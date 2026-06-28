@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(cd \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\"; python -m py_compile config.py storage.py web_app_server.py intern_track.py 2>&1; Write-Host \"exit:$LASTEXITCODE\")",
+      "PowerShell(cd \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\"; python -m py_compile config.py 2>&1; Write-Host \"config: $LASTEXITCODE\"; python -m py_compile storage.py 2>&1; Write-Host \"storage: $LASTEXITCODE\"; python -m py_compile web_app_server.py 2>&1; Write-Host \"web_app_server: $LASTEXITCODE\"; python -m py_compile intern_track.py 2>&1; Write-Host \"intern_track: $LASTEXITCODE\"; python -m py_compile moyklass_client.py 2>&1; Write-Host \"moyklass_client: $LASTEXITCODE\")",
+      "PowerShell(cd \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\"; python -m py_compile config.py storage.py web_app_server.py intern_track.py moyklass_client.py 2>&1; Write-Host \"ALL exit:$LASTEXITCODE\")",
+      "Bash(python -m py_compile config.py storage.py web_app_server.py intern_track.py moyklass_client.py)",
+      "Bash(node --check \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\miniapp\\\\app.js\")",
+      "PowerShell(node --check \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\miniapp\\\\app.js\" 2>&1; if \\($?\\) { \"OK\" } else { \"SYNTAX ERROR\" })",
+      "PowerShell(python -m py_compile \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\web_app_server.py\" \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\storage.py\" 2>&1; if \\($?\\) { \"Python OK\" })",
+      "PowerShell(python -m py_compile \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\config.py\" \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\storage.py\" \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\web_app_server.py\" \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\intern_track.py\" \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\moyklass_client.py\" 2>&1; if \\($?\\) { \"Python OK\" })",
+      "PowerShell(python -m py_compile \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\storage.py\" \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\config.py\" \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\web_app_server.py\" 2>&1; if \\($?\\) { \"Python OK\" })",
+      "PowerShell(python -m py_compile \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\config.py\" 2>&1)",
+      "PowerShell(python -m py_compile \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\storage.py\" 2>&1)",
+      "PowerShell(python -m py_compile \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\web_app_server.py\" 2>&1)",
+      "PowerShell(python -m py_compile \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\intern_track.py\" 2>&1)",
+      "PowerShell(python -m py_compile \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\moyklass_client.py\" 2>&1)",
+      "PowerShell(if \\($?\\) { \"OK: config.py\" })",
+      "PowerShell(if \\($?\\) { \"OK: storage.py\" })",
+      "PowerShell(if \\($?\\) { \"OK: web_app_server.py\" })",
+      "PowerShell(if \\($?\\) { \"OK: intern_track.py\" })",
+      "PowerShell(if \\($?\\) { \"OK: moyklass_client.py\" })",
+      "PowerShell(node --check \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\miniapp\\\\app.js\" 2>&1; if \\($?\\) { \"OK: app.js\" })",
+      "PowerShell(python -m py_compile \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\food_menu_ocr.py\")",
+      "PowerShell(python -m py_compile \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\config.py\")",
+      "PowerShell(python -m py_compile \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\web_app_server.py\")",
+      "PowerShell(if \\($?\\) { \"food_menu_ocr.py OK\" } else { \"food_menu_ocr.py FAIL\" })",
+      "PowerShell(if \\($?\\) { \"config.py OK\" } else { \"config.py FAIL\" })",
+      "PowerShell(if \\($?\\) { \"web_app_server.py OK\" } else { \"web_app_server.py FAIL\" })",
+      "PowerShell(node --check \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\miniapp\\\\app.js\" 2>&1; if \\($LASTEXITCODE -eq 0\\) { \"app.js OK\" } else { \"app.js FAIL or node not available\" })",
+      "PowerShell(python -m py_compile \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\storage.py\" 2>&1; if \\($?\\) { \"storage.py OK\" } else { \"storage.py FAIL\" })",
+      "PowerShell(python -m py_compile \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\web_app_server.py\" 2>&1; if \\($?\\) { \"web_app_server.py OK\" } else { \"web_app_server.py FAIL\" })",
+      "PowerShell(New-Item *)",
+      "PowerShell(node --version 2>&1)"
+    ]
+  }
+}

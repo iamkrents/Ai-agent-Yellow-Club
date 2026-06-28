@@ -1,0 +1,4252 @@
+{
+  "version": 1,
+  "pages": {
+    "d0b7ab83-5cd5-4c4b-8f4a-ad7128937c16": {
+      "page_id": "d0b7ab83-5cd5-4c4b-8f4a-ad7128937c16",
+      "title": "Yellow Club | wiki",
+      "file_path": "notion/yellow_club_wiki__d0b7ab835cd5.md",
+      "notion_url": "https://app.notion.com/p/Yellow-Club-wiki-d0b7ab835cd54c4b8f4aad7128937c16",
+      "last_edited_time": "2026-06-15T12:08:00.000Z",
+      "path_titles": [
+        "Yellow Club | wiki"
+      ]
+    },
+    "32fa39a4-80c9-80a6-bd0e-c4ca8cf9dccd": {
+      "page_id": "32fa39a4-80c9-80a6-bd0e-c4ca8cf9dccd",
+      "title": "Я преподаватель",
+      "file_path": "notion/я_преподаватель__32fa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/32fa39a480c980a6bd0ec4ca8cf9dccd",
+      "last_edited_time": "2026-04-08T12:45:00.000Z",
+      "path_titles": [
+        "32fa39a4",
+        "Я преподаватель"
+      ]
+    },
+    "32fa39a4-80c9-80e4-b1f0-eeb2e38516fa": {
+      "page_id": "32fa39a4-80c9-80e4-b1f0-eeb2e38516fa",
+      "title": "Я работаю с клиентами",
+      "file_path": "notion/я_работаю_с_клиентами__32fa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/32fa39a480c980e4b1f0eeb2e38516fa",
+      "last_edited_time": "2026-03-26T16:00:00.000Z",
+      "path_titles": [
+        "32fa39a4",
+        "Я работаю с клиентами"
+      ]
+    },
+    "32fa39a4-80c9-80f4-9ee3-f64b162e9e55": {
+      "page_id": "32fa39a4-80c9-80f4-9ee3-f64b162e9e55",
+      "title": "Я участвую в операционной работе",
+      "file_path": "notion/я_участвую_в_операционной_работе__32fa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/32fa39a480c980f49ee3f64b162e9e55",
+      "last_edited_time": "2026-03-26T16:03:00.000Z",
+      "path_titles": [
+        "32fa39a4",
+        "Я участвую в операционной работе"
+      ]
+    },
+    "32fa39a4-80c9-8070-aef9-f7ad0f9db61b": {
+      "page_id": "32fa39a4-80c9-8070-aef9-f7ad0f9db61b",
+      "title": "Я занимаюсь маркетингом и привлечением клиентов",
+      "file_path": "notion/я_занимаюсь_маркетингом_и_привлечением_клиентов__32fa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/32fa39a480c98070aef9f7ad0f9db61b",
+      "last_edited_time": "2026-03-26T16:05:00.000Z",
+      "path_titles": [
+        "32fa39a4",
+        "Я занимаюсь маркетингом и привлечением клиентов"
+      ]
+    },
+    "32ca39a4-80c9-8065-a336-c754cc05f41f": {
+      "page_id": "32ca39a4-80c9-8065-a336-c754cc05f41f",
+      "title": "Миссия, цели и задачи",
+      "file_path": "notion/миссия_цели_и_задачи__32ca39a480c9.md",
+      "notion_url": "https://app.notion.com/p/32ca39a480c98065a336c754cc05f41f",
+      "last_edited_time": "2026-06-15T12:40:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Миссия, цели и задачи"
+      ]
+    },
+    "32ca39a4-80c9-80fe-87dc-fc405b73c888": {
+      "page_id": "32ca39a4-80c9-80fe-87dc-fc405b73c888",
+      "title": "История",
+      "file_path": "notion/история__32ca39a480c9.md",
+      "notion_url": "https://app.notion.com/p/32ca39a480c980fe87dcfc405b73c888",
+      "last_edited_time": "2026-04-02T12:35:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "История"
+      ]
+    },
+    "32ca39a4-80c9-8034-bead-c0982e0978b0": {
+      "page_id": "32ca39a4-80c9-8034-bead-c0982e0978b0",
+      "title": "Команда",
+      "file_path": "notion/команда__32ca39a480c9.md",
+      "notion_url": "https://app.notion.com/p/32ca39a480c98034beadc0982e0978b0",
+      "last_edited_time": "2026-04-02T12:50:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Команда"
+      ]
+    },
+    "32fa39a4-80c9-8051-bdf7-dd44ddec4c7f": {
+      "page_id": "32fa39a4-80c9-8051-bdf7-dd44ddec4c7f",
+      "title": "Ольга",
+      "file_path": "notion/ольга__32fa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/32fa39a480c98051bdf7dd44ddec4c7f",
+      "last_edited_time": "2026-03-26T16:25:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Команда",
+        "Команда",
+        "Ольга"
+      ]
+    },
+    "30ba39a4-80c9-8050-865a-d0f60863c2f9": {
+      "page_id": "30ba39a4-80c9-8050-865a-d0f60863c2f9",
+      "title": "Владислав Лашкевич",
+      "file_path": "notion/владислав_лашкевич__30ba39a480c9.md",
+      "notion_url": "https://app.notion.com/p/30ba39a480c98050865ad0f60863c2f9",
+      "last_edited_time": "2026-03-26T16:27:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Команда",
+        "Команда",
+        "Владислав Лашкевич"
+      ]
+    },
+    "30ba39a4-80c9-80fe-b3c7-d10c586f5c96": {
+      "page_id": "30ba39a4-80c9-80fe-b3c7-d10c586f5c96",
+      "title": "Валерия Ситоленко",
+      "file_path": "notion/валерия_ситоленко__30ba39a480c9.md",
+      "notion_url": "https://app.notion.com/p/30ba39a480c980feb3c7d10c586f5c96",
+      "last_edited_time": "2026-03-26T16:27:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Команда",
+        "Команда",
+        "Валерия Ситоленко"
+      ]
+    },
+    "30ba39a4-80c9-8097-8ec8-fffc85519cd3": {
+      "page_id": "30ba39a4-80c9-8097-8ec8-fffc85519cd3",
+      "title": "Эльвира Яроцкая",
+      "file_path": "notion/эльвира_яроцкая__30ba39a480c9.md",
+      "notion_url": "https://app.notion.com/p/30ba39a480c980978ec8fffc85519cd3",
+      "last_edited_time": "2026-03-26T16:27:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Команда",
+        "Команда",
+        "Эльвира Яроцкая"
+      ]
+    },
+    "30ba39a4-80c9-80c0-ae54-c24c23b625f2": {
+      "page_id": "30ba39a4-80c9-80c0-ae54-c24c23b625f2",
+      "title": "Елизавета Гаврилина",
+      "file_path": "notion/елизавета_гаврилина__30ba39a480c9.md",
+      "notion_url": "https://app.notion.com/p/30ba39a480c980c0ae54c24c23b625f2",
+      "last_edited_time": "2026-03-24T08:52:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Команда",
+        "Команда",
+        "Елизавета Гаврилина"
+      ]
+    },
+    "30ba39a4-80c9-807b-805e-e9f54c7dd09d": {
+      "page_id": "30ba39a4-80c9-807b-805e-e9f54c7dd09d",
+      "title": "Варвара Казакова",
+      "file_path": "notion/варвара_казакова__30ba39a480c9.md",
+      "notion_url": "https://app.notion.com/p/30ba39a480c9807b805ee9f54c7dd09d",
+      "last_edited_time": "2026-03-24T08:52:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Команда",
+        "Команда",
+        "Варвара Казакова"
+      ]
+    },
+    "30ba39a4-80c9-806d-b54a-fe51837d6d46": {
+      "page_id": "30ba39a4-80c9-806d-b54a-fe51837d6d46",
+      "title": "Александра Скроба",
+      "file_path": "notion/александра_скроба__30ba39a480c9.md",
+      "notion_url": "https://app.notion.com/p/30ba39a480c9806db54afe51837d6d46",
+      "last_edited_time": "2026-03-24T08:51:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Команда",
+        "Команда",
+        "Александра Скроба"
+      ]
+    },
+    "30ba39a4-80c9-8001-b26d-cefc188a494e": {
+      "page_id": "30ba39a4-80c9-8001-b26d-cefc188a494e",
+      "title": "Анна Телица",
+      "file_path": "notion/анна_телица__30ba39a480c9.md",
+      "notion_url": "https://app.notion.com/p/30ba39a480c98001b26dcefc188a494e",
+      "last_edited_time": "2026-03-24T08:52:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Команда",
+        "Команда",
+        "Анна Телица"
+      ]
+    },
+    "30ba39a4-80c9-8022-8a37-dd003a202f64": {
+      "page_id": "30ba39a4-80c9-8022-8a37-dd003a202f64",
+      "title": "Налин Виракоон",
+      "file_path": "notion/налин_виракоон__30ba39a480c9.md",
+      "notion_url": "https://app.notion.com/p/30ba39a480c980228a37dd003a202f64",
+      "last_edited_time": "2026-03-24T08:51:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Команда",
+        "Команда",
+        "Налин Виракоон"
+      ]
+    },
+    "30ba39a4-80c9-802b-95e9-fa8aa077814f": {
+      "page_id": "30ba39a4-80c9-802b-95e9-fa8aa077814f",
+      "title": "Марта Багрицевич",
+      "file_path": "notion/марта_багрицевич__30ba39a480c9.md",
+      "notion_url": "https://app.notion.com/p/30ba39a480c9802b95e9fa8aa077814f",
+      "last_edited_time": "2026-03-24T08:51:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Команда",
+        "Команда",
+        "Марта Багрицевич"
+      ]
+    },
+    "25ba39a4-80c9-8099-a663-fe26ca30279b": {
+      "page_id": "25ba39a4-80c9-8099-a663-fe26ca30279b",
+      "title": "Валерия Тихановец",
+      "file_path": "notion/валерия_тихановец__25ba39a480c9.md",
+      "notion_url": "https://app.notion.com/p/25ba39a480c98099a663fe26ca30279b",
+      "last_edited_time": "2026-03-24T08:52:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Команда",
+        "Команда",
+        "Валерия Тихановец"
+      ]
+    },
+    "25ba39a4-80c9-8063-9c96-f032714f92ea": {
+      "page_id": "25ba39a4-80c9-8063-9c96-f032714f92ea",
+      "title": "Александра Бурдюгова",
+      "file_path": "notion/александра_бурдюгова__25ba39a480c9.md",
+      "notion_url": "https://app.notion.com/p/25ba39a480c980639c96f032714f92ea",
+      "last_edited_time": "2026-03-26T16:25:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Команда",
+        "Команда",
+        "Александра Бурдюгова"
+      ]
+    },
+    "25ba39a4-80c9-8011-b1d9-eccbf6450f3f": {
+      "page_id": "25ba39a4-80c9-8011-b1d9-eccbf6450f3f",
+      "title": "Екатерина Емельяшенкова",
+      "file_path": "notion/екатерина_емельяшенкова__25ba39a480c9.md",
+      "notion_url": "https://app.notion.com/p/25ba39a480c98011b1d9eccbf6450f3f",
+      "last_edited_time": "2026-03-24T08:54:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Команда",
+        "Команда",
+        "Екатерина Емельяшенкова"
+      ]
+    },
+    "25ba39a4-80c9-8043-a62e-fd6aaef5a04d": {
+      "page_id": "25ba39a4-80c9-8043-a62e-fd6aaef5a04d",
+      "title": "Александр Кренть",
+      "file_path": "notion/александр_кренть__25ba39a480c9.md",
+      "notion_url": "https://app.notion.com/p/25ba39a480c98043a62efd6aaef5a04d",
+      "last_edited_time": "2026-03-24T08:53:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Команда",
+        "Команда",
+        "Александр Кренть"
+      ]
+    },
+    "25ba39a4-80c9-8019-82bf-d79d77c2e389": {
+      "page_id": "25ba39a4-80c9-8019-82bf-d79d77c2e389",
+      "title": "Константин Сердюк",
+      "file_path": "notion/константин_сердюк__25ba39a480c9.md",
+      "notion_url": "https://app.notion.com/p/25ba39a480c9801982bfd79d77c2e389",
+      "last_edited_time": "2026-03-26T16:30:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Команда",
+        "Команда",
+        "Константин Сердюк"
+      ]
+    },
+    "32ca39a4-80c9-80f8-b1cb-ce74454b9b6f": {
+      "page_id": "32ca39a4-80c9-80f8-b1cb-ce74454b9b6f",
+      "title": "Локации и контакты",
+      "file_path": "notion/локации_и_контакты__32ca39a480c9.md",
+      "notion_url": "https://app.notion.com/p/32ca39a480c980f8b1cbce74454b9b6f",
+      "last_edited_time": "2026-04-02T12:31:00.000Z",
+      "path_titles": [
+        "32ca39a4",
+        "Локации и контакты"
+      ]
+    },
+    "32ca39a4-80c9-80f1-bfcb-c6c13573c8a5": {
+      "page_id": "32ca39a4-80c9-80f1-bfcb-c6c13573c8a5",
+      "title": "Продукт",
+      "file_path": "notion/продукт__32ca39a480c9.md",
+      "notion_url": "https://app.notion.com/p/32ca39a480c980f1bfcbc6c13573c8a5",
+      "last_edited_time": "2026-03-27T09:32:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт"
+      ]
+    },
+    "32ca39a4-80c9-8022-be99-cfa93f30ad28": {
+      "page_id": "32ca39a4-80c9-8022-be99-cfa93f30ad28",
+      "title": "Структура продукта",
+      "file_path": "notion/структура_продукта__32ca39a480c9.md",
+      "notion_url": "https://app.notion.com/p/32ca39a480c98022be99cfa93f30ad28",
+      "last_edited_time": "2026-03-27T09:33:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Структура продукта"
+      ]
+    },
+    "32ca39a4-80c9-80ed-8d3a-c55b9c521ade": {
+      "page_id": "32ca39a4-80c9-80ed-8d3a-c55b9c521ade",
+      "title": "Форматы продукта",
+      "file_path": "notion/форматы_продукта__32ca39a480c9.md",
+      "notion_url": "https://app.notion.com/p/32ca39a480c980ed8d3ac55b9c521ade",
+      "last_edited_time": "2026-03-23T16:31:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Форматы продукта"
+      ]
+    },
+    "f911c6d5-6ba0-49c3-b08c-3cf0b74a593b": {
+      "page_id": "f911c6d5-6ba0-49c3-b08c-3cf0b74a593b",
+      "title": "Программа обучения",
+      "file_path": "notion/программа_обучения__f911c6d56ba0.md",
+      "notion_url": "https://app.notion.com/p/f911c6d56ba049c3b08c3cf0b74a593b",
+      "last_edited_time": "2026-03-26T18:52:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения"
+      ]
+    },
+    "248a39a4-80c9-805b-9946-c5a919155144": {
+      "page_id": "248a39a4-80c9-805b-9946-c5a919155144",
+      "title": "16 лет",
+      "file_path": "notion/16_лет__248a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/16-248a39a480c9805b9946c5a919155144",
+      "last_edited_time": "2025-08-07T16:10:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "16 лет"
+      ]
+    },
+    "248a39a4-80c9-800b-bf80-c19bada51233": {
+      "page_id": "248a39a4-80c9-800b-bf80-c19bada51233",
+      "title": "16 лет",
+      "file_path": "notion/16_лет__248a39a480c9_2.md",
+      "notion_url": "https://app.notion.com/p/16-248a39a480c9800bbf80c19bada51233",
+      "last_edited_time": "2025-08-07T16:29:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "16 лет"
+      ]
+    },
+    "248a39a4-80c9-8009-a152-ee63616e831d": {
+      "page_id": "248a39a4-80c9-8009-a152-ee63616e831d",
+      "title": "16 лет",
+      "file_path": "notion/16_лет__248a39a480c9_3.md",
+      "notion_url": "https://app.notion.com/p/16-248a39a480c98009a152ee63616e831d",
+      "last_edited_time": "2025-08-07T16:31:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "16 лет"
+      ]
+    },
+    "248a39a4-80c9-80a4-a98a-f66efd0012c5": {
+      "page_id": "248a39a4-80c9-80a4-a98a-f66efd0012c5",
+      "title": "16 лет",
+      "file_path": "notion/16_лет__248a39a480c9_4.md",
+      "notion_url": "https://app.notion.com/p/16-248a39a480c980a4a98af66efd0012c5",
+      "last_edited_time": "2025-08-07T16:09:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "16 лет"
+      ]
+    },
+    "248a39a4-80c9-80fa-bf90-efa342c21660": {
+      "page_id": "248a39a4-80c9-80fa-bf90-efa342c21660",
+      "title": "17 лет",
+      "file_path": "notion/17_лет__248a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/17-248a39a480c980fabf90efa342c21660",
+      "last_edited_time": "2025-08-07T15:56:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "17 лет"
+      ]
+    },
+    "248a39a4-80c9-8012-9245-f153fcc96c6f": {
+      "page_id": "248a39a4-80c9-8012-9245-f153fcc96c6f",
+      "title": "17 лет",
+      "file_path": "notion/17_лет__248a39a480c9_2.md",
+      "notion_url": "https://app.notion.com/p/17-248a39a480c980129245f153fcc96c6f",
+      "last_edited_time": "2025-08-07T16:31:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "17 лет"
+      ]
+    },
+    "248a39a4-80c9-801b-8da9-cbc8e6cc6952": {
+      "page_id": "248a39a4-80c9-801b-8da9-cbc8e6cc6952",
+      "title": "17 лет",
+      "file_path": "notion/17_лет__248a39a480c9_3.md",
+      "notion_url": "https://app.notion.com/p/17-248a39a480c9801b8da9cbc8e6cc6952",
+      "last_edited_time": "2025-08-07T16:30:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "17 лет"
+      ]
+    },
+    "248a39a4-80c9-8096-965e-de137c555043": {
+      "page_id": "248a39a4-80c9-8096-965e-de137c555043",
+      "title": "17 лет",
+      "file_path": "notion/17_лет__248a39a480c9_4.md",
+      "notion_url": "https://app.notion.com/p/17-248a39a480c98096965ede137c555043",
+      "last_edited_time": "2025-08-07T15:55:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "17 лет"
+      ]
+    },
+    "248a39a4-80c9-801b-b4ab-e606a1cf1e15": {
+      "page_id": "248a39a4-80c9-801b-b4ab-e606a1cf1e15",
+      "title": "17 лет",
+      "file_path": "notion/17_лет__248a39a480c9_5.md",
+      "notion_url": "https://app.notion.com/p/17-248a39a480c9801bb4abe606a1cf1e15",
+      "last_edited_time": "2025-08-07T15:55:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "17 лет"
+      ]
+    },
+    "248a39a4-80c9-80c9-b1a8-db405ae24120": {
+      "page_id": "248a39a4-80c9-80c9-b1a8-db405ae24120",
+      "title": "15 лет",
+      "file_path": "notion/15_лет__248a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/15-248a39a480c980c9b1a8db405ae24120",
+      "last_edited_time": "2025-08-07T15:52:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "15 лет"
+      ]
+    },
+    "248a39a4-80c9-8099-927c-e647f1fe7216": {
+      "page_id": "248a39a4-80c9-8099-927c-e647f1fe7216",
+      "title": "15 лет",
+      "file_path": "notion/15_лет__248a39a480c9_2.md",
+      "notion_url": "https://app.notion.com/p/15-248a39a480c98099927ce647f1fe7216",
+      "last_edited_time": "2025-08-07T15:52:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "15 лет"
+      ]
+    },
+    "248a39a4-80c9-80a7-8cff-ecfd85d705d6": {
+      "page_id": "248a39a4-80c9-80a7-8cff-ecfd85d705d6",
+      "title": "15 лет",
+      "file_path": "notion/15_лет__248a39a480c9_3.md",
+      "notion_url": "https://app.notion.com/p/15-248a39a480c980a78cffecfd85d705d6",
+      "last_edited_time": "2025-08-07T16:29:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "15 лет"
+      ]
+    },
+    "248a39a4-80c9-80f4-8886-da9fa597787d": {
+      "page_id": "248a39a4-80c9-80f4-8886-da9fa597787d",
+      "title": "13 лет",
+      "file_path": "notion/13_лет__248a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/13-248a39a480c980f48886da9fa597787d",
+      "last_edited_time": "2025-08-07T16:20:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "13 лет"
+      ]
+    },
+    "248a39a4-80c9-80e7-94d5-df4404aa21fa": {
+      "page_id": "248a39a4-80c9-80e7-94d5-df4404aa21fa",
+      "title": "13 лет",
+      "file_path": "notion/13_лет__248a39a480c9_2.md",
+      "notion_url": "https://app.notion.com/p/13-248a39a480c980e794d5df4404aa21fa",
+      "last_edited_time": "2025-08-07T15:51:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "13 лет"
+      ]
+    },
+    "248a39a4-80c9-8078-9b8a-d2253dab9090": {
+      "page_id": "248a39a4-80c9-8078-9b8a-d2253dab9090",
+      "title": "12 лет",
+      "file_path": "notion/12_лет__248a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/12-248a39a480c980789b8ad2253dab9090",
+      "last_edited_time": "2025-08-07T15:49:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "12 лет"
+      ]
+    },
+    "248a39a4-80c9-809d-8c94-c2ec2309cbf0": {
+      "page_id": "248a39a4-80c9-809d-8c94-c2ec2309cbf0",
+      "title": "10 лет",
+      "file_path": "notion/10_лет__248a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/10-248a39a480c9809d8c94c2ec2309cbf0",
+      "last_edited_time": "2025-08-07T15:48:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "10 лет"
+      ]
+    },
+    "248a39a4-80c9-8089-ace4-fab38b63387e": {
+      "page_id": "248a39a4-80c9-8089-ace4-fab38b63387e",
+      "title": "16 лет",
+      "file_path": "notion/16_лет__248a39a480c9_5.md",
+      "notion_url": "https://app.notion.com/p/16-248a39a480c98089ace4fab38b63387e",
+      "last_edited_time": "2025-08-07T15:47:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "16 лет"
+      ]
+    },
+    "248a39a4-80c9-8032-a63f-ed3508005554": {
+      "page_id": "248a39a4-80c9-8032-a63f-ed3508005554",
+      "title": "15 лет",
+      "file_path": "notion/15_лет__248a39a480c9_4.md",
+      "notion_url": "https://app.notion.com/p/15-248a39a480c98032a63fed3508005554",
+      "last_edited_time": "2025-08-07T16:30:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "15 лет"
+      ]
+    },
+    "248a39a4-80c9-80d0-8bb0-e8bf543a988a": {
+      "page_id": "248a39a4-80c9-80d0-8bb0-e8bf543a988a",
+      "title": "14 лет",
+      "file_path": "notion/14_лет__248a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/14-248a39a480c980d08bb0e8bf543a988a",
+      "last_edited_time": "2025-08-07T15:45:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "14 лет"
+      ]
+    },
+    "248a39a4-80c9-8009-9343-fe04de13232c": {
+      "page_id": "248a39a4-80c9-8009-9343-fe04de13232c",
+      "title": "14 лет",
+      "file_path": "notion/14_лет__248a39a480c9_2.md",
+      "notion_url": "https://app.notion.com/p/14-248a39a480c980099343fe04de13232c",
+      "last_edited_time": "2025-08-07T16:29:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "14 лет"
+      ]
+    },
+    "248a39a4-80c9-80d9-816d-c4d34680b548": {
+      "page_id": "248a39a4-80c9-80d9-816d-c4d34680b548",
+      "title": "14 лет",
+      "file_path": "notion/14_лет__248a39a480c9_3.md",
+      "notion_url": "https://app.notion.com/p/14-248a39a480c980d9816dc4d34680b548",
+      "last_edited_time": "2025-08-07T15:45:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "14 лет"
+      ]
+    },
+    "28c550d7-0c6d-4619-a150-71d6297bb532": {
+      "page_id": "28c550d7-0c6d-4619-a150-71d6297bb532",
+      "title": "14 лет",
+      "file_path": "notion/14_лет__28c550d70c6d.md",
+      "notion_url": "https://app.notion.com/p/14-28c550d70c6d4619a15071d6297bb532",
+      "last_edited_time": "2025-08-07T16:28:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "14 лет"
+      ]
+    },
+    "b064a455-2e66-4076-9c52-76d92adb9ae8": {
+      "page_id": "b064a455-2e66-4076-9c52-76d92adb9ae8",
+      "title": "15 лет",
+      "file_path": "notion/15_лет__b064a4552e66.md",
+      "notion_url": "https://app.notion.com/p/15-b064a4552e6640769c5276d92adb9ae8",
+      "last_edited_time": "2025-08-07T15:39:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "15 лет"
+      ]
+    },
+    "c05324d8-b8a1-4f79-b6b3-17bfb63d6285": {
+      "page_id": "c05324d8-b8a1-4f79-b6b3-17bfb63d6285",
+      "title": "13 лет",
+      "file_path": "notion/13_лет__c05324d8b8a1.md",
+      "notion_url": "https://app.notion.com/p/13-c05324d8b8a14f79b6b317bfb63d6285",
+      "last_edited_time": "2025-08-07T15:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "13 лет"
+      ]
+    },
+    "e2ab884d-dfd1-488a-bd59-c5c1aca8928a": {
+      "page_id": "e2ab884d-dfd1-488a-bd59-c5c1aca8928a",
+      "title": "12 лет",
+      "file_path": "notion/12_лет__e2ab884ddfd1.md",
+      "notion_url": "https://app.notion.com/p/12-e2ab884ddfd1488abd59c5c1aca8928a",
+      "last_edited_time": "2025-08-07T16:18:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "12 лет"
+      ]
+    },
+    "67786dba-a567-4acf-a67d-a90d0cfe2dc6": {
+      "page_id": "67786dba-a567-4acf-a67d-a90d0cfe2dc6",
+      "title": "11 лет",
+      "file_path": "notion/11_лет__67786dbaa567.md",
+      "notion_url": "https://app.notion.com/p/11-67786dbaa5674acfa67da90d0cfe2dc6",
+      "last_edited_time": "2025-08-07T15:37:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "11 лет"
+      ]
+    },
+    "53a91060-b828-4e25-a6b9-0efca9bda15f": {
+      "page_id": "53a91060-b828-4e25-a6b9-0efca9bda15f",
+      "title": "11 лет",
+      "file_path": "notion/11_лет__53a91060b828.md",
+      "notion_url": "https://app.notion.com/p/11-53a91060b8284e25a6b90efca9bda15f",
+      "last_edited_time": "2025-08-07T16:18:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "11 лет"
+      ]
+    },
+    "2b74e878-14b6-4837-9877-368d6f6481f7": {
+      "page_id": "2b74e878-14b6-4837-9877-368d6f6481f7",
+      "title": "10 лет",
+      "file_path": "notion/10_лет__2b74e87814b6.md",
+      "notion_url": "https://app.notion.com/p/10-2b74e87814b648379877368d6f6481f7",
+      "last_edited_time": "2024-08-27T14:48:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "10 лет"
+      ]
+    },
+    "0af02b76-2357-4001-81f8-2ad73ddbbae8": {
+      "page_id": "0af02b76-2357-4001-81f8-2ad73ddbbae8",
+      "title": "12 лет",
+      "file_path": "notion/12_лет__0af02b762357.md",
+      "notion_url": "https://app.notion.com/p/12-0af02b762357400181f82ad73ddbbae8",
+      "last_edited_time": "2025-08-07T16:25:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "12 лет"
+      ]
+    },
+    "4240245b-9f46-41c9-a3c0-e829385b599e": {
+      "page_id": "4240245b-9f46-41c9-a3c0-e829385b599e",
+      "title": "11 лет",
+      "file_path": "notion/11_лет__4240245b9f46.md",
+      "notion_url": "https://app.notion.com/p/11-4240245b9f4641c9a3c0e829385b599e",
+      "last_edited_time": "2024-08-27T15:24:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "11 лет"
+      ]
+    },
+    "09bad276-b87f-448c-92af-823239c33469": {
+      "page_id": "09bad276-b87f-448c-92af-823239c33469",
+      "title": "11 лет",
+      "file_path": "notion/11_лет__09bad276b87f.md",
+      "notion_url": "https://app.notion.com/p/11-09bad276b87f448c92af823239c33469",
+      "last_edited_time": "2025-08-07T16:16:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "11 лет"
+      ]
+    },
+    "9d4a6329-7c3e-4a28-8632-be6b8c57aa4a": {
+      "page_id": "9d4a6329-7c3e-4a28-8632-be6b8c57aa4a",
+      "title": "9 лет",
+      "file_path": "notion/9_лет__9d4a63297c3e.md",
+      "notion_url": "https://app.notion.com/p/9-9d4a63297c3e4a288632be6b8c57aa4a",
+      "last_edited_time": "2026-04-10T10:24:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "9 лет"
+      ]
+    },
+    "eba98ce7-2e39-4e1c-bcf4-44c2f6f4c378": {
+      "page_id": "eba98ce7-2e39-4e1c-bcf4-44c2f6f4c378",
+      "title": "13 лет",
+      "file_path": "notion/13_лет__eba98ce72e39.md",
+      "notion_url": "https://app.notion.com/p/13-eba98ce72e394e1cbcf444c2f6f4c378",
+      "last_edited_time": "2025-08-07T16:26:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "13 лет"
+      ]
+    },
+    "25011d28-c75d-4916-90a8-0ea7d4cd0056": {
+      "page_id": "25011d28-c75d-4916-90a8-0ea7d4cd0056",
+      "title": "12 лет",
+      "file_path": "notion/12_лет__25011d28c75d.md",
+      "notion_url": "https://app.notion.com/p/12-25011d28c75d491690a80ea7d4cd0056",
+      "last_edited_time": "2024-09-17T09:28:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "12 лет"
+      ]
+    },
+    "e8b5567d-2cb9-44d8-bcf7-4bf8cfdf7ac5": {
+      "page_id": "e8b5567d-2cb9-44d8-bcf7-4bf8cfdf7ac5",
+      "title": "11 лет",
+      "file_path": "notion/11_лет__e8b5567d2cb9.md",
+      "notion_url": "https://app.notion.com/p/11-e8b5567d2cb944d8bcf74bf8cfdf7ac5",
+      "last_edited_time": "2025-08-07T16:17:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "11 лет"
+      ]
+    },
+    "d4e8da15-69b7-473d-bd75-422f765f19cb": {
+      "page_id": "d4e8da15-69b7-473d-bd75-422f765f19cb",
+      "title": "14 лет",
+      "file_path": "notion/14_лет__d4e8da1569b7.md",
+      "notion_url": "https://app.notion.com/p/14-d4e8da1569b7473dbd75422f765f19cb",
+      "last_edited_time": "2025-08-07T16:27:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "14 лет"
+      ]
+    },
+    "de574810-4174-4730-b6c0-c98c4a6ddcd6": {
+      "page_id": "de574810-4174-4730-b6c0-c98c4a6ddcd6",
+      "title": "13 лет",
+      "file_path": "notion/13_лет__de5748104174.md",
+      "notion_url": "https://app.notion.com/p/13-de57481041744730b6c0c98c4a6ddcd6",
+      "last_edited_time": "2025-08-07T16:21:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "13 лет"
+      ]
+    },
+    "25816bda-8f87-4a3a-bc6a-aea3a6b63fa2": {
+      "page_id": "25816bda-8f87-4a3a-bc6a-aea3a6b63fa2",
+      "title": "12 лет",
+      "file_path": "notion/12_лет__25816bda8f87.md",
+      "notion_url": "https://app.notion.com/p/12-25816bda8f874a3abc6aaea3a6b63fa2",
+      "last_edited_time": "2025-08-07T16:23:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "12 лет"
+      ]
+    },
+    "f04edbc8-f0d8-4bb5-ab8b-e0469482dcff": {
+      "page_id": "f04edbc8-f0d8-4bb5-ab8b-e0469482dcff",
+      "title": "10 лет",
+      "file_path": "notion/10_лет__f04edbc8f0d8.md",
+      "notion_url": "https://app.notion.com/p/10-f04edbc8f0d84bb5ab8be0469482dcff",
+      "last_edited_time": "2026-02-19T11:41:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "10 лет"
+      ]
+    },
+    "9893e780-0ea3-47bd-9d06-a6763ff351e0": {
+      "page_id": "9893e780-0ea3-47bd-9d06-a6763ff351e0",
+      "title": "10 лет",
+      "file_path": "notion/10_лет__9893e7800ea3.md",
+      "notion_url": "https://app.notion.com/p/10-9893e7800ea347bd9d06a6763ff351e0",
+      "last_edited_time": "2025-08-07T16:25:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "10 лет"
+      ]
+    },
+    "7d5690c8-557f-491b-8797-ddacbb65619e": {
+      "page_id": "7d5690c8-557f-491b-8797-ddacbb65619e",
+      "title": "9 лет",
+      "file_path": "notion/9_лет__7d5690c8557f.md",
+      "notion_url": "https://app.notion.com/p/9-7d5690c8557f491b8797ddacbb65619e",
+      "last_edited_time": "2025-08-07T16:11:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "9 лет"
+      ]
+    },
+    "0dc04b14-c655-4d93-bca9-a194f5c67f4c": {
+      "page_id": "0dc04b14-c655-4d93-bca9-a194f5c67f4c",
+      "title": "7 лет",
+      "file_path": "notion/7_лет__0dc04b14c655.md",
+      "notion_url": "https://app.notion.com/p/7-0dc04b14c6554d93bca9a194f5c67f4c",
+      "last_edited_time": "2026-03-20T16:04:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "7 лет"
+      ]
+    },
+    "3de4cc9b-1f23-4156-b214-288ca8e3a691": {
+      "page_id": "3de4cc9b-1f23-4156-b214-288ca8e3a691",
+      "title": "9 лет",
+      "file_path": "notion/9_лет__3de4cc9b1f23.md",
+      "notion_url": "https://app.notion.com/p/9-3de4cc9b1f234156b214288ca8e3a691",
+      "last_edited_time": "2025-08-09T16:37:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "9 лет"
+      ]
+    },
+    "af32ef41-a093-4aee-bd1f-25e63d498710": {
+      "page_id": "af32ef41-a093-4aee-bd1f-25e63d498710",
+      "title": "8 лет",
+      "file_path": "notion/8_лет__af32ef41a093.md",
+      "notion_url": "https://app.notion.com/p/8-af32ef41a0934aeebd1f25e63d498710",
+      "last_edited_time": "2026-02-19T11:41:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Учебный трек",
+        "8 лет"
+      ]
+    },
+    "35aa39a4-80c9-80cb-87a1-eaf4d755b31c": {
+      "page_id": "35aa39a4-80c9-80cb-87a1-eaf4d755b31c",
+      "title": "1 тема - Doodle Jump",
+      "file_path": "notion/1_тема_doodle_jump__35aa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/1-Doodle-Jump-35aa39a480c980cb87a1eaf4d755b31c",
+      "last_edited_time": "2026-05-15T08:26:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Doodle Jump"
+      ]
+    },
+    "358a39a4-80c9-8010-a53a-fc590bff313e": {
+      "page_id": "358a39a4-80c9-8010-a53a-fc590bff313e",
+      "title": "11 тема - Создание сцены - UV, Свет",
+      "file_path": "notion/11_тема_создание_сцены_uv_свет__358a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/11-UV-358a39a480c98010a53afc590bff313e",
+      "last_edited_time": "2026-06-15T07:39:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "11 тема - Создание сцены - UV, Свет"
+      ]
+    },
+    "358a39a4-80c9-80ef-8a81-f8d692ce91bd": {
+      "page_id": "358a39a4-80c9-80ef-8a81-f8d692ce91bd",
+      "title": "4 тема - Создание сцены Halloween",
+      "file_path": "notion/4_тема_создание_сцены_halloween__358a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/4-Halloween-358a39a480c980ef8a81f8d692ce91bd",
+      "last_edited_time": "2026-06-15T07:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "4 тема - Создание сцены Halloween"
+      ]
+    },
+    "358a39a4-80c9-80d3-82c5-f2ca73f8c4d2": {
+      "page_id": "358a39a4-80c9-80d3-82c5-f2ca73f8c4d2",
+      "title": "3 тема - Цилиндр",
+      "file_path": "notion/3_тема_цилиндр__358a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/3-358a39a480c980d382c5f2ca73f8c4d2",
+      "last_edited_time": "2026-06-15T07:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема - Цилиндр"
+      ]
+    },
+    "358a39a4-80c9-804a-abc1-f42b309ed060": {
+      "page_id": "358a39a4-80c9-804a-abc1-f42b309ed060",
+      "title": "2 тема - Сфера",
+      "file_path": "notion/2_тема_сфера__358a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/2-358a39a480c9804aabc1f42b309ed060",
+      "last_edited_time": "2026-06-15T07:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Сфера"
+      ]
+    },
+    "358a39a4-80c9-8006-8183-e3a426af723e": {
+      "page_id": "358a39a4-80c9-8006-8183-e3a426af723e",
+      "title": "6 тема - Имитация краски",
+      "file_path": "notion/6_тема_имитация_краски__358a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/6-358a39a480c980068183e3a426af723e",
+      "last_edited_time": "2026-05-06T10:14:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "6 тема - Имитация краски"
+      ]
+    },
+    "358a39a4-80c9-8054-a469-d75503a60946": {
+      "page_id": "358a39a4-80c9-8054-a469-d75503a60946",
+      "title": "5 тема - Глитч",
+      "file_path": "notion/5_тема_глитч__358a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/5-358a39a480c98054a469d75503a60946",
+      "last_edited_time": "2026-05-06T08:56:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "5 тема - Глитч"
+      ]
+    },
+    "358a39a4-80c9-8055-8292-c447645b40f4": {
+      "page_id": "358a39a4-80c9-8055-8292-c447645b40f4",
+      "title": "4 тема - Дуотон",
+      "file_path": "notion/4_тема_дуотон__358a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/4-358a39a480c980558292c447645b40f4",
+      "last_edited_time": "2026-05-06T08:14:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "4 тема - Дуотон"
+      ]
+    },
+    "358a39a4-80c9-8013-96fc-d0f6a526ea0e": {
+      "page_id": "358a39a4-80c9-8013-96fc-d0f6a526ea0e",
+      "title": "1 тема - Повторение",
+      "file_path": "notion/1_тема_повторение__358a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/1-358a39a480c9801396fcd0f6a526ea0e",
+      "last_edited_time": "2026-06-02T10:15:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Повторение"
+      ]
+    },
+    "358a39a4-80c9-80a7-9ace-e67872ce6ff5": {
+      "page_id": "358a39a4-80c9-80a7-9ace-e67872ce6ff5",
+      "title": "3 тема - Двойная экспозиция",
+      "file_path": "notion/3_тема_двойная_экспозиция__358a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/3-358a39a480c980a79acee67872ce6ff5",
+      "last_edited_time": "2026-05-06T08:15:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема - Двойная экспозиция"
+      ]
+    },
+    "353a39a4-80c9-808b-8662-c459fd4c587b": {
+      "page_id": "353a39a4-80c9-808b-8662-c459fd4c587b",
+      "title": "Выгрузка результатов курса на сайт WP",
+      "file_path": "notion/выгрузка_результатов_курса_на_сайт_wp__353a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/WP-353a39a480c9808b8662c459fd4c587b",
+      "last_edited_time": "2026-06-05T14:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Выгрузка результатов курса на сайт WP"
+      ]
+    },
+    "346a39a4-80c9-8008-957a-c789302c7e98": {
+      "page_id": "346a39a4-80c9-8008-957a-c789302c7e98",
+      "title": "9 тема - Движение NPC",
+      "file_path": "notion/9_тема_движение_npc__346a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/9-NPC-346a39a480c98008957ac789302c7e98",
+      "last_edited_time": "2026-05-10T06:52:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "9 тема - Движение NPC"
+      ]
+    },
+    "345a39a4-80c9-8030-97df-ced11916dfcb": {
+      "page_id": "345a39a4-80c9-8030-97df-ced11916dfcb",
+      "title": "Змейка - 5 тема - Добавляем SFML к игре",
+      "file_path": "notion/змейка_5_тема_добавляем_sfml_к_игре__345a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/5-SFML-345a39a480c9803097dfced11916dfcb",
+      "last_edited_time": "2026-04-26T08:07:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Змейка - 5 тема - Добавляем SFML к игре"
+      ]
+    },
+    "337a39a4-80c9-80cd-8678-f162b8f2c5d0": {
+      "page_id": "337a39a4-80c9-80cd-8678-f162b8f2c5d0",
+      "title": "8 тема - NPC",
+      "file_path": "notion/8_тема_npc__337a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/8-NPC-337a39a480c980cd8678f162b8f2c5d0",
+      "last_edited_time": "2026-05-10T06:51:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "8 тема - NPC"
+      ]
+    },
+    "332a39a4-80c9-80bc-a7b3-ddc9e4c4452b": {
+      "page_id": "332a39a4-80c9-80bc-a7b3-ddc9e4c4452b",
+      "title": "Дополнительная тема - ООП",
+      "file_path": "notion/дополнительная_тема_ооп__332a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/332a39a480c980bca7b3ddc9e4c4452b",
+      "last_edited_time": "2026-03-29T13:33:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Дополнительная тема - ООП"
+      ]
+    },
+    "332a39a4-80c9-8016-ac5f-c91f0a05cc10": {
+      "page_id": "332a39a4-80c9-8016-ac5f-c91f0a05cc10",
+      "title": "Змейка - 4 тема - Библиотека SFML",
+      "file_path": "notion/змейка_4_тема_библиотека_sfml__332a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/4-SFML-332a39a480c98016ac5fc91f0a05cc10",
+      "last_edited_time": "2026-05-19T11:30:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Змейка - 4 тема - Библиотека SFML"
+      ]
+    },
+    "331a39a4-80c9-8029-a132-e3ad6c06fb94": {
+      "page_id": "331a39a4-80c9-8029-a132-e3ad6c06fb94",
+      "title": "7 тема - Звук + GUI",
+      "file_path": "notion/7_тема_звук_gui__331a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/7-GUI-331a39a480c98029a132e3ad6c06fb94",
+      "last_edited_time": "2026-05-11T10:24:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "7 тема - Звук + GUI"
+      ]
+    },
+    "330a39a4-80c9-80da-9123-e4d57f576ec4": {
+      "page_id": "330a39a4-80c9-80da-9123-e4d57f576ec4",
+      "title": "Змейка - 3 тема",
+      "file_path": "notion/змейка_3_тема__330a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/3-330a39a480c980da9123e4d57f576ec4",
+      "last_edited_time": "2026-03-27T08:32:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Змейка - 3 тема"
+      ]
+    },
+    "330a39a4-80c9-80a0-95e1-e74a6d437133": {
+      "page_id": "330a39a4-80c9-80a0-95e1-e74a6d437133",
+      "title": "6 тема - GUI",
+      "file_path": "notion/6_тема_gui__330a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/6-GUI-330a39a480c980a095e1e74a6d437133",
+      "last_edited_time": "2026-04-28T08:06:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "6 тема - GUI"
+      ]
+    },
+    "317a39a4-80c9-809c-b9a4-c1ff57382350": {
+      "page_id": "317a39a4-80c9-809c-b9a4-c1ff57382350",
+      "title": "19 тема - Камень ножницы бумага - Реализация функционала Maximum",
+      "file_path": "notion/19_тема_камень_ножницы_бумага_реализация_функционала_maximum__317a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/19-Maximum-317a39a480c9809cb9a4c1ff57382350",
+      "last_edited_time": "2026-03-02T12:56:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "19 тема - Камень ножницы бумага - Реализация функционала Maximum"
+      ]
+    },
+    "317a39a4-80c9-802f-81f0-ec0bfc5b195e": {
+      "page_id": "317a39a4-80c9-802f-81f0-ec0bfc5b195e",
+      "title": "18 тема - Камень ножницы бумага - Реализация функционала Average",
+      "file_path": "notion/18_тема_камень_ножницы_бумага_реализация_функционала_average__317a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/18-Average-317a39a480c9802f81f0ec0bfc5b195e",
+      "last_edited_time": "2026-05-15T08:37:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "18 тема - Камень ножницы бумага - Реализация функционала Average"
+      ]
+    },
+    "317a39a4-80c9-8049-8287-d47122d8d56d": {
+      "page_id": "317a39a4-80c9-8049-8287-d47122d8d56d",
+      "title": "21 тема - Приложение викторина - Реализация дизайна",
+      "file_path": "notion/21_тема_приложение_викторина_реализация_дизайна__317a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/21-317a39a480c980498287d47122d8d56d",
+      "last_edited_time": "2026-03-02T12:57:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "21 тема - Приложение викторина - Реализация дизайна"
+      ]
+    },
+    "317a39a4-80c9-80de-8c95-f098d287819a": {
+      "page_id": "317a39a4-80c9-80de-8c95-f098d287819a",
+      "title": "17 тема - Камень ножницы бумага - Реализация дизайна Minimum",
+      "file_path": "notion/17_тема_камень_ножницы_бумага_реализация_дизайна_minimum__317a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/17-Minimum-317a39a480c980de8c95f098d287819a",
+      "last_edited_time": "2026-03-27T13:44:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "17 тема - Камень ножницы бумага - Реализация дизайна Minimum"
+      ]
+    },
+    "317a39a4-80c9-807c-afbe-c0d37b82e398": {
+      "page_id": "317a39a4-80c9-807c-afbe-c0d37b82e398",
+      "title": "16 тема - Камень ножницы бумага - Базовая верстка и логика",
+      "file_path": "notion/16_тема_камень_ножницы_бумага_базовая_верстка_и_логика__317a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/16-317a39a480c9807cafbec0d37b82e398",
+      "last_edited_time": "2026-03-06T15:30:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "16 тема - Камень ножницы бумага - Базовая верстка и логика"
+      ]
+    },
+    "317a39a4-80c9-8014-885a-c91cfe770eea": {
+      "page_id": "317a39a4-80c9-8014-885a-c91cfe770eea",
+      "title": "15 тема - Рандомайзер - Реализация дизайна",
+      "file_path": "notion/15_тема_рандомайзер_реализация_дизайна__317a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/15-317a39a480c98014885ac91cfe770eea",
+      "last_edited_time": "2026-03-20T09:15:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "15 тема - Рандомайзер - Реализация дизайна"
+      ]
+    },
+    "317a39a4-80c9-8013-864e-cf0a54b56065": {
+      "page_id": "317a39a4-80c9-8013-864e-cf0a54b56065",
+      "title": "14 тема - Рандомайзер - Базовая верстка и логика",
+      "file_path": "notion/14_тема_рандомайзер_базовая_верстка_и_логика__317a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/14-317a39a480c98013864ecf0a54b56065",
+      "last_edited_time": "2026-03-02T12:36:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "14 тема - Рандомайзер - Базовая верстка и логика"
+      ]
+    },
+    "314a39a4-80c9-8023-bc84-c781c5eee666": {
+      "page_id": "314a39a4-80c9-8023-bc84-c781c5eee666",
+      "title": "2 тема - Блокинг и создание своей карты",
+      "file_path": "notion/2_тема_блокинг_и_создание_своей_карты__314a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/2-314a39a480c98023bc84c781c5eee666",
+      "last_edited_time": "2026-04-04T14:29:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Блокинг и создание своей карты"
+      ]
+    },
+    "314a39a4-80c9-806b-ae47-f3cc6e1c85b8": {
+      "page_id": "314a39a4-80c9-806b-ae47-f3cc6e1c85b8",
+      "title": "5 тема - Работа со скриптами",
+      "file_path": "notion/5_тема_работа_со_скриптами__314a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/5-314a39a480c9806bae47f3cc6e1c85b8",
+      "last_edited_time": "2026-04-04T14:47:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "5 тема - Работа со скриптами"
+      ]
+    },
+    "314a39a4-80c9-8008-8a37-fe6e1eefa3d8": {
+      "page_id": "314a39a4-80c9-8008-8a37-fe6e1eefa3d8",
+      "title": "4 тема - Создание инструментов",
+      "file_path": "notion/4_тема_создание_инструментов__314a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/4-314a39a480c980088a37fe6e1eefa3d8",
+      "last_edited_time": "2026-04-10T10:25:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "4 тема - Создание инструментов"
+      ]
+    },
+    "314a39a4-80c9-806f-b02b-fa41d4a5bd5e": {
+      "page_id": "314a39a4-80c9-806f-b02b-fa41d4a5bd5e",
+      "title": "Python -",
+      "file_path": "notion/python__314a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/Python-314a39a480c9806fb02bfa41d4a5bd5e",
+      "last_edited_time": "2026-02-27T09:12:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Python -"
+      ]
+    },
+    "314a39a4-80c9-8044-95c4-d261a20d8ef0": {
+      "page_id": "314a39a4-80c9-8044-95c4-d261a20d8ef0",
+      "title": "Roblox -",
+      "file_path": "notion/roblox__314a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/Roblox-314a39a480c9804495c4d261a20d8ef0",
+      "last_edited_time": "2026-02-27T09:12:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Roblox -"
+      ]
+    },
+    "314a39a4-80c9-801d-af8c-f93d8eef84f9": {
+      "page_id": "314a39a4-80c9-801d-af8c-f93d8eef84f9",
+      "title": "3 тема - Моделирование ключа и двери",
+      "file_path": "notion/3_тема_моделирование_ключа_и_двери__314a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/3-314a39a480c9801daf8cf93d8eef84f9",
+      "last_edited_time": "2026-04-04T14:30:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема - Моделирование ключа и двери"
+      ]
+    },
+    "314a39a4-80c9-801f-a63f-c675cffcd178": {
+      "page_id": "314a39a4-80c9-801f-a63f-c675cffcd178",
+      "title": "11 тема - Динамические массивы. Операторы new и delete",
+      "file_path": "notion/11_тема_динамические_массивы_операторы_new_и_delete__314a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/11-new-delete-314a39a480c9801fa63fc675cffcd178",
+      "last_edited_time": "2026-02-27T08:15:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "11 тема - Динамические массивы. Операторы new и delete"
+      ]
+    },
+    "314a39a4-80c9-8074-9bad-f5059de21583": {
+      "page_id": "314a39a4-80c9-8074-9bad-f5059de21583",
+      "title": "Практика 1-4",
+      "file_path": "notion/практика_1_4__314a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/1-4-314a39a480c980749badf5059de21583",
+      "last_edited_time": "2026-02-27T07:59:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Практика 1-4"
+      ]
+    },
+    "309a39a4-80c9-8013-800d-c131cea0c369": {
+      "page_id": "309a39a4-80c9-8013-800d-c131cea0c369",
+      "title": "Змейка - 2 тема - Движение змейки и управление",
+      "file_path": "notion/змейка_2_тема_движение_змейки_и_управление__309a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/2-309a39a480c98013800dc131cea0c369",
+      "last_edited_time": "2026-03-06T07:47:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Змейка - 2 тема - Движение змейки и управление"
+      ]
+    },
+    "309a39a4-80c9-8011-ae50-c32f586e42a0": {
+      "page_id": "309a39a4-80c9-8011-ae50-c32f586e42a0",
+      "title": "Змейка - 1 тема -",
+      "file_path": "notion/змейка_1_тема__309a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/1-309a39a480c98011ae50c32f586e42a0",
+      "last_edited_time": "2026-03-20T08:13:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Змейка - 1 тема -"
+      ]
+    },
+    "2f6a39a4-80c9-8017-a61b-ce176248870f": {
+      "page_id": "2f6a39a4-80c9-8017-a61b-ce176248870f",
+      "title": "2 тема - Маска",
+      "file_path": "notion/2_тема_маска__2f6a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/2-2f6a39a480c98017a61bce176248870f",
+      "last_edited_time": "2026-05-06T08:14:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Маска"
+      ]
+    },
+    "2f1a39a4-80c9-8042-9ae2-edcc1849eb3c": {
+      "page_id": "2f1a39a4-80c9-8042-9ae2-edcc1849eb3c",
+      "title": "Хоррор",
+      "file_path": "notion/хоррор__2f1a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/2f1a39a480c980429ae2edcc1849eb3c",
+      "last_edited_time": "2026-02-04T17:14:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Хоррор"
+      ]
+    },
+    "2e7a39a4-80c9-80ff-b3e4-f4336e13c1f7": {
+      "page_id": "2e7a39a4-80c9-80ff-b3e4-f4336e13c1f7",
+      "title": "10 тема - Указатели и ссылки",
+      "file_path": "notion/10_тема_указатели_и_ссылки__2e7a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/10-2e7a39a480c980ffb3e4f4336e13c1f7",
+      "last_edited_time": "2026-02-16T08:31:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "10 тема - Указатели и ссылки"
+      ]
+    },
+    "2c9a39a4-80c9-8012-a616-c381155675f0": {
+      "page_id": "2c9a39a4-80c9-8012-a616-c381155675f0",
+      "title": "10 тема - Создание сцены - Материалы",
+      "file_path": "notion/10_тема_создание_сцены_материалы__2c9a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/10-2c9a39a480c98012a616c381155675f0",
+      "last_edited_time": "2026-06-15T07:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "10 тема - Создание сцены - Материалы"
+      ]
+    },
+    "2b4a39a4-80c9-80ca-94e1-d574afefa72d": {
+      "page_id": "2b4a39a4-80c9-80ca-94e1-d574afefa72d",
+      "title": "8 тема - Создание сцены - Пальмы",
+      "file_path": "notion/8_тема_создание_сцены_пальмы__2b4a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/8-2b4a39a480c980ca94e1d574afefa72d",
+      "last_edited_time": "2026-06-15T07:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "8 тема - Создание сцены - Пальмы"
+      ]
+    },
+    "2ada39a4-80c9-8053-a741-f5b016b05295": {
+      "page_id": "2ada39a4-80c9-8053-a741-f5b016b05295",
+      "title": "9 тема - Создание сцены - Детали",
+      "file_path": "notion/9_тема_создание_сцены_детали__2ada39a480c9.md",
+      "notion_url": "https://app.notion.com/p/9-2ada39a480c98053a741f5b016b05295",
+      "last_edited_time": "2026-06-15T07:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "9 тема - Создание сцены - Детали"
+      ]
+    },
+    "29fa39a4-80c9-80eb-af57-fb70e96493e3": {
+      "page_id": "29fa39a4-80c9-80eb-af57-fb70e96493e3",
+      "title": "7 тема - Создание сцены - Пирс",
+      "file_path": "notion/7_тема_создание_сцены_пирс__29fa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/7-29fa39a480c980ebaf57fb70e96493e3",
+      "last_edited_time": "2026-06-15T07:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "7 тема - Создание сцены - Пирс"
+      ]
+    },
+    "298a39a4-80c9-803c-aec8-c80a86c375c5": {
+      "page_id": "298a39a4-80c9-803c-aec8-c80a86c375c5",
+      "title": "6 тема - Создание сцены - Лодка",
+      "file_path": "notion/6_тема_создание_сцены_лодка__298a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/6-298a39a480c9803caec8c80a86c375c5",
+      "last_edited_time": "2026-06-15T07:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "6 тема - Создание сцены - Лодка"
+      ]
+    },
+    "28aa39a4-80c9-80c5-b0cb-d719e79ff355": {
+      "page_id": "28aa39a4-80c9-80c5-b0cb-d719e79ff355",
+      "title": "1 тема - Повторение",
+      "file_path": "notion/1_тема_повторение__28aa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/1-28aa39a480c980c5b0cbd719e79ff355",
+      "last_edited_time": "2026-06-15T07:37:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Повторение"
+      ]
+    },
+    "28aa39a4-80c9-80bc-8afd-f319e8745578": {
+      "page_id": "28aa39a4-80c9-80bc-8afd-f319e8745578",
+      "title": "5 тема - Анимация",
+      "file_path": "notion/5_тема_анимация__28aa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/5-28aa39a480c980bc8afdf319e8745578",
+      "last_edited_time": "2026-06-15T07:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "5 тема - Анимация"
+      ]
+    },
+    "22aa39a4-80c9-80c8-8fc9-d8d538b2b180": {
+      "page_id": "22aa39a4-80c9-80c8-8fc9-d8d538b2b180",
+      "title": "8 тема -",
+      "file_path": "notion/8_тема__22aa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/8-22aa39a480c980c88fc9d8d538b2b180",
+      "last_edited_time": "2026-02-27T08:13:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "8 тема -"
+      ]
+    },
+    "22aa39a4-80c9-80a2-8a22-d9a290e9ddec": {
+      "page_id": "22aa39a4-80c9-80a2-8a22-d9a290e9ddec",
+      "title": "7 тема - Рекурсия",
+      "file_path": "notion/7_тема_рекурсия__22aa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/7-22aa39a480c980a28a22d9a290e9ddec",
+      "last_edited_time": "2026-02-27T07:56:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "7 тема - Рекурсия"
+      ]
+    },
+    "22aa39a4-80c9-8065-a2ee-e15ef568adae": {
+      "page_id": "22aa39a4-80c9-8065-a2ee-e15ef568adae",
+      "title": "6 тема - Функции",
+      "file_path": "notion/6_тема_функции__22aa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/6-22aa39a480c98065a2eee15ef568adae",
+      "last_edited_time": "2026-02-16T08:34:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "6 тема - Функции"
+      ]
+    },
+    "22aa39a4-80c9-80fa-ba37-d0b39a2a1864": {
+      "page_id": "22aa39a4-80c9-80fa-ba37-d0b39a2a1864",
+      "title": "5 тема - Массивы",
+      "file_path": "notion/5_тема_массивы__22aa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/5-22aa39a480c980faba37d0b39a2a1864",
+      "last_edited_time": "2026-02-27T07:57:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "5 тема - Массивы"
+      ]
+    },
+    "22aa39a4-80c9-8054-8366-c01c3e2c115a": {
+      "page_id": "22aa39a4-80c9-8054-8366-c01c3e2c115a",
+      "title": "4 тема - Циклы",
+      "file_path": "notion/4_тема_циклы__22aa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/4-22aa39a480c980548366c01c3e2c115a",
+      "last_edited_time": "2026-02-27T08:13:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "4 тема - Циклы"
+      ]
+    },
+    "22aa39a4-80c9-80e4-a028-c79ca684d390": {
+      "page_id": "22aa39a4-80c9-80e4-a028-c79ca684d390",
+      "title": "3 тема -",
+      "file_path": "notion/3_тема__22aa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/3-22aa39a480c980e4a028c79ca684d390",
+      "last_edited_time": "2026-02-16T08:34:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема -"
+      ]
+    },
+    "22aa39a4-80c9-8096-b285-e3e725995353": {
+      "page_id": "22aa39a4-80c9-8096-b285-e3e725995353",
+      "title": "2 тема -",
+      "file_path": "notion/2_тема__22aa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/2-22aa39a480c98096b285e3e725995353",
+      "last_edited_time": "2026-02-16T08:34:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема -"
+      ]
+    },
+    "22aa39a4-80c9-8053-a1cd-ebc768d07cd5": {
+      "page_id": "22aa39a4-80c9-8053-a1cd-ebc768d07cd5",
+      "title": "1 тема - Основы языка С",
+      "file_path": "notion/1_тема_основы_языка_с__22aa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/1-22aa39a480c98053a1cdebc768d07cd5",
+      "last_edited_time": "2026-02-16T08:34:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Основы языка С"
+      ]
+    },
+    "224a39a4-80c9-8081-a92e-eaa2dd6e72a5": {
+      "page_id": "224a39a4-80c9-8081-a92e-eaa2dd6e72a5",
+      "title": "SCRUM-LEGO",
+      "file_path": "notion/scrum_lego__224a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/SCRUM-LEGO-224a39a480c98081a92eeaa2dd6e72a5",
+      "last_edited_time": "2025-07-02T12:11:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "SCRUM-LEGO"
+      ]
+    },
+    "20ea39a4-80c9-804d-a426-f456ee14449a": {
+      "page_id": "20ea39a4-80c9-804d-a426-f456ee14449a",
+      "title": "3 тема - Работа с материалами",
+      "file_path": "notion/3_тема_работа_с_материалами__20ea39a480c9.md",
+      "notion_url": "https://app.notion.com/p/3-20ea39a480c9804da426f456ee14449a",
+      "last_edited_time": "2026-06-07T17:34:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема - Работа с материалами"
+      ]
+    },
+    "209a39a4-80c9-80b2-bd17-dae9fb4dc2a5": {
+      "page_id": "209a39a4-80c9-80b2-bd17-dae9fb4dc2a5",
+      "title": "2 тема - Наполнение сцены 3D-моделями",
+      "file_path": "notion/2_тема_наполнение_сцены_3d_моделями__209a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/2-3D-209a39a480c980b2bd17dae9fb4dc2a5",
+      "last_edited_time": "2026-06-07T17:34:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Наполнение сцены 3D-моделями"
+      ]
+    },
+    "207a39a4-80c9-80e0-85c8-e5e779155012": {
+      "page_id": "207a39a4-80c9-80e0-85c8-e5e779155012",
+      "title": "2 тема - Сценарий и запись геймплея",
+      "file_path": "notion/2_тема_сценарий_и_запись_геймплея__207a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/2-207a39a480c980e085c8e5e779155012",
+      "last_edited_time": "2026-06-07T17:33:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Сценарий и запись геймплея"
+      ]
+    },
+    "207a39a4-80c9-8097-a6e0-c31e0dea9266": {
+      "page_id": "207a39a4-80c9-8097-a6e0-c31e0dea9266",
+      "title": "3 тема - Монтаж видео",
+      "file_path": "notion/3_тема_монтаж_видео__207a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/3-207a39a480c98097a6e0c31e0dea9266",
+      "last_edited_time": "2026-06-07T17:33:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема - Монтаж видео"
+      ]
+    },
+    "207a39a4-80c9-80f3-8071-c4f79f1aae52": {
+      "page_id": "207a39a4-80c9-80f3-8071-c4f79f1aae52",
+      "title": "1 тема - Подготовка к записи",
+      "file_path": "notion/1_тема_подготовка_к_записи__207a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/1-207a39a480c980f38071c4f79f1aae52",
+      "last_edited_time": "2026-06-01T06:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Подготовка к записи"
+      ]
+    },
+    "1f7a39a4-80c9-8057-a291-dc71073a7195": {
+      "page_id": "1f7a39a4-80c9-8057-a291-dc71073a7195",
+      "title": "10 тема - Inline links, HTML, content",
+      "file_path": "notion/10_тема_inline_links_html_content__1f7a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/10-Inline-links-HTML-content-1f7a39a480c98057a291dc71073a7195",
+      "last_edited_time": "2026-05-19T11:34:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "10 тема - Inline links, HTML, content"
+      ]
+    },
+    "1f5a39a4-80c9-808a-adfc-c79b3343c8da": {
+      "page_id": "1f5a39a4-80c9-808a-adfc-c79b3343c8da",
+      "title": "9 тема - Кнопки inline и контент",
+      "file_path": "notion/9_тема_кнопки_inline_и_контент__1f5a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/9-inline-1f5a39a480c9808aadfcc79b3343c8da",
+      "last_edited_time": "2026-05-19T11:34:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "9 тема - Кнопки inline и контент"
+      ]
+    },
+    "1f5a39a4-80c9-80e3-8564-e560cb696ced": {
+      "page_id": "1f5a39a4-80c9-80e3-8564-e560cb696ced",
+      "title": "8 тема - Кнопка назад, Каталог и Фото",
+      "file_path": "notion/8_тема_кнопка_назад_каталог_и_фото__1f5a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/8-1f5a39a480c980e38564e560cb696ced",
+      "last_edited_time": "2026-05-19T11:34:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "8 тема - Кнопка назад, Каталог и Фото"
+      ]
+    },
+    "1e7a39a4-80c9-80bb-8700-e26e10975ee7": {
+      "page_id": "1e7a39a4-80c9-80bb-8700-e26e10975ee7",
+      "title": "1 тема - Фиксация идеи и блокинг сцены",
+      "file_path": "notion/1_тема_фиксация_идеи_и_блокинг_сцены__1e7a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/1-1e7a39a480c980bb8700e26e10975ee7",
+      "last_edited_time": "2026-06-01T06:39:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Фиксация идеи и блокинг сцены"
+      ]
+    },
+    "1e1a39a4-80c9-80ff-afbc-cd4ace3ffc81": {
+      "page_id": "1e1a39a4-80c9-80ff-afbc-cd4ace3ffc81",
+      "title": "5 тема - Работа с окружением: сцена в стиле Minecraft",
+      "file_path": "notion/5_тема_работа_с_окружением_сцена_в_стиле_minecraft__1e1a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/5-Minecraft-1e1a39a480c980ffafbccd4ace3ffc81",
+      "last_edited_time": "2026-03-11T19:56:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "5 тема - Работа с окружением: сцена в стиле Minecraft"
+      ]
+    },
+    "1dda39a4-80c9-80f1-8a3e-e50ecc42351d": {
+      "page_id": "1dda39a4-80c9-80f1-8a3e-e50ecc42351d",
+      "title": "6 тема - Бот в группах и фильтрация сообщений по словам",
+      "file_path": "notion/6_тема_бот_в_группах_и_фильтрация_сообщений_по_словам__1dda39a480c9.md",
+      "notion_url": "https://app.notion.com/p/6-1dda39a480c980f18a3ee50ecc42351d",
+      "last_edited_time": "2026-04-10T07:30:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "6 тема - Бот в группах и фильтрация сообщений по словам"
+      ]
+    },
+    "1dda39a4-80c9-809f-b9f6-fb8b942896e3": {
+      "page_id": "1dda39a4-80c9-809f-b9f6-fb8b942896e3",
+      "title": "7 тема - Создание кнопок типа reply",
+      "file_path": "notion/7_тема_создание_кнопок_типа_reply__1dda39a480c9.md",
+      "notion_url": "https://app.notion.com/p/7-reply-1dda39a480c9809fb9f6fb8b942896e3",
+      "last_edited_time": "2026-04-10T07:30:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "7 тема - Создание кнопок типа reply"
+      ]
+    },
+    "1daa39a4-80c9-80b0-aee5-da01c92c6887": {
+      "page_id": "1daa39a4-80c9-80b0-aee5-da01c92c6887",
+      "title": "6 тема - Свет, камера и рендер: финализация сцены со Стивом",
+      "file_path": "notion/6_тема_свет_камера_и_рендер_финализация_сцены_со_стивом__1daa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/6-1daa39a480c980b0aee5da01c92c6887",
+      "last_edited_time": "2026-06-12T08:53:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "6 тема - Свет, камера и рендер: финализация сцены со Стивом"
+      ]
+    },
+    "1d9a39a4-80c9-800c-a277-fb02d328c614": {
+      "page_id": "1d9a39a4-80c9-800c-a277-fb02d328c614",
+      "title": "4 тема - Работа с материалами: стилизуем модель Стива",
+      "file_path": "notion/4_тема_работа_с_материалами_стилизуем_модель_стива__1d9a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/4-1d9a39a480c9800ca277fb02d328c614",
+      "last_edited_time": "2026-03-09T17:54:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "4 тема - Работа с материалами: стилизуем модель Стива"
+      ]
+    },
+    "1d5a39a4-80c9-8091-b5bc-fde787d2d241": {
+      "page_id": "1d5a39a4-80c9-8091-b5bc-fde787d2d241",
+      "title": "JS - 5 тема - Операции сравнения и булевые значения",
+      "file_path": "notion/js_5_тема_операции_сравнения_и_булевые_значения__1d5a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/JS-5-1d5a39a480c98091b5bcfde787d2d241",
+      "last_edited_time": "2025-04-14T10:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "JS - 5 тема - Операции сравнения и булевые значения"
+      ]
+    },
+    "1d5a39a4-80c9-804e-836e-dc0a3fd585ae": {
+      "page_id": "1d5a39a4-80c9-804e-836e-dc0a3fd585ae",
+      "title": "JS - 4 тема - Арифметические операции и типы данных",
+      "file_path": "notion/js_4_тема_арифметические_операции_и_типы_данных__1d5a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/JS-4-1d5a39a480c9804e836edc0a3fd585ae",
+      "last_edited_time": "2025-06-05T19:50:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "JS - 4 тема - Арифметические операции и типы данных"
+      ]
+    },
+    "1d2a39a4-80c9-8089-9e6b-f293d68a4f43": {
+      "page_id": "1d2a39a4-80c9-8089-9e6b-f293d68a4f43",
+      "title": "3 тема - Редактирование мешей: строим Стива",
+      "file_path": "notion/3_тема_редактирование_мешей_строим_стива__1d2a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/3-1d2a39a480c980899e6bf293d68a4f43",
+      "last_edited_time": "2026-03-09T17:54:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема - Редактирование мешей: строим Стива"
+      ]
+    },
+    "1d0a39a4-80c9-8002-82a0-d57d663c093d": {
+      "page_id": "1d0a39a4-80c9-8002-82a0-d57d663c093d",
+      "title": "1 тема - Ландшафт",
+      "file_path": "notion/1_тема_ландшафт__1d0a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/1-1d0a39a480c9800282a0d57d663c093d",
+      "last_edited_time": "2026-04-04T14:29:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Ландшафт"
+      ]
+    },
+    "1d0a39a4-80c9-80b2-a2df-ca1c6d75be78": {
+      "page_id": "1d0a39a4-80c9-80b2-a2df-ca1c6d75be78",
+      "title": "4 тема - Паркур - Тестирование и релиз",
+      "file_path": "notion/4_тема_паркур_тестирование_и_релиз__1d0a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/4-1d0a39a480c980b2a2dfca1c6d75be78",
+      "last_edited_time": "2026-01-23T09:48:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "4 тема - Паркур - Тестирование и релиз"
+      ]
+    },
+    "1d0a39a4-80c9-80c6-a642-dbd5c7fad383": {
+      "page_id": "1d0a39a4-80c9-80c6-a642-dbd5c7fad383",
+      "title": "3 тема - Паркур - Работа с механиками и доработка уровня",
+      "file_path": "notion/3_тема_паркур_работа_с_механиками_и_доработка_уровня__1d0a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/3-1d0a39a480c980c6a642dbd5c7fad383",
+      "last_edited_time": "2026-01-23T09:48:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема - Паркур - Работа с механиками и доработка уровня"
+      ]
+    },
+    "1d0a39a4-80c9-808e-b151-e88f79964b43": {
+      "page_id": "1d0a39a4-80c9-808e-b151-e88f79964b43",
+      "title": "2 тема - Паркур - Блокинг и Level-дизайн",
+      "file_path": "notion/2_тема_паркур_блокинг_и_level_дизайн__1d0a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/2-Level-1d0a39a480c9808eb151e88f79964b43",
+      "last_edited_time": "2026-03-22T20:03:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Паркур - Блокинг и Level-дизайн"
+      ]
+    },
+    "1c9a39a4-80c9-8073-bb19-f8a04ffe8d8b": {
+      "page_id": "1c9a39a4-80c9-8073-bb19-f8a04ffe8d8b",
+      "title": "2 тема - Знакомство с объектами: меши",
+      "file_path": "notion/2_тема_знакомство_с_объектами_меши__1c9a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/2-1c9a39a480c98073bb19f8a04ffe8d8b",
+      "last_edited_time": "2026-03-09T17:54:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Знакомство с объектами: меши"
+      ]
+    },
+    "1baa39a4-80c9-80ea-baf1-e8d41aad41a1": {
+      "page_id": "1baa39a4-80c9-80ea-baf1-e8d41aad41a1",
+      "title": "JS - 3 тема - Переменные и функция вывода данных",
+      "file_path": "notion/js_3_тема_переменные_и_функция_вывода_данных__1baa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/JS-3-1baa39a480c980eabaf1e8d41aad41a1",
+      "last_edited_time": "2025-11-26T12:55:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "JS - 3 тема - Переменные и функция вывода данных"
+      ]
+    },
+    "18ba39a4-80c9-80f3-8e22-f08ceeb24b82": {
+      "page_id": "18ba39a4-80c9-80f3-8e22-f08ceeb24b82",
+      "title": "20 тема - Приложение викторина - Базовая верстка и логика",
+      "file_path": "notion/20_тема_приложение_викторина_базовая_верстка_и_логика__18ba39a480c9.md",
+      "notion_url": "https://app.notion.com/p/20-18ba39a480c980f38e22f08ceeb24b82",
+      "last_edited_time": "2026-03-02T12:56:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "20 тема - Приложение викторина - Базовая верстка и логика"
+      ]
+    },
+    "1b4a39a4-80c9-805c-9994-e3bd44ce3c27": {
+      "page_id": "1b4a39a4-80c9-805c-9994-e3bd44ce3c27",
+      "title": "2 тема - Постройка дома",
+      "file_path": "notion/2_тема_постройка_дома__1b4a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/2-1b4a39a480c9805c9994e3bd44ce3c27",
+      "last_edited_time": "2026-03-22T20:03:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Постройка дома"
+      ]
+    },
+    "1b4a39a4-80c9-80f8-bbdf-fd17c8df8efb": {
+      "page_id": "1b4a39a4-80c9-80f8-bbdf-fd17c8df8efb",
+      "title": "1 тема - Знакомство с Roblox Studio",
+      "file_path": "notion/1_тема_знакомство_с_roblox_studio__1b4a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/1-Roblox-Studio-1b4a39a480c980f8bbdffd17c8df8efb",
+      "last_edited_time": "2026-03-11T17:54:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Знакомство с Roblox Studio"
+      ]
+    },
+    "1b3a39a4-80c9-80b6-9014-f36945f657c2": {
+      "page_id": "1b3a39a4-80c9-80b6-9014-f36945f657c2",
+      "title": "JS - 2 тема - Основы работы с JavaScript",
+      "file_path": "notion/js_2_тема_основы_работы_с_javascript__1b3a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/JS-2-JavaScript-1b3a39a480c980b69014f36945f657c2",
+      "last_edited_time": "2026-02-18T15:49:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "JS - 2 тема - Основы работы с JavaScript"
+      ]
+    },
+    "1b3a39a4-80c9-808e-b261-f02112b92c89": {
+      "page_id": "1b3a39a4-80c9-808e-b261-f02112b92c89",
+      "title": "Практика - Верстка второй секции",
+      "file_path": "notion/практика_верстка_второй_секции__1b3a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/1b3a39a480c9808eb261f02112b92c89",
+      "last_edited_time": "2026-02-18T15:49:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Практика - Верстка второй секции"
+      ]
+    },
+    "1b3a39a4-80c9-802c-8702-db4ab8759dbb": {
+      "page_id": "1b3a39a4-80c9-802c-8702-db4ab8759dbb",
+      "title": "Дополнительно - Подключение личного репозитория",
+      "file_path": "notion/дополнительно_подключение_личного_репозитория__1b3a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/1b3a39a480c9802c8702db4ab8759dbb",
+      "last_edited_time": "2026-02-16T13:09:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Дополнительно - Подключение личного репозитория"
+      ]
+    },
+    "1b2a39a4-80c9-8064-bc49-ea776282b059": {
+      "page_id": "1b2a39a4-80c9-8064-bc49-ea776282b059",
+      "title": "2 тема - Git, Github",
+      "file_path": "notion/2_тема_git_github__1b2a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/2-Git-Github-1b2a39a480c98064bc49ea776282b059",
+      "last_edited_time": "2026-04-30T20:10:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Git, Github"
+      ]
+    },
+    "1b2a39a4-80c9-80da-9925-d4eb15988117": {
+      "page_id": "1b2a39a4-80c9-80da-9925-d4eb15988117",
+      "title": "JS - 1 тема - Верстка интерфейса",
+      "file_path": "notion/js_1_тема_верстка_интерфейса__1b2a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/JS-1-1b2a39a480c980da9925d4eb15988117",
+      "last_edited_time": "2026-02-18T15:49:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "JS - 1 тема - Верстка интерфейса"
+      ]
+    },
+    "1aba39a4-80c9-80cb-914a-cf1cbd38ad9d": {
+      "page_id": "1aba39a4-80c9-80cb-914a-cf1cbd38ad9d",
+      "title": "2 тема - Знакомство с разработкой игровой логики",
+      "file_path": "notion/2_тема_знакомство_с_разработкой_игровой_логики__1aba39a480c9.md",
+      "notion_url": "https://app.notion.com/p/2-1aba39a480c980cb914acf1cbd38ad9d",
+      "last_edited_time": "2026-03-22T19:52:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Знакомство с разработкой игровой логики"
+      ]
+    },
+    "196a39a4-80c9-80cc-988b-d3cc74d2f326": {
+      "page_id": "196a39a4-80c9-80cc-988b-d3cc74d2f326",
+      "title": "Практика - 8-10 темы",
+      "file_path": "notion/практика_8_10_темы__196a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/8-10-196a39a480c980cc988bd3cc74d2f326",
+      "last_edited_time": "2026-03-10T16:15:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Практика - 8-10 темы"
+      ]
+    },
+    "191a39a4-80c9-805b-9364-d474e149ad0c": {
+      "page_id": "191a39a4-80c9-805b-9364-d474e149ad0c",
+      "title": "Figma - Создание клубной карты",
+      "file_path": "notion/figma_создание_клубной_карты__191a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/Figma-191a39a480c9805b9364d474e149ad0c",
+      "last_edited_time": "2026-04-16T14:29:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Figma - Создание клубной карты"
+      ]
+    },
+    "185a39a4-80c9-808a-a7b5-d3a1b3513ee9": {
+      "page_id": "185a39a4-80c9-808a-a7b5-d3a1b3513ee9",
+      "title": "ИИ",
+      "file_path": "notion/ии__185a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/185a39a480c9808aa7b5d3a1b3513ee9",
+      "last_edited_time": "2026-02-26T13:27:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "ИИ"
+      ]
+    },
+    "67255c60-79be-496a-a547-7b0dc576f846": {
+      "page_id": "67255c60-79be-496a-a547-7b0dc576f846",
+      "title": "Практика - Верстка первой секции",
+      "file_path": "notion/практика_верстка_первой_секции__67255c6079be.md",
+      "notion_url": "https://app.notion.com/p/67255c6079be496aa5477b0dc576f846",
+      "last_edited_time": "2026-02-18T15:49:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Практика - Верстка первой секции"
+      ]
+    },
+    "174a39a4-80c9-807d-853e-f675a011ffd5": {
+      "page_id": "174a39a4-80c9-807d-853e-f675a011ffd5",
+      "title": "13 тема - Связка элементов с кодом",
+      "file_path": "notion/13_тема_связка_элементов_с_кодом__174a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/13-174a39a480c9807d853ef675a011ffd5",
+      "last_edited_time": "2025-06-05T19:57:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "13 тема - Связка элементов с кодом"
+      ]
+    },
+    "174a39a4-80c9-801a-b160-f760f7e05b0e": {
+      "page_id": "174a39a4-80c9-801a-b160-f760f7e05b0e",
+      "title": "12 тема - Верстка кодом",
+      "file_path": "notion/12_тема_верстка_кодом__174a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/12-174a39a480c9801ab160f760f7e05b0e",
+      "last_edited_time": "2025-06-05T19:57:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "12 тема - Верстка кодом"
+      ]
+    },
+    "174a39a4-80c9-801e-9755-dabceda3739a": {
+      "page_id": "174a39a4-80c9-801e-9755-dabceda3739a",
+      "title": "11 тема - Контейнеры",
+      "file_path": "notion/11_тема_контейнеры__174a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/11-174a39a480c9801e9755dabceda3739a",
+      "last_edited_time": "2026-03-27T12:08:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "11 тема - Контейнеры"
+      ]
+    },
+    "174a39a4-80c9-8020-b390-c2919551dd79": {
+      "page_id": "174a39a4-80c9-8020-b390-c2919551dd79",
+      "title": "10 тема - Основные элементы верстки в Android Studio",
+      "file_path": "notion/10_тема_основные_элементы_верстки_в_android_studio__174a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/10-Android-Studio-174a39a480c98020b390c2919551dd79",
+      "last_edited_time": "2026-03-27T12:08:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "10 тема - Основные элементы верстки в Android Studio"
+      ]
+    },
+    "173a39a4-80c9-8084-afd8-fc884c4c1756": {
+      "page_id": "173a39a4-80c9-8084-afd8-fc884c4c1756",
+      "title": "Дополнительная тема - Секция с игрой",
+      "file_path": "notion/дополнительная_тема_секция_с_игрой__173a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/173a39a480c98084afd8fc884c4c1756",
+      "last_edited_time": "2026-05-26T19:39:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Дополнительная тема - Секция с игрой"
+      ]
+    },
+    "173a39a4-80c9-8039-9613-c0b48c37fccd": {
+      "page_id": "173a39a4-80c9-8039-9613-c0b48c37fccd",
+      "title": "Практика - Камень, ножницы, бумага",
+      "file_path": "notion/практика_камень_ножницы_бумага__173a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/173a39a480c980399613c0b48c37fccd",
+      "last_edited_time": "2026-05-15T07:15:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Практика - Камень, ножницы, бумага"
+      ]
+    },
+    "16aa39a4-80c9-8080-8997-fbb05ec35d6b": {
+      "page_id": "16aa39a4-80c9-8080-8997-fbb05ec35d6b",
+      "title": "Дополнительная тема - Дизайн веб-страницы",
+      "file_path": "notion/дополнительная_тема_дизайн_веб_страницы__16aa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/16aa39a480c980808997fbb05ec35d6b",
+      "last_edited_time": "2025-11-25T07:08:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Дополнительная тема - Дизайн веб-страницы"
+      ]
+    },
+    "169a39a4-80c9-8055-aa72-e993642148dc": {
+      "page_id": "169a39a4-80c9-8055-aa72-e993642148dc",
+      "title": "Мастер-класс по софт-скиллам",
+      "file_path": "notion/мастер_класс_по_софт_скиллам__169a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/169a39a480c98055aa72e993642148dc",
+      "last_edited_time": "2025-06-05T20:04:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Мастер-класс по софт-скиллам"
+      ]
+    },
+    "931ea7e4-f1da-4d94-b065-83a991b426c3": {
+      "page_id": "931ea7e4-f1da-4d94-b065-83a991b426c3",
+      "title": "3 тема - Стиль сайта",
+      "file_path": "notion/3_тема_стиль_сайта__931ea7e4f1da.md",
+      "notion_url": "https://app.notion.com/p/3-931ea7e4f1da4d94b06583a991b426c3",
+      "last_edited_time": "2026-05-26T19:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема - Стиль сайта"
+      ]
+    },
+    "162a39a4-80c9-80eb-b56e-ef636b4a6463": {
+      "page_id": "162a39a4-80c9-80eb-b56e-ef636b4a6463",
+      "title": "1 тема - Паркур - Разбор механик и создание плана",
+      "file_path": "notion/1_тема_паркур_разбор_механик_и_создание_плана__162a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/1-162a39a480c980ebb56eef636b4a6463",
+      "last_edited_time": "2026-03-22T20:03:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Паркур - Разбор механик и создание плана"
+      ]
+    },
+    "161a39a4-80c9-801c-bfe2-c711063928c4": {
+      "page_id": "161a39a4-80c9-801c-bfe2-c711063928c4",
+      "title": "Практика - 8-9 темы",
+      "file_path": "notion/практика_8_9_темы__161a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/8-9-161a39a480c9801cbfe2c711063928c4",
+      "last_edited_time": "2025-06-05T19:57:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Практика - 8-9 темы"
+      ]
+    },
+    "611cab2c-8c3a-4931-9cc8-ea8b3d48ec1e": {
+      "page_id": "611cab2c-8c3a-4931-9cc8-ea8b3d48ec1e",
+      "title": "4 тема -  Секция с работами, мобильная версия сайта",
+      "file_path": "notion/4_тема_секция_с_работами_мобильная_версия_сайта__611cab2c8c3a.md",
+      "notion_url": "https://app.notion.com/p/4-611cab2c8c3a49319cc8ea8b3d48ec1e",
+      "last_edited_time": "2026-05-26T19:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "4 тема -  Секция с работами, мобильная версия сайта"
+      ]
+    },
+    "14ea39a4-80c9-80f9-b36f-dfa382489e39": {
+      "page_id": "14ea39a4-80c9-80f9-b36f-dfa382489e39",
+      "title": "8 тема - Дизайн библиотека",
+      "file_path": "notion/8_тема_дизайн_библиотека__14ea39a480c9.md",
+      "notion_url": "https://app.notion.com/p/8-14ea39a480c980f9b36fdfa382489e39",
+      "last_edited_time": "2025-11-25T07:08:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "8 тема - Дизайн библиотека"
+      ]
+    },
+    "14ea39a4-80c9-8046-a2a3-e3bad54f1aff": {
+      "page_id": "14ea39a4-80c9-8046-a2a3-e3bad54f1aff",
+      "title": "7 тема - Экраны приветствия и регистрации",
+      "file_path": "notion/7_тема_экраны_приветствия_и_регистрации__14ea39a480c9.md",
+      "notion_url": "https://app.notion.com/p/7-14ea39a480c98046a2a3e3bad54f1aff",
+      "last_edited_time": "2025-11-26T13:26:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "7 тема - Экраны приветствия и регистрации"
+      ]
+    },
+    "14ea39a4-80c9-80f5-bbc0-c321e7ed6119": {
+      "page_id": "14ea39a4-80c9-80f5-bbc0-c321e7ed6119",
+      "title": "8 тема - Практика",
+      "file_path": "notion/8_тема_практика__14ea39a480c9.md",
+      "notion_url": "https://app.notion.com/p/8-14ea39a480c980f5bbc0c321e7ed6119",
+      "last_edited_time": "2026-04-13T18:32:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "8 тема - Практика"
+      ]
+    },
+    "dae368a7-88aa-4ead-9d65-362290ba835f": {
+      "page_id": "dae368a7-88aa-4ead-9d65-362290ba835f",
+      "title": "1 тема – Интерфейс и инструменты Blockbench",
+      "file_path": "notion/1_тема_интерфейс_и_инструменты_blockbench__dae368a788aa.md",
+      "notion_url": "https://app.notion.com/p/1-Blockbench-dae368a788aa4ead9d65362290ba835f",
+      "last_edited_time": "2025-10-03T18:31:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема – Интерфейс и инструменты Blockbench"
+      ]
+    },
+    "14da39a4-80c9-80fa-9662-f7cd8bb96ed9": {
+      "page_id": "14da39a4-80c9-80fa-9662-f7cd8bb96ed9",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__14da39a480c9.md",
+      "notion_url": "https://app.notion.com/p/14da39a480c980fa9662f7cd8bb96ed9",
+      "last_edited_time": "2026-05-26T19:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "149a39a4-80c9-80c2-b2be-df78ac96e6ba": {
+      "page_id": "149a39a4-80c9-80c2-b2be-df78ac96e6ba",
+      "title": "Практика - 1-7 темы",
+      "file_path": "notion/практика_1_7_темы__149a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/1-7-149a39a480c980c2b2bedf78ac96e6ba",
+      "last_edited_time": "2026-05-16T07:18:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Практика - 1-7 темы"
+      ]
+    },
+    "138a39a4-80c9-80fc-90cd-f4cbbb615f35": {
+      "page_id": "138a39a4-80c9-80fc-90cd-f4cbbb615f35",
+      "title": "9 тема - Функции",
+      "file_path": "notion/9_тема_функции__138a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/9-138a39a480c980fc90cdf4cbbb615f35",
+      "last_edited_time": "2025-12-11T17:26:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "9 тема - Функции"
+      ]
+    },
+    "138a39a4-80c9-8093-a0ff-ee6e6fa8ca0e": {
+      "page_id": "138a39a4-80c9-8093-a0ff-ee6e6fa8ca0e",
+      "title": "8 тема - Циклы",
+      "file_path": "notion/8_тема_циклы__138a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/8-138a39a480c98093a0ffee6e6fa8ca0e",
+      "last_edited_time": "2025-06-05T19:57:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "8 тема - Циклы"
+      ]
+    },
+    "138a39a4-80c9-806f-8096-dcf7cc86c7a6": {
+      "page_id": "138a39a4-80c9-806f-8096-dcf7cc86c7a6",
+      "title": "Практика - 1-7 темы",
+      "file_path": "notion/практика_1_7_темы__138a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/1-7-138a39a480c9806f8096dcf7cc86c7a6",
+      "last_edited_time": "2025-06-05T19:57:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Практика - 1-7 темы"
+      ]
+    },
+    "138a39a4-80c9-8093-8f2e-ff9979154da0": {
+      "page_id": "138a39a4-80c9-8093-8f2e-ff9979154da0",
+      "title": "6 тема - Строки, срезы и методы строк",
+      "file_path": "notion/6_тема_строки_срезы_и_методы_строк__138a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/6-138a39a480c980938f2eff9979154da0",
+      "last_edited_time": "2026-02-23T12:28:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "6 тема - Строки, срезы и методы строк"
+      ]
+    },
+    "136a39a4-80c9-801c-9cf5-d99fa2967263": {
+      "page_id": "136a39a4-80c9-801c-9cf5-d99fa2967263",
+      "title": "10 тема - Функции",
+      "file_path": "notion/10_тема_функции__136a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/10-136a39a480c9801c9cf5d99fa2967263",
+      "last_edited_time": "2026-05-23T06:59:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "10 тема - Функции"
+      ]
+    },
+    "136a39a4-80c9-806c-8048-d0d5c6d19d4e": {
+      "page_id": "136a39a4-80c9-806c-8048-d0d5c6d19d4e",
+      "title": "9 тема - Словари и хеш-таблицы",
+      "file_path": "notion/9_тема_словари_и_хеш_таблицы__136a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/9-136a39a480c9806c8048d0d5c6d19d4e",
+      "last_edited_time": "2026-05-07T20:10:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "9 тема - Словари и хеш-таблицы"
+      ]
+    },
+    "136a39a4-80c9-80d1-8a24-c3f0f7bff140": {
+      "page_id": "136a39a4-80c9-80d1-8a24-c3f0f7bff140",
+      "title": "8 тема - Циклы",
+      "file_path": "notion/8_тема_циклы__136a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/8-136a39a480c980d18a24c3f0f7bff140",
+      "last_edited_time": "2026-05-16T07:18:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "8 тема - Циклы"
+      ]
+    },
+    "136a39a4-80c9-8024-af72-c04524c4f2c9": {
+      "page_id": "136a39a4-80c9-8024-af72-c04524c4f2c9",
+      "title": "6 тема - Списки и методы списков",
+      "file_path": "notion/6_тема_списки_и_методы_списков__136a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/6-136a39a480c98024af72c04524c4f2c9",
+      "last_edited_time": "2026-04-08T06:11:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "6 тема - Списки и методы списков"
+      ]
+    },
+    "136a39a4-80c9-801c-adc2-f3987a864570": {
+      "page_id": "136a39a4-80c9-801c-adc2-f3987a864570",
+      "title": "5 тема - Строки, срезы и методы строк",
+      "file_path": "notion/5_тема_строки_срезы_и_методы_строк__136a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/5-136a39a480c9801cadc2f3987a864570",
+      "last_edited_time": "2026-03-10T16:13:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "5 тема - Строки, срезы и методы строк"
+      ]
+    },
+    "134a39a4-80c9-8002-9925-c0a91d58ed39": {
+      "page_id": "134a39a4-80c9-8002-9925-c0a91d58ed39",
+      "title": "6 тема - FigmaJam board",
+      "file_path": "notion/6_тема_figmajam_board__134a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/6-FigmaJam-board-134a39a480c980029925c0a91d58ed39",
+      "last_edited_time": "2025-11-11T14:28:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "6 тема - FigmaJam board"
+      ]
+    },
+    "12ea39a4-80c9-80ab-91bd-e0ee0e3c3546": {
+      "page_id": "12ea39a4-80c9-80ab-91bd-e0ee0e3c3546",
+      "title": "7 тема - Условия и понятие ветвления",
+      "file_path": "notion/7_тема_условия_и_понятие_ветвления__12ea39a480c9.md",
+      "notion_url": "https://app.notion.com/p/7-12ea39a480c980ab91bde0ee0e3c3546",
+      "last_edited_time": "2026-05-16T07:17:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "7 тема - Условия и понятие ветвления"
+      ]
+    },
+    "12da39a4-80c9-80b5-af21-d99eed3d2ab0": {
+      "page_id": "12da39a4-80c9-80b5-af21-d99eed3d2ab0",
+      "title": "5 тема - Практика фигуры+перо",
+      "file_path": "notion/5_тема_практика_фигуры_перо__12da39a480c9.md",
+      "notion_url": "https://app.notion.com/p/5-12da39a480c980b5af21d99eed3d2ab0",
+      "last_edited_time": "2025-11-11T14:28:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "5 тема - Практика фигуры+перо"
+      ]
+    },
+    "12da39a4-80c9-8070-bb4e-d6321949e111": {
+      "page_id": "12da39a4-80c9-8070-bb4e-d6321949e111",
+      "title": "3 тема - Практика фигуры",
+      "file_path": "notion/3_тема_практика_фигуры__12da39a480c9.md",
+      "notion_url": "https://app.notion.com/p/3-12da39a480c98070bb4ed6321949e111",
+      "last_edited_time": "2025-12-29T16:58:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема - Практика фигуры"
+      ]
+    },
+    "12da39a4-80c9-8065-8988-cf6ce6eb3bb9": {
+      "page_id": "12da39a4-80c9-8065-8988-cf6ce6eb3bb9",
+      "title": "4 тема - Перо",
+      "file_path": "notion/4_тема_перо__12da39a480c9.md",
+      "notion_url": "https://app.notion.com/p/4-12da39a480c980658988cf6ce6eb3bb9",
+      "last_edited_time": "2025-06-05T19:47:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "4 тема - Перо"
+      ]
+    },
+    "124a39a4-80c9-8026-8cbc-ddf3c612af78": {
+      "page_id": "124a39a4-80c9-8026-8cbc-ddf3c612af78",
+      "title": "7 тема - Списки и методы списков",
+      "file_path": "notion/7_тема_списки_и_методы_списков__124a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/7-124a39a480c980268cbcddf3c612af78",
+      "last_edited_time": "2025-06-05T19:57:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "7 тема - Списки и методы списков"
+      ]
+    },
+    "124a39a4-80c9-8054-ac31-d375d2357552": {
+      "page_id": "124a39a4-80c9-8054-ac31-d375d2357552",
+      "title": "5 тема - Условные операции",
+      "file_path": "notion/5_тема_условные_операции__124a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/5-124a39a480c98054ac31d375d2357552",
+      "last_edited_time": "2025-10-24T13:16:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "5 тема - Условные операции"
+      ]
+    },
+    "124a39a4-80c9-8096-8590-c5a4b81ad760": {
+      "page_id": "124a39a4-80c9-8096-8590-c5a4b81ad760",
+      "title": "4 тема - Логические операции",
+      "file_path": "notion/4_тема_логические_операции__124a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/4-124a39a480c980968590c5a4b81ad760",
+      "last_edited_time": "2025-06-05T19:57:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "4 тема - Логические операции"
+      ]
+    },
+    "124a39a4-80c9-801f-9a9a-fd0ee9b18eec": {
+      "page_id": "124a39a4-80c9-801f-9a9a-fd0ee9b18eec",
+      "title": "3 тема - Операции сравнения",
+      "file_path": "notion/3_тема_операции_сравнения__124a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/3-124a39a480c9801f9a9afd0ee9b18eec",
+      "last_edited_time": "2025-06-05T19:57:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема - Операции сравнения"
+      ]
+    },
+    "120a39a4-80c9-80ac-8d80-fbd0789f3969": {
+      "page_id": "120a39a4-80c9-80ac-8d80-fbd0789f3969",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__120a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/120a39a480c980ac8d80fbd0789f3969",
+      "last_edited_time": "2026-06-01T06:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "120a39a4-80c9-8041-8360-d8828af9c63a": {
+      "page_id": "120a39a4-80c9-8041-8360-d8828af9c63a",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__120a39a480c9_2.md",
+      "notion_url": "https://app.notion.com/p/120a39a480c980418360d8828af9c63a",
+      "last_edited_time": "2025-06-05T19:58:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "120a39a4-80c9-803d-a750-d0b8d12e57a0": {
+      "page_id": "120a39a4-80c9-803d-a750-d0b8d12e57a0",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__120a39a480c9_3.md",
+      "notion_url": "https://app.notion.com/p/120a39a480c9803da750d0b8d12e57a0",
+      "last_edited_time": "2026-06-01T06:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "95b0d439-baab-41f7-bfb4-19412a2c4a46": {
+      "page_id": "95b0d439-baab-41f7-bfb4-19412a2c4a46",
+      "title": "4 тема - Логические операции и оператор принадлежности",
+      "file_path": "notion/4_тема_логические_операции_и_оператор_принадлежности__95b0d439baab.md",
+      "notion_url": "https://app.notion.com/p/4-95b0d439baab41f7bfb419412a2c4a46",
+      "last_edited_time": "2026-03-12T12:27:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "4 тема - Логические операции и оператор принадлежности"
+      ]
+    },
+    "a68b043b-3758-4084-a53e-31e904eee8ea": {
+      "page_id": "a68b043b-3758-4084-a53e-31e904eee8ea",
+      "title": "3 тема - Операции сравнения и булевые значения",
+      "file_path": "notion/3_тема_операции_сравнения_и_булевые_значения__a68b043b3758.md",
+      "notion_url": "https://app.notion.com/p/3-a68b043b37584084a53e31e904eee8ea",
+      "last_edited_time": "2026-04-07T10:11:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема - Операции сравнения и булевые значения"
+      ]
+    },
+    "11da39a4-80c9-8049-87f5-cc0088278425": {
+      "page_id": "11da39a4-80c9-8049-87f5-cc0088278425",
+      "title": "2 тема -  Ввод данных, арифметические операции и типы данных",
+      "file_path": "notion/2_тема_ввод_данных_арифметические_операции_и_типы_данных__11da39a480c9.md",
+      "notion_url": "https://app.notion.com/p/2-11da39a480c9804987f5cc0088278425",
+      "last_edited_time": "2026-02-20T06:11:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема -  Ввод данных, арифметические операции и типы данных"
+      ]
+    },
+    "118a39a4-80c9-80ec-8284-ca2937022496": {
+      "page_id": "118a39a4-80c9-80ec-8284-ca2937022496",
+      "title": "2 тема - Фигуры",
+      "file_path": "notion/2_тема_фигуры__118a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/2-118a39a480c980ec8284ca2937022496",
+      "last_edited_time": "2025-10-22T07:41:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Фигуры"
+      ]
+    },
+    "116a39a4-80c9-805f-840a-d5dc5e7785db": {
+      "page_id": "116a39a4-80c9-805f-840a-d5dc5e7785db",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__116a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/116a39a480c9805f840ad5dc5e7785db",
+      "last_edited_time": "2026-02-09T12:40:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "10ca39a4-80c9-80cd-9ece-da63a1691d17": {
+      "page_id": "10ca39a4-80c9-80cd-9ece-da63a1691d17",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__10ca39a480c9.md",
+      "notion_url": "https://app.notion.com/p/10ca39a480c980cd9eceda63a1691d17",
+      "last_edited_time": "2026-02-20T06:11:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "bea8ee83-da6f-4e8a-89c7-3b1478688a49": {
+      "page_id": "bea8ee83-da6f-4e8a-89c7-3b1478688a49",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__bea8ee83da6f.md",
+      "notion_url": "https://app.notion.com/p/bea8ee83da6f4e8a89c73b1478688a49",
+      "last_edited_time": "2025-06-05T20:02:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "f1a9a450-10d7-44c6-9561-af53654698b9": {
+      "page_id": "f1a9a450-10d7-44c6-9561-af53654698b9",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__f1a9a45010d7.md",
+      "notion_url": "https://app.notion.com/p/f1a9a45010d744c69561af53654698b9",
+      "last_edited_time": "2025-06-05T20:01:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "2671f2a1-2f7a-4a0d-806b-281e8ce84835": {
+      "page_id": "2671f2a1-2f7a-4a0d-806b-281e8ce84835",
+      "title": "1 тема - Переменные, функция вывода данных",
+      "file_path": "notion/1_тема_переменные_функция_вывода_данных__2671f2a12f7a.md",
+      "notion_url": "https://app.notion.com/p/1-2671f2a12f7a4a0d806b281e8ce84835",
+      "last_edited_time": "2026-02-20T06:11:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Переменные, функция вывода данных"
+      ]
+    },
+    "63f6eebe-9fa5-4389-8682-48b04acbf66f": {
+      "page_id": "63f6eebe-9fa5-4389-8682-48b04acbf66f",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__63f6eebe9fa5.md",
+      "notion_url": "https://app.notion.com/p/63f6eebe9fa54389868248b04acbf66f",
+      "last_edited_time": "2025-06-05T19:32:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "ef24a5d8-e553-43a9-afa8-104ce3641fbe": {
+      "page_id": "ef24a5d8-e553-43a9-afa8-104ce3641fbe",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__ef24a5d8e553.md",
+      "notion_url": "https://app.notion.com/p/ef24a5d8e55343a9afa8104ce3641fbe",
+      "last_edited_time": "2026-06-15T07:37:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "8bd21354-2e13-4359-a56d-381c83d138b4": {
+      "page_id": "8bd21354-2e13-4359-a56d-381c83d138b4",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__8bd213542e13.md",
+      "notion_url": "https://app.notion.com/p/8bd213542e134359a56d381c83d138b4",
+      "last_edited_time": "2025-06-05T19:16:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "7f427007-c46b-4213-bb8e-7085fdfd84fc": {
+      "page_id": "7f427007-c46b-4213-bb8e-7085fdfd84fc",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__7f427007c46b.md",
+      "notion_url": "https://app.notion.com/p/7f427007c46b4213bb8e7085fdfd84fc",
+      "last_edited_time": "2026-05-06T08:14:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "143b9dd6-f10f-46c6-ab33-e19b2f90b016": {
+      "page_id": "143b9dd6-f10f-46c6-ab33-e19b2f90b016",
+      "title": "1 тема - Знакомство с Figma",
+      "file_path": "notion/1_тема_знакомство_с_figma__143b9dd6f10f.md",
+      "notion_url": "https://app.notion.com/p/1-Figma-143b9dd6f10f46c6ab33e19b2f90b016",
+      "last_edited_time": "2026-02-09T12:40:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Знакомство с Figma"
+      ]
+    },
+    "249a5c4f-ffba-45a1-b697-fbfecc79e791": {
+      "page_id": "249a5c4f-ffba-45a1-b697-fbfecc79e791",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__249a5c4fffba.md",
+      "notion_url": "https://app.notion.com/p/249a5c4fffba45a1b697fbfecc79e791",
+      "last_edited_time": "2025-06-05T20:03:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "ccaa13c5-29f3-46b9-841f-b434bee0a370": {
+      "page_id": "ccaa13c5-29f3-46b9-841f-b434bee0a370",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__ccaa13c529f3.md",
+      "notion_url": "https://app.notion.com/p/ccaa13c529f346b9841fb434bee0a370",
+      "last_edited_time": "2026-03-09T17:53:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "ec73bea7-57e7-4c46-bd08-a72303d57e1b": {
+      "page_id": "ec73bea7-57e7-4c46-bd08-a72303d57e1b",
+      "title": "10 тема - Публикация и релиз игры",
+      "file_path": "notion/10_тема_публикация_и_релиз_игры__ec73bea757e7.md",
+      "notion_url": "https://app.notion.com/p/10-ec73bea757e74c46bd08a72303d57e1b",
+      "last_edited_time": "2026-05-09T19:54:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "10 тема - Публикация и релиз игры"
+      ]
+    },
+    "4f990512-c5d2-4e5a-b1c0-a3e0c9f84f68": {
+      "page_id": "4f990512-c5d2-4e5a-b1c0-a3e0c9f84f68",
+      "title": "9 тема - Адаптация игры под мобильные устройства",
+      "file_path": "notion/9_тема_адаптация_игры_под_мобильные_устройства__4f990512c5d2.md",
+      "notion_url": "https://app.notion.com/p/9-4f990512c5d24e5ab1c0a3e0c9f84f68",
+      "last_edited_time": "2026-05-19T18:28:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "9 тема - Адаптация игры под мобильные устройства"
+      ]
+    },
+    "17b3d9d8-a27c-45e5-af4d-81d4d8367e36": {
+      "page_id": "17b3d9d8-a27c-45e5-af4d-81d4d8367e36",
+      "title": "8 тема - Меню и дополнительные экраны",
+      "file_path": "notion/8_тема_меню_и_дополнительные_экраны__17b3d9d8a27c.md",
+      "notion_url": "https://app.notion.com/p/8-17b3d9d8a27c45e5af4d81d4d8367e36",
+      "last_edited_time": "2026-05-07T20:11:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "8 тема - Меню и дополнительные экраны"
+      ]
+    },
+    "1db1e0f9-d6a8-41c9-b56d-843dff2193ea": {
+      "page_id": "1db1e0f9-d6a8-41c9-b56d-843dff2193ea",
+      "title": "7 тема - Расширенные игровые механики",
+      "file_path": "notion/7_тема_расширенные_игровые_механики__1db1e0f9d6a8.md",
+      "notion_url": "https://app.notion.com/p/7-1db1e0f9d6a841c9b56d843dff2193ea",
+      "last_edited_time": "2026-04-26T15:11:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "7 тема - Расширенные игровые механики"
+      ]
+    },
+    "0b4b6567-1b52-4c30-b397-2b3442cee185": {
+      "page_id": "0b4b6567-1b52-4c30-b397-2b3442cee185",
+      "title": "6 тема - Фон, окружение и построение игрового уровня",
+      "file_path": "notion/6_тема_фон_окружение_и_построение_игрового_уровня__0b4b65671b52.md",
+      "notion_url": "https://app.notion.com/p/6-0b4b65671b524c30b3972b3442cee185",
+      "last_edited_time": "2026-04-06T10:31:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "6 тема - Фон, окружение и построение игрового уровня"
+      ]
+    },
+    "00012685-b47a-4a5e-a72a-456df3233efd": {
+      "page_id": "00012685-b47a-4a5e-a72a-456df3233efd",
+      "title": "4 тема - Сбор ресурсов и счетчики",
+      "file_path": "notion/4_тема_сбор_ресурсов_и_счетчики__00012685b47a.md",
+      "notion_url": "https://app.notion.com/p/4-00012685b47a4a5ea72a456df3233efd",
+      "last_edited_time": "2026-04-01T12:59:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "4 тема - Сбор ресурсов и счетчики"
+      ]
+    },
+    "afab0058-eac6-4fdd-8544-70bbdf09fa5b": {
+      "page_id": "afab0058-eac6-4fdd-8544-70bbdf09fa5b",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__afab0058eac6.md",
+      "notion_url": "https://app.notion.com/p/afab0058eac64fdd854470bbdf09fa5b",
+      "last_edited_time": "2026-03-20T16:13:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "c6ca377a-3cba-45e9-967a-6d665f91c4ca": {
+      "page_id": "c6ca377a-3cba-45e9-967a-6d665f91c4ca",
+      "title": "2 тема - Арифметические операции и типы данных",
+      "file_path": "notion/2_тема_арифметические_операции_и_типы_данных__c6ca377a3cba.md",
+      "notion_url": "https://app.notion.com/p/2-c6ca377a3cba45e9967a6d665f91c4ca",
+      "last_edited_time": "2026-04-07T10:11:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Арифметические операции и типы данных"
+      ]
+    },
+    "4ed0552f-352a-47fc-b2b5-c4bcd01f2bd0": {
+      "page_id": "4ed0552f-352a-47fc-b2b5-c4bcd01f2bd0",
+      "title": "1 тема - Переменные, функции вывода и ввода данных",
+      "file_path": "notion/1_тема_переменные_функции_вывода_и_ввода_данных__4ed0552f352a.md",
+      "notion_url": "https://app.notion.com/p/1-4ed0552f352a47fcb2b5c4bcd01f2bd0",
+      "last_edited_time": "2026-04-07T10:11:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Переменные, функции вывода и ввода данных"
+      ]
+    },
+    "e5557960-b4eb-4efc-a33e-9e6a4c0589a7": {
+      "page_id": "e5557960-b4eb-4efc-a33e-9e6a4c0589a7",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__e5557960b4eb.md",
+      "notion_url": "https://app.notion.com/p/e5557960b4eb4efca33e9e6a4c0589a7",
+      "last_edited_time": "2026-04-07T10:10:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "0352a6ae-f903-4c8a-955b-399cdab729a1": {
+      "page_id": "0352a6ae-f903-4c8a-955b-399cdab729a1",
+      "title": "2 тема - Функция вывода данных",
+      "file_path": "notion/2_тема_функция_вывода_данных__0352a6aef903.md",
+      "notion_url": "https://app.notion.com/p/2-0352a6aef9034c8a955b399cdab729a1",
+      "last_edited_time": "2025-10-02T19:53:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Функция вывода данных"
+      ]
+    },
+    "1808afcf-b090-4a54-81d5-93016084b05b": {
+      "page_id": "1808afcf-b090-4a54-81d5-93016084b05b",
+      "title": "8 тема - Условные операции",
+      "file_path": "notion/8_тема_условные_операции__1808afcfb090.md",
+      "notion_url": "https://app.notion.com/p/8-1808afcfb0904a5481d593016084b05b",
+      "last_edited_time": "2025-06-05T19:30:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "8 тема - Условные операции"
+      ]
+    },
+    "4afa4fbd-a2cc-4959-ad3e-76d98c9a1a26": {
+      "page_id": "4afa4fbd-a2cc-4959-ad3e-76d98c9a1a26",
+      "title": "7 тема - Логические операции",
+      "file_path": "notion/7_тема_логические_операции__4afa4fbda2cc.md",
+      "notion_url": "https://app.notion.com/p/7-4afa4fbda2cc4959ad3e76d98c9a1a26",
+      "last_edited_time": "2025-06-05T19:59:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "7 тема - Логические операции"
+      ]
+    },
+    "9cbb54f8-96e3-4e08-a227-cd33e5984607": {
+      "page_id": "9cbb54f8-96e3-4e08-a227-cd33e5984607",
+      "title": "6 тема - Операции сравнения",
+      "file_path": "notion/6_тема_операции_сравнения__9cbb54f896e3.md",
+      "notion_url": "https://app.notion.com/p/6-9cbb54f896e34e08a227cd33e5984607",
+      "last_edited_time": "2025-06-05T19:59:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "6 тема - Операции сравнения"
+      ]
+    },
+    "f36ca83d-e4d8-4902-83d9-032d602f8756": {
+      "page_id": "f36ca83d-e4d8-4902-83d9-032d602f8756",
+      "title": "5 тема - Арифметические операции",
+      "file_path": "notion/5_тема_арифметические_операции__f36ca83de4d8.md",
+      "notion_url": "https://app.notion.com/p/5-f36ca83de4d8490283d9032d602f8756",
+      "last_edited_time": "2025-06-05T19:59:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "5 тема - Арифметические операции"
+      ]
+    },
+    "5a351b66-5195-4aa0-a5bf-b9449c8524d8": {
+      "page_id": "5a351b66-5195-4aa0-a5bf-b9449c8524d8",
+      "title": "4 тема - Функция ввода данных",
+      "file_path": "notion/4_тема_функция_ввода_данных__5a351b665195.md",
+      "notion_url": "https://app.notion.com/p/4-5a351b6651954aa0a5bfb9449c8524d8",
+      "last_edited_time": "2025-06-05T19:59:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "4 тема - Функция ввода данных"
+      ]
+    },
+    "cc544051-6e51-4967-aa91-3d78a74687aa": {
+      "page_id": "cc544051-6e51-4967-aa91-3d78a74687aa",
+      "title": "3 тема - Переменные и типы данных",
+      "file_path": "notion/3_тема_переменные_и_типы_данных__cc5440516e51.md",
+      "notion_url": "https://app.notion.com/p/3-cc5440516e514967aa913d78a74687aa",
+      "last_edited_time": "2025-10-02T20:00:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема - Переменные и типы данных"
+      ]
+    },
+    "e19a9df0-bdd8-41db-ad4c-5b034a1bdbf4": {
+      "page_id": "e19a9df0-bdd8-41db-ad4c-5b034a1bdbf4",
+      "title": "1 тема - Основы языка С",
+      "file_path": "notion/1_тема_основы_языка_с__e19a9df0bdd8.md",
+      "notion_url": "https://app.notion.com/p/1-e19a9df0bdd841dbad4c5b034a1bdbf4",
+      "last_edited_time": "2025-10-02T19:53:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Основы языка С"
+      ]
+    },
+    "1096b4bc-855b-49ad-bf3e-004b54085f79": {
+      "page_id": "1096b4bc-855b-49ad-bf3e-004b54085f79",
+      "title": "1 тема - Знакомство с Blender 3D",
+      "file_path": "notion/1_тема_знакомство_с_blender_3d__1096b4bc855b.md",
+      "notion_url": "https://app.notion.com/p/1-Blender-3D-1096b4bc855b49adbf3e004b54085f79",
+      "last_edited_time": "2026-03-09T17:54:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Знакомство с Blender 3D"
+      ]
+    },
+    "5dc4db7b-9ba1-4516-bd2d-0d43ff505f12": {
+      "page_id": "5dc4db7b-9ba1-4516-bd2d-0d43ff505f12",
+      "title": "4 тема - Структура бота и команды",
+      "file_path": "notion/4_тема_структура_бота_и_команды__5dc4db7b9ba1.md",
+      "notion_url": "https://app.notion.com/p/4-5dc4db7b9ba14516bd2d0d43ff505f12",
+      "last_edited_time": "2026-05-12T10:43:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "4 тема - Структура бота и команды"
+      ]
+    },
+    "7598b649-66a7-4e45-9484-1de167eef815": {
+      "page_id": "7598b649-66a7-4e45-9484-1de167eef815",
+      "title": "5 тема - Магические фильтры",
+      "file_path": "notion/5_тема_магические_фильтры__7598b64966a7.md",
+      "notion_url": "https://app.notion.com/p/5-7598b64966a74e4594841de167eef815",
+      "last_edited_time": "2026-05-07T20:12:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "5 тема - Магические фильтры"
+      ]
+    },
+    "8df4e1bc-2051-4342-82c9-013e63e7c5b0": {
+      "page_id": "8df4e1bc-2051-4342-82c9-013e63e7c5b0",
+      "title": "3 тема - Создание echo-bot",
+      "file_path": "notion/3_тема_создание_echo_bot__8df4e1bc2051.md",
+      "notion_url": "https://app.notion.com/p/3-echo-bot-8df4e1bc2051434282c9013e63e7c5b0",
+      "last_edited_time": "2026-04-28T08:05:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема - Создание echo-bot"
+      ]
+    },
+    "7220ae0a-e0d2-4eb7-b98c-b00ed0fe9a6a": {
+      "page_id": "7220ae0a-e0d2-4eb7-b98c-b00ed0fe9a6a",
+      "title": "1 тема - Терминал, библиотеки, фреймворки и модули",
+      "file_path": "notion/1_тема_терминал_библиотеки_фреймворки_и_модули__7220ae0ae0d2.md",
+      "notion_url": "https://app.notion.com/p/1-7220ae0ae0d24eb7b98cb00ed0fe9a6a",
+      "last_edited_time": "2026-04-30T20:10:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Терминал, библиотеки, фреймворки и модули"
+      ]
+    },
+    "43da5faf-9343-4622-8a09-a30d68bacf1d": {
+      "page_id": "43da5faf-9343-4622-8a09-a30d68bacf1d",
+      "title": "5 тема - Враги, препятствия и логика проигрыша",
+      "file_path": "notion/5_тема_враги_препятствия_и_логика_проигрыша__43da5faf9343.md",
+      "notion_url": "https://app.notion.com/p/5-43da5faf934346228a09a30d68bacf1d",
+      "last_edited_time": "2026-04-06T10:31:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "5 тема - Враги, препятствия и логика проигрыша"
+      ]
+    },
+    "0ae00028-1cf1-4784-ae6c-d4f18a5643d5": {
+      "page_id": "0ae00028-1cf1-4784-ae6c-d4f18a5643d5",
+      "title": "1 тема - Знакомство с GDevelop",
+      "file_path": "notion/1_тема_знакомство_с_gdevelop__0ae000281cf1.md",
+      "notion_url": "https://app.notion.com/p/1-GDevelop-0ae000281cf14784ae6cd4f18a5643d5",
+      "last_edited_time": "2026-03-22T19:52:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Знакомство с GDevelop"
+      ]
+    },
+    "36151630-0fab-4e05-84e7-6ad23a56eb49": {
+      "page_id": "36151630-0fab-4e05-84e7-6ad23a56eb49",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__361516300fab.md",
+      "notion_url": "https://app.notion.com/p/361516300fab4e0584e76ad23a56eb49",
+      "last_edited_time": "2025-10-03T18:30:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "b75212bb-db71-4a76-a4cb-5297958f5dca": {
+      "page_id": "b75212bb-db71-4a76-a4cb-5297958f5dca",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__b75212bbdb71.md",
+      "notion_url": "https://app.notion.com/p/b75212bbdb714a76a4cb5297958f5dca",
+      "last_edited_time": "2025-06-05T20:02:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "deb6ccda-27e8-4f53-a627-8cdb73a978db": {
+      "page_id": "deb6ccda-27e8-4f53-a627-8cdb73a978db",
+      "title": "Вводная тема",
+      "file_path": "notion/вводная_тема__deb6ccda27e8.md",
+      "notion_url": "https://app.notion.com/p/deb6ccda27e84f53a6278cdb73a978db",
+      "last_edited_time": "2026-03-22T19:52:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "Вводная тема"
+      ]
+    },
+    "cd915f63-a35b-4ad4-b1e7-62af8fb48768": {
+      "page_id": "cd915f63-a35b-4ad4-b1e7-62af8fb48768",
+      "title": "4 тема - Контейнеры и стилизация фона",
+      "file_path": "notion/4_тема_контейнеры_и_стилизация_фона__cd915f63a35b.md",
+      "notion_url": "https://app.notion.com/p/4-cd915f63a35b4ad4b1e762af8fb48768",
+      "last_edited_time": "2026-04-11T09:19:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "4 тема - Контейнеры и стилизация фона"
+      ]
+    },
+    "4ddabcc6-2759-4132-96d4-64f29c883bda": {
+      "page_id": "4ddabcc6-2759-4132-96d4-64f29c883bda",
+      "title": "3 тема - Тег style и CSS-селекторы",
+      "file_path": "notion/3_тема_тег_style_и_css_селекторы__4ddabcc62759.md",
+      "notion_url": "https://app.notion.com/p/3-style-CSS-4ddabcc62759413296d464f29c883bda",
+      "last_edited_time": "2026-04-11T09:19:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема - Тег style и CSS-селекторы"
+      ]
+    },
+    "248a3f95-db6e-48ed-b44d-a37dd50b2d9a": {
+      "page_id": "248a3f95-db6e-48ed-b44d-a37dd50b2d9a",
+      "title": "2 тема - Стилизация кнопки и изображения",
+      "file_path": "notion/2_тема_стилизация_кнопки_и_изображения__248a3f95db6e.md",
+      "notion_url": "https://app.notion.com/p/2-248a3f95db6e48edb44da37dd50b2d9a",
+      "last_edited_time": "2026-04-13T12:22:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Стилизация кнопки и изображения"
+      ]
+    },
+    "4b265872-635f-4293-a9cb-6e423ba7c2a4": {
+      "page_id": "4b265872-635f-4293-a9cb-6e423ba7c2a4",
+      "title": "1 тема - Атрибут style и стилизация текста",
+      "file_path": "notion/1_тема_атрибут_style_и_стилизация_текста__4b265872635f.md",
+      "notion_url": "https://app.notion.com/p/1-style-4b265872635f4293a9cb6e423ba7c2a4",
+      "last_edited_time": "2026-02-17T20:21:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Атрибут style и стилизация текста"
+      ]
+    },
+    "597d0bf2-ce27-4dbc-ba1e-2e13e34fcc05": {
+      "page_id": "597d0bf2-ce27-4dbc-ba1e-2e13e34fcc05",
+      "title": "4 тема - Заголовок, фавикон",
+      "file_path": "notion/4_тема_заголовок_фавикон__597d0bf2ce27.md",
+      "notion_url": "https://app.notion.com/p/4-597d0bf2ce274dbcba1e2e13e34fcc05",
+      "last_edited_time": "2026-02-06T19:01:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "4 тема - Заголовок, фавикон"
+      ]
+    },
+    "87d5fff8-b270-46fa-a538-6fd841902626": {
+      "page_id": "87d5fff8-b270-46fa-a538-6fd841902626",
+      "title": "3 тема - Кнопка, картинка",
+      "file_path": "notion/3_тема_кнопка_картинка__87d5fff8b270.md",
+      "notion_url": "https://app.notion.com/p/3-87d5fff8b27046faa5386fd841902626",
+      "last_edited_time": "2026-02-12T08:54:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема - Кнопка, картинка"
+      ]
+    },
+    "fcec1c0f-93af-4b21-a0f9-c0b3742809b0": {
+      "page_id": "fcec1c0f-93af-4b21-a0f9-c0b3742809b0",
+      "title": "2 тема - Текст",
+      "file_path": "notion/2_тема_текст__fcec1c0f93af.md",
+      "notion_url": "https://app.notion.com/p/2-fcec1c0f93af4b21a0f9c0b3742809b0",
+      "last_edited_time": "2026-02-24T10:53:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Текст"
+      ]
+    },
+    "0c9e090b-83bf-4815-9e5f-144e17ffab72": {
+      "page_id": "0c9e090b-83bf-4815-9e5f-144e17ffab72",
+      "title": "1 тема - Скелет сайта",
+      "file_path": "notion/1_тема_скелет_сайта__0c9e090b83bf.md",
+      "notion_url": "https://app.notion.com/p/1-0c9e090b83bf48159e5f144e17ffab72",
+      "last_edited_time": "2026-02-24T10:53:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Скелет сайта"
+      ]
+    },
+    "67f85023-b0dd-47f9-8030-276ce7e46ad5": {
+      "page_id": "67f85023-b0dd-47f9-8030-276ce7e46ad5",
+      "title": "2 тема - Кнопка, фон секции",
+      "file_path": "notion/2_тема_кнопка_фон_секции__67f85023b0dd.md",
+      "notion_url": "https://app.notion.com/p/2-67f85023b0dd47f98030276ce7e46ad5",
+      "last_edited_time": "2026-05-26T19:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Кнопка, фон секции"
+      ]
+    },
+    "eaaf8650-522f-49fb-b5f3-ffb7a5132f68": {
+      "page_id": "eaaf8650-522f-49fb-b5f3-ffb7a5132f68",
+      "title": "1 тема - Знакомство с Wordpress, текст, изображение",
+      "file_path": "notion/1_тема_знакомство_с_wordpress_текст_изображение__eaaf8650522f.md",
+      "notion_url": "https://app.notion.com/p/1-Wordpress-eaaf8650522f49fbb5f3ffb7a5132f68",
+      "last_edited_time": "2026-05-26T19:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Знакомство с Wordpress, текст, изображение"
+      ]
+    },
+    "6368db7f-c8ff-46ee-b65f-19e3b40229a6": {
+      "page_id": "6368db7f-c8ff-46ee-b65f-19e3b40229a6",
+      "title": "1 тема - Кисть",
+      "file_path": "notion/1_тема_кисть__6368db7fc8ff.md",
+      "notion_url": "https://app.notion.com/p/1-6368db7fc8ff46eeb65f19e3b40229a6",
+      "last_edited_time": "2026-06-15T12:54:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Кисть"
+      ]
+    },
+    "b897a966-4616-461f-a366-90f3dfaa1ca8": {
+      "page_id": "b897a966-4616-461f-a366-90f3dfaa1ca8",
+      "title": "5 тема - Удаление объектов",
+      "file_path": "notion/5_тема_удаление_объектов__b897a9664616.md",
+      "notion_url": "https://app.notion.com/p/5-b897a9664616461fa36690f3dfaa1ca8",
+      "last_edited_time": "2025-11-19T11:37:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "5 тема - Удаление объектов"
+      ]
+    },
+    "ab35ee37-abe4-413e-8d6c-ee188d6e2b78": {
+      "page_id": "ab35ee37-abe4-413e-8d6c-ee188d6e2b78",
+      "title": "6 тема - Маска",
+      "file_path": "notion/6_тема_маска__ab35ee37abe4.md",
+      "notion_url": "https://app.notion.com/p/6-ab35ee37abe4413e8d6cee188d6e2b78",
+      "last_edited_time": "2026-04-13T18:31:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "6 тема - Маска"
+      ]
+    },
+    "f2d27711-2014-4b7c-b155-3a410caa1a9c": {
+      "page_id": "f2d27711-2014-4b7c-b155-3a410caa1a9c",
+      "title": "2 тема - Слои",
+      "file_path": "notion/2_тема_слои__f2d277112014.md",
+      "notion_url": "https://app.notion.com/p/2-f2d2771120144b7cb1553a410caa1a9c",
+      "last_edited_time": "2026-05-18T13:32:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Слои"
+      ]
+    },
+    "388152c1-a1d7-43ab-adbf-f3656cadb86b": {
+      "page_id": "388152c1-a1d7-43ab-adbf-f3656cadb86b",
+      "title": "3 тема - Фигуры",
+      "file_path": "notion/3_тема_фигуры__388152c1a1d7.md",
+      "notion_url": "https://app.notion.com/p/3-388152c1a1d743abadbff3656cadb86b",
+      "last_edited_time": "2025-10-22T07:37:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема - Фигуры"
+      ]
+    },
+    "9626fbfd-5518-49f7-a48a-d438e9b622b0": {
+      "page_id": "9626fbfd-5518-49f7-a48a-d438e9b622b0",
+      "title": "4 тема - Перо",
+      "file_path": "notion/4_тема_перо__9626fbfd5518.md",
+      "notion_url": "https://app.notion.com/p/4-9626fbfd551849f7a48ad438e9b622b0",
+      "last_edited_time": "2026-03-20T15:22:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "4 тема - Перо"
+      ]
+    },
+    "c40ccf4b-edda-4571-8879-bc90430c3ec0": {
+      "page_id": "c40ccf4b-edda-4571-8879-bc90430c3ec0",
+      "title": "7 тема - Текст",
+      "file_path": "notion/7_тема_текст__c40ccf4bedda.md",
+      "notion_url": "https://app.notion.com/p/7-c40ccf4bedda45718879bc90430c3ec0",
+      "last_edited_time": "2026-04-13T18:32:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "7 тема - Текст"
+      ]
+    },
+    "c2cc3da6-7892-47e5-8aeb-a44cb9a9dfa5": {
+      "page_id": "c2cc3da6-7892-47e5-8aeb-a44cb9a9dfa5",
+      "title": "1 тема - Мышь и клавиатура",
+      "file_path": "notion/1_тема_мышь_и_клавиатура__c2cc3da67892.md",
+      "notion_url": "https://app.notion.com/p/1-c2cc3da6789247e58aeba44cb9a9dfa5",
+      "last_edited_time": "2025-03-31T11:32:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Мышь и клавиатура"
+      ]
+    },
+    "9c7ac37f-adfa-4005-a3c2-4ff5e9c4ff04": {
+      "page_id": "9c7ac37f-adfa-4005-a3c2-4ff5e9c4ff04",
+      "title": "2 тема - Машинное обучение",
+      "file_path": "notion/2_тема_машинное_обучение__9c7ac37fadfa.md",
+      "notion_url": "https://app.notion.com/p/2-9c7ac37fadfa4005a3c24ff5e9c4ff04",
+      "last_edited_time": "2026-02-27T08:41:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "2 тема - Машинное обучение"
+      ]
+    },
+    "1942b334-a9bd-474e-a4b8-9be573ee10d7": {
+      "page_id": "1942b334-a9bd-474e-a4b8-9be573ee10d7",
+      "title": "3 тема - ИИ + Roblox",
+      "file_path": "notion/3_тема_ии_roblox__1942b334a9bd.md",
+      "notion_url": "https://app.notion.com/p/3-Roblox-1942b334a9bd474ea4b89be573ee10d7",
+      "last_edited_time": "2026-02-26T13:36:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "3 тема - ИИ + Roblox"
+      ]
+    },
+    "f6ae8a87-24ed-4bdc-81ff-6e2bae20cb5d": {
+      "page_id": "f6ae8a87-24ed-4bdc-81ff-6e2bae20cb5d",
+      "title": "1 тема - Введение в ИИ",
+      "file_path": "notion/1_тема_введение_в_ии__f6ae8a8724ed.md",
+      "notion_url": "https://app.notion.com/p/1-f6ae8a8724ed4bdc81ff6e2bae20cb5d",
+      "last_edited_time": "2026-03-06T09:11:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Темы",
+        "1 тема - Введение в ИИ"
+      ]
+    },
+    "330a39a4-80c9-80d3-932c-d08f662050ce": {
+      "page_id": "330a39a4-80c9-80d3-932c-d08f662050ce",
+      "title": "Minecraft",
+      "file_path": "notion/minecraft__330a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/Minecraft-330a39a480c980d3932cd08f662050ce",
+      "last_edited_time": "2026-03-27T09:05:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Minecraft"
+      ]
+    },
+    "313a39a4-80c9-80d2-9a4e-e0b61f9e9d1b": {
+      "page_id": "313a39a4-80c9-80d2-9a4e-e0b61f9e9d1b",
+      "title": "ИИ",
+      "file_path": "notion/ии__313a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/313a39a480c980d29a4ee0b61f9e9d1b",
+      "last_edited_time": "2026-02-27T08:36:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "ИИ"
+      ]
+    },
+    "302a39a4-80c9-80b3-ad79-c1b1bf7e4488": {
+      "page_id": "302a39a4-80c9-80b3-ad79-c1b1bf7e4488",
+      "title": "Создание игр в Roblox - Хоррор",
+      "file_path": "notion/создание_игр_в_roblox_хоррор__302a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/Roblox-302a39a480c980b3ad79c1b1bf7e4488",
+      "last_edited_time": "2026-05-22T14:22:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Создание игр в Roblox - Хоррор"
+      ]
+    },
+    "22aa39a4-80c9-80cd-9c4f-cd091044f24e": {
+      "page_id": "22aa39a4-80c9-80cd-9c4f-cd091044f24e",
+      "title": "Язык С++",
+      "file_path": "notion/язык_с__22aa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/22aa39a480c980cd9c4fcd091044f24e",
+      "last_edited_time": "2026-05-08T09:28:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Язык С++"
+      ]
+    },
+    "1faa39a4-80c9-80a8-a200-c0a5525affaa": {
+      "page_id": "1faa39a4-80c9-80a8-a200-c0a5525affaa",
+      "title": "Python + ИИ: создание игры",
+      "file_path": "notion/python_ии_создание_игры__1faa39a480c9.md",
+      "notion_url": "https://app.notion.com/p/Python-1faa39a480c980a8a200c0a5525affaa",
+      "last_edited_time": "2025-10-17T07:00:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Python + ИИ: создание игры"
+      ]
+    },
+    "1aea39a4-80c9-8097-901b-e5e31e781534": {
+      "page_id": "1aea39a4-80c9-8097-901b-e5e31e781534",
+      "title": "Создание портфолио HTML/CSS",
+      "file_path": "notion/создание_портфолио_html_css__1aea39a480c9.md",
+      "notion_url": "https://app.notion.com/p/HTML-CSS-1aea39a480c98097901be5e31e781534",
+      "last_edited_time": "2026-02-09T09:39:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Создание портфолио HTML/CSS"
+      ]
+    },
+    "169a39a4-80c9-80f7-99c8-dc0a35cc3a4c": {
+      "page_id": "169a39a4-80c9-80f7-99c8-dc0a35cc3a4c",
+      "title": "Мастер-классы",
+      "file_path": "notion/мастер_классы__169a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/169a39a480c980f799c8dc0a35cc3a4c",
+      "last_edited_time": "2025-10-17T06:59:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Мастер-классы"
+      ]
+    },
+    "120a39a4-80c9-8087-a0b7-d7bb0efc0d76": {
+      "page_id": "120a39a4-80c9-8087-a0b7-d7bb0efc0d76",
+      "title": "Видеомейкинг: от идеи до публикации",
+      "file_path": "notion/видеомейкинг_от_идеи_до_публикации__120a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/120a39a480c98087a0b7d7bb0efc0d76",
+      "last_edited_time": "2026-06-15T07:42:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Видеомейкинг: от идеи до публикации"
+      ]
+    },
+    "e2b61995-8b66-4093-b4e1-ab6306213cb8": {
+      "page_id": "e2b61995-8b66-4093-b4e1-ab6306213cb8",
+      "title": "Вводные занятия",
+      "file_path": "notion/вводные_занятия__e2b619958b66.md",
+      "notion_url": "https://app.notion.com/p/e2b619958b664093b4e1ab6306213cb8",
+      "last_edited_time": "2025-10-17T06:59:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Вводные занятия"
+      ]
+    },
+    "9a6bb4b1-6738-43a4-940b-1f62ad686c20": {
+      "page_id": "9a6bb4b1-6738-43a4-940b-1f62ad686c20",
+      "title": "3D-моделирование в Blender 3D (углубленный курс)",
+      "file_path": "notion/3d_моделирование_в_blender_3d_углубленный_курс__9a6bb4b16738.md",
+      "notion_url": "https://app.notion.com/p/3D-Blender-3D-9a6bb4b1673843a4940b1f62ad686c20",
+      "last_edited_time": "2026-05-06T09:34:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "3D-моделирование в Blender 3D (углубленный курс)"
+      ]
+    },
+    "53d61cea-ff50-4bca-94dd-ab335a819bbe": {
+      "page_id": "53d61cea-ff50-4bca-94dd-ab335a819bbe",
+      "title": "Ретушь фотографий",
+      "file_path": "notion/ретушь_фотографий__53d61ceaff50.md",
+      "notion_url": "https://app.notion.com/p/53d61ceaff504bca94ddab335a819bbe",
+      "last_edited_time": "2026-02-09T09:39:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Ретушь фотографий"
+      ]
+    },
+    "cddb67fd-de1c-438d-91c8-ec1ced16428b": {
+      "page_id": "cddb67fd-de1c-438d-91c8-ec1ced16428b",
+      "title": "Создание игр в Roblox - Паркур",
+      "file_path": "notion/создание_игр_в_roblox_паркур__cddb67fdde1c.md",
+      "notion_url": "https://app.notion.com/p/Roblox-cddb67fdde1c438d91c8ec1ced16428b",
+      "last_edited_time": "2026-02-24T12:53:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Создание игр в Roblox - Паркур"
+      ]
+    },
+    "e1435a72-d214-4b04-8173-0ce1ecf923a9": {
+      "page_id": "e1435a72-d214-4b04-8173-0ce1ecf923a9",
+      "title": "3D-моделирование в Blockbench",
+      "file_path": "notion/3d_моделирование_в_blockbench__e1435a72d214.md",
+      "notion_url": "https://app.notion.com/p/3D-Blockbench-e1435a72d2144b0481730ce1ecf923a9",
+      "last_edited_time": "2025-10-17T06:59:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "3D-моделирование в Blockbench"
+      ]
+    },
+    "78d0649a-52ea-4a3c-a97d-46624ceb57e8": {
+      "page_id": "78d0649a-52ea-4a3c-a97d-46624ceb57e8",
+      "title": "Создание игрового уровня в UE",
+      "file_path": "notion/создание_игрового_уровня_в_ue__78d0649a52ea.md",
+      "notion_url": "https://app.notion.com/p/UE-78d0649a52ea4a3ca97d46624ceb57e8",
+      "last_edited_time": "2025-10-17T06:59:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Создание игрового уровня в UE"
+      ]
+    },
+    "561ab0b2-1a93-4246-b545-3305b32ef167": {
+      "page_id": "561ab0b2-1a93-4246-b545-3305b32ef167",
+      "title": "Дизайн в Canva",
+      "file_path": "notion/дизайн_в_canva__561ab0b21a93.md",
+      "notion_url": "https://app.notion.com/p/Canva-561ab0b21a934246b5453305b32ef167",
+      "last_edited_time": "2026-02-09T09:38:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Дизайн в Canva"
+      ]
+    },
+    "52b89d87-690d-47a2-be37-4f501c31a5ed": {
+      "page_id": "52b89d87-690d-47a2-be37-4f501c31a5ed",
+      "title": "Язык C",
+      "file_path": "notion/язык_c__52b89d87690d.md",
+      "notion_url": "https://app.notion.com/p/C-52b89d87690d47a2be374f501c31a5ed",
+      "last_edited_time": "2025-10-17T07:02:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Язык C"
+      ]
+    },
+    "6a6752ad-9634-4666-a2c9-c3382cb89668": {
+      "page_id": "6a6752ad-9634-4666-a2c9-c3382cb89668",
+      "title": "Создание игр в Unity",
+      "file_path": "notion/создание_игр_в_unity__6a6752ad9634.md",
+      "notion_url": "https://app.notion.com/p/Unity-6a6752ad96344666a2c9c3382cb89668",
+      "last_edited_time": "2025-10-17T06:59:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Создание игр в Unity"
+      ]
+    },
+    "44e575ea-426b-4a70-bab4-53dbde128b72": {
+      "page_id": "44e575ea-426b-4a70-bab4-53dbde128b72",
+      "title": "Soft Skills",
+      "file_path": "notion/soft_skills__44e575ea426b.md",
+      "notion_url": "https://app.notion.com/p/Soft-Skills-44e575ea426b4a70bab453dbde128b72",
+      "last_edited_time": "2025-10-17T07:00:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Soft Skills"
+      ]
+    },
+    "4ee76df1-3894-43b9-a771-beeaa3b59ad3": {
+      "page_id": "4ee76df1-3894-43b9-a771-beeaa3b59ad3",
+      "title": "Программирование Javascript",
+      "file_path": "notion/программирование_javascript__4ee76df13894.md",
+      "notion_url": "https://app.notion.com/p/Javascript-4ee76df1389443b9a771beeaa3b59ad3",
+      "last_edited_time": "2025-10-17T06:58:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Программирование Javascript"
+      ]
+    },
+    "412177f0-f8ec-49d8-bf1f-5b566ca40737": {
+      "page_id": "412177f0-f8ec-49d8-bf1f-5b566ca40737",
+      "title": "Программирование Kotlin",
+      "file_path": "notion/программирование_kotlin__412177f0f8ec.md",
+      "notion_url": "https://app.notion.com/p/Kotlin-412177f0f8ec49d8bf1f5b566ca40737",
+      "last_edited_time": "2026-03-20T09:26:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Программирование Kotlin"
+      ]
+    },
+    "f95dafb5-ea69-48d2-80f7-abedf0321e26": {
+      "page_id": "f95dafb5-ea69-48d2-80f7-abedf0321e26",
+      "title": "Создание Telegram-бота на Python",
+      "file_path": "notion/создание_telegram_бота_на_python__f95dafb5ea69.md",
+      "notion_url": "https://app.notion.com/p/Telegram-Python-f95dafb5ea6948d280f7abedf0321e26",
+      "last_edited_time": "2026-02-09T09:39:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Создание Telegram-бота на Python"
+      ]
+    },
+    "1542723c-c0cf-431b-852e-53a1fcddcbc1": {
+      "page_id": "1542723c-c0cf-431b-852e-53a1fcddcbc1",
+      "title": "Веб-дизайн в Figma",
+      "file_path": "notion/веб_дизайн_в_figma__1542723cc0cf.md",
+      "notion_url": "https://app.notion.com/p/Figma-1542723cc0cf431b852e53a1fcddcbc1",
+      "last_edited_time": "2025-10-17T06:57:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Веб-дизайн в Figma"
+      ]
+    },
+    "6be9a86f-faf1-4213-8947-655b0faf78c8": {
+      "page_id": "6be9a86f-faf1-4213-8947-655b0faf78c8",
+      "title": "Концепт-арт и визуализация локаций в Blender",
+      "file_path": "notion/концепт_арт_и_визуализация_локаций_в_blender__6be9a86ffaf1.md",
+      "notion_url": "https://app.notion.com/p/Blender-6be9a86ffaf142138947655b0faf78c8",
+      "last_edited_time": "2026-02-26T13:31:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Концепт-арт и визуализация локаций в Blender"
+      ]
+    },
+    "fd05bfad-e7c0-4d3f-a2af-5ed768419b26": {
+      "page_id": "fd05bfad-e7c0-4d3f-a2af-5ed768419b26",
+      "title": "Моушн дизайн в Unreal Engine",
+      "file_path": "notion/моушн_дизайн_в_unreal_engine__fd05bfade7c0.md",
+      "notion_url": "https://app.notion.com/p/Unreal-Engine-fd05bfade7c04d3fa2af5ed768419b26",
+      "last_edited_time": "2025-10-17T06:59:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Моушн дизайн в Unreal Engine"
+      ]
+    },
+    "e470e15b-2ff3-4c00-886d-732349a46b2a": {
+      "page_id": "e470e15b-2ff3-4c00-886d-732349a46b2a",
+      "title": "Программирование Python (базовый курс)",
+      "file_path": "notion/программирование_python_базовый_курс__e470e15b2ff3.md",
+      "notion_url": "https://app.notion.com/p/Python-e470e15b2ff34c00886d732349a46b2a",
+      "last_edited_time": "2025-10-17T06:58:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Программирование Python (базовый курс)"
+      ]
+    },
+    "de6f8546-f9a5-45d0-b5d0-1c5a78f58d64": {
+      "page_id": "de6f8546-f9a5-45d0-b5d0-1c5a78f58d64",
+      "title": "3D-моделирование в Blender 3D (базовый курс)",
+      "file_path": "notion/3d_моделирование_в_blender_3d_базовый_курс__de6f8546f9a5.md",
+      "notion_url": "https://app.notion.com/p/3D-Blender-3D-de6f8546f9a545d0b5d01c5a78f58d64",
+      "last_edited_time": "2025-10-17T06:59:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "3D-моделирование в Blender 3D (базовый курс)"
+      ]
+    },
+    "f1fa1453-fc58-4953-a11b-9839c5c3277e": {
+      "page_id": "f1fa1453-fc58-4953-a11b-9839c5c3277e",
+      "title": "Создание арены в Roblox",
+      "file_path": "notion/создание_арены_в_roblox__f1fa1453fc58.md",
+      "notion_url": "https://app.notion.com/p/Roblox-f1fa1453fc584953a11b9839c5c3277e",
+      "last_edited_time": "2025-10-17T07:00:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Создание арены в Roblox"
+      ]
+    },
+    "2f40f923-5a19-4736-beca-37288ab333a3": {
+      "page_id": "2f40f923-5a19-4736-beca-37288ab333a3",
+      "title": "Программирование в Code Combat",
+      "file_path": "notion/программирование_в_code_combat__2f40f9235a19.md",
+      "notion_url": "https://app.notion.com/p/Code-Combat-2f40f9235a194736beca37288ab333a3",
+      "last_edited_time": "2026-02-09T09:39:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Программирование в Code Combat"
+      ]
+    },
+    "9e03f285-8702-41ae-9874-7599d7a7380a": {
+      "page_id": "9e03f285-8702-41ae-9874-7599d7a7380a",
+      "title": "Разработка мобильных игр в GDevelop",
+      "file_path": "notion/разработка_мобильных_игр_в_gdevelop__9e03f2858702.md",
+      "notion_url": "https://app.notion.com/p/GDevelop-9e03f285870241ae98747599d7a7380a",
+      "last_edited_time": "2026-06-12T09:01:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Разработка мобильных игр в GDevelop"
+      ]
+    },
+    "7b90f1a4-f2d7-4e61-b789-2fbed0ed6790": {
+      "page_id": "7b90f1a4-f2d7-4e61-b789-2fbed0ed6790",
+      "title": "Программирование CSS",
+      "file_path": "notion/программирование_css__7b90f1a4f2d7.md",
+      "notion_url": "https://app.notion.com/p/CSS-7b90f1a4f2d74e61b7892fbed0ed6790",
+      "last_edited_time": "2026-05-01T09:06:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Программирование CSS"
+      ]
+    },
+    "c6895ed9-675c-4736-9eb7-0aaf1a53bef2": {
+      "page_id": "c6895ed9-675c-4736-9eb7-0aaf1a53bef2",
+      "title": "Программирование HTML",
+      "file_path": "notion/программирование_html__c6895ed9675c.md",
+      "notion_url": "https://app.notion.com/p/HTML-c6895ed9675c47369eb70aaf1a53bef2",
+      "last_edited_time": "2025-10-17T06:57:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Программирование HTML"
+      ]
+    },
+    "9703b3a2-bf96-4ba7-9680-80439068de77": {
+      "page_id": "9703b3a2-bf96-4ba7-9680-80439068de77",
+      "title": "Графический дизайн в Adobe Photoshop (продвинутый уровень)",
+      "file_path": "notion/графический_дизайн_в_adobe_photoshop_продвинутый_уровень__9703b3a2bf96.md",
+      "notion_url": "https://app.notion.com/p/Adobe-Photoshop-9703b3a2bf964ba7968080439068de77",
+      "last_edited_time": "2026-05-06T08:11:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Графический дизайн в Adobe Photoshop (продвинутый уровень)"
+      ]
+    },
+    "152337c5-0f0b-43cb-b8ed-bdf07fad093f": {
+      "page_id": "152337c5-0f0b-43cb-b8ed-bdf07fad093f",
+      "title": "Веб-разработка в Wordpress",
+      "file_path": "notion/веб_разработка_в_wordpress__152337c50f0b.md",
+      "notion_url": "https://app.notion.com/p/Wordpress-152337c50f0b43cbb8edbdf07fad093f",
+      "last_edited_time": "2025-10-17T06:57:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Веб-разработка в Wordpress"
+      ]
+    },
+    "fff313d6-40d5-44e9-a784-4af071c35695": {
+      "page_id": "fff313d6-40d5-44e9-a784-4af071c35695",
+      "title": "Курс компьютерной грамотности",
+      "file_path": "notion/курс_компьютерной_грамотности__fff313d640d5.md",
+      "notion_url": "https://app.notion.com/p/fff313d640d544e9a7844af071c35695",
+      "last_edited_time": "2025-10-17T06:59:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Курс компьютерной грамотности"
+      ]
+    },
+    "893b095f-90cd-48ef-9bca-d8aa78396c5e": {
+      "page_id": "893b095f-90cd-48ef-9bca-d8aa78396c5e",
+      "title": "Графический дизайн в Adobe Photoshop",
+      "file_path": "notion/графический_дизайн_в_adobe_photoshop__893b095f90cd.md",
+      "notion_url": "https://app.notion.com/p/Adobe-Photoshop-893b095f90cd48ef9bcad8aa78396c5e",
+      "last_edited_time": "2025-11-26T11:47:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Программа обучения",
+        "Курсы",
+        "Графический дизайн в Adobe Photoshop"
+      ]
+    },
+    "120a39a4-80c9-8075-ac35-fcbaba9e890b": {
+      "page_id": "120a39a4-80c9-8075-ac35-fcbaba9e890b",
+      "title": "Оцифровка курсов",
+      "file_path": "notion/оцифровка_курсов__120a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/120a39a480c98075ac35fcbaba9e890b",
+      "last_edited_time": "2026-03-23T16:24:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Продукт",
+        "Оцифровка курсов"
+      ]
+    },
+    "30ca39a4-80c9-80af-9fbf-d7d784e2cf3e": {
+      "page_id": "30ca39a4-80c9-80af-9fbf-d7d784e2cf3e",
+      "title": "Преподавание",
+      "file_path": "notion/преподавание__30ca39a480c9.md",
+      "notion_url": "https://app.notion.com/p/30ca39a480c980af9fbfd7d784e2cf3e",
+      "last_edited_time": "2026-06-05T14:39:00.000Z",
+      "path_titles": [
+        "30ca39a4",
+        "Преподавание"
+      ]
+    },
+    "336a39a4-80c9-8043-a52e-d0874ca09e5c": {
+      "page_id": "336a39a4-80c9-8043-a52e-d0874ca09e5c",
+      "title": "Карточка роли преподавателя",
+      "file_path": "notion/карточка_роли_преподавателя__336a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/336a39a480c98043a52ed0874ca09e5c",
+      "last_edited_time": "2026-04-02T11:39:00.000Z",
+      "path_titles": [
+        "336a39a4",
+        "Карточка роли преподавателя"
+      ]
+    },
+    "313a39a4-80c9-80bb-9df5-eae21a987c99": {
+      "page_id": "313a39a4-80c9-80bb-9df5-eae21a987c99",
+      "title": "Инструкции",
+      "file_path": "notion/инструкции__313a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/313a39a480c980bb9df5eae21a987c99",
+      "last_edited_time": "2026-04-02T09:53:00.000Z",
+      "path_titles": [
+        "336a39a4",
+        "Инструкции"
+      ]
+    },
+    "336a39a4-80c9-80de-89ba-de7403265cfd": {
+      "page_id": "336a39a4-80c9-80de-89ba-de7403265cfd",
+      "title": "Проведение онлайн занятий",
+      "file_path": "notion/проведение_онлайн_занятий__336a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/336a39a480c980de89bade7403265cfd",
+      "last_edited_time": "2026-05-01T07:46:00.000Z",
+      "path_titles": [
+        "336a39a4",
+        "Проведение онлайн занятий"
+      ]
+    },
+    "376a39a4-80c9-800d-8dcc-de4ded1bf411": {
+      "page_id": "376a39a4-80c9-800d-8dcc-de4ded1bf411",
+      "title": "Выгрузка результатов работ в Wordpress",
+      "file_path": "notion/выгрузка_результатов_работ_в_wordpress__376a39a480c9.md",
+      "notion_url": "https://app.notion.com/p/Wordpress-376a39a480c9800d8dccde4ded1bf411",
+      "last_edited_time": "2026-06-05T14:40:00.000Z",
+      "path_titles": [
+        "336a39a4",
+        "Выгрузка результатов работ в Wordpress"
+      ]
+    }
+  },
+  "last_sync_mode": "fast",
+  "last_sync_pages_total": 308,
+  "last_sync_pages_saved": 0,
+  "last_sync_pages_skipped": 308
+}

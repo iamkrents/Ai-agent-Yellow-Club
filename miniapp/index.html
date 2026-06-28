@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>Yellow Club OPS</title>
+  <link rel="stylesheet" href="/static/styles.css?v=7.0.1" />
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">Yellow Club</div>
+        <h1 id="appTitle">Кабинет сотрудника</h1>
+      </div>
+      <div class="badge" id="roleBadge">...</div>
+    </header>
+
+    <section class="notice" id="notice">Загружаю кабинет...</section>
+
+    <section class="test-role-panel hidden" id="testRolePanel">
+      <div class="test-role-head">
+        <div>
+          <b>Тестовая роль</b>
+          <span id="testRoleStatus">Вы работаете в реальной роли</span>
+        </div>
+      </div>
+      <div class="test-role-controls">
+        <label>
+          <span>Роль</span>
+          <select id="testRoleSelect"></select>
+        </label>
+        <label id="testTeacherLabel" class="hidden">
+          <span>Преподаватель для МойКласс</span>
+          <select id="testTeacherSelect"></select>
+        </label>
+        <button class="primary" id="applyTestRole">Применить</button>
+        <button class="secondary" id="clearTestRole">Сбросить</button>
+      </div>
+    </section>
+
+    <nav class="tabs bottom-tabbar" id="tabs" aria-label="Разделы кабинета">
+      <button class="tab role-intern hidden" data-tab="intern" type="button">
+        <span class="tab-icon">🎓</span><span class="tab-label">Стажировка</span>
+      </button>
+      <button class="tab active role-lessons" data-tab="lessons" type="button">
+        <span class="tab-icon">📅</span><span class="tab-label">Занятия</span>
+      </button>
+      <button class="tab role-open-slots hidden" data-tab="windows" type="button">
+        <span class="tab-icon">🪟</span><span class="tab-label">Окна</span>
+      </button>
+      <button class="tab role-schedule" data-tab="schedule" type="button">
+        <span class="tab-icon">⏱</span><span class="tab-label">Время</span>
+      </button>
+      <button class="tab" data-tab="tasks" type="button">
+        <span class="tab-icon">📌</span><span class="tab-label">Задачи</span>
+      </button>
+      <button class="tab role-reports hidden" data-tab="reports" type="button">
+        <span class="tab-icon">📊</span><span class="tab-label">Отчёты</span>
+      </button>
+      <button class="tab parent-only hidden" data-tab="my-children" type="button">
+        <span class="tab-icon">👶</span><span class="tab-label">Мои дети</span>
+      </button>
+      <button class="tab parent-only hidden" data-tab="food" type="button">
+        <span class="tab-icon">🍽</span><span class="tab-label">Питание</span>
+      </button>
+      <button class="tab" data-tab="help" type="button">
+        <span class="tab-icon">❓</span><span class="tab-label">Помощь</span>
+      </button>
+      <button class="tab" data-tab="ask" type="button">
+        <span class="tab-icon">💬</span><span class="tab-label">Чат</span>
+      </button>
+      <button class="tab admin-only hidden" data-tab="admin" type="button">
+        <span class="tab-icon">🛠</span><span class="tab-label">Админ</span>
+      </button>
+    </nav>
+
+    <main>
+      <div id="mvp-cm-stub" class="hidden mvp-cm-stub">
+        <div class="mvp-cm-stub-inner">
+          <div class="mvp-cm-stub-icon">🚧</div>
+          <h2 class="mvp-cm-stub-title">Роль временно скрыта</h2>
+          <p class="mvp-cm-stub-text">Сейчас тестируются роли: <strong>Стажёр</strong>, <strong>Преподаватель</strong> и <strong>Методист / Админ</strong>. Интерфейс клиент-менеджера будет доступен в следующей версии.</p>
+        </div>
+      </div>
+
+      <section id="tab-intern" class="tab-panel role-intern hidden">
+        <div class="section-head">
+          <div>
+            <h2>Стажировка</h2>
+            <p>Ваш маршрут стажёра. Текущий шаг доступен, следующие открываются поэтапно.</p>
+          </div>
+          <button class="secondary" id="refreshIntern">Обновить</button>
+        </div>
+        <div id="internContent" class="intern-steps"></div>
+      </section>
+
+      <section id="tab-lessons" class="tab-panel active role-lessons">
+        <div class="section-head">
+          <div>
+            <h2>Мои занятия на 7 дней</h2>
+            <p>Выберите занятие, чтобы открыть материал, подготовку, отчёт и статусы.</p>
+          </div>
+          <button class="secondary" id="refreshLessons">Обновить</button>
+        </div>
+        <div id="lessonsList" class="cards"></div>
+      </section>
+
+      <section id="tab-windows" class="tab-panel role-open-slots hidden">
+        <div class="section-head schedule-head open-slots-head">
+          <div>
+            <h2>Свободные окна</h2>
+            <p>Рабочие возможности преподавателей для подбора времени клиенту.</p>
+          </div>
+          <button class="secondary" id="refreshOpenSlots">Обновить</button>
+        </div>
+
+        <article class="card schedule-hero-card open-slots-hero">
+          <div class="schedule-hero-mark">🪟</div>
+          <div>
+            <h3>Подбор времени для клиента</h3>
+            <p>Выберите подходящее окно и нажмите “Использовать” - агент поможет оформить вариант для клиента и подскажет, что проверить в МойКласс.</p>
+          </div>
+        </article>
+
+        <div class="week-switch" id="openSlotsWeekSwitch">
+          <button class="active" type="button" data-open-slots-week="current">Эта неделя</button>
+          <button type="button" data-open-slots-week="next">Следующая неделя</button>
+        </div>
+
+        <div class="open-slots-filters">
+          <label>
+            <span>Филиал / формат</span>
+            <select id="openSlotsLocationFilter">
+              <option value="all">Все форматы</option>
+              <option value="Любой формат">Любой формат</option>
+              <option value="Кульман 1/1">Кульман 1/1</option>
+              <option value="Мстиславца 6">Мстиславца 6</option>
+              <option value="Онлайн">Онлайн</option>
+            </select>
+          </label>
+          <label>
+            <span>Время дня</span>
+            <select id="openSlotsTimeFilter">
+              <option value="all">Любое время</option>
+              <option value="morning">Утро</option>
+              <option value="day">День</option>
+              <option value="evening">Вечер</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="openSlotsSummary" class="open-slots-summary"></div>
+        <div id="openSlotsList" class="cards schedule-cards open-slots-list"></div>
+      </section>
+
+      <section id="tab-schedule" class="tab-panel role-schedule">
+        <div class="section-head schedule-head">
+          <div>
+            <h2>Мои рабочие возможности</h2>
+            <p>Укажите свободные окна, когда вы можете работать дополнительно. Преподаватели универсальные: тип занятия и курс выбирать не нужно.</p>
+          </div>
+          <button class="secondary" id="refreshSchedule">Обновить</button>
+        </div>
+
+        <article class="card schedule-hero-card">
+          <div class="schedule-hero-mark">🕒</div>
+          <div>
+            <h3>Рабочие возможности на неделю</h3>
+            <p>Укажите свободные окна для пробных, отработок, замен или дополнительных занятий.</p>
+          </div>
+        </article>
+
+        <div class="week-switch" id="workWeekSwitch">
+          <button class="active" type="button" data-work-week="current">Эта неделя</button>
+          <button type="button" data-work-week="next">Следующая неделя</button>
+        </div>
+
+        <div id="workScheduleSummary" class="schedule-week"></div>
+
+        <article class="card schedule-form-card">
+          <div class="schedule-form-title">
+            <h3>Добавить рабочее окно</h3>
+            <p>Можно добавить несколько свободных окон на один день. Регулярные занятия из МойКласс сюда вносить не нужно.</p>
+          </div>
+          <form id="workScheduleForm" class="schedule-form">
+            <input type="hidden" id="workSlotId" value="" />
+            <label>
+              <span>День</span>
+              <select id="workDay" required>
+                <option value="0">Понедельник</option>
+                <option value="1">Вторник</option>
+                <option value="2">Среда</option>
+                <option value="3">Четверг</option>
+                <option value="4">Пятница</option>
+                <option value="5">Суббота</option>
+                <option value="6">Воскресенье</option>
+              </select>
+            </label>
+            <label>
+              <span>С</span>
+              <input id="workStart" type="time" value="10:00" required />
+            </label>
+            <label>
+              <span>До</span>
+              <input id="workEnd" type="time" value="14:00" required />
+            </label>
+            <label>
+              <span>Формат / место</span>
+              <select id="workLocation">
+                <option value="Любой формат">Любой формат</option>
+                <option value="Кульман 1/1">Кульман 1/1</option>
+                <option value="Мстиславца 6">Мстиславца 6</option>
+                <option value="Онлайн">Онлайн</option>
+              </select>
+            </label>
+            <label class="schedule-note-field">
+              <span>Комментарий</span>
+              <input id="workNote" type="text" placeholder="Например: только YC2, могу после 17:00, онлайн не беру" />
+            </label>
+            <div class="schedule-form-actions">
+              <button class="primary" type="submit" id="saveWorkSlot">Сохранить</button>
+              <button class="secondary" type="button" id="clearWorkSlot">Очистить</button>
+            </div>
+          </form>
+        </article>
+
+        <div id="workScheduleList" class="cards schedule-cards"></div>
+      </section>
+
+      <section id="tab-tasks" class="tab-panel">
+        <div class="section-head">
+          <div>
+            <h2>Мои задачи</h2>
+            <p>Автоматическая лента: подготовка, проверка работ, доработки и незакрытые занятия.</p>
+          </div>
+          <button class="secondary" id="refreshTasks">Обновить</button>
+        </div>
+        <div id="tasksSummary" class="task-summary"></div>
+        <div class="task-help-note">
+          Задачи не нужно закрывать вручную. Они исчезают сами, когда вы выполняете действие в карточке занятия.
+        </div>
+        <div id="tasksList" class="cards tasks-cards"></div>
+      </section>
+
+      <section id="tab-reports" class="tab-panel role-reports hidden">
+        <div class="section-head reports-head">
+          <div>
+            <h2>Отчёты</h2>
+            <p>Статистика из МойКласс для оплат, посещений, пробных и управленческих отчётов.</p>
+          </div>
+          <button class="secondary" id="refreshReports">Обновить</button>
+        </div>
+
+        <article class="card reports-hero-card">
+          <div class="reports-hero-mark">📊</div>
+          <div>
+            <h3>Отчёт клиент-менеджера</h3>
+            <p>Выберите месяц и обновите данные. Агент и менеджеры используют эти показатели для задач по оплатам, отработкам и отчётности.</p>
+          </div>
+        </article>
+
+        <div class="reports-controls">
+          <label>
+            <span>Месяц отчёта</span>
+            <input id="reportsMonth" type="month" />
+          </label>
+          <button class="primary" id="loadReports" type="button">Сформировать отчёт</button>
+        </div>
+
+        <div id="reportsSummary" class="reports-summary"></div>
+        <div id="reportsDetailCards" class="reports-detail-grid"></div>
+        <div id="reportsSections" class="reports-sections"></div>
+
+        <article class="card reports-text-card hidden" id="reportsTextCard">
+          <div class="reports-text-head">
+            <div>
+              <h3>Текст отчёта</h3>
+              <p>Можно скопировать и использовать в рабочем отчёте.</p>
+            </div>
+            <button class="secondary" id="copyReportsText" type="button">Скопировать</button>
+          </div>
+          <pre id="reportsText" class="reports-text"></pre>
+        </article>
+
+        <div id="kpiBlock" class="kpi-block hidden"></div>
+
+        <div class="reports-actions reports-actions-wide">
+          <button class="primary" id="syncPaymentTasksFromReports" type="button">Создать задачи по оплатам</button>
+          <button class="primary" id="syncMakeupTasksFromReports" type="button">Создать задачи по отработкам</button>
+          <button class="secondary" id="syncTasksFromReports" type="button">Обновить все задачи</button>
+          <button class="secondary" id="askReportsAgent" type="button">Спросить агента по отчёту</button>
+        </div>
+      </section>
+
+      <section id="tab-admin" class="tab-panel">
+        <div class="section-head">
+          <div>
+            <h2>OPS панель</h2>
+            <p>Контроль преподавателей, задач, расписания, Notion и уведомлений.</p>
+          </div>
+          <button class="secondary" id="refreshAdmin">Обновить</button>
+        </div>
+        <div class="admin-grid" id="adminStats"></div>
+        <div class="admin-actions">
+          <button class="primary" id="runScheduleCheck">🔄 Проверить МойКласс</button>
+          <button class="green" id="runScheduleCheckNotify">🔔 Проверить и уведомить</button>
+        </div>
+        <div class="subtabs">
+          <button class="subtab active" data-admin-tab="overview">Обзор</button>
+          <button class="subtab" data-admin-tab="lesson-control">Контроль занятий</button>
+          <button class="subtab" data-admin-tab="teachers">Преподаватели</button>
+          <button class="subtab" data-admin-tab="work-schedule">Возможности</button>
+          <button class="subtab" data-admin-tab="prep-results">Проверка работ</button>
+          <button class="subtab" data-admin-tab="tasks">Задачи</button>
+          <button class="subtab" data-admin-tab="users">Сотрудники</button>
+          <button class="subtab" data-admin-tab="notion">Notion</button>
+          <button class="subtab" data-admin-tab="notifications">Уведомления</button>
+          <button class="subtab" data-admin-tab="kpi">KPI</button>
+          <button class="subtab" data-admin-tab="interns">Стажёры</button>
+          <button class="subtab" data-admin-tab="food-debug">Питание · диагностика</button>
+          <button class="subtab" data-admin-tab="food-children">Питание · дети</button>
+          <button class="subtab" data-admin-tab="food-menu">Питание · меню</button>
+          <button class="subtab" data-admin-tab="food-report">Питание · отчёт</button>
+        </div>
+        <div id="adminContent" class="cards"></div>
+      </section>
+
+
+      <section id="tab-ask" class="tab-panel chat-panel">
+        <div class="section-head chat-head">
+          <div>
+            <h2>Чат</h2>
+            <p>Рабочий помощник Yellow Club по регламентам, занятиям, отчётам, МойКласс и нестандартным ситуациям.</p>
+          </div>
+        </div>
+
+        <details class="card chat-guide-card">
+          <summary>
+            <span>Как пользоваться чатом</span>
+            <small>краткая инструкция</small>
+          </summary>
+          <div class="chat-guide-body">
+            <p>Пишите конкретно: тема занятия, группа, ситуация и что уже сделали. Агент видит вашу роль, ближайшие занятия, задачи и последние сообщения в этом чате.</p>
+            <p>Ответы можно использовать как рабочую подсказку. Если вопрос зависит от расписания, посещаемости или конкретного ученика, сверяйтесь с МойКласс.</p>
+          </div>
+        </details>
+
+        <details class="card chat-quick-card" open>
+          <summary>
+            <span>Быстрые сценарии</span>
+            <small>типовые вопросы</small>
+          </summary>
+          <div class="chat-quick-grid" id="chatQuickGrid">
+            <button type="button" class="chat-chip" data-chat-prompt="single_student">Один ученик</button>
+            <button type="button" class="chat-chip" data-chat-prompt="parent_report">Отчёт родителям</button>
+            <button type="button" class="chat-chip" data-chat-prompt="moyklass">МойКласс</button>
+            <button type="button" class="chat-chip" data-chat-prompt="trial_lesson">Пробное занятие</button>
+            <button type="button" class="chat-chip" data-chat-prompt="no_topic">Нет темы</button>
+            <button type="button" class="chat-chip" data-chat-prompt="prep">Подготовка</button>
+            <button type="button" class="chat-chip" data-chat-prompt="revision">Доработка</button>
+            <button type="button" class="chat-chip" data-chat-prompt="notion_material">Материал Notion</button>
+          </div>
+        </details>
+
+        <article class="chat-shell">
+          <div class="ask-messages chat-messages" id="askMessages"></div>
+          <form class="ask-form chat-form" id="askForm">
+            <textarea id="askInput" class="text-input ask-input chat-input" rows="1" placeholder="Напишите вопрос по работе..." required></textarea>
+            <button class="primary ask-submit chat-submit" id="askSubmit" type="submit" aria-label="Отправить"><span class="chat-send-icon" aria-hidden="true">➤</span></button>
+          </form>
+        </article>
+      </section>
+
+      <section id="tab-help" class="tab-panel">
+        <div class="section-head help-head">
+          <div>
+            <h2>Инструкция преподавателя</h2>
+            <p>Что делать в приложении до занятия, после занятия и в нестандартных ситуациях.</p>
+          </div>
+        </div>
+
+        <div class="help-guide">
+          <article class="card help-card help-hero">
+            <div class="help-hero-icon">🧭</div>
+            <div>
+              <h3>Главный принцип</h3>
+              <p>Работайте от карточки занятия: подготовка, материал, файл результата, отчёт родителям, МойКласс и закрытие занятия находятся внутри конкретного занятия.</p>
+            </div>
+          </article>
+
+          <article class="card help-card help-card-soft">
+            <div class="help-card-title-row">
+              <div>
+                <h3>Быстрый маршрут</h3>
+                <p>Короткий порядок работы преподавателя в приложении.</p>
+              </div>
+            </div>
+            <div class="help-route">
+              <div class="help-route-step">
+                <span class="help-route-num">1</span>
+                <div class="help-route-body">
+                  <b>Откройте “Занятия”</b>
+                  <small>Проверьте расписание на ближайшие 7 дней.</small>
+                </div>
+              </div>
+              <div class="help-route-step">
+                <span class="help-route-num">2</span>
+                <div class="help-route-body">
+                  <b>Откройте карточку</b>
+                  <small>Проверьте тему, время, кабинет и комментарий.</small>
+                </div>
+              </div>
+              <div class="help-route-step">
+                <span class="help-route-num">3</span>
+                <div class="help-route-body">
+                  <b>Подготовьтесь</b>
+                  <small>Откройте Notion, изучите материал и выполните практику.</small>
+                </div>
+              </div>
+              <div class="help-route-step">
+                <span class="help-route-num">4</span>
+                <div class="help-route-body">
+                  <b>Прикрепите файл</b>
+                  <small>Отправьте результат подготовки на проверку старшему преподавателю.</small>
+                </div>
+              </div>
+              <div class="help-route-step">
+                <span class="help-route-num">5</span>
+                <div class="help-route-body">
+                  <b>Проведите занятие</b>
+                  <small>После проверки и допуска проведите занятие по материалу.</small>
+                </div>
+              </div>
+              <div class="help-route-step">
+                <span class="help-route-num">6</span>
+                <div class="help-route-body">
+                  <b>Закройте занятие</b>
+                  <small>Отчёт, МойКласс, работы учеников, кабинет и кнопка “Закрыть занятие”.</small>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <article class="card help-card">
+            <h3>Что означают страницы</h3>
+            <div class="help-page-list help-page-grid">
+              <div class="help-page-item"><span>📅</span><div><b>Занятия</b><p>Главная рабочая страница. Здесь открываются карточки занятий, материалы, подготовка, отчёты и закрытие.</p></div></div>
+              <div class="help-page-item"><span>🕒</span><div><b>Время</b><p>Страница рабочих возможностей. Здесь преподаватель указывает свободные окна для дополнительных занятий, пробных, отработок и замен.</p></div></div>
+              <div class="help-page-item"><span>📌</span><div><b>Задачи</b><p>Автоматическая лента. Показывает, где нужно подготовиться, прикрепить файл, исправить работу или закрыть прошедшее занятие.</p></div></div>
+              <div class="help-page-item"><span>❓</span><div><b>Помощь</b><p>Памятка по работе в приложении и по базовым регламентам преподавателя.</p></div></div>
+              <div class="help-page-item"><span>💬</span><div><b>Чат</b><p>Рабочий диалог с агентом. Можно спросить по регламентам, отчётам, МойКласс, пробным занятиям и сложным ситуациям.</p></div></div>
+            </div>
+          </article>
+
+          <article class="card help-card">
+            <h3>Как работать со страницей “Занятия”</h3>
+            <div class="help-status-grid help-status-legend">
+              <div class="help-status white"><b>Белая карточка</b><span>Будущее занятие.</span></div>
+              <div class="help-status yellow"><b>Жёлтые статусы</b><span>Действие ещё не выполнено.</span></div>
+              <div class="help-status red"><b>Красная карточка</b><span>Занятие прошло, но не закрыто, или есть проблема.</span></div>
+              <div class="help-status green"><b>Зелёная карточка</b><span>Занятие закрыто и завершено.</span></div>
+              <div class="help-status blue"><b>Голубой статус</b><span>Файл подготовки ждёт проверки методиста.</span></div>
+            </div>
+
+            <div class="help-workflow-grid">
+              <div class="help-workflow-card before">
+                <div class="help-workflow-head">
+                  <span>До</span>
+                  <h4>До занятия</h4>
+                </div>
+                <ul class="help-checklist">
+                  <li>Откройте карточку занятия.</li>
+                  <li>Проверьте тему, время, кабинет и комментарий.</li>
+                  <li>Откройте материал Notion.</li>
+                  <li>Изучите тему, видео/инструкцию и практику.</li>
+                  <li>Выполните свою подготовительную работу.</li>
+                  <li>Прикрепите файл результата подготовки.</li>
+                  <li>Дождитесь проверки старшего преподавателя.</li>
+                </ul>
+              </div>
+
+              <div class="help-workflow-card after">
+                <div class="help-workflow-head">
+                  <span>После</span>
+                  <h4>После занятия</h4>
+                </div>
+                <ul class="help-checklist">
+                  <li>Сгенерируйте отчёт родителям.</li>
+                  <li>Проверьте и поправьте текст при необходимости.</li>
+                  <li>Отправьте отчёт в родительский чат.</li>
+                  <li>Заполните МойКласс.</li>
+                  <li>Сохраните работы учеников.</li>
+                  <li>Проверьте кабинет, технику и расходники.</li>
+                  <li>Нажмите “Закрыть занятие”.</li>
+                </ul>
+              </div>
+            </div>
+          </article>
+
+          <details class="card help-card help-section-details" open>
+            <summary>Как работать со страницей “Задачи”</summary>
+            <div class="help-section-content">
+              <p>Задачи создаются автоматически по занятиям. Их не нужно закрывать вручную.</p>
+              <div class="help-page-list compact">
+                <div class="help-page-item"><span>🔴</span><div><b>Срочно</b><p>Прошедшие незакрытые занятия и работы, отправленные на доработку.</p></div></div>
+                <div class="help-page-item"><span>🟡</span><div><b>Скоро / на неделе</b><p>Нужно подготовиться, уточнить тему или прикрепить файл результата.</p></div></div>
+                <div class="help-page-item"><span>🔵</span><div><b>В ожидании</b><p>Файл результата уже отправлен и ждёт проверки старшего преподавателя.</p></div></div>
+              </div>
+              <p class="help-note">Правильная логика: открываете задачу → переходите в карточку занятия → выполняете действие → задача исчезает сама.</p>
+            </div>
+          </details>
+
+          <details class="card help-card help-section-details" open>
+            <summary>Как работать со страницей “Чат”</summary>
+            <div class="help-section-content">
+              <p>Здесь можно задавать рабочие вопросы агенту. Пишите конкретно: тема, группа, ситуация, что уже сделали. Быстрые кнопки помогают отправить типовой вопрос без лишнего набора.</p>
+              <div class="help-question-grid">
+                <span>Что делать, если пришёл один ученик?</span>
+                <span>Как заполнить МойКласс после занятия?</span>
+                <span>Составь отчёт родителям по Roblox.</span>
+                <span>Что делать, если тема в МойКласс не указана?</span>
+                <span>Как провести пробное занятие?</span>
+                <span>Как сохранить работы учеников?</span>
+              </div>
+            </div>
+          </details>
+
+          <article class="card help-card">
+            <h3>Важные регламенты</h3>
+            <div class="help-accordion">
+              <details open>
+                <summary>Если в МойКласс не указана тема</summary>
+                <p>Не готовьтесь по случайному материалу. Нужно уточнить тему у старшего преподавателя или ответственного менеджера до подготовки.</p>
+              </details>
+              <details>
+                <summary>Если Notion-материал подобран неверно</summary>
+                <p>Не используйте неверный материал. Сообщите старшему преподавателю, что связь темы МойКласс с Notion нужно уточнить или исправить.</p>
+              </details>
+              <details>
+                <summary>Если старший преподаватель отправил работу на доработку</summary>
+                <p>Откройте карточку занятия, прочитайте комментарий, исправьте работу и прикрепите новый/исправленный файл результата.</p>
+              </details>
+              <details>
+                <summary>Если на занятии только один ученик</summary>
+                <p>Если через 5 минут после начала пришёл только один ученик, офлайн-занятие длится 1 час. Нужно сообщить в рабочий чат преподавания по формату: “На занятии 14:00 YC2 присутствует только Вася - занятие будет длиться час. Ребенка предупредил. Сообщите, пожалуйста, родителям”.</p>
+              </details>
+              <details>
+                <summary>Если пробный ученик не пришёл</summary>
+                <p>Если пробный ученик не пришёл в течение 15 минут, сообщите в рабочий чат преподавания.</p>
+              </details>
+              <details>
+                <summary>Что отметить в МойКласс после занятия</summary>
+                <p>Отметьте занятие проведённым, проставьте присутствующих и отсутствующих, у отсутствующих в комментарии укажите “имя - отработка”, поставьте тему следующего занятия. Если тему не закончили, укажите, где остановились.</p>
+              </details>
+              <details>
+                <summary>Как сохранять работы учеников</summary>
+                <p>После занятия сохраните работы в нужную папку на Яндекс Диске: группа, блок, тема. Файлы называйте по имени/фамилии ученика так, чтобы их можно было быстро найти.</p>
+              </details>
+            </div>
+          </article>
+        </div>
+      </section>
+      <section id="tab-my-children" class="tab-panel">
+        <div class="section-head">
+          <div>
+            <h2>Мои дети</h2>
+            <p>Привяжите ребёнка по коду от Yellow Club.</p>
+          </div>
+        </div>
+        <div id="myChildrenContent"></div>
+      </section>
+
+      <section id="tab-food" class="tab-panel">
+        <div class="section-head">
+          <div>
+            <h2>Питание</h2>
+            <p>Выбор питания для ребёнка в лагере.</p>
+          </div>
+        </div>
+        <div id="foodContent"></div>
+      </section>
+
+    </main>
+  </div>
+
+  <div id="lessonModal" class="modal hidden">
+    <div class="modal-card">
+      <button class="modal-close" id="closeLesson">×</button>
+      <div id="lessonContent"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=7.0.1"></script>
+</body>
+</html>
