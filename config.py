@@ -105,6 +105,9 @@ class Settings:
     camp_active_week_mode: str
     camp_active_start_date: str
     camp_active_end_date: str
+    food_auto_reminders_enabled: bool
+    food_auto_reminder_minutes_before_deadline: int
+    food_auto_reminder_check_interval_minutes: int
 
     @property
     def allow_all_groups(self) -> bool:
@@ -198,4 +201,7 @@ def load_settings() -> Settings:
         camp_active_week_mode=os.getenv("CAMP_ACTIVE_WEEK_MODE", "auto").strip().lower() or "auto",
         camp_active_start_date=os.getenv("CAMP_ACTIVE_START_DATE", "").strip(),
         camp_active_end_date=os.getenv("CAMP_ACTIVE_END_DATE", "").strip(),
+        food_auto_reminders_enabled=_bool(os.getenv("FOOD_AUTO_REMINDERS_ENABLED", "false"), False),
+        food_auto_reminder_minutes_before_deadline=max(1, int(os.getenv("FOOD_AUTO_REMINDER_MINUTES_BEFORE_DEADLINE", "120"))),
+        food_auto_reminder_check_interval_minutes=max(1, int(os.getenv("FOOD_AUTO_REMINDER_CHECK_INTERVAL_MINUTES", "15"))),
     )

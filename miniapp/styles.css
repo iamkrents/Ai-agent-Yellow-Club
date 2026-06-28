@@ -6298,6 +6298,8 @@ details > summary:focus {
 .food-remind-result--ok { background: #eafaf1; color: #1a7a3a; }
 .food-remind-result--error { background: #fdecea; color: #c0392b; }
 .food-remind-no-parent { margin-top: 8px; padding: 8px 12px; background: #fff3cd; color: #856404; border-radius: 8px; font-size: 13px; }
+.food-remind-result--info { background: var(--bg-secondary, #f5f5f5); color: var(--color-text, #222); }
+.food-notify-block { display: flex; flex-direction: column; gap: 0; }
 
 /* v7.0.1 — food data status block in debug panel */
 .food-debug-data-status { background: var(--bg-secondary, #f5f5f5); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }

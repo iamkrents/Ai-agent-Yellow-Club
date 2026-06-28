@@ -31,7 +31,8 @@
       "PowerShell(python -m py_compile \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\storage.py\" 2>&1; if \\($?\\) { \"storage.py OK\" } else { \"storage.py FAIL\" })",
       "PowerShell(python -m py_compile \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\web_app_server.py\" 2>&1; if \\($?\\) { \"web_app_server.py OK\" } else { \"web_app_server.py FAIL\" })",
       "PowerShell(New-Item *)",
-      "PowerShell(node --version 2>&1)"
+      "PowerShell(node --version 2>&1)",
+      "Bash(python -m py_compile config.py storage.py web_app_server.py)"
     ]
   }
 }

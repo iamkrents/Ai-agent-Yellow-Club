@@ -581,6 +581,26 @@ class Storage:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_food_reminder_log_menu ON food_reminder_log(menu_id, created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_food_reminder_log_parent ON food_reminder_log(parent_telegram_id, menu_id)")
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS food_menu_notification_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                menu_id INTEGER NOT NULL,
+                parent_telegram_id TEXT NOT NULL,
+                child_names_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'sent',
+                error TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_food_notif_log_menu ON food_menu_notification_log(menu_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_food_notif_log_parent ON food_menu_notification_log(parent_telegram_id, menu_id)")
+
+        # Safe migration: add triggered_by to food_reminder_log if missing (created in v7.0.2 without it)
+        try:
+            conn.execute("ALTER TABLE food_reminder_log ADD COLUMN triggered_by TEXT NOT NULL DEFAULT 'manual'")
+        except Exception:
+            pass
+
     # --- Food module: camp children ---
 
     def upsert_camp_child(self, child: dict[str, Any]) -> dict[str, Any]:
@@ -1172,14 +1192,98 @@ class Storage:
         child_names: list[str],
         status: str,
         error: str = "",
+        triggered_by: str = "manual",
     ) -> None:
         import json as _json
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO food_reminder_log(created_at, menu_id, parent_telegram_id, child_names_json, status, error) "
-                "VALUES(?,?,?,?,?,?)",
-                (now_iso(), int(menu_id), str(parent_telegram_id), _json.dumps(child_names, ensure_ascii=False), status, error or ""),
+                "INSERT INTO food_reminder_log"
+                "(created_at, menu_id, parent_telegram_id, child_names_json, status, error, triggered_by) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (now_iso(), int(menu_id), str(parent_telegram_id),
+                 _json.dumps(child_names, ensure_ascii=False), status, error or "", triggered_by),
             )
+
+    def get_all_children_with_parents(self) -> list[dict[str, Any]]:
+        """Return all active children with their parent link info (for publish notification)."""
+        with self._connect() as conn:
+            children_rows = conn.execute(
+                "SELECT c.mk_student_id, c.full_name, c.group_name, c.mk_class_name, c.classroom, c.raw_json "
+                "FROM camp_children c WHERE c.active=1 ORDER BY c.full_name"
+            ).fetchall()
+            all_children = [dict(r) for r in children_rows]
+            if not all_children:
+                return []
+            sids = [c["mk_student_id"] for c in all_children]
+            ph = ", ".join("?" for _ in sids)
+            link_rows = conn.execute(
+                f"SELECT mk_student_id, parent_telegram_id FROM parent_child_links "
+                f"WHERE mk_student_id IN ({ph}) AND active=1",
+                sids,
+            ).fetchall()
+            parent_by_sid: dict[str, str | None] = {r["mk_student_id"]: r["parent_telegram_id"] for r in link_rows}
+        result = []
+        for ch in all_children:
+            sid = ch["mk_student_id"]
+            result.append({
+                "mk_student_id": sid,
+                "full_name": ch["full_name"],
+                "groupCode": _get_food_group_code(ch),
+                "parent_telegram_id": parent_by_sid.get(sid),
+            })
+        return result
+
+    def check_food_notification_sent(self, menu_id: int, parent_telegram_id: str) -> bool:
+        """Return True if this parent has already been notified for this menu (any time)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM food_menu_notification_log "
+                "WHERE menu_id=? AND parent_telegram_id=? AND status='sent'",
+                (int(menu_id), str(parent_telegram_id)),
+            ).fetchone()
+        return row is not None
+
+    def log_food_notification(
+        self,
+        menu_id: int,
+        parent_telegram_id: str,
+        child_names: list[str],
+        status: str,
+        error: str = "",
+    ) -> None:
+        import json as _json
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO food_menu_notification_log"
+                "(created_at, menu_id, parent_telegram_id, child_names_json, status, error) "
+                "VALUES(?,?,?,?,?,?)",
+                (now_iso(), int(menu_id), str(parent_telegram_id),
+                 _json.dumps(child_names, ensure_ascii=False), status, error or ""),
+            )
+
+    def get_published_menus_needing_auto_reminder(self, minutes_before_deadline: int) -> list[dict[str, Any]]:
+        """Return published menus whose deadline is within minutes_before_deadline minutes from now."""
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        cutoff = now + timedelta(minutes=minutes_before_deadline)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM food_menus WHERE status='published' AND deadline_at IS NOT NULL AND deadline_at != '' "
+                "ORDER BY deadline_at"
+            ).fetchall()
+        result = []
+        for row in rows:
+            m = dict(row)
+            deadline_str = m.get("deadline_at") or ""
+            try:
+                dl = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
+                if dl.tzinfo is None:
+                    dl = dl.replace(tzinfo=timezone.utc)
+                if now < dl <= cutoff:
+                    result.append(m)
+            except Exception:
+                pass
+        return result
 
     def get_food_data_status(self) -> dict[str, Any]:
         def _c(conn: sqlite3.Connection, table: str, where: str = "") -> int:

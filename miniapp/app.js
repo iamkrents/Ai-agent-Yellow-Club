@@ -4957,6 +4957,15 @@ function renderFoodDebugPanel(root) {
           <span class="food-debug-rawkeys">Нажмите «Обновить» для загрузки</span>
         </div>
       </div>
+      <div class="food-debug-data-status" id="foodAutoReminderStatus" style="margin-top:8px">
+        <div class="food-debug-data-status-head">
+          <span>Авто-напоминания (watcher)</span>
+          <button class="secondary btn-sm" id="foodAutoReminderRefresh">Обновить</button>
+        </div>
+        <div id="foodAutoReminderBody" class="food-debug-data-status-body">
+          <span class="food-debug-rawkeys">Нажмите «Обновить» для загрузки</span>
+        </div>
+      </div>
       <div class="food-debug-field-row">
         <label for="foodDebugLessonId">Проверить lessonId вручную:</label>
         <input type="text" id="foodDebugLessonId" class="food-debug-input" placeholder="8472607">
@@ -4975,10 +4984,12 @@ function renderFoodDebugPanel(root) {
   root.querySelector("#foodDebugClear")?.addEventListener("click", runFoodDebugClear);
   root.querySelector("#foodDebugCleanupDupes")?.addEventListener("click", runFoodDebugCleanupDuplicates);
   root.querySelector("#foodDataStatusRefresh")?.addEventListener("click", () => loadFoodDataStatus(root.querySelector("#foodDataStatusBody")));
+  root.querySelector("#foodAutoReminderRefresh")?.addEventListener("click", () => loadFoodAutoReminderStatus(root.querySelector("#foodAutoReminderBody")));
   if (lastResult) {
     root.querySelector("#foodDebugCopyJson")?.addEventListener("click", _foodDebugCopyJson);
   }
   loadFoodDataStatus(root.querySelector("#foodDataStatusBody"));
+  loadFoodAutoReminderStatus(root.querySelector("#foodAutoReminderBody"));
 }
 
 async function loadFoodDataStatus(el) {
@@ -4997,6 +5008,29 @@ async function loadFoodDataStatus(el) {
       <div class="food-debug-data-status-row"><span>Меню</span><b>${data.foodMenus ?? 0}</b></div>
       <div class="food-debug-data-status-row"><span>Блюд (доступных)</span><b>${data.foodItems ?? 0}</b></div>
       <div class="food-debug-data-status-row"><span>Заказов</span><b>${data.foodOrders ?? 0}</b></div>`;
+  } catch (e) {
+    el.innerHTML = `<span class="food-debug-error" style="display:inline;padding:0">${escapeHtml(e.message)}</span>`;
+  }
+}
+async function loadFoodAutoReminderStatus(el) {
+  if (!el) return;
+  el.innerHTML = `<span class="food-debug-rawkeys">Загрузка...</span>`;
+  try {
+    const data = await apiGet("/api/food/debug/auto-reminder-status");
+    if (!data.ok) {
+      el.innerHTML = `<span class="food-debug-error" style="display:inline;padding:0">${escapeHtml(data.error || "Ошибка")}</span>`;
+      return;
+    }
+    const enabledLabel = data.enabled ? `<b style="color:var(--color-ok,#2a7a2a)">Включено</b>` : `<b style="color:var(--color-text-secondary,#888)">Отключено</b>`;
+    const lastRun = data.lastRunAt ? _fmtDate(data.lastRunAt.slice(0,10)) + " " + (data.lastRunAt.slice(11,16) || "") : "Ещё не запускался";
+    const lastRes = data.lastResult ? `отправлено: ${data.lastResult.sentCount ?? 0}, проверено меню: ${data.lastResult.menusChecked ?? 0}` : "—";
+    el.innerHTML = `
+      <div class="food-debug-data-status-row"><span>Статус</span>${enabledLabel}</div>
+      <div class="food-debug-data-status-row"><span>Окно до дедлайна</span><b>${data.minutesBeforeDeadline ?? 120} мин</b></div>
+      <div class="food-debug-data-status-row"><span>Интервал проверки</span><b>${data.checkIntervalMinutes ?? 15} мин</b></div>
+      <div class="food-debug-data-status-row"><span>Запусков</span><b>${data.runCount ?? 0}</b></div>
+      <div class="food-debug-data-status-row"><span>Последний запуск</span><b>${escapeHtml(lastRun)}</b></div>
+      <div class="food-debug-data-status-row"><span>Последний результат</span><b>${escapeHtml(lastRes)}</b></div>`;
   } catch (e) {
     el.innerHTML = `<span class="food-debug-error" style="display:inline;padding:0">${escapeHtml(e.message)}</span>`;
   }
@@ -5918,11 +5952,16 @@ function _renderFoodMenuDetail(root, menu) {
       <span class="food-menu-detail-title">${escapeHtml(menu.title || dateStr)} ${_foodMenuStatusBadge(menu.status)}</span>
       <span style="font-size:13px;color:var(--color-text-secondary)">${escapeHtml(dateStr)}</span>
     </div>
-    <div class="food-menu-card-actions" style="margin-bottom:12px">
+    <div class="food-menu-card-actions" style="margin-bottom:8px">
       ${menu.status === "draft" ? `<button class="primary btn-sm" data-publish-menu="${menu.id}">Опубликовать</button>` : ""}
       ${menu.status === "published" ? `<button class="secondary btn-sm" data-close-menu="${menu.id}">Закрыть меню</button>` : ""}
       ${(menu.status === "published" || menu.status === "closed") ? `<button class="secondary btn-sm" data-summary-menu="${menu.id}">Сводка заказов</button>` : ""}
     </div>
+    ${menu.status === "published" && !_isMenuDeadlinePassed(menu.deadline_at) ? `
+    <div class="food-notify-block" style="margin-bottom:12px">
+      <button class="secondary btn-sm" id="fmNotifyBtn">Уведомить родителей</button>
+      <div id="fmNotifyResult" style="display:none;margin-top:8px"></div>
+    </div>` : ""}
     <div id="fmDetailItems">${catHtml}</div>
     <div class="food-item-add-form">
       <h4>Добавить блюдо</h4>
@@ -6000,6 +6039,7 @@ function _renderFoodMenuDetail(root, menu) {
     state.foodMenuDrafts[menu.id].bulkText = e.target.value;
   });
   root.querySelector("#fiOcrBtn")?.addEventListener("click", () => _uploadFoodMenuOcr(root, menu.id));
+  root.querySelector("#fmNotifyBtn")?.addEventListener("click", () => sendFoodPublishNotification(root, menu.id));
 }
 
 async function _uploadFoodMenuOcr(root, menuId) {
@@ -6237,6 +6277,42 @@ function _renderFoodMenuSummary(root, menuId, data) {
 function _isMenuDeadlinePassed(deadline_at) {
   if (!deadline_at) return false;
   try { return new Date(deadline_at) < new Date(); } catch (e) { return false; }
+}
+
+async function sendFoodPublishNotification(root, menuId) {
+  const btn = root.querySelector("#fmNotifyBtn");
+  const resultEl = root.querySelector("#fmNotifyResult");
+  if (btn) btn.disabled = true;
+  if (resultEl) { resultEl.style.display = ""; resultEl.innerHTML = `<span class="food-debug-rawkeys">Отправка...</span>`; }
+  try {
+    const data = await apiPost(`/api/food/menus/${menuId}/notify-published`, {});
+    if (!data.ok) {
+      const msg = data.message || data.error || "Ошибка";
+      if (resultEl) resultEl.innerHTML = `<div class="food-remind-result food-remind-result--error">${escapeHtml(msg)}</div>`;
+      if (btn) btn.disabled = false;
+      return;
+    }
+    let lines = [];
+    if (data.alreadyNotifiedCount > 0 && data.sentCount === 0) {
+      lines.push("Родители уже были уведомлены.");
+    } else {
+      lines.push(`Отправлено родителям: ${data.sentCount}`);
+      lines.push(`Детей в уведомлении: ${data.childrenCount}`);
+    }
+    if (data.alreadyNotifiedCount > 0) lines.push(`Уже уведомляли: ${data.alreadyNotifiedCount}`);
+    if (data.noParentCount > 0) lines.push(`Без привязанного родителя: ${data.noParentCount}`);
+    if (data.failedCount > 0) lines.push(`Ошибок отправки: ${data.failedCount}`);
+    let html = `<div class="food-remind-result ${data.sentCount > 0 ? "food-remind-result--ok" : "food-remind-result--info"}">${lines.map(l => escapeHtml(l)).join("<br>")}</div>`;
+    if (Array.isArray(data.noParentChildren) && data.noParentChildren.length) {
+      const names = data.noParentChildren.map(c => `• ${c.childName}${c.groupCode && c.groupCode !== "unknown" ? ", " + c.groupCode : ""}`).join("\n");
+      html += `<div class="food-remind-no-parent"><b>Нет привязанного родителя:</b><pre style="margin:4px 0;font-size:12px;white-space:pre-wrap">${escapeHtml(names)}</pre></div>`;
+    }
+    if (resultEl) resultEl.innerHTML = html;
+    if (btn) { btn.textContent = data.sentCount > 0 ? "Уведомлено" : "Уведомлено ранее"; }
+  } catch (e) {
+    if (resultEl) resultEl.innerHTML = `<div class="food-remind-result food-remind-result--error">${escapeHtml(e.message)}</div>`;
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function sendFoodReminder(root, menuId) {
