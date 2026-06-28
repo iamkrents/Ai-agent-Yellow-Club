@@ -606,6 +606,34 @@ def _lesson_fields_for_control(item: dict[str, Any], user_id: int, mk_teacher_id
     }
 
 
+def _telegram_send_with_webapp(
+    bot_token: str,
+    user_id: int | None,
+    text: str,
+    web_app_url: str = "",
+) -> tuple[bool, str]:
+    """Send a Telegram message, optionally with an inline WebApp button."""
+    if not bot_token or not user_id:
+        return False, "no_token_or_user_id"
+    try:
+        import requests as _req
+        payload: dict = {"chat_id": int(user_id), "text": text}
+        if web_app_url:
+            payload["reply_markup"] = {
+                "inline_keyboard": [[{"text": "Открыть кабинет Yellow Club", "web_app": {"url": web_app_url}}]]
+            }
+        resp = _req.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json=payload,
+            timeout=10,
+        )
+        if resp.status_code >= 400:
+            return False, resp.text[:500]
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)[:500]
+
+
 def _telegram_send(bot_token: str, user_id: int | None, text: str) -> tuple[bool, str]:
     if not bot_token or not user_id:
         return False, "no_token_or_user_id"
@@ -2163,6 +2191,114 @@ class MiniAppContext:
                 for item in cat_items:
                     item.pop("price", None)
         return {"ok": True, "childrenRequired": False, "children": children, "menus": menus}
+
+    def food_remind_missing(self, auth: dict[str, Any], menu_id_str: str) -> dict[str, Any]:
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        denied = self._require_admin(auth)
+        if denied:
+            return denied
+        try:
+            mid = int(menu_id_str)
+        except (ValueError, TypeError):
+            return {"ok": False, "error": "Неверный menu_id"}
+        summary = self.storage.get_food_menu_summary(mid)
+        if not summary:
+            return {"ok": False, "error": "Меню не найдено"}
+        menu = summary.get("menu", {})
+        if menu.get("status") not in ("published", "closed"):
+            return {"ok": False, "error": "Меню не опубликовано — напоминания не отправляются."}
+
+        from datetime import datetime, timezone as _tz
+        deadline_str = menu.get("deadline_at") or ""
+        if deadline_str:
+            try:
+                dl = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
+                if dl.tzinfo is None:
+                    dl = dl.replace(tzinfo=_tz.utc)
+                if datetime.now(_tz.utc) > dl:
+                    return {"ok": False, "error": "deadline_passed", "message": "Дедлайн прошёл. Напоминания не отправляются."}
+            except Exception:
+                pass
+
+        missing_children = self.storage.get_missing_children_with_parents(mid)
+        if not missing_children:
+            return {"ok": True, "sentCount": 0, "parentsCount": 0, "childrenCount": 0,
+                    "noParentCount": 0, "alreadyRemindedCount": 0, "failedCount": 0,
+                    "noParentChildren": [], "failed": [], "message": "Все дети уже выбрали питание."}
+
+        menu_date = menu.get("menu_date") or ""
+        menu_title = menu.get("title") or menu_date
+        date_parts = menu_date.split("-")
+        date_display = f"{date_parts[2]}.{date_parts[1]}.{date_parts[0]}" if len(date_parts) == 3 else menu_date
+        deadline_display = ""
+        if deadline_str:
+            try:
+                dl_local = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
+                deadline_display = dl_local.strftime("%d.%m в %H:%M")
+            except Exception:
+                deadline_display = deadline_str
+
+        by_parent: dict[str, list[dict]] = {}
+        no_parent_children: list[dict] = []
+        for ch in missing_children:
+            ptid = ch.get("parent_telegram_id")
+            if ptid:
+                by_parent.setdefault(str(ptid), []).append(ch)
+            else:
+                no_parent_children.append({"childName": ch["full_name"], "groupCode": ch["groupCode"]})
+
+        bot_token = getattr(self.settings, "telegram_bot_token", "") or ""
+        web_app_url = getattr(self.settings, "web_app_url", "") or ""
+        sent_count = 0
+        already_count = 0
+        failed: list[dict] = []
+
+        for ptid, children in by_parent.items():
+            if self.storage.check_food_reminder_cooldown(mid, ptid, hours=2):
+                already_count += 1
+                continue
+            child_names = [c["full_name"] for c in children]
+            if len(child_names) == 1:
+                body = (
+                    f"Здравствуйте! Напоминаем выбрать питание для ребёнка на {date_display}.\n\n"
+                    f"Ребёнок:\n{child_names[0]}\n\n"
+                    f"Меню: {menu_title}"
+                )
+            else:
+                names_block = "\n".join(f"• {n}" for n in child_names)
+                body = (
+                    f"Здравствуйте! Напоминаем выбрать питание на {date_display}.\n\n"
+                    f"Дети:\n{names_block}\n\n"
+                    f"Меню: {menu_title}"
+                )
+            if deadline_display:
+                body += f"\nВыбор доступен до: {deadline_display}"
+            body += "\n\nОткройте кабинет Yellow Club и выберите блюда."
+
+            ok, err = _telegram_send_with_webapp(bot_token, int(ptid), body, web_app_url)
+            status = "sent" if ok else "failed"
+            self.storage.log_food_reminder(mid, ptid, child_names, status, err)
+            if ok:
+                sent_count += 1
+            else:
+                log.warning("food_remind_missing: failed send to %s: %s", ptid, err)
+                failed.append({"parentTelegramId": ptid, "error": err})
+
+        children_count = sum(len(v) for v in by_parent.values()) - sum(
+            len(by_parent[ptid]) for ptid in by_parent if self.storage.check_food_reminder_cooldown(mid, ptid, hours=2)
+        )
+        return {
+            "ok": True,
+            "sentCount": sent_count,
+            "parentsCount": len(by_parent),
+            "childrenCount": len(missing_children) - len(no_parent_children),
+            "noParentCount": len(no_parent_children),
+            "alreadyRemindedCount": already_count,
+            "failedCount": len(failed),
+            "noParentChildren": no_parent_children,
+            "failed": failed,
+        }
 
     def food_debug_data_status(self, auth: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
@@ -4927,6 +5063,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.food_close_menu(auth, _mparts[0]))
                 if len(_mparts) == 2 and _mparts[1] == "items":
                     return self._send_json(CTX.food_add_item(auth, _mparts[0], body))
+                if len(_mparts) == 2 and _mparts[1] == "remind-missing":
+                    return self._send_json(CTX.food_remind_missing(auth, _mparts[0]))
             if path.startswith("/api/food/items/"):
                 _irest = path[len("/api/food/items/"):]
                 _iparts = _irest.split("/")

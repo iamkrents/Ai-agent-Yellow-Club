@@ -6198,12 +6198,29 @@ function _renderFoodMenuSummary(root, menuId, data) {
       ${_itemsBlock(data.byItems)}`;
   }
 
+  const missingCount = data.missingOrders || 0;
+  const deadlinePassed = _isMenuDeadlinePassed(menu.deadline_at);
+  let remindBlockHtml = "";
+  if (missingCount > 0) {
+    if (deadlinePassed) {
+      remindBlockHtml = `<div class="food-remind-deadline-passed">Дедлайн прошёл. Напоминания не отправляются.</div>`;
+    } else {
+      remindBlockHtml = `
+        <div class="food-remind-block">
+          <div class="food-remind-hint">Сообщение уйдёт только родителям, у которых ребёнок привязан в кабинете.</div>
+          <button class="secondary" id="fmRemindBtn">Напомнить тем, кто не выбрал (${missingCount})</button>
+          <div id="fmRemindResult" style="display:none;margin-top:10px"></div>
+        </div>`;
+    }
+  }
+
   root.innerHTML = `<div class="food-debug-card">
     <div class="food-menu-detail-head">
       <button class="secondary btn-sm" id="fmSummaryBack">← Назад к меню</button>
       <span class="food-menu-detail-title">${escapeHtml(title)} — Сводка</span>
     </div>
     ${overallStats}
+    ${remindBlockHtml}
     ${bodyHtml}
     <div class="food-menu-actions" style="margin-top:16px">
       <button class="secondary" id="fmSummaryRefresh">Обновить сводку</button>
@@ -6214,6 +6231,44 @@ function _renderFoodMenuSummary(root, menuId, data) {
   root.querySelector("#fmSummaryBack")?.addEventListener("click", () => { if (state.foodMenuSelected) _renderFoodMenuDetail(root, state.foodMenuSelected); else { state.foodMenuData = null; loadFoodMenus(root); } });
   root.querySelector("#fmSummaryRefresh")?.addEventListener("click", () => loadFoodMenuSummary(root, menuId));
   root.querySelector("#fmSummaryCopy")?.addEventListener("click", () => _copyFoodSummary(title, dateStr, data));
+  root.querySelector("#fmRemindBtn")?.addEventListener("click", () => sendFoodReminder(root, menuId));
+}
+
+function _isMenuDeadlinePassed(deadline_at) {
+  if (!deadline_at) return false;
+  try { return new Date(deadline_at) < new Date(); } catch (e) { return false; }
+}
+
+async function sendFoodReminder(root, menuId) {
+  const btn = root.querySelector("#fmRemindBtn");
+  const resultEl = root.querySelector("#fmRemindResult");
+  if (btn) btn.disabled = true;
+  if (resultEl) { resultEl.style.display = ""; resultEl.innerHTML = `<span class="food-debug-rawkeys">Отправка...</span>`; }
+  try {
+    const data = await apiPost(`/api/food/menus/${menuId}/remind-missing`, {});
+    if (!data.ok) {
+      const msg = data.message || data.error || "Ошибка";
+      if (resultEl) resultEl.innerHTML = `<div class="food-remind-result food-remind-result--error">${escapeHtml(msg)}</div>`;
+      if (btn) btn.disabled = false;
+      return;
+    }
+    let lines = [];
+    lines.push(`Отправлено родителям: ${data.sentCount}`);
+    lines.push(`Детей в напоминании: ${data.childrenCount}`);
+    if (data.alreadyRemindedCount > 0) lines.push(`Уже напоминали недавно: ${data.alreadyRemindedCount}`);
+    if (data.noParentCount > 0) lines.push(`Без привязанного родителя: ${data.noParentCount}`);
+    if (data.failedCount > 0) lines.push(`Ошибок отправки: ${data.failedCount}`);
+    let html = `<div class="food-remind-result food-remind-result--ok">${lines.map(l => escapeHtml(l)).join("<br>")}</div>`;
+    if (Array.isArray(data.noParentChildren) && data.noParentChildren.length) {
+      const names = data.noParentChildren.map(c => `• ${c.childName}${c.groupCode && c.groupCode !== "unknown" ? ", " + c.groupCode : ""}`).join("\n");
+      html += `<div class="food-remind-no-parent"><b>Нет привязанного родителя:</b><pre style="margin:4px 0;font-size:12px;white-space:pre-wrap">${escapeHtml(names)}</pre></div>`;
+    }
+    if (resultEl) resultEl.innerHTML = html;
+    if (btn) { btn.textContent = "Напоминание отправлено"; }
+  } catch (e) {
+    if (resultEl) resultEl.innerHTML = `<div class="food-remind-result food-remind-result--error">${escapeHtml(e.message)}</div>`;
+    if (btn) btn.disabled = false;
+  }
 }
 
 function _copyFoodSummary(title, dateStr, data) {

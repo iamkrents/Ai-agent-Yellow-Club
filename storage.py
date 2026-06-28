@@ -567,6 +567,20 @@ class Storage:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_food_order_items_order ON food_order_items(order_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_food_order_items_item ON food_order_items(item_id)")
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS food_reminder_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                menu_id INTEGER NOT NULL,
+                parent_telegram_id TEXT NOT NULL,
+                child_names_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'sent',
+                error TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_food_reminder_log_menu ON food_reminder_log(menu_id, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_food_reminder_log_parent ON food_reminder_log(parent_telegram_id, menu_id)")
+
     # --- Food module: camp children ---
 
     def upsert_camp_child(self, child: dict[str, Any]) -> dict[str, Any]:
@@ -1099,6 +1113,73 @@ class Storage:
             "byChildren": by_children,
             "missingChildren": missing_children,
         }
+
+    def get_missing_children_with_parents(self, menu_id: int) -> list[dict[str, Any]]:
+        """Return children who have not placed/skipped order for menu_id, with parent link info."""
+        import json as _json
+        mid = int(menu_id)
+        with self._connect() as conn:
+            children_rows = conn.execute(
+                "SELECT c.mk_student_id, c.full_name, c.group_name, c.mk_class_name, c.classroom, c.raw_json "
+                "FROM camp_children c WHERE c.active=1 ORDER BY c.full_name"
+            ).fetchall()
+            all_children = [dict(r) for r in children_rows]
+            if not all_children:
+                return []
+            orders_rows = conn.execute(
+                "SELECT mk_student_id, status FROM food_orders WHERE menu_id=?", (mid,)
+            ).fetchall()
+            ordered_sids: set[str] = {r["mk_student_id"] for r in orders_rows}
+            missing_sids = [c["mk_student_id"] for c in all_children if c["mk_student_id"] not in ordered_sids]
+            if not missing_sids:
+                return []
+            ph = ", ".join("?" for _ in missing_sids)
+            link_rows = conn.execute(
+                f"SELECT mk_student_id, parent_telegram_id FROM parent_child_links "
+                f"WHERE mk_student_id IN ({ph}) AND active=1",
+                missing_sids,
+            ).fetchall()
+            parent_by_sid: dict[str, str | None] = {r["mk_student_id"]: r["parent_telegram_id"] for r in link_rows}
+        result = []
+        for ch in all_children:
+            sid = ch["mk_student_id"]
+            if sid not in ordered_sids:
+                group_code = _get_food_group_code(ch)
+                result.append({
+                    "mk_student_id": sid,
+                    "full_name": ch["full_name"],
+                    "groupCode": group_code,
+                    "parent_telegram_id": parent_by_sid.get(sid),
+                })
+        return result
+
+    def check_food_reminder_cooldown(self, menu_id: int, parent_telegram_id: str, hours: int = 2) -> bool:
+        """Return True if this parent was already reminded for this menu within `hours` hours."""
+        from datetime import datetime, timedelta, timezone
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM food_reminder_log "
+                "WHERE menu_id=? AND parent_telegram_id=? AND status='sent' AND created_at >= ?",
+                (int(menu_id), str(parent_telegram_id), cutoff),
+            ).fetchone()
+        return row is not None
+
+    def log_food_reminder(
+        self,
+        menu_id: int,
+        parent_telegram_id: str,
+        child_names: list[str],
+        status: str,
+        error: str = "",
+    ) -> None:
+        import json as _json
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO food_reminder_log(created_at, menu_id, parent_telegram_id, child_names_json, status, error) "
+                "VALUES(?,?,?,?,?,?)",
+                (now_iso(), int(menu_id), str(parent_telegram_id), _json.dumps(child_names, ensure_ascii=False), status, error or ""),
+            )
 
     def get_food_data_status(self) -> dict[str, Any]:
         def _c(conn: sqlite3.Connection, table: str, where: str = "") -> int:
