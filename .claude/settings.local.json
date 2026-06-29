@@ -32,7 +32,14 @@
       "PowerShell(python -m py_compile \"C:\\\\Users\\\\Main Yellow Club\\\\Desktop\\\\yellow_club_agent\\\\web_app_server.py\" 2>&1; if \\($?\\) { \"web_app_server.py OK\" } else { \"web_app_server.py FAIL\" })",
       "PowerShell(New-Item *)",
       "PowerShell(node --version 2>&1)",
-      "Bash(python -m py_compile config.py storage.py web_app_server.py)"
+      "Bash(python -m py_compile config.py storage.py web_app_server.py)",
+      "Bash(python -m py_compile config.py storage.py web_app_server.py intern_track.py moyklass_client.py food_menu_ocr.py scripts/reset_food_module_for_production.py)",
+      "Bash(node --check \"C:/Users/Main Yellow Club/Desktop/yellow_club_agent/miniapp/app.js\")",
+      "Bash(grep -E \"\\\\.\\(db|sqlite|sqlite3\\)$\")",
+      "Bash(grep -E \"\\\\.\\(db|sqlite|sqlite3|env\\)$|^backups/|^logs/|pycache\")",
+      "Bash(grep -v \"//\\\\|escapeHtml\\\\|typeof\\\\|=== undefined\\\\|!== undefined\\\\|isNaN\\\\|undefined ?\\\\|? undefined\\\\|var undefined\\\\|void 0\\\\|'undefined'\")",
+      "Bash(grep -E \"\\\\.\\(db|sqlite|sqlite3\\)$|^backups/|^\\\\.env$\")",
+      "Bash(python -m py_compile scripts/reset_food_module_for_production.py)"
     ]
   }
 }
