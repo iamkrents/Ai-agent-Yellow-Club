@@ -6275,8 +6275,7 @@ function _renderFoodMenuSummary(root, menuId, data) {
 }
 
 function _isMenuDeadlinePassed(deadline_at) {
-  if (!deadline_at) return false;
-  try { return new Date(deadline_at) < new Date(); } catch (e) { return false; }
+  return _isDeadlinePassed(deadline_at);
 }
 
 async function sendFoodPublishNotification(root, menuId) {
@@ -6293,15 +6292,19 @@ async function sendFoodPublishNotification(root, menuId) {
       return;
     }
     let lines = [];
-    if (data.alreadyNotifiedCount > 0 && data.sentCount === 0) {
+    if (data.sentCount === 0 && data.childrenCount === 0 && data.alreadyNotifiedCount === 0 && data.message) {
+      lines.push(data.message);
+    } else if (data.alreadyNotifiedCount > 0 && data.sentCount === 0) {
       lines.push("Родители уже были уведомлены.");
+      if (data.alreadyNotifiedCount > 0) lines.push(`Уже уведомляли: ${data.alreadyNotifiedCount}`);
+      if (data.noParentCount > 0) lines.push(`Без привязанного родителя: ${data.noParentCount}`);
     } else {
       lines.push(`Отправлено родителям: ${data.sentCount}`);
       lines.push(`Детей в уведомлении: ${data.childrenCount}`);
+      if (data.alreadyNotifiedCount > 0) lines.push(`Уже уведомляли: ${data.alreadyNotifiedCount}`);
+      if (data.noParentCount > 0) lines.push(`Без привязанного родителя: ${data.noParentCount}`);
+      if (data.failedCount > 0) lines.push(`Ошибок отправки: ${data.failedCount}`);
     }
-    if (data.alreadyNotifiedCount > 0) lines.push(`Уже уведомляли: ${data.alreadyNotifiedCount}`);
-    if (data.noParentCount > 0) lines.push(`Без привязанного родителя: ${data.noParentCount}`);
-    if (data.failedCount > 0) lines.push(`Ошибок отправки: ${data.failedCount}`);
     let html = `<div class="food-remind-result ${data.sentCount > 0 ? "food-remind-result--ok" : "food-remind-result--info"}">${lines.map(l => escapeHtml(l)).join("<br>")}</div>`;
     if (Array.isArray(data.noParentChildren) && data.noParentChildren.length) {
       const names = data.noParentChildren.map(c => `• ${c.childName}${c.groupCode && c.groupCode !== "unknown" ? ", " + c.groupCode : ""}`).join("\n");
@@ -6329,11 +6332,15 @@ async function sendFoodReminder(root, menuId) {
       return;
     }
     let lines = [];
-    lines.push(`Отправлено родителям: ${data.sentCount}`);
-    lines.push(`Детей в напоминании: ${data.childrenCount}`);
-    if (data.alreadyRemindedCount > 0) lines.push(`Уже напоминали недавно: ${data.alreadyRemindedCount}`);
-    if (data.noParentCount > 0) lines.push(`Без привязанного родителя: ${data.noParentCount}`);
-    if (data.failedCount > 0) lines.push(`Ошибок отправки: ${data.failedCount}`);
+    if (data.sentCount === 0 && data.childrenCount === 0 && data.alreadyRemindedCount === 0 && data.message) {
+      lines.push(data.message);
+    } else {
+      lines.push(`Отправлено родителям: ${data.sentCount}`);
+      lines.push(`Детей в напоминании: ${data.childrenCount}`);
+      if (data.alreadyRemindedCount > 0) lines.push(`Уже напоминали недавно: ${data.alreadyRemindedCount}`);
+      if (data.noParentCount > 0) lines.push(`Без привязанного родителя: ${data.noParentCount}`);
+      if (data.failedCount > 0) lines.push(`Ошибок отправки: ${data.failedCount}`);
+    }
     let html = `<div class="food-remind-result food-remind-result--ok">${lines.map(l => escapeHtml(l)).join("<br>")}</div>`;
     if (Array.isArray(data.noParentChildren) && data.noParentChildren.length) {
       const names = data.noParentChildren.map(c => `• ${c.childName}${c.groupCode && c.groupCode !== "unknown" ? ", " + c.groupCode : ""}`).join("\n");

@@ -54,12 +54,14 @@ except ImportError as exc:
 # Tables to clear (order matters: children before parents due to FK)
 # ---------------------------------------------------------------------------
 FOOD_TABLES: list[tuple[str, str]] = [
-    ("food_order_items", "всегда"),
-    ("food_orders",      "всегда"),
-    ("food_items",       "всегда"),
-    ("food_menus",       "всегда"),
-    ("parent_child_links", "все привязки родителей и коды"),
-    ("camp_children",    "кэш детей из МойКласс"),
+    ("food_order_items",          "всегда"),
+    ("food_orders",               "всегда"),
+    ("food_items",                "всегда"),
+    ("food_menus",                "всегда"),
+    ("food_reminder_log",         "логи напоминаний (сбрасывает cooldown и флаги повторной отправки)"),
+    ("food_menu_notification_log","логи уведомлений о публикации (сбрасывает флаг 'уже уведомляли')"),
+    ("parent_child_links",        "все привязки родителей и коды"),
+    ("camp_children",             "кэш детей из МойКласс"),
 ]
 
 SKIPPED_TABLES = [
