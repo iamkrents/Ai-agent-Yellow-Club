@@ -7,8 +7,10 @@ Clears all food-module test data before going live:
   - food_orders
   - food_items
   - food_menus
-  - parent_child_links  (parent-to-child bindings and link codes)
-  - camp_children       (cached children from MoyKlass)
+  - food_reminder_log         (clears reminder cooldowns and sent-flags)
+  - food_menu_notification_log (clears "already notified" flags)
+  - parent_child_links        (parent-to-child bindings and link codes)
+  - camp_children             (cached children from MoyKlass)
 
 Does NOT touch:
   - staff_users / roles / admin / owner / methodist / teacher / intern
@@ -51,17 +53,17 @@ except ImportError as exc:
     sys.exit(1)
 
 # ---------------------------------------------------------------------------
-# Tables to clear (order matters: children before parents due to FK)
+# Tables to clear (order matters: items before parents due to FK)
 # ---------------------------------------------------------------------------
 FOOD_TABLES: list[tuple[str, str]] = [
-    ("food_order_items",          "всегда"),
-    ("food_orders",               "всегда"),
-    ("food_items",                "всегда"),
-    ("food_menus",                "всегда"),
-    ("food_reminder_log",         "логи напоминаний (сбрасывает cooldown и флаги повторной отправки)"),
-    ("food_menu_notification_log","логи уведомлений о публикации (сбрасывает флаг 'уже уведомляли')"),
-    ("parent_child_links",        "все привязки родителей и коды"),
-    ("camp_children",             "кэш детей из МойКласс"),
+    ("food_order_items",           "всегда"),
+    ("food_orders",                "всегда"),
+    ("food_items",                 "всегда"),
+    ("food_menus",                 "всегда"),
+    ("food_reminder_log",          "логи напоминаний (сбрасывает cooldown и флаги повторной отправки)"),
+    ("food_menu_notification_log", "логи уведомлений о публикации (сбрасывает флаг 'уже уведомляли')"),
+    ("parent_child_links",         "все привязки родителей и коды"),
+    ("camp_children",              "кэш детей из МойКласс"),
 ]
 
 SKIPPED_TABLES = [
@@ -132,7 +134,7 @@ def main() -> None:
         n = _count(conn, table)
         counts[table] = n
         flag = "   [нет таблицы]" if n < 0 else ""
-        print(f"  {table:<30}  {max(n,0):>6} строк  — {note}{flag}")
+        print(f"  {table:<35}  {max(n, 0):>6} строк  — {note}{flag}")
         if n > 0:
             total_rows += n
 
@@ -140,7 +142,7 @@ def main() -> None:
     print("Таблицы НЕ затрагиваются:")
     for t in SKIPPED_TABLES:
         n = _count(conn, t)
-        print(f"  {t:<30}  {max(n,0):>6} строк")
+        print(f"  {t:<35}  {max(n, 0):>6} строк")
 
     print()
     print(f"Итого строк для удаления: {total_rows}")
@@ -153,35 +155,83 @@ def main() -> None:
         conn.close()
         return
 
-    # --- Real delete ---
+    # -----------------------------------------------------------------------
+    # REAL DELETE
+    # -----------------------------------------------------------------------
     print()
     backup_path = _backup(db_path)
     print(f"✅ Backup создан: {backup_path}")
     print()
 
+    # Step 1: DELETE inside a transaction — commit on success, rollback on error.
+    # VACUUM is NOT included here because SQLite forbids VACUUM inside a transaction.
+    deleted: dict[str, int] = {}
     try:
         with conn:
             for table, _ in FOOD_TABLES:
                 if counts.get(table, -1) < 0:
-                    print(f"  SKIP {table} (таблица не существует)")
+                    print(f"  SKIP  {table} (таблица не существует)")
+                    deleted[table] = 0
                     continue
                 conn.execute(f"DELETE FROM {table}")
-                print(f"  DELETE {table} — {counts[table]} строк удалено")
-            conn.execute("VACUUM")
-        print()
-        print("✅ Очистка завершена.")
+                deleted[table] = counts[table]
+                print(f"  DELETE {table:<35}  {counts[table]:>6} строк")
+        # `with conn:` auto-committed here — DELETEs are permanently applied
     except Exception as exc:
-        print(f"\n[ERROR] Ошибка при удалении: {exc}")
+        # `with conn:` auto-rolled back — no data was changed
+        print(f"\n[ERROR] DELETE завершился ошибкой — выполнен rollback: {exc}")
+        print(f"  Данные НЕ удалены.")
         print(f"  Backup сохранён: {backup_path}")
         conn.close()
         sys.exit(1)
+
+    total_deleted = sum(v for v in deleted.values())
+    print()
+    print(f"✅ DELETE выполнен и закоммичен. Удалено строк: {total_deleted}")
+
+    # Step 2: VACUUM — must run OUTSIDE any transaction.
+    # Switch to autocommit (isolation_level=None) so no implicit transaction wraps VACUUM.
+    # If VACUUM fails, the reset is already committed — only warn, do NOT rollback.
+    print()
+    try:
+        conn.isolation_level = None  # autocommit mode — no transaction wraps VACUUM
+        conn.execute("VACUUM")
+        print("✅ VACUUM завершён.")
+    except Exception as exc:
+        print(f"[WARNING] VACUUM не удался (reset уже применён и закоммичен): {exc}")
+        print("  Reset completed, but VACUUM failed/skipped.")
+    finally:
+        try:
+            conn.isolation_level = ""  # restore default isolation level
+        except Exception:
+            pass
+
+    # Step 3: Verify post-reset counts — all food tables must be 0.
+    print()
+    print("Проверка после reset (ожидается 0 во всех таблицах):")
+    check_tables = [t for t, _ in FOOD_TABLES]
+    all_zero = True
+    for table in check_tables:
+        n = _count(conn, table)
+        status = "✅" if n == 0 else "❌"
+        print(f"  {status} {table:<35}  {max(n, 0):>6} строк")
+        if n != 0:
+            all_zero = False
 
     conn.close()
 
     print()
     print("=" * 60)
-    print("  После reset выполните:")
+    if all_zero:
+        print("  ✅ Reset completed successfully.")
+        print(f"     Backup    : {backup_path}")
+        print(f"     Удалено   : {total_deleted} строк")
+    else:
+        print("  ❌ Reset applied, but some tables are not empty.")
+        print("     Проверьте вручную — возможно, данные добавились параллельно.")
     print("=" * 60)
+    print()
+    print("После reset выполните:")
     print()
     print("  1. Запустите Mini App server.")
     print("  2. Откройте Админ → Питание · диагностика.")
