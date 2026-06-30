@@ -4879,6 +4879,10 @@ async function renderAdminContent() {
       await renderFoodReportPanel(root);
       return;
     }
+    if (tab === "food-lunch") {
+      await renderStaffFoodLunch(root);
+      return;
+    }
   } catch (e) { root.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`; }
 }
 function _renderActiveCampWeekInfo(aw) {
@@ -5574,7 +5578,10 @@ function renderParentFoodMenu() {
         : "";
       let body = "";
       if (order.status === "submitted") {
-        const names = (order.items || []).map(i => escapeHtml(i.name || "")).filter(Boolean).join(", ");
+        const names = (order.items || []).map(i => {
+          const qty = parseInt(i.quantity || 1, 10);
+          return escapeHtml(i.name || "") + (qty > 1 ? ` × ${qty}` : "");
+        }).filter(Boolean).join(", ");
         body = names ? `<div class="food-order-summary-items">${names}</div>` : "";
       } else if (order.status === "skipped") {
         body = `<div class="food-order-summary-note">Вы отметили, что питание в этот день не нужно.</div>`;
@@ -5589,22 +5596,30 @@ function renderParentFoodMenu() {
       </div>`;
     }
 
-    // Expanded view
-    const checkedIds = new Set((order?.items || []).map(i => String(i.item_id)));
+    // Expanded view — build quantity map from existing order
+    const qtyMap = {};
+    (order?.items || []).forEach(i => { qtyMap[String(i.item_id)] = parseInt(i.quantity || 1, 10); });
     const deadlineNote = menu.deadline_at
       ? (deadlinePassed
           ? `<div class="food-order-deadline-passed" style="margin-top:4px">Дедлайн прошёл — ${escapeHtml(_formatDeadline(menu.deadline_at))}</div>`
           : `<div class="parent-food-deadline">Дедлайн выбора: до ${escapeHtml(_formatDeadline(menu.deadline_at))}</div>`)
       : "";
-    const hintHtml = deadlinePassed ? "" : `<div class="food-order-hint">Выберите по 1 блюду из каждого курса. Выбирать каждый курс необязательно.</div>`;
+    const hintHtml = deadlinePassed ? "" : `<div class="food-order-hint">Выберите нужные позиции и количество.</div>`;
     const itemsHtml = allCats.map(cat => {
       const catItems = cats[cat] || [];
-      const rows = catItems.map(item => `
-        <div class="food-order-item-check">
-          <input type="checkbox" id="fc-${menu.id}-${item.id}" data-item-id="${item.id}" data-menu-id="${menu.id}" data-category="${escapeAttr(cat)}"${checkedIds.has(String(item.id)) ? " checked" : ""}${deadlinePassed ? " disabled" : ""}>
-          <label for="fc-${menu.id}-${item.id}" class="food-order-item-label">${escapeHtml(item.name || "")}${item.weight ? ` <span class="food-order-item-weight">· ${escapeHtml(item.weight)}</span>` : ""}</label>
-        </div>`).join("");
-      return `<div class="parent-food-category">${escapeHtml(cat)}</div><div class="food-order-items-list">${rows}</div>`;
+      const rows = catItems.map(item => {
+        const qty = qtyMap[String(item.id)] || 0;
+        const isActive = qty > 0;
+        return `<div class="food-order-qty-row${isActive ? " food-order-qty-row--active" : ""}" data-qty-item="${item.id}" data-menu-id="${menu.id}">
+          <div class="food-order-qty-label">${escapeHtml(item.name || "")}${item.weight ? `<span class="food-order-qty-weight"> · ${escapeHtml(item.weight)}</span>` : ""}</div>
+          <div class="food-order-qty-ctrl">
+            <button class="food-order-qty-btn" data-qty-dec="${item.id}"${deadlinePassed ? " disabled" : ""}>−</button>
+            <span class="food-order-qty-val">${qty}</span>
+            <button class="food-order-qty-btn" data-qty-inc="${item.id}"${deadlinePassed ? " disabled" : ""}>+</button>
+          </div>
+        </div>`;
+      }).join("");
+      return `<div class="parent-food-category">${escapeHtml(cat)}</div><div class="food-order-qty-list">${rows}</div>`;
     }).join("");
     const actionsHtml = deadlinePassed ? "" : `
       <div class="food-order-actions">
@@ -5643,8 +5658,14 @@ function renderParentFoodMenu() {
   root.querySelectorAll("[data-submit-order]").forEach(btn => {
     btn.addEventListener("click", async () => {
       const menuId = parseInt(btn.dataset.submitOrder);
-      const checked = [...root.querySelectorAll(`input[type=checkbox][data-menu-id="${menuId}"]:checked`)].map(cb => parseInt(cb.dataset.itemId));
-      await submitFoodOrder(menuId, childId, checked);
+      const items = [];
+      root.querySelectorAll(`[data-qty-item][data-menu-id="${menuId}"]`).forEach(row => {
+        const iid = parseInt(row.dataset.qtyItem);
+        const valEl = row.querySelector(".food-order-qty-val");
+        const qty = valEl ? parseInt(valEl.textContent, 10) : 0;
+        if (qty > 0) items.push({ id: iid, quantity: qty });
+      });
+      await submitFoodOrder(menuId, childId, items);
     });
   });
   root.querySelectorAll("[data-skip-order]").forEach(btn => {
@@ -5653,15 +5674,29 @@ function renderParentFoodMenu() {
       await skipFoodOrder(menuId, childId);
     });
   });
-  root.querySelectorAll("input[type=checkbox][data-menu-id]").forEach(cb => {
-    cb.addEventListener("change", e => {
-      if (!e.target.checked) return;
-      const mid = e.target.dataset.menuId;
-      const cat = e.target.dataset.category;
-      if (!cat) return;
-      root.querySelectorAll(`input[type=checkbox][data-menu-id="${mid}"]`).forEach(other => {
-        if (other !== e.target && other.dataset.category === cat) other.checked = false;
-      });
+  // Quantity +/- buttons
+  root.querySelectorAll("[data-qty-inc]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const iid = btn.dataset.qtyInc;
+      const row = root.querySelector(`[data-qty-item="${iid}"]`);
+      if (!row) return;
+      const valEl = row.querySelector(".food-order-qty-val");
+      if (!valEl) return;
+      let v = parseInt(valEl.textContent, 10) || 0;
+      if (v < 99) { v++; valEl.textContent = v; }
+      row.classList.toggle("food-order-qty-row--active", v > 0);
+    });
+  });
+  root.querySelectorAll("[data-qty-dec]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const iid = btn.dataset.qtyDec;
+      const row = root.querySelector(`[data-qty-item="${iid}"]`);
+      if (!row) return;
+      const valEl = row.querySelector(".food-order-qty-val");
+      if (!valEl) return;
+      let v = parseInt(valEl.textContent, 10) || 0;
+      if (v > 0) { v--; valEl.textContent = v; }
+      row.classList.toggle("food-order-qty-row--active", v > 0);
     });
   });
 }
@@ -5673,9 +5708,9 @@ function _wireParentRefreshAndTabs(root) {
   });
 }
 
-async function submitFoodOrder(menuId, mkStudentId, itemIds) {
+async function submitFoodOrder(menuId, mkStudentId, items) {
   try {
-    const data = await apiPost("/api/food/orders", { menu_id: menuId, mk_student_id: mkStudentId, item_ids: itemIds });
+    const data = await apiPost("/api/food/orders", { menu_id: menuId, mk_student_id: mkStudentId, items: items });
     if (!data.ok) { setNotice(data.error || "Ошибка отправки", "error"); return; }
     const orders = Array.isArray(state.myOrders) ? state.myOrders : [];
     const idx = orders.findIndex(o => String(o.menu_id) === String(menuId) && String(o.mk_student_id) === String(mkStudentId));
@@ -6188,7 +6223,7 @@ function _renderFoodMenuSummary(root, menuId, data) {
     if (ch.status === "submitted") {
       const details = Array.isArray(ch.itemDetails) && ch.itemDetails.length ? ch.itemDetails : [];
       cardBody = details.length
-        ? `<ul class="food-child-order-items">${details.map(it => `<li>${escapeHtml(it.name)}${it.weight ? ` · ${escapeHtml(it.weight)}` : ""}</li>`).join("")}</ul>`
+        ? `<ul class="food-child-order-items">${details.map(it => { const q = parseInt(it.quantity||1,10); return `<li>${escapeHtml(it.name)}${it.weight ? ` · ${escapeHtml(it.weight)}` : ""}${q > 1 ? ` <b>× ${q}</b>` : ""}</li>`; }).join("")}</ul>`
         : `<div class="food-child-order-note">Нет блюд в заказе</div>`;
     } else if (ch.status === "skipped") {
       cardBody = `<div class="food-child-order-note">Питание не нужно</div>`;
@@ -6225,6 +6260,7 @@ function _renderFoodMenuSummary(root, menuId, data) {
         </div>
         <div class="food-summary-section" style="margin-top:10px">Заказы по детям</div>
         ${childCards}
+        ${_staffSummaryBlock(data.byStaff)}
         <div class="food-summary-section" style="margin-top:10px">Итог по блюдам</div>
         ${_itemsBlock(loc.byItems)}
       </div>`;
@@ -6234,8 +6270,23 @@ function _renderFoodMenuSummary(root, menuId, data) {
     bodyHtml = `
       <div class="food-summary-section">Заказы по детям</div>
       ${sorted.length ? sorted.map(_childOrderCard).join("") : `<div class="food-summary-empty">Детей нет</div>`}
+      ${_staffSummaryBlock(data.byStaff)}
       <div class="food-summary-section" style="margin-top:10px">Итог по блюдам</div>
       ${_itemsBlock(data.byItems)}`;
+  }
+
+  function _staffSummaryBlock(byStaff) {
+    if (!Array.isArray(byStaff) || !byStaff.length) return "";
+    const cards = byStaff.map(s => {
+      const badge = s.status === "submitted"
+        ? `<span class="food-staff-status-badge food-staff-status-badge--submitted">Выбор отправлен</span>`
+        : `<span class="food-staff-status-badge food-staff-status-badge--skipped">Без питания</span>`;
+      const items = s.status === "submitted" && s.itemDetails && s.itemDetails.length
+        ? `<ul class="food-child-order-items">${s.itemDetails.map(it => { const q = parseInt(it.quantity||1,10); return `<li>${escapeHtml(it.name)}${q > 1 ? ` <b>× ${q}</b>` : ""}</li>`; }).join("")}</ul>`
+        : "";
+      return `<div class="food-child-order-card"><div class="food-child-order-head"><span class="food-child-order-name">${escapeHtml(s.staffName)}</span>${badge}</div>${items}</div>`;
+    }).join("");
+    return `<div class="food-summary-section" style="margin-top:10px">Заказы сотрудников</div>${cards}`;
   }
 
   const missingCount = data.missingOrders || 0;
@@ -6354,6 +6405,18 @@ async function sendFoodReminder(root, menuId) {
   }
 }
 
+function _formatStaffBlockText(byStaff) {
+  if (!Array.isArray(byStaff) || !byStaff.length) return "";
+  const submitted = byStaff.filter(s => s.status === "submitted");
+  if (!submitted.length) return "";
+  const lines = submitted.map(s => {
+    const details = Array.isArray(s.itemDetails) && s.itemDetails.length ? s.itemDetails : [];
+    const itemsText = details.map(it => { const q = parseInt(it.quantity||1,10); return `• ${it.name}${q > 1 ? ` × ${q}` : ""}`; }).join(", ") || "нет блюд";
+    return `${s.staffName}: ${itemsText}`;
+  }).join("\n");
+  return `\n\nСОТРУДНИКИ:\n${lines}`;
+}
+
 function _copyFoodSummary(title, dateStr, data) {
   const catOrder = ["Супы", "Салаты", "Второе", "Гарниры", "Сладкое", "Напитки", "Другое"];
 
@@ -6366,20 +6429,21 @@ function _copyFoodSummary(title, dateStr, data) {
     const childLines = sorted.map(ch => {
       if (ch.status === "submitted") {
         const details = Array.isArray(ch.itemDetails) && ch.itemDetails.length ? ch.itemDetails : [];
-        return `${ch.childName}:\n${details.map(it => `• ${it.name}${it.weight ? ` · ${it.weight}` : ""}`).join("\n") || "• (нет блюд)"}`;
+        return `${ch.childName}:\n${details.map(it => { const q = parseInt(it.quantity||1,10); return `• ${it.name}${it.weight ? ` · ${it.weight}` : ""}${q > 1 ? ` × ${q}` : ""}`; }).join("\n") || "• (нет блюд)"}`;
       }
       if (ch.status === "skipped") return `${ch.childName}:\nБез питания`;
       return `${ch.childName}:\nНе выбрано`;
     }).join("\n\n");
+    const staffBlock = _formatStaffBlockText(loc.byStaff);
     const byItems = Array.isArray(loc.byItems) ? loc.byItems : [];
     const byCat = {};
     byItems.forEach(it => { const _c = _normalizeFoodCategory(it.name, it.category); byCat[_c] = byCat[_c] || []; byCat[_c].push(it); });
     const cats = [...new Set([...catOrder, ...Object.keys(byCat)])].filter(c => byCat[c]);
     const orderLines = cats.map(cat =>
-      cat.toUpperCase() + "\n" + byCat[cat].map(it => `${it.name}${it.weight ? ` · ${it.weight}` : ""} — ${it.count}`).join("\n")
+      cat.toUpperCase() + "\n" + byCat[cat].map(it => `${it.name}${it.weight ? ` · ${it.weight}` : ""} — ${it.count} шт.`).join("\n")
     ).join("\n\n") || "нет выбранных блюд";
     const skipped = sorted.filter(c => c.status === "skipped").map(c => `• ${c.childName}`).join("\n") || "нет";
-    return `ЗАКАЗ ${idx + 1} — ${loc.groupCode}, ${loc.location}\n\nЗАКАЗЫ ПО ДЕТЯМ:\n\n${childLines || "нет детей"}\n\nИТОГ ПО БЛЮДАМ:\n${orderLines}\n\nБез питания:\n${skipped}`;
+    return `ЗАКАЗ ${idx + 1} — ${loc.groupCode}, ${loc.location}\n\nЗАКАЗЫ ПО ДЕТЯМ:\n\n${childLines || "нет детей"}${staffBlock}\n\nИТОГ ПО БЛЮДАМ:\n${orderLines}\n\nБез питания:\n${skipped}`;
   }
 
   const byLocations = Array.isArray(data.byLocations) && data.byLocations.length ? data.byLocations : null;
@@ -6391,24 +6455,176 @@ function _copyFoodSummary(title, dateStr, data) {
     const childLines = sorted.map(ch => {
       if (ch.status === "submitted") {
         const details = Array.isArray(ch.itemDetails) && ch.itemDetails.length ? ch.itemDetails : [];
-        return `${ch.childName}:\n${details.map(it => `• ${it.name}${it.weight ? ` · ${it.weight}` : ""}`).join("\n") || "• (нет блюд)"}`;
+        return `${ch.childName}:\n${details.map(it => { const q = parseInt(it.quantity||1,10); return `• ${it.name}${it.weight ? ` · ${it.weight}` : ""}${q > 1 ? ` × ${q}` : ""}`; }).join("\n") || "• (нет блюд)"}`;
       }
       if (ch.status === "skipped") return `${ch.childName}:\nБез питания`;
       return `${ch.childName}:\nНе выбрано`;
     }).join("\n\n");
+    const staffBlock = _formatStaffBlockText(data.byStaff);
     const byItems = Array.isArray(data.byItems) ? data.byItems : [];
     const byCat = {};
     byItems.forEach(it => { const _c = _normalizeFoodCategory(it.name, it.category); byCat[_c] = byCat[_c] || []; byCat[_c].push(it); });
     const cats = [...new Set([...catOrder, ...Object.keys(byCat)])].filter(c => byCat[c]);
     const orderLines = cats.map(cat =>
-      cat.toUpperCase() + "\n" + byCat[cat].map(it => `${it.name}${it.weight ? ` · ${it.weight}` : ""} — ${it.count}`).join("\n")
+      cat.toUpperCase() + "\n" + byCat[cat].map(it => `${it.name}${it.weight ? ` · ${it.weight}` : ""} — ${it.count} шт.`).join("\n")
     ).join("\n\n") || "(нет заказов)";
     const skipped = sorted.filter(c => c.status === "skipped").map(c => `• ${c.childName}`).join("\n") || "нет";
-    bodyText = `ЗАКАЗЫ ПО ДЕТЯМ:\n\n${childLines || "нет детей"}\n\nИТОГ ПО БЛЮДАМ:\n${orderLines}\n\nБез питания:\n${skipped}`;
+    bodyText = `ЗАКАЗЫ ПО ДЕТЯМ:\n\n${childLines || "нет детей"}${staffBlock}\n\nИТОГ ПО БЛЮДАМ:\n${orderLines}\n\nБез питания:\n${skipped}`;
   }
 
   const text = [`Питание Yellow Club`, `${title}, ${dateStr}`, ``, bodyText].join("\n");
   navigator.clipboard?.writeText(text).then(() => setNotice("Сводка скопирована", "ok")).catch(() => setNotice("Не удалось скопировать", "error"));
+}
+
+// ---- Staff food lunch (food-lunch tab) ----
+async function renderStaffFoodLunch(root) {
+  root.innerHTML = `<div class="food-debug-card"><div class="empty">Загрузка меню...</div></div>`;
+  try {
+    const menusData = await apiGet("/api/food/active-menus");
+    if (!menusData.ok) {
+      root.innerHTML = `<div class="food-debug-card"><div class="food-debug-error">${escapeHtml(menusData.error || "Ошибка загрузки меню")}</div></div>`;
+      return;
+    }
+    const menus = Array.isArray(menusData.menus) ? menusData.menus : [];
+    if (!menus.length) {
+      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>Меню на сегодня ещё не опубликовано.</p></div><button class="secondary" id="staffLunchRefresh">Обновить</button></div>`;
+      root.querySelector("#staffLunchRefresh")?.addEventListener("click", () => renderStaffFoodLunch(root));
+      return;
+    }
+    // Load existing staff orders for all menus
+    const staffOrders = {};
+    await Promise.all(menus.map(async m => {
+      try {
+        const r = await apiGet(`/api/food/staff/my-order?menu_id=${m.id}`);
+        if (r.ok && r.order) staffOrders[m.id] = r.order;
+      } catch (e) {}
+    }));
+
+    const catOrder = ["Супы", "Салаты", "Второе", "Гарниры", "Сладкое", "Напитки", "Другое"];
+    const menusHtml = menus.map(menu => {
+      const dateStr = _formatMenuDate(menu.menu_date);
+      const deadlinePassed = _isDeadlinePassed(menu.deadline_at);
+      const order = staffOrders[menu.id] || null;
+      const titleHtml = `<div class="parent-food-card-title">${escapeHtml(menu.title || dateStr)}</div><div class="parent-food-card-meta">${escapeHtml(dateStr)}</div>`;
+      const deadlineNote = menu.deadline_at
+        ? (deadlinePassed
+            ? `<div class="food-order-deadline-passed" style="margin-top:4px">Дедлайн прошёл</div>`
+            : `<div class="parent-food-deadline">Дедлайн: до ${escapeHtml(_formatDeadline(menu.deadline_at))}</div>`)
+        : "";
+      const statusBadge = !order ? `<span class="food-staff-status-badge food-staff-status-badge--none">Не выбрано</span>`
+        : order.status === "submitted" ? `<span class="food-staff-status-badge food-staff-status-badge--submitted">Выбор отправлен</span>`
+        : `<span class="food-staff-status-badge food-staff-status-badge--skipped">Без питания</span>`;
+
+      const rawCats = menu.itemsByCategory || {};
+      const cats = {};
+      Object.entries(rawCats).forEach(([rc, items]) => items.forEach(it => {
+        const nc = _normalizeFoodCategory(it.name, rc);
+        (cats[nc] = cats[nc] || []).push(it);
+      }));
+      const allCats = [...new Set([...catOrder, ...Object.keys(cats)])].filter(c => cats[c] && cats[c].length);
+      const qtyMap = {};
+      (order?.items || []).forEach(i => { qtyMap[String(i.item_id)] = parseInt(i.quantity || 1, 10); });
+
+      const itemsHtml = deadlinePassed
+        ? (order && order.status === "submitted"
+            ? `<div class="food-order-summary-items">${(order.items||[]).map(i => { const q = parseInt(i.quantity||1,10); return escapeHtml(i.name||"") + (q > 1 ? ` × ${q}` : ""); }).filter(Boolean).join(", ")}</div>`
+            : order && order.status === "skipped" ? `<div class="food-order-summary-note">Без питания</div>` : `<div class="food-order-summary-note">Выбор не сделан (дедлайн прошёл)</div>`)
+        : allCats.map(cat => {
+            const catItems = cats[cat] || [];
+            const rows = catItems.map(item => {
+              const qty = qtyMap[String(item.id)] || 0;
+              return `<div class="food-order-qty-row${qty > 0 ? " food-order-qty-row--active" : ""}" data-sl-item="${item.id}" data-sl-menu="${menu.id}">
+                <div class="food-order-qty-label">${escapeHtml(item.name || "")}${item.weight ? `<span class="food-order-qty-weight"> · ${escapeHtml(item.weight)}</span>` : ""}</div>
+                <div class="food-order-qty-ctrl">
+                  <button class="food-order-qty-btn" data-sl-dec="${item.id}">−</button>
+                  <span class="food-order-qty-val">${qty}</span>
+                  <button class="food-order-qty-btn" data-sl-inc="${item.id}">+</button>
+                </div>
+              </div>`;
+            }).join("");
+            return `<div class="parent-food-category">${escapeHtml(cat)}</div><div class="food-order-qty-list">${rows}</div>`;
+          }).join("");
+
+      const actionsHtml = deadlinePassed ? "" : `
+        <div class="food-order-actions">
+          <button class="primary" data-sl-submit="${menu.id}">Сохранить мой выбор</button>
+          <button class="secondary" data-sl-skip="${menu.id}">Без питания</button>
+        </div>`;
+
+      return `<div class="food-staff-section" data-sl-menu-card="${menu.id}">
+        <div class="food-order-card-head" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div>${titleHtml}${deadlineNote}</div>${statusBadge}
+        </div>
+        ${itemsHtml || `<div class="empty">Блюда не добавлены</div>`}
+        ${actionsHtml}
+      </div>`;
+    }).join("");
+
+    root.innerHTML = `<div class="food-debug-card">
+      <div class="food-menu-panel-head"><h3>Мой обед</h3><button class="secondary" id="staffLunchRefresh">Обновить</button></div>
+      ${menusHtml}
+    </div>`;
+
+    root.querySelector("#staffLunchRefresh")?.addEventListener("click", () => renderStaffFoodLunch(root));
+
+    root.querySelectorAll("[data-sl-submit]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const menuId = parseInt(btn.dataset.slSubmit);
+        const items = [];
+        root.querySelectorAll(`[data-sl-item][data-sl-menu="${menuId}"]`).forEach(row => {
+          const iid = parseInt(row.dataset.slItem);
+          const valEl = row.querySelector(".food-order-qty-val");
+          const qty = valEl ? parseInt(valEl.textContent, 10) : 0;
+          if (qty > 0) items.push({ id: iid, quantity: qty });
+        });
+        btn.disabled = true;
+        try {
+          const data = await apiPost("/api/food/staff/orders", { menu_id: menuId, items });
+          if (!data.ok) { setNotice(data.error || "Ошибка", "error"); }
+          else { setNotice("Выбор сохранён.", "ok"); renderStaffFoodLunch(root); }
+        } catch (e) { setNotice(e.message, "error"); }
+        finally { btn.disabled = false; }
+      });
+    });
+    root.querySelectorAll("[data-sl-skip]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const menuId = parseInt(btn.dataset.slSkip);
+        btn.disabled = true;
+        try {
+          const data = await apiPost("/api/food/staff/orders/skip", { menu_id: menuId });
+          if (!data.ok) { setNotice(data.error || "Ошибка", "error"); }
+          else { setNotice("Отмечено: без питания.", "ok"); renderStaffFoodLunch(root); }
+        } catch (e) { setNotice(e.message, "error"); }
+        finally { btn.disabled = false; }
+      });
+    });
+    root.querySelectorAll("[data-sl-inc]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const iid = btn.dataset.slInc;
+        const row = root.querySelector(`[data-sl-item="${iid}"]`);
+        if (!row) return;
+        const valEl = row.querySelector(".food-order-qty-val");
+        if (!valEl) return;
+        let v = parseInt(valEl.textContent, 10) || 0;
+        if (v < 99) { v++; valEl.textContent = v; }
+        row.classList.toggle("food-order-qty-row--active", v > 0);
+      });
+    });
+    root.querySelectorAll("[data-sl-dec]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const iid = btn.dataset.slDec;
+        const row = root.querySelector(`[data-sl-item="${iid}"]`);
+        if (!row) return;
+        const valEl = row.querySelector(".food-order-qty-val");
+        if (!valEl) return;
+        let v = parseInt(valEl.textContent, 10) || 0;
+        if (v > 0) { v--; valEl.textContent = v; }
+        row.classList.toggle("food-order-qty-row--active", v > 0);
+      });
+    });
+  } catch (e) {
+    root.innerHTML = `<div class="food-debug-card"><div class="food-debug-error">${escapeHtml(e.message)}</div></div>`;
+  }
 }
 
 // ---- Food shift report (food-report tab) ----

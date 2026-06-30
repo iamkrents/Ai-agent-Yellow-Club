@@ -1049,6 +1049,10 @@ class MiniAppContext:
                 admin_tabs = list(admin_tabs) + ["food-menu"]
             if "food-report" not in admin_tabs:
                 admin_tabs = list(admin_tabs) + ["food-report"]
+        _staff_food_roles = {"owner", "methodist", "operations", "teacher", "intern", "client_manager", "other"}
+        can_order_staff_lunch = bool(getattr(self.settings, "food_module_enabled", False)) and role in _staff_food_roles
+        if can_order_staff_lunch and "food-lunch" not in admin_tabs:
+            admin_tabs = list(admin_tabs) + ["food-lunch"]
         return {
             "canUseLessons": role in LESSON_ROLES,
             "canUseSchedule": role in SCHEDULE_ROLES,
@@ -1066,6 +1070,7 @@ class MiniAppContext:
             "isParent": role == "parent",
             "adminTabs": admin_tabs,
             "foodMenuOcrEnabled": bool(getattr(self.settings, "food_menu_ocr_enabled", False)) and role in ADMIN_ROLES,
+            "canOrderStaffLunch": can_order_staff_lunch,
         }
 
     def me(self, auth: dict[str, Any]) -> dict[str, Any]:
@@ -2091,17 +2096,30 @@ class MiniAppContext:
         if err:
             return {"ok": False, "error": err}
         user_id = int(auth["user_id"])
-        item_ids = payload.get("item_ids") or []
         available_items = [it for it in menu.get("items", []) if it.get("is_available")]
         menu_item_ids = {it["id"] for it in available_items}
-        safe_ids = [int(iid) for iid in item_ids if int(iid) in menu_item_ids]
-        # Normalize: keep only the last item per category to enforce 1-per-category rule
-        cat_map = {it["id"]: (it.get("category") or "Другое") for it in available_items}
-        seen_cats: dict = {}
-        for iid in safe_ids:
-            seen_cats[cat_map.get(iid, "Другое")] = iid
-        safe_ids = list(seen_cats.values())
-        order = self.storage.upsert_food_order(str(user_id), mk_student_id, menu_id, safe_ids, "submitted")
+        # Accept {items: [{id, quantity}]} or legacy {item_ids: [...]}
+        item_quantities: dict[int, int] = {}
+        raw_items = payload.get("items")
+        if isinstance(raw_items, list):
+            for entry in raw_items:
+                try:
+                    iid = int(entry["id"])
+                    qty = min(99, max(1, int(entry.get("quantity", 1) or 1)))
+                    if iid in menu_item_ids and qty > 0:
+                        item_quantities[iid] = qty
+                except (KeyError, TypeError, ValueError):
+                    pass
+        else:
+            # Legacy: item_ids list
+            for iid in (payload.get("item_ids") or []):
+                try:
+                    i = int(iid)
+                    if i in menu_item_ids:
+                        item_quantities[i] = 1
+                except (TypeError, ValueError):
+                    pass
+        order = self.storage.upsert_food_order(str(user_id), mk_student_id, menu_id, item_quantities, "submitted")
         return {"ok": True, "order": order}
 
     def food_skip_order(self, auth: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -2111,7 +2129,7 @@ class MiniAppContext:
         if err:
             return {"ok": False, "error": err}
         user_id = int(auth["user_id"])
-        order = self.storage.upsert_food_order(str(user_id), mk_student_id, menu_id, [], "skipped")
+        order = self.storage.upsert_food_order(str(user_id), mk_student_id, menu_id, {}, "skipped")
         return {"ok": True, "order": order}
 
     # --- Food module: admin summary ---
@@ -2154,8 +2172,10 @@ class MiniAppContext:
                 if ch["status"] == "submitted":
                     for it in ch.get("itemDetails", []):
                         iid = int(it["item_id"])
-                        loc_item_counts[iid] = loc_item_counts.get(iid, 0) + 1
-                        loc_item_children.setdefault(iid, []).append(ch["childName"])
+                        qty = int(it.get("quantity", 1) or 1)
+                        loc_item_counts[iid] = loc_item_counts.get(iid, 0) + qty
+                        if ch["childName"] not in loc_item_children.get(iid, []):
+                            loc_item_children.setdefault(iid, []).append(ch["childName"])
                         loc_item_meta[iid] = it
             loc_by_items = [
                 {"item_id": iid, "category": meta["category"], "name": meta["name"], "weight": meta["weight"], "count": loc_item_counts[iid], "children": loc_item_children.get(iid, [])}
@@ -2483,6 +2503,96 @@ class MiniAppContext:
             "lastResult": _FOOD_AUTO_REMINDER_STATUS.get("lastResult"),
             "runCount": _FOOD_AUTO_REMINDER_STATUS.get("runCount", 0),
         }
+
+    # --- Food module: staff lunch orders ---
+
+    def _is_staff_food_role(self, auth: dict[str, Any]) -> bool:
+        role = self._role_for_user(int(auth["user_id"]))
+        return role not in ("", "parent") and bool(getattr(self.settings, "food_module_enabled", False))
+
+    def food_staff_my_order(self, auth: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        if not self._is_staff_food_role(auth):
+            return {"ok": False, "error": "forbidden"}
+        try:
+            menu_id = int(params.get("menu_id") or 0)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Неверный menu_id"}
+        if not menu_id:
+            return {"ok": False, "error": "menu_id обязателен"}
+        user_id = int(auth["user_id"])
+        order = self.storage.get_food_staff_order(user_id, menu_id)
+        return {"ok": True, "order": order}
+
+    def food_staff_submit_order(self, auth: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        if not self._is_staff_food_role(auth):
+            return {"ok": False, "error": "forbidden"}
+        try:
+            menu_id = int(payload.get("menu_id") or 0)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Неверный menu_id"}
+        if not menu_id:
+            return {"ok": False, "error": "menu_id обязателен"}
+        menu = self.storage.get_food_menu(menu_id)
+        if not menu or menu.get("status") != "published":
+            return {"ok": False, "error": "menu_not_available"}
+        deadline_at = menu.get("deadline_at")
+        if deadline_at:
+            try:
+                dl = datetime.fromisoformat(deadline_at)
+                if dl.tzinfo is None:
+                    from datetime import timezone
+                    dl = dl.replace(tzinfo=timezone.utc)
+                from datetime import timezone
+                if datetime.now(timezone.utc) > dl:
+                    return {"ok": False, "error": "deadline_passed"}
+            except Exception:
+                pass
+        available_items = [it for it in menu.get("items", []) if it.get("is_available")]
+        menu_item_ids = {it["id"] for it in available_items}
+        item_quantities: dict[int, int] = {}
+        raw_items = payload.get("items")
+        if isinstance(raw_items, list):
+            for entry in raw_items:
+                try:
+                    iid = int(entry["id"])
+                    qty = min(99, max(1, int(entry.get("quantity", 1) or 1)))
+                    if iid in menu_item_ids and qty > 0:
+                        item_quantities[iid] = qty
+                except (KeyError, TypeError, ValueError):
+                    pass
+        else:
+            for iid in (payload.get("item_ids") or []):
+                try:
+                    i = int(iid)
+                    if i in menu_item_ids:
+                        item_quantities[i] = 1
+                except (TypeError, ValueError):
+                    pass
+        user_id = int(auth["user_id"])
+        order = self.storage.upsert_food_staff_order(user_id, menu_id, item_quantities, "submitted")
+        return {"ok": True, "order": order}
+
+    def food_staff_skip_order(self, auth: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        if not self._is_staff_food_role(auth):
+            return {"ok": False, "error": "forbidden"}
+        try:
+            menu_id = int(payload.get("menu_id") or 0)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Неверный menu_id"}
+        if not menu_id:
+            return {"ok": False, "error": "menu_id обязателен"}
+        menu = self.storage.get_food_menu(menu_id)
+        if not menu or menu.get("status") != "published":
+            return {"ok": False, "error": "menu_not_available"}
+        user_id = int(auth["user_id"])
+        order = self.storage.upsert_food_staff_order(user_id, menu_id, {}, "skipped")
+        return {"ok": True, "order": order}
 
     def food_shift_report(self, auth: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
@@ -5105,6 +5215,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.food_my_children(auth))
                 if path == "/api/food/my-orders":
                     return self._send_json(CTX.food_my_orders(auth))
+                if path == "/api/food/staff/my-order":
+                    return self._send_json(CTX.food_staff_my_order(auth, params))
                 if path == "/api/food/menus":
                     return self._send_json(CTX.food_list_menus(auth))
                 if path == "/api/food/active-menus":
@@ -5228,6 +5340,10 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 return self._send_json(CTX.food_submit_order(auth, body))
             if path == "/api/food/orders/skip":
                 return self._send_json(CTX.food_skip_order(auth, body))
+            if path == "/api/food/staff/orders":
+                return self._send_json(CTX.food_staff_submit_order(auth, body))
+            if path == "/api/food/staff/orders/skip":
+                return self._send_json(CTX.food_staff_skip_order(auth, body))
             if path == "/api/food/menus":
                 return self._send_json(CTX.food_create_menu(auth, body))
             if path.startswith("/api/food/menus/"):

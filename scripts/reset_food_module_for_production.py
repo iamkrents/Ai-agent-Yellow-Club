@@ -56,6 +56,8 @@ except ImportError as exc:
 # Tables to clear (order matters: items before parents due to FK)
 # ---------------------------------------------------------------------------
 FOOD_TABLES: list[tuple[str, str]] = [
+    ("food_staff_order_items",     "заказы сотрудников (позиции)"),
+    ("food_staff_orders",          "заказы сотрудников"),
     ("food_order_items",           "всегда"),
     ("food_orders",                "всегда"),
     ("food_items",                 "всегда"),
