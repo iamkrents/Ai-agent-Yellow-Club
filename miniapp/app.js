@@ -13,6 +13,17 @@ if (tg) {
   }
 }
 
+// v7.0.8: set --tg-vh from Telegram viewportStableHeight so app-shell can use it as scroll container
+function _updateTgViewportHeight() {
+  const h = (tg && (tg.viewportStableHeight || tg.viewportHeight)) || window.innerHeight;
+  if (h > 50) document.documentElement.style.setProperty("--tg-vh", h + "px");
+}
+_updateTgViewportHeight();
+if (tg && typeof tg.onEvent === "function") {
+  tg.onEvent("viewportChanged", _updateTgViewportHeight);
+}
+window.addEventListener("resize", _updateTgViewportHeight, { passive: true });
+
 // Mark body/html for Telegram CSS and immediately set hardcoded top offset.
 // We set --app-top-safe-offset directly on <html> so it wins over any CSS body-class rule.
 if (tg) {
@@ -522,7 +533,7 @@ function parentHelpHtml() {
     <details class="help-accordion">
       <summary class="help-accordion-title">Где взять код?</summary>
       <div class="help-accordion-body">
-        <p>Код выдаётся администратором Yellow Club при оформлении путёвки. Он имеет формат <b>YC-XXXX</b> (4 символа после дефиса). Если у вас нет кода, обратитесь в администрацию.</p>
+        <p>Код выдаётся администратором Yellow Club. Он имеет формат <b>YC-XXXX</b> (4 символа после дефиса). Если у вас нет кода, обратитесь в администрацию.</p>
       </div>
     </details>
     <details class="help-accordion">
@@ -1022,6 +1033,9 @@ function setupRoleUi() {
   document.querySelectorAll(".role-open-slots").forEach(el => el.classList.toggle("hidden", !canUseOpenSlots()));
   document.querySelectorAll(".role-reports").forEach(el => el.classList.toggle("hidden", !canUseReports()));
   document.querySelectorAll(".role-intern").forEach(el => el.classList.toggle("hidden", !canUseInternship()));
+  // Staff lunch tab: show for staff with canOrderStaffLunch (hidden for parents)
+  const _canOrderLunch = !!roleCaps().canOrderStaffLunch && role !== "parent";
+  document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.toggle("hidden", !_canOrderLunch));
   const askTab = document.querySelector('.tab[data-tab="ask"]');
   if (askTab) askTab.classList.toggle("hidden", !canAskAgent());
 
@@ -1057,6 +1071,7 @@ function setupRoleUi() {
     document.querySelectorAll(".tab[data-tab]").forEach(t => {
       t.classList.toggle("hidden", !parentAllowed.includes(t.dataset.tab));
     });
+    document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.add("hidden"));
     $("appTitle").textContent = "Питание · Yellow Club";
     $("roleBadge").textContent = "Родитель";
   }
@@ -1100,6 +1115,7 @@ function activateTab(name) {
   if (name === "ask") renderAskMessages();
   if (name === "my-children") { if (state.myChildren === null) loadMyChildren(); else renderMyChildren(); }
   if (name === "food") { if (state.activeMenus === null) loadActiveMenus(); else renderParentFoodMenu(); }
+  if (name === "my-lunch") { renderStaffFoodLunch($("myLunchContent")); }
 }
 
 function renderTestRolePanel() {
@@ -4983,17 +4999,57 @@ function renderFoodDebugPanel(root) {
         <button class="secondary" id="foodDebugCleanupDupes">Убрать дубли детей</button>
       </div>
       <div id="foodDebugResult">${lastResult ? renderFoodDebugResult(lastResult) : ""}</div>
+      <div class="food-debug-data-status" id="foodTeacherAccess" style="margin-top:10px">
+        <div class="food-debug-data-status-head">
+          <span>Доступ преподавателей к питанию (завтра)</span>
+          <button class="secondary btn-sm" id="foodTeacherAccessLoad">Загрузить</button>
+        </div>
+        <div id="foodTeacherAccessBody" class="food-debug-data-status-body">
+          <span class="food-debug-rawkeys">Нажмите «Загрузить»</span>
+        </div>
+      </div>
     </div>`;
   root.querySelector("#foodDebugRun")?.addEventListener("click", runFoodDebugSync);
   root.querySelector("#foodDebugClear")?.addEventListener("click", runFoodDebugClear);
   root.querySelector("#foodDebugCleanupDupes")?.addEventListener("click", runFoodDebugCleanupDuplicates);
   root.querySelector("#foodDataStatusRefresh")?.addEventListener("click", () => loadFoodDataStatus(root.querySelector("#foodDataStatusBody")));
   root.querySelector("#foodAutoReminderRefresh")?.addEventListener("click", () => loadFoodAutoReminderStatus(root.querySelector("#foodAutoReminderBody")));
+  root.querySelector("#foodTeacherAccessLoad")?.addEventListener("click", () => loadFoodTeacherAccess(root.querySelector("#foodTeacherAccessBody")));
   if (lastResult) {
     root.querySelector("#foodDebugCopyJson")?.addEventListener("click", _foodDebugCopyJson);
   }
   loadFoodDataStatus(root.querySelector("#foodDataStatusBody"));
   loadFoodAutoReminderStatus(root.querySelector("#foodAutoReminderBody"));
+}
+
+async function loadFoodTeacherAccess(el) {
+  if (!el) return;
+  el.innerHTML = `<span class="food-debug-rawkeys">Загрузка...</span>`;
+  try {
+    const data = await apiGet("/api/food/staff/tomorrow-teachers");
+    if (!data.ok) {
+      el.innerHTML = `<span class="food-debug-error" style="display:inline;padding:0">${escapeHtml(data.error || "Ошибка")}</span>`;
+      return;
+    }
+    const teachers = data.teachers || [];
+    const dateStr = escapeHtml(data.tomorrowDate || "");
+    if (!teachers.length) {
+      el.innerHTML = `<div class="food-debug-data-status-row"><span>Завтра ${dateStr}</span><b>нет занятий в БД</b></div>`;
+      return;
+    }
+    const rows = teachers.map(t => {
+      const statusIcon = t.hasStaffUser ? "✅" : "❌";
+      const statusText = t.hasStaffUser ? "доступ есть" : "нет Telegram-привязки";
+      const userNote = t.username ? ` · @${escapeHtml(t.username)}` : (t.userId ? ` · id ${escapeHtml(String(t.userId))}` : "");
+      return `<div class="food-debug-data-status-row">
+        <span>${escapeHtml(t.teacherName || t.mkTeacherId || "")}${userNote}</span>
+        <b>${statusIcon} ${escapeHtml(statusText)}</b>
+      </div>`;
+    }).join("");
+    el.innerHTML = `<div class="food-debug-data-status-row" style="font-weight:700"><span>Завтра ${dateStr}: преподавателей с занятием</span><b>${teachers.length}</b></div>${rows}`;
+  } catch (e) {
+    el.innerHTML = `<span class="food-debug-error" style="display:inline;padding:0">${escapeHtml(e.message)}</span>`;
+  }
 }
 
 async function loadFoodDataStatus(el) {
@@ -5402,13 +5458,13 @@ function renderMyChildren() {
   const linkFormHtml = `
     <div class="parent-link-card">
       <h3>${children.length ? "Добавить ещё ребёнка" : "Привязать ребёнка"}</h3>
-      <p class="parent-link-hint">Введите код YC-XXXX, который вы получили от администратора смены.</p>
+      <p class="parent-link-hint">Введите код YC-XXXX, который вы получили от администратора Yellow Club.</p>
       <div class="parent-link-form">
         <input type="text" id="parentLinkCodeInput" class="parent-code-input" placeholder="YC-XXXX" maxlength="7" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false">
         <button type="button" class="primary" id="parentLinkBtn">Привязать</button>
       </div>
       <div id="parentLinkError" class="parent-link-error hidden"></div>
-      <p class="parent-link-footnote">Код выдаётся администратором при оформлении путёвки.</p>
+      <p class="parent-link-footnote">Код выдаётся администратором Yellow Club.</p>
     </div>`;
 
   if (!children.length) {
@@ -6483,6 +6539,10 @@ async function renderStaffFoodLunch(root) {
     const menusData = await apiGet("/api/food/staff/active-menus");
     if (!menusData.ok) {
       root.innerHTML = `<div class="food-debug-card"><div class="food-debug-error">${escapeHtml(menusData.error || "Ошибка загрузки меню")}</div></div>`;
+      return;
+    }
+    if (menusData.teacherNotLinked) {
+      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>Ваш профиль преподавателя не связан с МойКласс. Обратитесь к администратору.</p></div></div>`;
       return;
     }
     if (menusData.hasTomorrowLesson === false) {

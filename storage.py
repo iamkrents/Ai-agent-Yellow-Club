@@ -2097,6 +2097,32 @@ class Storage:
             ).fetchone()
         return row is not None
 
+    def list_teachers_with_lesson_on_date(self, date_str: str) -> list[dict[str, Any]]:
+        """Distinct mk_teacher_ids with lessons on date_str, joined to staff_users."""
+        if not date_str:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT
+                    tlc.mk_teacher_id,
+                    tlc.teacher_name,
+                    su.user_id,
+                    su.full_name,
+                    su.username
+                FROM teacher_lesson_control tlc
+                LEFT JOIN staff_users su
+                    ON su.mk_teacher_id = tlc.mk_teacher_id
+                    AND (su.status IS NULL OR su.status != 'inactive')
+                WHERE tlc.lesson_date = ?
+                  AND tlc.mk_teacher_id IS NOT NULL
+                  AND tlc.mk_teacher_id != ''
+                ORDER BY tlc.teacher_name, tlc.mk_teacher_id
+                """,
+                (str(date_str),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def mark_teacher_preparation(self, lesson_id: str | int, user_id: int | None, status: str, comment: str = "", **lesson_fields: Any) -> dict[str, Any]:
         status = (status or "not_started").strip()
         fields: dict[str, Any] = dict(lesson_fields)

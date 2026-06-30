@@ -2283,12 +2283,14 @@ class MiniAppContext:
             minsk_now = datetime.utcnow()
         tomorrow_str = (minsk_now.date() + timedelta(days=1)).isoformat()
         has_tomorrow_lesson = True
+        teacher_not_linked = False
         if role in {"teacher", "intern"}:
             mk_teacher_id = self._mk_teacher_id_for_user(user_id)
             if mk_teacher_id:
                 has_tomorrow_lesson = self.storage.teacher_has_lesson_on_date(mk_teacher_id, tomorrow_str)
             else:
                 has_tomorrow_lesson = False
+                teacher_not_linked = True
         menus = self.storage.list_published_food_menus_with_items()
         tomorrow_menus = [m for m in menus if (m.get("menu_date") or "") == tomorrow_str]
         for menu in tomorrow_menus:
@@ -2298,9 +2300,38 @@ class MiniAppContext:
         return {
             "ok": True,
             "hasTomorrowLesson": has_tomorrow_lesson,
+            "teacherNotLinked": teacher_not_linked,
             "tomorrowDate": tomorrow_str,
             "menus": tomorrow_menus,
         }
+
+    def food_staff_tomorrow_teachers(self, auth: dict[str, Any]) -> dict[str, Any]:
+        """Admin diagnostic: list teachers with lessons tomorrow."""
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        denied = self._require_admin(auth)
+        if denied:
+            return denied
+        try:
+            import zoneinfo
+            minsk_now = datetime.now(zoneinfo.ZoneInfo("Europe/Minsk"))
+        except Exception:
+            minsk_now = datetime.utcnow()
+        tomorrow_str = (minsk_now.date() + timedelta(days=1)).isoformat()
+        rows = self.storage.list_teachers_with_lesson_on_date(tomorrow_str)
+        teachers = []
+        for t in rows:
+            mk_id = str(t.get("mk_teacher_id") or "").strip()
+            has_user = bool(t.get("user_id"))
+            teachers.append({
+                "mkTeacherId": mk_id,
+                "teacherName": t.get("teacher_name") or t.get("full_name") or mk_id,
+                "userId": t.get("user_id"),
+                "username": t.get("username"),
+                "hasStaffUser": has_user,
+                "status": "access_ok" if has_user else "no_telegram_link",
+            })
+        return {"ok": True, "tomorrowDate": tomorrow_str, "teachers": teachers}
 
     def food_notify_published(self, auth: dict[str, Any], menu_id_str: str) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
@@ -5256,6 +5287,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.food_active_menus(auth))
                 if path == "/api/food/staff/active-menus":
                     return self._send_json(CTX.food_staff_active_menus(auth))
+                if path == "/api/food/staff/tomorrow-teachers":
+                    return self._send_json(CTX.food_staff_tomorrow_teachers(auth))
                 if path == "/api/food/debug/data-status":
                     return self._send_json(CTX.food_debug_data_status(auth))
                 if path == "/api/food/debug/auto-reminder-status":

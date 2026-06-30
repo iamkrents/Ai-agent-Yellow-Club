@@ -6348,3 +6348,22 @@ body { -webkit-overflow-scrolling: touch; }
 .food-order-qty-row,
 .food-order-qty-list,
 .food-staff-section { touch-action: pan-y; }
+
+/* v7.0.8 — Android scroll deep fix: make .app-shell the scroll container on mobile.
+   body/html become overflow:hidden; .app-shell gains the scrollable viewport.
+   position:fixed children (bottom tab bar, modal) remain viewport-anchored in Chrome. */
+@media (max-width: 640px) {
+  html, body {
+    height: var(--tg-vh, 100dvh);
+    min-height: 0;
+    overflow: hidden;
+  }
+  .app-shell {
+    box-sizing: border-box;
+    height: var(--tg-vh, 100dvh);
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+  }
+}
