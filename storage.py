@@ -893,6 +893,31 @@ class Storage:
             return existing["link_code"]
         return self.generate_child_link_code(mk_student_id)
 
+    def relink_child(self, mk_student_id: str) -> dict[str, Any]:
+        """Deactivate current active link (unlinks parent + invalidates old code), generate a new code."""
+        mk_student_id = str(mk_student_id or "").strip()
+        if not mk_student_id:
+            return {"ok": False, "error": "mk_student_id обязателен"}
+        old_parent_telegram_id = None
+        with self._connect() as conn:
+            old_link = conn.execute(
+                "SELECT * FROM parent_child_links WHERE mk_student_id=? AND active=1 ORDER BY id DESC LIMIT 1",
+                (mk_student_id,),
+            ).fetchone()
+            if old_link:
+                old_parent_telegram_id = dict(old_link).get("parent_telegram_id")
+            conn.execute(
+                "UPDATE parent_child_links SET active=0 WHERE mk_student_id=? AND active=1",
+                (mk_student_id,),
+            )
+        new_code = self.generate_child_link_code(mk_student_id)
+        return {
+            "ok": True,
+            "mk_student_id": mk_student_id,
+            "new_code": new_code,
+            "old_parent_telegram_id": old_parent_telegram_id,
+        }
+
     # --- Food module: menus ---
 
     def create_food_menu(self, menu_date: str, title: Optional[str], deadline_at: Optional[str], created_by: Optional[int] = None, location_code: Optional[str] = None) -> dict[str, Any]:

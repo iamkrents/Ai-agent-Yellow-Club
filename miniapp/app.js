@@ -5353,6 +5353,9 @@ function renderCampChildrenPanel(root) {
       else prompt("Скопируйте код:", code);
     });
   });
+  root.querySelectorAll(".camp-child-relink-btn").forEach(btn => {
+    btn.addEventListener("click", () => relinkChild(btn.dataset.mkId, btn.dataset.childName, btn.dataset.hasParent === "1"));
+  });
 
   if (!data) loadCampChildren();
 }
@@ -5371,12 +5374,22 @@ function _renderCampChildCard(child) {
   const code = child.link_code || "";
   const mkId = String(child.mk_student_id || "");
   const badge = _campChildStatusBadge(child);
+  const hasParent = Boolean(child.parent_telegram_id);
   const codeHtml = code
     ? `<span class="camp-child-code">${escapeHtml(code)}</span>
        <button class="secondary camp-child-copy-btn" data-code="${escapeHtml(code)}" style="padding:3px 8px;font-size:12px">Копировать</button>`
     : `<button class="secondary camp-child-gen-btn" data-mk-id="${escapeHtml(mkId)}" style="padding:3px 8px;font-size:12px">Создать код</button>`;
-  const parentLine = child.parent_telegram_id
-    ? `<div class="food-debug-rawkeys">Telegram: ${escapeHtml(String(child.parent_telegram_id))}${child.link_confirmed_at ? ` · привязан: ${escapeHtml(String(child.link_confirmed_at).slice(0,10))}` : ""}</div>`
+  const parentInfo = hasParent
+    ? `<div class="camp-child-parent-row">
+        <span class="camp-child-parent-label">Родитель:</span>
+        <span class="camp-child-parent-id">tg:${escapeHtml(String(child.parent_telegram_id))}</span>
+        ${child.link_confirmed_at ? `<span class="camp-child-parent-date">с ${escapeHtml(String(child.link_confirmed_at).slice(0,10))}</span>` : ""}
+       </div>`
+    : "";
+  const relinkBtn = code
+    ? `<button class="secondary btn-sm camp-child-relink-btn${hasParent ? " camp-child-relink-btn--has-parent" : ""}" data-mk-id="${escapeHtml(mkId)}" data-child-name="${escapeAttr(child.full_name || "Без имени")}" data-has-parent="${hasParent ? "1" : "0"}" style="margin-top:6px">
+        ${hasParent ? "Отвязать и выдать новый код" : "Выдать новый код"}
+       </button>`
     : "";
   return `<div class="food-debug-class camp-child-card">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;flex-wrap:wrap;">
@@ -5384,7 +5397,9 @@ function _renderCampChildCard(child) {
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${codeHtml}</div>
     </div>
     ${group ? `<div class="food-debug-rawkeys">${group}${date ? ` · ${date}` : ""}${room ? ` · ${room}` : ""}</div>` : ""}
-    ${parentLine}
+    ${parentInfo}
+    ${relinkBtn}
+    <div class="camp-child-relink-result" id="relinkResult-${escapeAttr(mkId)}" style="display:none"></div>
   </div>`;
 }
 
@@ -5432,6 +5447,33 @@ async function generateCodeForChild(mkId) {
       setNotice(data.error || "Ошибка создания кода", "error");
     }
   } catch (e) {
+    setNotice(e.message, "error");
+  }
+}
+
+async function relinkChild(mkId, childName, hasParent) {
+  const msg = hasParent
+    ? `Отвязать ребёнка «${childName}» от текущего родителя и выдать новый код привязки?\n\nСтарый код перестанет работать. Старый родитель больше не увидит этого ребёнка.`
+    : `Выдать новый код привязки для «${childName}»?\n\nСтарый код перестанет работать.`;
+  if (!confirm(msg)) return;
+  const resultEl = document.querySelector(`#relinkResult-${mkId}`);
+  try {
+    const data = await apiPost("/api/food/camp-children/relink", { mk_student_id: mkId });
+    if (!data.ok) {
+      if (resultEl) { resultEl.textContent = data.error || "Ошибка"; resultEl.className = "camp-child-relink-result camp-child-relink-result--error"; resultEl.style.display = ""; }
+      setNotice(data.error || "Ошибка перепривязки", "error");
+      return;
+    }
+    const newCode = data.new_code || "";
+    if (resultEl) {
+      resultEl.innerHTML = `${hasParent ? "Ребёнок отвязан. " : ""}Новый код: <b class="camp-child-code">${escapeHtml(newCode)}</b>`;
+      resultEl.className = "camp-child-relink-result camp-child-relink-result--ok";
+      resultEl.style.display = "";
+    }
+    setNotice(`${hasParent ? "Ребёнок отвязан. " : ""}Новый код: ${newCode}`, "ok");
+    await loadCampChildren();
+  } catch (e) {
+    if (resultEl) { resultEl.textContent = e.message; resultEl.className = "camp-child-relink-result camp-child-relink-result--error"; resultEl.style.display = ""; }
     setNotice(e.message, "error");
   }
 }

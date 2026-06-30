@@ -6376,6 +6376,17 @@ body { -webkit-overflow-scrolling: touch; }
 /* v7.0.10 — location code badge */
 .food-loc-badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 8px; background: #e3f0fb; color: #1a5fa8; white-space: nowrap; margin-right: 4px; vertical-align: middle; }
 
+/* v7.0.14 — child relink panel */
+.camp-child-parent-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; font-size: 13px; flex-wrap: wrap; }
+.camp-child-parent-label { color: var(--color-text-secondary, #888); }
+.camp-child-parent-id { font-family: monospace; font-size: 12px; color: #555; }
+.camp-child-parent-date { color: var(--color-text-secondary, #888); font-size: 12px; }
+.camp-child-relink-btn { display: inline-block; }
+.camp-child-relink-btn--has-parent { border-color: #e0a000 !important; color: #b05800 !important; }
+.camp-child-relink-result { margin-top: 6px; padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+.camp-child-relink-result--ok { background: #eafaf1; color: #1a7a3a; }
+.camp-child-relink-result--error { background: #fdecea; color: #c0392b; }
+
 /* v7.0.13 — editable food menu deadline */
 .food-menu-dl-status { font-size: 13px; margin: 4px 0 2px; line-height: 1.4; }
 .food-menu-dl-status--active { color: #1a5fa8; font-weight: 600; }

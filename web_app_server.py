@@ -1864,6 +1864,33 @@ class MiniAppContext:
         except Exception as exc:
             return {"ok": False, "error": str(exc)[:300]}
 
+    def food_relink_child(self, auth: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        denied = self._require_admin(auth)
+        if denied:
+            return denied
+        mk_student_id = str(payload.get("mk_student_id") or "").strip()
+        if not mk_student_id:
+            return {"ok": False, "error": "mk_student_id обязателен"}
+        child = self.storage.get_camp_child_by_mk_student_id(mk_student_id)
+        if not child:
+            return {"ok": False, "error": "Ребёнок не найден"}
+        result = self.storage.relink_child(mk_student_id)
+        if not result.get("ok"):
+            return result
+        child_name = child.get("full_name") or child.get("first_name") or mk_student_id
+        old_parent = result.get("old_parent_telegram_id")
+        log.info("food_relink_child mk_student_id=%s old_parent=%r new_code=%r by=%s",
+                 mk_student_id, old_parent, result.get("new_code"), auth.get("user_id"))
+        return {
+            "ok": True,
+            "child_name": child_name,
+            "mk_student_id": mk_student_id,
+            "new_code": result["new_code"],
+            "old_parent_telegram_id": old_parent,
+        }
+
     def food_link_child(self, auth: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
@@ -5494,6 +5521,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/food/camp-children/") and path.endswith("/generate-code"):
                 _mk_id = path[len("/api/food/camp-children/"):-len("/generate-code")]
                 return self._send_json(CTX.food_generate_code_for_child(auth, _mk_id))
+            if path == "/api/food/camp-children/relink":
+                return self._send_json(CTX.food_relink_child(auth, body))
             if path == "/api/food/orders":
                 return self._send_json(CTX.food_submit_order(auth, body))
             if path == "/api/food/orders/skip":
