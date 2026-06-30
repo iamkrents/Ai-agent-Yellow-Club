@@ -6564,20 +6564,20 @@ async function renderStaffFoodLunch(root) {
   try {
     const menusData = await apiGet("/api/food/staff/active-menus");
     if (!menusData.ok) {
-      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="food-debug-error">${escapeHtml(menusData.error || "Ошибка загрузки меню")}</div>${_staffLunchDebugHtml(null)}</div>`;
+      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="food-debug-error">${escapeHtml(menusData.error || "Ошибка загрузки меню")}</div></div>`;
       return;
     }
     if (menusData.teacherNotLinked) {
-      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>Ваш профиль преподавателя не связан с МойКласс. Обратитесь к администратору.</p></div>${_staffLunchDebugHtml(menusData)}</div>`;
+      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>Ваш профиль преподавателя не связан с МойКласс. Обратитесь к администратору.</p></div></div>`;
       return;
     }
     if (menusData.hasTomorrowLesson === false) {
-      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>На завтра у вас нет занятий в городской программе — заказ питания недоступен.</p></div>${_staffLunchDebugHtml(menusData)}</div>`;
+      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>На завтра у вас нет занятий в городской программе — заказ питания недоступен.</p></div></div>`;
       return;
     }
     const menus = Array.isArray(menusData.menus) ? menusData.menus : [];
     if (!menus.length) {
-      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>Меню на завтра ещё не опубликовано.</p></div><button class="secondary" id="staffLunchRefresh">Обновить</button>${_staffLunchDebugHtml(menusData)}</div>`;
+      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>Меню на завтра ещё не опубликовано.</p></div><button class="secondary" id="staffLunchRefresh">Обновить</button></div>`;
       root.querySelector("#staffLunchRefresh")?.addEventListener("click", () => renderStaffFoodLunch(root));
       return;
     }
@@ -6654,7 +6654,6 @@ async function renderStaffFoodLunch(root) {
     root.innerHTML = `<div class="food-debug-card">
       <div class="food-menu-panel-head"><h3>Мой обед</h3><button class="secondary" id="staffLunchRefresh">Обновить</button></div>
       ${menusHtml}
-      ${_staffLunchDebugHtml(menusData)}
     </div>`;
 
     root.querySelector("#staffLunchRefresh")?.addEventListener("click", () => renderStaffFoodLunch(root));

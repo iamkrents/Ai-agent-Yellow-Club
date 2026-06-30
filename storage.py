@@ -1181,10 +1181,10 @@ class Storage:
         for so in staff_orders:
             if so["status"] == "submitted":
                 item_details = [{"item_id": i["item_id"], "name": i["name"], "category": i["category"], "weight": i["weight"], "quantity": int(i.get("quantity", 1) or 1)} for i in so.get("items", [])]
-                display_name = str(so.get("staff_name") or so.get("staff_username") or f"Сотрудник #{so['staff_user_id']}")
+                display_name = str(so.get("staff_name") or so.get("staff_teacher_name") or so.get("staff_username") or f"Сотрудник #{so['staff_user_id']}")
                 by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "status": "submitted", "itemDetails": item_details, "locationCode": menu_location_code})
             elif so["status"] == "skipped":
-                display_name = str(so.get("staff_name") or so.get("staff_username") or f"Сотрудник #{so['staff_user_id']}")
+                display_name = str(so.get("staff_name") or so.get("staff_teacher_name") or so.get("staff_username") or f"Сотрудник #{so['staff_user_id']}")
                 by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "status": "skipped", "itemDetails": [], "locationCode": menu_location_code})
         # Add staff item counts to aggregate
         for so_entry in by_staff:
@@ -1415,7 +1415,16 @@ class Storage:
         mid = int(menu_id)
         with self._connect() as conn:
             orders_rows = conn.execute(
-                "SELECT so.*, su.full_name AS staff_name, su.username AS staff_username FROM food_staff_orders so LEFT JOIN staff_users su ON su.user_id = so.staff_user_id WHERE so.menu_id=? ORDER BY so.id",
+                """SELECT so.*,
+                    su.full_name AS staff_name,
+                    su.username AS staff_username,
+                    (SELECT tlc.teacher_name FROM teacher_lesson_control tlc
+                     WHERE tlc.mk_teacher_id = su.mk_teacher_id
+                       AND tlc.teacher_name IS NOT NULL AND tlc.teacher_name != ''
+                     LIMIT 1) AS staff_teacher_name
+                FROM food_staff_orders so
+                LEFT JOIN staff_users su ON su.user_id = so.staff_user_id
+                WHERE so.menu_id=? ORDER BY so.id""",
                 (mid,),
             ).fetchall()
             result = []
