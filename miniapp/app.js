@@ -161,12 +161,12 @@ function canUseFoodMenuOcr() {
 }
 function isAdminRole(role) { return ["owner", "methodist", "operations"].includes(role || ""); }
 const MVP_TABS_BY_ROLE = {
-  intern:         ["intern", "help", "ask"],
-  teacher:        ["lessons", "tasks", "help", "ask"],
-  methodist:      ["lessons", "tasks", "help", "ask", "admin"],
-  owner:          ["lessons", "tasks", "help", "ask", "admin"],
-  operations:     ["lessons", "tasks", "help", "ask", "admin"],
-  client_manager: [],
+  intern:         ["intern", "help", "ask", "my-lunch"],
+  teacher:        ["lessons", "tasks", "help", "ask", "my-lunch"],
+  methodist:      ["lessons", "tasks", "help", "ask", "admin", "my-lunch"],
+  owner:          ["lessons", "tasks", "help", "ask", "admin", "my-lunch"],
+  operations:     ["lessons", "tasks", "help", "ask", "admin", "my-lunch"],
+  client_manager: ["my-lunch"],
   parent:         ["my-children", "food", "help"],
 };
 const MVP_ADMIN_TABS = ["interns", "prep-results", "lesson-control", "teachers", "users", "notifications", "food-debug", "food-children", "food-menu", "food-report"];
@@ -1033,14 +1033,11 @@ function setupRoleUi() {
   document.querySelectorAll(".role-open-slots").forEach(el => el.classList.toggle("hidden", !canUseOpenSlots()));
   document.querySelectorAll(".role-reports").forEach(el => el.classList.toggle("hidden", !canUseReports()));
   document.querySelectorAll(".role-intern").forEach(el => el.classList.toggle("hidden", !canUseInternship()));
-  // Staff lunch tab: show for staff with canOrderStaffLunch (hidden for parents)
-  const _canOrderLunch = !!roleCaps().canOrderStaffLunch && role !== "parent";
-  document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.toggle("hidden", !_canOrderLunch));
   const askTab = document.querySelector('.tab[data-tab="ask"]');
   if (askTab) askTab.classList.toggle("hidden", !canAskAgent());
 
   if (canUseInternship()) {
-    const internOnlyTabs = ["intern", "help", "ask"];
+    const internOnlyTabs = ["intern", "help", "ask", "my-lunch"];
     document.querySelectorAll(".tab[data-tab]").forEach(t => {
       if (!internOnlyTabs.includes(t.dataset.tab)) t.classList.add("hidden");
     });
@@ -1074,6 +1071,13 @@ function setupRoleUi() {
     document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.add("hidden"));
     $("appTitle").textContent = "Питание · Yellow Club";
     $("roleBadge").textContent = "Родитель";
+  }
+
+  // Staff lunch tab: show for ALL staff (not parent), runs LAST to override intern/MVP hiding
+  if (role && role !== "parent") {
+    document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.remove("hidden"));
+  } else {
+    document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.add("hidden"));
   }
 
   renderRoleHelp();
@@ -6533,25 +6537,41 @@ function _copyFoodSummary(title, dateStr, data) {
 }
 
 // ---- Staff food lunch (food-lunch tab) ----
+function _staffLunchDebugHtml(d) {
+  const role = escapeHtml(state.me?.role || "?");
+  const uid = escapeHtml(String(state.me?.userId || state.me?.user_id || "?"));
+  const mkId = escapeHtml(String(state.me?.mkTeacherId || "—"));
+  const tomorrow = d ? escapeHtml(d.tomorrowDate || "?") : "?";
+  const lesson = d ? (d.teacherNotLinked ? "нет teacherId" : d.hasTomorrowLesson ? "да" : "нет") : "загрузка";
+  const menus = d ? ((d.menus || []).length > 0 ? `найдено (${(d.menus || []).length})` : "не найдено") : "загрузка";
+  return `<details class="staff-lunch-debug"><summary>debug</summary>
+    <div>Роль: <b>${role}</b></div>
+    <div>Telegram ID: <b>${uid}</b></div>
+    <div>MoyKlass teacherId: <b>${mkId}</b></div>
+    <div>Завтра (${tomorrow}) — занятие: <b>${lesson}</b></div>
+    <div>Меню на завтра: <b>${menus}</b></div>
+  </details>`;
+}
+
 async function renderStaffFoodLunch(root) {
   root.innerHTML = `<div class="food-debug-card"><div class="empty">Загрузка меню...</div></div>`;
   try {
     const menusData = await apiGet("/api/food/staff/active-menus");
     if (!menusData.ok) {
-      root.innerHTML = `<div class="food-debug-card"><div class="food-debug-error">${escapeHtml(menusData.error || "Ошибка загрузки меню")}</div></div>`;
+      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="food-debug-error">${escapeHtml(menusData.error || "Ошибка загрузки меню")}</div>${_staffLunchDebugHtml(null)}</div>`;
       return;
     }
     if (menusData.teacherNotLinked) {
-      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>Ваш профиль преподавателя не связан с МойКласс. Обратитесь к администратору.</p></div></div>`;
+      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>Ваш профиль преподавателя не связан с МойКласс. Обратитесь к администратору.</p></div>${_staffLunchDebugHtml(menusData)}</div>`;
       return;
     }
     if (menusData.hasTomorrowLesson === false) {
-      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>На завтра у вас нет занятий в городской программе — заказ питания недоступен.</p></div></div>`;
+      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>На завтра у вас нет занятий в городской программе — заказ питания недоступен.</p></div>${_staffLunchDebugHtml(menusData)}</div>`;
       return;
     }
     const menus = Array.isArray(menusData.menus) ? menusData.menus : [];
     if (!menus.length) {
-      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>Меню на завтра ещё не опубликовано.</p></div><button class="secondary" id="staffLunchRefresh">Обновить</button></div>`;
+      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>Меню на завтра ещё не опубликовано.</p></div><button class="secondary" id="staffLunchRefresh">Обновить</button>${_staffLunchDebugHtml(menusData)}</div>`;
       root.querySelector("#staffLunchRefresh")?.addEventListener("click", () => renderStaffFoodLunch(root));
       return;
     }
@@ -6627,6 +6647,7 @@ async function renderStaffFoodLunch(root) {
     root.innerHTML = `<div class="food-debug-card">
       <div class="food-menu-panel-head"><h3>Мой обед</h3><button class="secondary" id="staffLunchRefresh">Обновить</button></div>
       ${menusHtml}
+      ${_staffLunchDebugHtml(menusData)}
     </div>`;
 
     root.querySelector("#staffLunchRefresh")?.addEventListener("click", () => renderStaffFoodLunch(root));

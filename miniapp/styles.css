@@ -6367,3 +6367,8 @@ body { -webkit-overflow-scrolling: touch; }
     touch-action: pan-y;
   }
 }
+
+/* v7.0.9 — staff lunch debug info block */
+.staff-lunch-debug { margin-top: 12px; font-size: 11px; color: #888; border-top: 1px solid var(--border, #eee); padding-top: 8px; }
+.staff-lunch-debug summary { cursor: pointer; color: #aaa; user-select: none; }
+.staff-lunch-debug div { padding: 1px 0; line-height: 1.5; }
