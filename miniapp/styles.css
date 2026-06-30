@@ -6338,3 +6338,13 @@ details > summary:focus {
 .food-order-items-list,
 .food-order-qty-list { overflow-y: visible; }
 .food-order-actions { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+/* v7.0.7 — Android scroll: allow pan-y through food content areas */
+body { -webkit-overflow-scrolling: touch; }
+#foodContent,
+#adminContent { touch-action: pan-y; }
+.food-order-card,
+.food-order-card--collapsed,
+.food-order-qty-row,
+.food-order-qty-list,
+.food-staff-section { touch-action: pan-y; }

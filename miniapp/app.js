@@ -4948,7 +4948,7 @@ function renderFoodDebugPanel(root) {
     </details>`;
   root.innerHTML = `
     <div class="food-debug-card">
-      <h3>Диагностика · Summer Camp дети</h3>
+      <h3>Диагностика · Городская программа дети</h3>
       <p class="food-debug-summary">Фильтр занятий МойКласс: <code>${filter}</code></p>
       ${activeWeekHtml}
       ${uiFlagsHtml}
@@ -5006,7 +5006,7 @@ async function loadFoodDataStatus(el) {
       return;
     }
     el.innerHTML = `
-      <div class="food-debug-data-status-row"><span>Дети смены в БД</span><b>${data.campChildren ?? 0}</b></div>
+      <div class="food-debug-data-status-row"><span>Дети городской программы в БД</span><b>${data.campChildren ?? 0}</b></div>
       <div class="food-debug-data-status-row"><span>Коды привязки (активные)</span><b>${data.activeLinkCodes ?? 0}</b></div>
       <div class="food-debug-data-status-row"><span>Привязок родителей</span><b>${data.parentLinks ?? 0}</b></div>
       <div class="food-debug-data-status-row"><span>Меню</span><b>${data.foodMenus ?? 0}</b></div>
@@ -5269,7 +5269,7 @@ function renderCampChildrenPanel(root) {
 
   root.innerHTML = `
     <div class="food-debug-card">
-      <h3>Дети смены · Yellow Club</h3>
+      <h3>Дети городской программы · Yellow Club</h3>
       ${statsHtml}
       <div class="food-debug-actions" style="flex-wrap:wrap;gap:8px;">
         <button class="secondary" id="campChildrenRefresh">Обновить</button>
@@ -6480,14 +6480,18 @@ function _copyFoodSummary(title, dateStr, data) {
 async function renderStaffFoodLunch(root) {
   root.innerHTML = `<div class="food-debug-card"><div class="empty">Загрузка меню...</div></div>`;
   try {
-    const menusData = await apiGet("/api/food/active-menus");
+    const menusData = await apiGet("/api/food/staff/active-menus");
     if (!menusData.ok) {
       root.innerHTML = `<div class="food-debug-card"><div class="food-debug-error">${escapeHtml(menusData.error || "Ошибка загрузки меню")}</div></div>`;
       return;
     }
+    if (menusData.hasTomorrowLesson === false) {
+      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>На завтра у вас нет занятий в городской программе — заказ питания недоступен.</p></div></div>`;
+      return;
+    }
     const menus = Array.isArray(menusData.menus) ? menusData.menus : [];
     if (!menus.length) {
-      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>Меню на сегодня ещё не опубликовано.</p></div><button class="secondary" id="staffLunchRefresh">Обновить</button></div>`;
+      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>Меню на завтра ещё не опубликовано.</p></div><button class="secondary" id="staffLunchRefresh">Обновить</button></div>`;
       root.querySelector("#staffLunchRefresh")?.addEventListener("click", () => renderStaffFoodLunch(root));
       return;
     }
@@ -6771,7 +6775,7 @@ function _copyFoodShiftReport(data, startDate, endDate) {
 
   const lines = [
     "Отчёт по питанию Yellow Club",
-    weekTitle ? `Смена: ${weekTitle}` : "",
+    weekTitle ? `Городская программа: ${weekTitle}` : "",
     periodStr ? `Период: ${periodStr}` : "",
     "",
     "ИТОГО:",

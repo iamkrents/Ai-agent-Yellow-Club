@@ -2087,6 +2087,16 @@ class Storage:
             rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
+    def teacher_has_lesson_on_date(self, mk_teacher_id: str, date_str: str) -> bool:
+        if not mk_teacher_id or not date_str:
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM teacher_lesson_control WHERE mk_teacher_id=? AND lesson_date=? LIMIT 1",
+                (str(mk_teacher_id).strip(), str(date_str)),
+            ).fetchone()
+        return row is not None
+
     def mark_teacher_preparation(self, lesson_id: str | int, user_id: int | None, status: str, comment: str = "", **lesson_fields: Any) -> dict[str, Any]:
         status = (status or "not_started").strip()
         fields: dict[str, Any] = dict(lesson_fields)
