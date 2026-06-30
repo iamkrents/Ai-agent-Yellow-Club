@@ -43,6 +43,17 @@ def _get_food_group_code(child: dict) -> str:
     return _get_food_group_info(child)["groupCode"]
 
 
+def normalize_food_location(value: str) -> str:
+    """Extract YC location code (YC1..YC5) from a string (group_name, menu title, etc.)."""
+    if not value:
+        return ""
+    v = str(value).upper()
+    for code in ("YC1", "YC2", "YC3", "YC4", "YC5"):
+        if code in v:
+            return code
+    return ""
+
+
 class Storage:
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -599,6 +610,7 @@ class Storage:
             conn.execute("ALTER TABLE food_order_items ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1")
         except Exception:
             pass
+        self._ensure_column(conn, "food_menus", "location_code", "location_code TEXT")
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS food_reminder_log (
@@ -883,12 +895,15 @@ class Storage:
 
     # --- Food module: menus ---
 
-    def create_food_menu(self, menu_date: str, title: Optional[str], deadline_at: Optional[str], created_by: Optional[int] = None) -> dict[str, Any]:
+    def create_food_menu(self, menu_date: str, title: Optional[str], deadline_at: Optional[str], created_by: Optional[int] = None, location_code: Optional[str] = None) -> dict[str, Any]:
         now = now_iso()
+        loc = str(location_code or "").strip().upper() or None
+        if not loc and title:
+            loc = normalize_food_location(title) or None
         with self._connect() as conn:
             cur = conn.execute(
-                "INSERT INTO food_menus(created_at, updated_at, created_by, menu_date, title, deadline_at, status) VALUES (?, ?, ?, ?, ?, ?, 'draft')",
-                (now, now, created_by, str(menu_date or "").strip(), str(title or "").strip() or None, str(deadline_at or "").strip() or None),
+                "INSERT INTO food_menus(created_at, updated_at, created_by, menu_date, title, deadline_at, status, location_code) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?)",
+                (now, now, created_by, str(menu_date or "").strip(), str(title or "").strip() or None, str(deadline_at or "").strip() or None, loc),
             )
             row = conn.execute("SELECT * FROM food_menus WHERE id=?", (cur.lastrowid,)).fetchone()
         return dict(row) if row else {}
@@ -920,7 +935,7 @@ class Storage:
 
     def update_food_menu(self, menu_id: int, data: dict[str, Any]) -> Optional[dict[str, Any]]:
         now = now_iso()
-        allowed = {"menu_date", "title", "deadline_at", "notes"}
+        allowed = {"menu_date", "title", "deadline_at", "notes", "location_code"}
         sets = []
         vals: list[Any] = []
         for k, v in data.items():
@@ -1160,16 +1175,17 @@ class Storage:
                     if ch["full_name"] not in item_children.get(iid, []):
                         item_children.setdefault(iid, []).append(ch["full_name"])
         # Staff orders for this menu
+        menu_location_code = str(menu.get("location_code") or "").strip().upper()
         staff_orders = self.list_food_staff_orders_for_menu(mid)
         by_staff = []
         for so in staff_orders:
             if so["status"] == "submitted":
                 item_details = [{"item_id": i["item_id"], "name": i["name"], "category": i["category"], "weight": i["weight"], "quantity": int(i.get("quantity", 1) or 1)} for i in so.get("items", [])]
                 display_name = str(so.get("staff_name") or so.get("staff_username") or f"Сотрудник #{so['staff_user_id']}")
-                by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "status": "submitted", "itemDetails": item_details})
+                by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "status": "submitted", "itemDetails": item_details, "locationCode": menu_location_code})
             elif so["status"] == "skipped":
                 display_name = str(so.get("staff_name") or so.get("staff_username") or f"Сотрудник #{so['staff_user_id']}")
-                by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "status": "skipped", "itemDetails": []})
+                by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "status": "skipped", "itemDetails": [], "locationCode": menu_location_code})
         # Add staff item counts to aggregate
         for so_entry in by_staff:
             if so_entry["status"] == "submitted":
@@ -1184,6 +1200,7 @@ class Storage:
         ]
         return {
             "menu": menu,
+            "menuLocationCode": menu_location_code,
             "totalChildren": len(all_children),
             "submittedOrders": submitted,
             "skippedOrders": skipped,
@@ -2097,6 +2114,22 @@ class Storage:
             ).fetchone()
         return row is not None
 
+    def get_teacher_lesson_locations(self, mk_teacher_id: str, date_str: str) -> list[str]:
+        """Return distinct YC location codes for a teacher's lessons on date_str."""
+        if not mk_teacher_id or not date_str:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT group_name FROM teacher_lesson_control WHERE mk_teacher_id=? AND lesson_date=?",
+                (str(mk_teacher_id).strip(), str(date_str)),
+            ).fetchall()
+        codes: list[str] = []
+        for row in rows:
+            c = normalize_food_location(row["group_name"] or "")
+            if c and c not in codes:
+                codes.append(c)
+        return codes
+
     def list_teachers_with_lesson_on_date(self, date_str: str) -> list[dict[str, Any]]:
         """Distinct mk_teacher_ids with lessons on date_str, joined to staff_users."""
         if not date_str:
@@ -2104,9 +2137,10 @@ class Storage:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT DISTINCT
+                SELECT
                     tlc.mk_teacher_id,
                     tlc.teacher_name,
+                    GROUP_CONCAT(DISTINCT tlc.group_name) AS group_names,
                     su.user_id,
                     su.full_name,
                     su.username
@@ -2117,6 +2151,7 @@ class Storage:
                 WHERE tlc.lesson_date = ?
                   AND tlc.mk_teacher_id IS NOT NULL
                   AND tlc.mk_teacher_id != ''
+                GROUP BY tlc.mk_teacher_id
                 ORDER BY tlc.teacher_name, tlc.mk_teacher_id
                 """,
                 (str(date_str),),

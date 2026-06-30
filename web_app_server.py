@@ -1925,8 +1925,9 @@ class MiniAppContext:
             return {"ok": False, "error": "menu_date обязателен"}
         title = str(payload.get("title") or "").strip() or None
         deadline_at = str(payload.get("deadline_at") or "").strip() or None
+        location_code = str(payload.get("location_code") or "").strip().upper() or None
         created_by = int(auth["user_id"])
-        menu = self.storage.create_food_menu(menu_date, title, deadline_at, created_by)
+        menu = self.storage.create_food_menu(menu_date, title, deadline_at, created_by, location_code)
         return {"ok": True, "menu": menu}
 
     def food_update_menu(self, auth: dict[str, Any], menu_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2159,7 +2160,10 @@ class MiniAppContext:
             code = ch.get("groupCode", "unknown")
             groups.setdefault(code, []).append(ch)
         by_locations = []
-        for code in sorted(groups.keys(), key=lambda c: code_order.get(c, 50)):
+        menu_loc_code = str((summary.get("menu") or {}).get("location_code") or "").strip().upper()
+        full_by_staff = summary.get("byStaff", [])
+        sorted_codes = sorted(groups.keys(), key=lambda c: code_order.get(c, 50))
+        for idx, code in enumerate(sorted_codes):
             ch_list = groups[code]
             loc = location_map.get(code, f"Адрес не определён ({code})")
             loc_submitted = sum(1 for c in ch_list if c["status"] == "submitted")
@@ -2181,6 +2185,12 @@ class MiniAppContext:
                 {"item_id": iid, "category": meta["category"], "name": meta["name"], "weight": meta["weight"], "count": loc_item_counts[iid], "children": loc_item_children.get(iid, [])}
                 for iid, meta in loc_item_meta.items()
             ]
+            # Distribute staff orders: match by location code, or first block if no location code on menu
+            if menu_loc_code:
+                loc_staff = [s for s in full_by_staff if (s.get("locationCode") or "").upper() == code or
+                             (s.get("locationCode") or "").upper() == menu_loc_code == code]
+            else:
+                loc_staff = full_by_staff if idx == 0 else []
             by_locations.append({
                 "groupCode": code,
                 "location": loc,
@@ -2190,6 +2200,7 @@ class MiniAppContext:
                 "missingOrders": loc_missing,
                 "byItems": loc_by_items,
                 "byChildren": ch_list,
+                "byStaff": loc_staff,
                 "missingChildren": [c["childName"] for c in ch_list if c["status"] == "missing"],
             })
         return {"ok": True, **summary, "byLocations": by_locations}
@@ -2284,15 +2295,23 @@ class MiniAppContext:
         tomorrow_str = (minsk_now.date() + timedelta(days=1)).isoformat()
         has_tomorrow_lesson = True
         teacher_not_linked = False
+        teacher_location_codes: list[str] = []
         if role in {"teacher", "intern"}:
             mk_teacher_id = self._mk_teacher_id_for_user(user_id)
             if mk_teacher_id:
                 has_tomorrow_lesson = self.storage.teacher_has_lesson_on_date(mk_teacher_id, tomorrow_str)
+                if has_tomorrow_lesson:
+                    teacher_location_codes = self.storage.get_teacher_lesson_locations(mk_teacher_id, tomorrow_str)
             else:
                 has_tomorrow_lesson = False
                 teacher_not_linked = True
         menus = self.storage.list_published_food_menus_with_items()
         tomorrow_menus = [m for m in menus if (m.get("menu_date") or "") == tomorrow_str]
+        # Filter by teacher location: only if teacher has known locations AND menus have location_code
+        if teacher_location_codes:
+            located = [m for m in tomorrow_menus if (m.get("location_code") or "").upper() in teacher_location_codes]
+            if located:
+                tomorrow_menus = located
         for menu in tomorrow_menus:
             for cat_items in (menu.get("itemsByCategory") or {}).values():
                 for item in cat_items:
@@ -2302,6 +2321,7 @@ class MiniAppContext:
             "hasTomorrowLesson": has_tomorrow_lesson,
             "teacherNotLinked": teacher_not_linked,
             "tomorrowDate": tomorrow_str,
+            "teacherLocationCodes": teacher_location_codes,
             "menus": tomorrow_menus,
         }
 
@@ -2318,16 +2338,21 @@ class MiniAppContext:
         except Exception:
             minsk_now = datetime.utcnow()
         tomorrow_str = (minsk_now.date() + timedelta(days=1)).isoformat()
+        from storage import normalize_food_location as _nfl
         rows = self.storage.list_teachers_with_lesson_on_date(tomorrow_str)
         teachers = []
         for t in rows:
             mk_id = str(t.get("mk_teacher_id") or "").strip()
             has_user = bool(t.get("user_id"))
+            group_names_str = str(t.get("group_names") or "")
+            loc_codes = list({_nfl(g) for g in group_names_str.split(",") if _nfl(g)})
             teachers.append({
                 "mkTeacherId": mk_id,
                 "teacherName": t.get("teacher_name") or t.get("full_name") or mk_id,
                 "userId": t.get("user_id"),
                 "username": t.get("username"),
+                "groupNames": group_names_str,
+                "locationCodes": loc_codes,
                 "hasStaffUser": has_user,
                 "status": "access_ok" if has_user else "no_telegram_link",
             })

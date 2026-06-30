@@ -5045,8 +5045,9 @@ async function loadFoodTeacherAccess(el) {
       const statusIcon = t.hasStaffUser ? "✅" : "❌";
       const statusText = t.hasStaffUser ? "доступ есть" : "нет Telegram-привязки";
       const userNote = t.username ? ` · @${escapeHtml(t.username)}` : (t.userId ? ` · id ${escapeHtml(String(t.userId))}` : "");
+      const locNote = Array.isArray(t.locationCodes) && t.locationCodes.length ? ` · <b>${t.locationCodes.map(c => escapeHtml(c)).join(", ")}</b>` : "";
       return `<div class="food-debug-data-status-row">
-        <span>${escapeHtml(t.teacherName || t.mkTeacherId || "")}${userNote}</span>
+        <span>${escapeHtml(t.teacherName || t.mkTeacherId || "")}${userNote}${locNote}</span>
         <b>${statusIcon} ${escapeHtml(statusText)}</b>
       </div>`;
     }).join("");
@@ -5893,7 +5894,8 @@ function _renderFoodMenuList(root) {
       <h4>Создать меню</h4>
       <div class="food-menu-form-row"><label>Дата меню</label><input type="date" id="fmDate" value="${defaultMenuDate}"></div>
       ${menuDateWarning}
-      <div class="food-menu-form-row"><label>Название (например: Понедельник)</label><input type="text" id="fmTitle" placeholder="Понедельник" maxlength="100"></div>
+      <div class="food-menu-form-row"><label>Название (например: Понедельник YC1)</label><input type="text" id="fmTitle" placeholder="Понедельник YC1" maxlength="100"></div>
+      <div class="food-menu-form-row"><label>Филиал (определяет, для какой локации меню)</label><select id="fmLocationCode"><option value="">— Общее (все филиалы) —</option><option value="YC1">YC1 · Кульман 1/1</option><option value="YC2">YC2 · Мстиславца 6</option><option value="YC3">YC3</option></select></div>
       <div class="food-menu-form-row"><label>Дедлайн выбора (необязательно)</label><input type="datetime-local" id="fmDeadline"></div>
       <div class="food-menu-actions">
         <button class="primary" id="fmCreateBtn">Создать</button>
@@ -5906,12 +5908,13 @@ function _renderFoodMenuList(root) {
     ? menus.map(m => {
         const dateStr = _formatMenuDate(m.menu_date);
         const dlStr = m.deadline_at ? `Дедлайн: ${_formatDeadline(m.deadline_at)}` : "";
+        const locBadge = m.location_code ? `<span class="food-loc-badge">${escapeHtml(m.location_code)}</span>` : "";
         const canPublish = m.status === "draft";
         const canClose = m.status === "published";
         return `<div class="food-menu-card">
           <div class="food-menu-card-head">
             <div>
-              <div class="food-menu-card-title">${escapeHtml(m.title || dateStr)} ${_foodMenuStatusBadge(m.status)}</div>
+              <div class="food-menu-card-title">${escapeHtml(m.title || dateStr)} ${_foodMenuStatusBadge(m.status)}${locBadge}</div>
               <div class="food-menu-card-meta">${escapeHtml(dateStr)}${dlStr ? " · " + escapeHtml(dlStr) : ""} · блюд: ${m.items_count ?? 0}</div>
             </div>
           </div>
@@ -5961,10 +5964,11 @@ async function createFoodMenu(root) {
   const menuDate = root.querySelector("#fmDate")?.value || "";
   const title = root.querySelector("#fmTitle")?.value || "";
   const deadline = root.querySelector("#fmDeadline")?.value || "";
+  const locationCode = root.querySelector("#fmLocationCode")?.value || "";
   const errEl = root.querySelector("#fmCreateError");
   if (!menuDate) { if (errEl) { errEl.textContent = "Укажите дату меню"; errEl.style.display = ""; } return; }
   try {
-    const data = await apiPost("/api/food/menus", { menu_date: menuDate, title, deadline_at: deadline || null });
+    const data = await apiPost("/api/food/menus", { menu_date: menuDate, title, deadline_at: deadline || null, location_code: locationCode || null });
     if (!data.ok) { if (errEl) { errEl.textContent = data.error || "Ошибка"; errEl.style.display = ""; } return; }
     state.foodMenuData = null;
     await loadFoodMenus(root);
@@ -6320,7 +6324,7 @@ function _renderFoodMenuSummary(root, menuId, data) {
         </div>
         <div class="food-summary-section" style="margin-top:10px">Заказы по детям</div>
         ${childCards}
-        ${_staffSummaryBlock(data.byStaff)}
+        ${_staffSummaryBlock(loc.byStaff || [])}
         <div class="food-summary-section" style="margin-top:10px">Итог по блюдам</div>
         ${_itemsBlock(loc.byItems)}
       </div>`;
@@ -6543,12 +6547,14 @@ function _staffLunchDebugHtml(d) {
   const mkId = escapeHtml(String(state.me?.mkTeacherId || "—"));
   const tomorrow = d ? escapeHtml(d.tomorrowDate || "?") : "?";
   const lesson = d ? (d.teacherNotLinked ? "нет teacherId" : d.hasTomorrowLesson ? "да" : "нет") : "загрузка";
+  const locCodes = d ? (Array.isArray(d.teacherLocationCodes) && d.teacherLocationCodes.length ? d.teacherLocationCodes.join(", ") : "—") : "загрузка";
   const menus = d ? ((d.menus || []).length > 0 ? `найдено (${(d.menus || []).length})` : "не найдено") : "загрузка";
   return `<details class="staff-lunch-debug"><summary>debug</summary>
     <div>Роль: <b>${role}</b></div>
     <div>Telegram ID: <b>${uid}</b></div>
     <div>MoyKlass teacherId: <b>${mkId}</b></div>
     <div>Завтра (${tomorrow}) — занятие: <b>${lesson}</b></div>
+    <div>Филиал (YC-код): <b>${escapeHtml(locCodes)}</b></div>
     <div>Меню на завтра: <b>${menus}</b></div>
   </details>`;
 }
@@ -6589,7 +6595,8 @@ async function renderStaffFoodLunch(root) {
       const dateStr = _formatMenuDate(menu.menu_date);
       const deadlinePassed = _isDeadlinePassed(menu.deadline_at);
       const order = staffOrders[menu.id] || null;
-      const titleHtml = `<div class="parent-food-card-title">${escapeHtml(menu.title || dateStr)}</div><div class="parent-food-card-meta">${escapeHtml(dateStr)}</div>`;
+      const locBadge = menu.location_code ? `<span class="food-loc-badge">${escapeHtml(menu.location_code)}</span> ` : "";
+      const titleHtml = `<div class="parent-food-card-title">${locBadge}${escapeHtml(menu.title || dateStr)}</div><div class="parent-food-card-meta">${escapeHtml(dateStr)}</div>`;
       const deadlineNote = menu.deadline_at
         ? (deadlinePassed
             ? `<div class="food-order-deadline-passed" style="margin-top:4px">Дедлайн прошёл</div>`
