@@ -1076,6 +1076,19 @@ class MiniAppContext:
     def me(self, auth: dict[str, Any]) -> dict[str, Any]:
         user_id = int(auth["user_id"])
         staff = self.storage.get_staff_user(user_id) or {}
+        # Auto-save Telegram display name when staff_users.full_name is empty
+        if staff:
+            tg_user = auth.get("user") or {}
+            tg_first = str(tg_user.get("first_name") or "").strip()
+            tg_last = str(tg_user.get("last_name") or "").strip()
+            tg_full = f"{tg_first} {tg_last}".strip() if (tg_first or tg_last) else ""
+            tg_username = str(tg_user.get("username") or "").strip()
+            if tg_full or tg_username:
+                self.storage.update_staff_display_name(user_id, tg_full, tg_username)
+                if tg_full and not staff.get("full_name"):
+                    staff["full_name"] = tg_full
+                if tg_username and not staff.get("username"):
+                    staff["username"] = tg_username
         profile = self.storage.get_teacher_profile(user_id) or {}
         role = self._role_for_user(user_id)
         real_role = self._base_role_for_user(user_id)
@@ -2162,6 +2175,10 @@ class MiniAppContext:
         by_locations = []
         menu_loc_code = str((summary.get("menu") or {}).get("location_code") or "").strip().upper()
         full_by_staff = summary.get("byStaff", [])
+        # Build a meta map from global byItems (includes staff items) for fallback lookup
+        global_item_meta: dict[int, dict[str, Any]] = {
+            int(bi["item_id"]): bi for bi in summary.get("byItems", [])
+        }
         sorted_codes = sorted(groups.keys(), key=lambda c: code_order.get(c, 50))
         for idx, code in enumerate(sorted_codes):
             ch_list = groups[code]
@@ -2169,9 +2186,16 @@ class MiniAppContext:
             loc_submitted = sum(1 for c in ch_list if c["status"] == "submitted")
             loc_skipped = sum(1 for c in ch_list if c["status"] == "skipped")
             loc_missing = sum(1 for c in ch_list if c["status"] == "missing")
+            # Determine this location's staff orders FIRST so their items can be counted too
+            if menu_loc_code:
+                loc_staff = [s for s in full_by_staff if (s.get("locationCode") or "").upper() == code or
+                             (s.get("locationCode") or "").upper() == menu_loc_code == code]
+            else:
+                loc_staff = full_by_staff if idx == 0 else []
             loc_item_counts: dict[int, int] = {}
             loc_item_children: dict[int, list[str]] = {}
             loc_item_meta: dict[int, dict[str, Any]] = {}
+            # Count children's items
             for ch in ch_list:
                 if ch["status"] == "submitted":
                     for it in ch.get("itemDetails", []):
@@ -2181,16 +2205,19 @@ class MiniAppContext:
                         if ch["childName"] not in loc_item_children.get(iid, []):
                             loc_item_children.setdefault(iid, []).append(ch["childName"])
                         loc_item_meta[iid] = it
+            # Add staff items to the same per-location counts
+            for s in loc_staff:
+                if s.get("status") == "submitted":
+                    for it in s.get("itemDetails", []):
+                        iid = int(it["item_id"])
+                        qty = int(it.get("quantity", 1) or 1)
+                        loc_item_counts[iid] = loc_item_counts.get(iid, 0) + qty
+                        if iid not in loc_item_meta:
+                            loc_item_meta[iid] = global_item_meta.get(iid, it)
             loc_by_items = [
-                {"item_id": iid, "category": meta["category"], "name": meta["name"], "weight": meta["weight"], "count": loc_item_counts[iid], "children": loc_item_children.get(iid, [])}
+                {"item_id": iid, "category": meta.get("category"), "name": meta.get("name"), "weight": meta.get("weight"), "count": loc_item_counts[iid], "children": loc_item_children.get(iid, [])}
                 for iid, meta in loc_item_meta.items()
             ]
-            # Distribute staff orders: match by location code, or first block if no location code on menu
-            if menu_loc_code:
-                loc_staff = [s for s in full_by_staff if (s.get("locationCode") or "").upper() == code or
-                             (s.get("locationCode") or "").upper() == menu_loc_code == code]
-            else:
-                loc_staff = full_by_staff if idx == 0 else []
             by_locations.append({
                 "groupCode": code,
                 "location": loc,
