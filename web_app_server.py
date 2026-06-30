@@ -1987,6 +1987,44 @@ class MiniAppContext:
             return {"ok": False, "error": "Меню не найдено"}
         return {"ok": True, "menu": menu}
 
+    def food_update_deadline(self, auth: dict[str, Any], menu_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        denied = self._require_admin(auth)
+        if denied:
+            return denied
+        try:
+            mid = int(menu_id)
+        except (ValueError, TypeError):
+            return {"ok": False, "error": "Неверный menu_id"}
+        deadline_at = str(payload.get("deadline_at") or "").strip()
+        if not deadline_at:
+            dl_date = str(payload.get("deadline_date") or "").strip()
+            dl_time = str(payload.get("deadline_time") or "").strip()
+            if dl_date and dl_time:
+                deadline_at = f"{dl_date}T{dl_time}" + (":00" if len(dl_time) == 5 else "")
+            elif dl_date:
+                deadline_at = f"{dl_date}T23:59:00"
+        if not deadline_at:
+            return {"ok": False, "error": "Дедлайн не указан"}
+        from datetime import datetime as _dt
+        try:
+            dl = _dt.fromisoformat(deadline_at.replace("Z", ""))
+            if dl <= _dt.now():
+                return {"ok": False, "error": "Дедлайн должен быть в будущем"}
+        except (ValueError, TypeError):
+            return {"ok": False, "error": "Неверный формат дедлайна"}
+        old_menu = self.storage.get_food_menu(mid)
+        if not old_menu:
+            return {"ok": False, "error": "Меню не найдено"}
+        old_deadline = old_menu.get("deadline_at") or ""
+        changed_by = int(auth["user_id"])
+        menu = self.storage.update_food_menu(mid, {"deadline_at": deadline_at})
+        if not menu:
+            return {"ok": False, "error": "Меню не найдено"}
+        log.info("food_deadline_updated menu_id=%s old=%r new=%r by=%s", mid, old_deadline, deadline_at, changed_by)
+        return {"ok": True, "menu": menu}
+
     def food_add_item(self, auth: dict[str, Any], menu_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
@@ -5481,6 +5519,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.food_remind_missing(auth, _mparts[0]))
                 if len(_mparts) == 2 and _mparts[1] == "notify-published":
                     return self._send_json(CTX.food_notify_published(auth, _mparts[0]))
+                if len(_mparts) == 2 and _mparts[1] == "update-deadline":
+                    return self._send_json(CTX.food_update_deadline(auth, _mparts[0], body))
             if path.startswith("/api/food/items/"):
                 _irest = path[len("/api/food/items/"):]
                 _iparts = _irest.split("/")

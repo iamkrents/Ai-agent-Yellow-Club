@@ -6375,3 +6375,19 @@ body { -webkit-overflow-scrolling: touch; }
 
 /* v7.0.10 — location code badge */
 .food-loc-badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 8px; background: #e3f0fb; color: #1a5fa8; white-space: nowrap; margin-right: 4px; vertical-align: middle; }
+
+/* v7.0.13 — editable food menu deadline */
+.food-menu-dl-status { font-size: 13px; margin: 4px 0 2px; line-height: 1.4; }
+.food-menu-dl-status--active { color: #1a5fa8; font-weight: 600; }
+.food-menu-dl-status--passed { color: #c0392b; font-weight: 600; }
+.food-menu-dl-status--none { color: var(--color-text-secondary, #888); }
+.food-menu-deadline-block { margin: 6px 0 10px; padding: 10px 12px; background: var(--bg-secondary, #f5f5f5); border-radius: 8px; }
+.food-deadline-form { padding: 8px 0 2px; }
+.food-deadline-form-title { font-weight: 600; font-size: 14px; margin-bottom: 8px; }
+.food-deadline-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.food-deadline-row .food-menu-form-row { flex: 1; min-width: 120px; }
+.food-deadline-quick { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 4px; }
+.food-deadline-form-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.food-deadline-result { padding: 6px 10px; border-radius: 6px; font-size: 13px; margin-top: 6px; }
+.food-deadline-result--error { background: #fdecea; color: #c0392b; }
+.food-deadline-result--ok { background: #eafaf1; color: #1a7a3a; }

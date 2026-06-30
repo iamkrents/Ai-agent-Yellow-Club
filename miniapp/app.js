@@ -5816,6 +5816,104 @@ function _formatDeadline(dt) {
   } catch (e) { return dt; }
 }
 
+function _dlLocalDateStr(dt) {
+  if (!dt) return "";
+  try {
+    const d = new Date(dt);
+    const p = n => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+  } catch (e) { return ""; }
+}
+
+function _dlLocalTimeStr(dt) {
+  if (!dt) return "";
+  try {
+    const d = new Date(dt);
+    const p = n => String(n).padStart(2, "0");
+    return `${p(d.getHours())}:${p(d.getMinutes())}`;
+  } catch (e) { return ""; }
+}
+
+function _deadlineEditFormHtml(menuId, deadlineAt) {
+  return `<div class="food-deadline-form">
+    <div class="food-deadline-form-title">Изменить дедлайн</div>
+    <div class="food-deadline-row">
+      <div class="food-menu-form-row"><label>Дата</label><input type="date" class="fmDlDate" data-mid="${menuId}" value="${escapeAttr(_dlLocalDateStr(deadlineAt))}"></div>
+      <div class="food-menu-form-row"><label>Время</label><input type="time" class="fmDlTime" data-mid="${menuId}" value="${escapeAttr(_dlLocalTimeStr(deadlineAt))}"></div>
+    </div>
+    <div class="food-deadline-quick">
+      <button class="secondary btn-sm" data-dl-quick="30m" data-mid="${menuId}">+30 мин</button>
+      <button class="secondary btn-sm" data-dl-quick="1h" data-mid="${menuId}">+1 час</button>
+      <button class="secondary btn-sm" data-dl-quick="today20" data-mid="${menuId}">Сегодня 20:00</button>
+      <button class="secondary btn-sm" data-dl-quick="tmr09" data-mid="${menuId}">Завтра 09:00</button>
+    </div>
+    <div class="food-deadline-form-actions">
+      <button class="primary btn-sm" data-save-dl="${menuId}">Сохранить дедлайн</button>
+      <button class="secondary btn-sm" data-cancel-dl="${menuId}">Отмена</button>
+    </div>
+    <div class="food-deadline-result" id="fmDlResult-${menuId}" style="display:none"></div>
+  </div>`;
+}
+
+function _applyDeadlineQuick(root, menuId, quick) {
+  const dateEl = root.querySelector(`.fmDlDate[data-mid="${menuId}"]`);
+  const timeEl = root.querySelector(`.fmDlTime[data-mid="${menuId}"]`);
+  if (!dateEl || !timeEl) return;
+  const now = new Date();
+  const p = n => String(n).padStart(2, "0");
+  const ds = d => `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+  const ts = d => `${p(d.getHours())}:${p(d.getMinutes())}`;
+  if (quick === "30m") {
+    const d = new Date(now.getTime() + 30 * 60 * 1000);
+    dateEl.value = ds(d); timeEl.value = ts(d);
+  } else if (quick === "1h") {
+    const d = new Date(now.getTime() + 60 * 60 * 1000);
+    dateEl.value = ds(d); timeEl.value = ts(d);
+  } else if (quick === "today20") {
+    dateEl.value = ds(now); timeEl.value = "20:00";
+  } else if (quick === "tmr09") {
+    const tmr = new Date(now); tmr.setDate(tmr.getDate() + 1);
+    dateEl.value = ds(tmr); timeEl.value = "09:00";
+  }
+}
+
+async function saveMenuDeadline(root, menuId) {
+  const dateEl = root.querySelector(`.fmDlDate[data-mid="${menuId}"]`);
+  const timeEl = root.querySelector(`.fmDlTime[data-mid="${menuId}"]`);
+  const resultEl = root.querySelector(`#fmDlResult-${menuId}`);
+  const dateVal = (dateEl?.value || "").trim();
+  const timeVal = (timeEl?.value || "").trim();
+  if (!dateVal || !timeVal) {
+    if (resultEl) { resultEl.textContent = "Укажите дату и время"; resultEl.className = "food-deadline-result food-deadline-result--error"; resultEl.style.display = ""; }
+    return;
+  }
+  const deadline_at = `${dateVal}T${timeVal}:00`;
+  if (resultEl) resultEl.style.display = "none";
+  try {
+    const data = await apiPost(`/api/food/menus/${menuId}/update-deadline`, { deadline_at });
+    if (!data.ok) {
+      if (resultEl) { resultEl.textContent = data.error || "Ошибка"; resultEl.className = "food-deadline-result food-deadline-result--error"; resultEl.style.display = ""; }
+      return;
+    }
+    if (state.foodMenuData) {
+      const idx = state.foodMenuData.findIndex(m => m.id === menuId);
+      if (idx !== -1) state.foodMenuData[idx] = data.menu;
+    }
+    if (state.foodMenuSelected && state.foodMenuSelected.id === menuId) {
+      state.foodMenuSelected = data.menu;
+    }
+    const newDl = _formatDeadline(data.menu?.deadline_at);
+    setNotice(newDl ? `Дедлайн обновлён. Заказы доступны до ${newDl}.` : "Дедлайн обновлён", "ok");
+    if (state.foodMenuSelected) {
+      _renderFoodMenuDetail(root, state.foodMenuSelected);
+    } else {
+      _renderFoodMenuList(root);
+    }
+  } catch (e) {
+    if (resultEl) { resultEl.textContent = e.message; resultEl.className = "food-deadline-result food-deadline-result--error"; resultEl.style.display = ""; }
+  }
+}
+
 // ---- Admin: food menu panel ----
 
 function _normalizeFoodCategory(name, cat) {
@@ -5907,7 +6005,12 @@ function _renderFoodMenuList(root) {
   const menuCardsHtml = menus.length
     ? menus.map(m => {
         const dateStr = _formatMenuDate(m.menu_date);
-        const dlStr = m.deadline_at ? `Дедлайн: ${_formatDeadline(m.deadline_at)}` : "";
+        const dlPassed = _isMenuDeadlinePassed(m.deadline_at);
+        const dlStatusHtml = m.deadline_at
+          ? (dlPassed
+              ? `<div class="food-menu-dl-status food-menu-dl-status--passed">Дедлайн прошёл. Заказы закрыты.</div>`
+              : `<div class="food-menu-dl-status food-menu-dl-status--active">Заказы доступны до <b>${escapeHtml(_formatDeadline(m.deadline_at))}</b></div>`)
+          : `<div class="food-menu-dl-status food-menu-dl-status--none">Дедлайн не установлен</div>`;
         const locBadge = m.location_code ? `<span class="food-loc-badge">${escapeHtml(m.location_code)}</span>` : "";
         const canPublish = m.status === "draft";
         const canClose = m.status === "published";
@@ -5915,14 +6018,17 @@ function _renderFoodMenuList(root) {
           <div class="food-menu-card-head">
             <div>
               <div class="food-menu-card-title">${escapeHtml(m.title || dateStr)} ${_foodMenuStatusBadge(m.status)}${locBadge}</div>
-              <div class="food-menu-card-meta">${escapeHtml(dateStr)}${dlStr ? " · " + escapeHtml(dlStr) : ""} · блюд: ${m.items_count ?? 0}</div>
+              <div class="food-menu-card-meta">${escapeHtml(dateStr)} · блюд: ${m.items_count ?? 0}</div>
+              ${dlStatusHtml}
             </div>
           </div>
           <div class="food-menu-card-actions">
             <button class="secondary btn-sm" data-open-menu="${m.id}">Открыть</button>
             ${canPublish ? `<button class="primary btn-sm" data-publish-menu="${m.id}">Опубликовать</button>` : ""}
             ${canClose ? `<button class="secondary btn-sm" data-close-menu="${m.id}">Закрыть</button>` : ""}
+            <button class="secondary btn-sm" data-edit-deadline="${m.id}">Изменить дедлайн</button>
           </div>
+          <div id="fmDlForm-${m.id}" style="display:none">${_deadlineEditFormHtml(m.id, m.deadline_at)}</div>
         </div>`;
       }).join("")
     : `<div class="empty">Меню ещё не создано. Нажмите «Создать меню».</div>`;
@@ -5957,6 +6063,26 @@ function _renderFoodMenuList(root) {
   });
   root.querySelectorAll("[data-close-menu]").forEach(btn => {
     btn.addEventListener("click", () => closeFoodMenu(root, parseInt(btn.dataset.closeMenu)));
+  });
+  root.querySelectorAll("[data-edit-deadline]").forEach(btn => {
+    const mid = parseInt(btn.dataset.editDeadline);
+    btn.addEventListener("click", () => {
+      const form = root.querySelector(`#fmDlForm-${mid}`);
+      if (form) form.style.display = form.style.display === "none" ? "" : "none";
+    });
+  });
+  root.querySelectorAll("[data-save-dl]").forEach(btn => {
+    btn.addEventListener("click", () => saveMenuDeadline(root, parseInt(btn.dataset.saveDl)));
+  });
+  root.querySelectorAll("[data-cancel-dl]").forEach(btn => {
+    const mid = parseInt(btn.dataset.cancelDl);
+    btn.addEventListener("click", () => {
+      const form = root.querySelector(`#fmDlForm-${mid}`);
+      if (form) form.style.display = "none";
+    });
+  });
+  root.querySelectorAll("[data-dl-quick]").forEach(btn => {
+    btn.addEventListener("click", () => _applyDeadlineQuick(root, parseInt(btn.dataset.mid), btn.dataset.dlQuick));
   });
 }
 
@@ -6056,6 +6182,15 @@ function _renderFoodMenuDetail(root, menu) {
       ${menu.status === "published" ? `<button class="secondary btn-sm" data-close-menu="${menu.id}">Закрыть меню</button>` : ""}
       ${(menu.status === "published" || menu.status === "closed") ? `<button class="secondary btn-sm" data-summary-menu="${menu.id}">Сводка заказов</button>` : ""}
     </div>
+    <div class="food-menu-deadline-block">
+      ${menu.deadline_at
+        ? (_isMenuDeadlinePassed(menu.deadline_at)
+            ? `<div class="food-menu-dl-status food-menu-dl-status--passed">Дедлайн прошёл. Заказы закрыты.</div>`
+            : `<div class="food-menu-dl-status food-menu-dl-status--active">Заказы доступны до <b>${escapeHtml(_formatDeadline(menu.deadline_at))}</b></div>`)
+        : `<div class="food-menu-dl-status food-menu-dl-status--none">Дедлайн не установлен</div>`}
+      <button class="secondary btn-sm" id="fmDetailEditDlBtn" style="margin-top:6px">Изменить дедлайн</button>
+      <div id="fmDetailDlForm" style="display:none;margin-top:8px">${_deadlineEditFormHtml(menu.id, menu.deadline_at)}</div>
+    </div>
     ${menu.status === "published" && !_isMenuDeadlinePassed(menu.deadline_at) ? `
     <div class="food-notify-block" style="margin-bottom:12px">
       <button class="secondary btn-sm" id="fmNotifyBtn">Уведомить родителей</button>
@@ -6139,6 +6274,18 @@ function _renderFoodMenuDetail(root, menu) {
   });
   root.querySelector("#fiOcrBtn")?.addEventListener("click", () => _uploadFoodMenuOcr(root, menu.id));
   root.querySelector("#fmNotifyBtn")?.addEventListener("click", () => sendFoodPublishNotification(root, menu.id));
+  root.querySelector("#fmDetailEditDlBtn")?.addEventListener("click", () => {
+    const f = root.querySelector("#fmDetailDlForm");
+    if (f) f.style.display = f.style.display === "none" ? "" : "none";
+  });
+  root.querySelector(`[data-save-dl="${menu.id}"]`)?.addEventListener("click", () => saveMenuDeadline(root, menu.id));
+  root.querySelector(`[data-cancel-dl="${menu.id}"]`)?.addEventListener("click", () => {
+    const f = root.querySelector("#fmDetailDlForm");
+    if (f) f.style.display = "none";
+  });
+  root.querySelectorAll(`[data-dl-quick][data-mid="${menu.id}"]`).forEach(btn => {
+    btn.addEventListener("click", () => _applyDeadlineQuick(root, menu.id, btn.dataset.dlQuick));
+  });
 }
 
 async function _uploadFoodMenuOcr(root, menuId) {
