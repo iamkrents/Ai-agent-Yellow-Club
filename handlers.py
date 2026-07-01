@@ -72,7 +72,7 @@ from moyklass_client import (
 log = logging.getLogger("yellow_club_agent.handlers")
 
 
-VALID_ROLES = {"owner", "manager", "teacher", "methodist", "operations", "smm", "accountant", "other"}
+VALID_ROLES = {"owner", "manager", "teacher", "methodist", "operations", "smm", "accountant", "other", "intern", "client_manager", "kitchen", "restaurant"}
 
 
 class BotHandlers:
@@ -3400,6 +3400,23 @@ class BotHandlers:
             await self._reply(msg, f"Привязка сохранена.\nTelegram ID: {tg_id}\nMoyKlass teacherId: {teacher_id}\nИмя: {teacher_name or '-'}")
             return
 
+        if cmd == "mk_link_staff":
+            if not self.admin.is_admin(user.id):
+                await self._reply(msg, "Назначать роли может только владелец.")
+                return
+            STAFF_ROLES = {"kitchen", "restaurant", "operations", "client_manager", "methodist", "admin", "owner", "teacher", "intern", "other", "manager"}
+            parts = args.strip().split(maxsplit=2)
+            if len(parts) < 2 or not parts[0].isdigit() or parts[1].lower() not in STAFF_ROLES:
+                roles_str = ", ".join(sorted(STAFF_ROLES))
+                await self._reply(msg, f"Формат: /mk_link_staff TELEGRAM_ID ROLE [Имя Фамилия]\nПример: /mk_link_staff 123456789 kitchen Повар Кухня\nРоли: {roles_str}")
+                return
+            tg_id = int(parts[0])
+            role = parts[1].lower()
+            display_name = parts[2] if len(parts) > 2 else ""
+            self.storage.register_staff_user(tg_id, username="", full_name=display_name, role=role)
+            await self._reply(msg, f"Сотрудник зарегистрирован.\nTelegram ID: {tg_id}\nРоль: {role}\nИмя: {display_name or '-'}")
+            return
+
         if cmd in {"mk_unlink_teacher", "mk_unbind_teacher"}:
             if not self.admin.is_admin(user.id):
                 await self._reply(msg, "Удалять привязку может только владелец.")
@@ -4190,7 +4207,7 @@ class BotHandlers:
                 return
             parts = args.split(maxsplit=1)
             if len(parts) != 2:
-                await self._reply(msg, "Формат: /set_role USER_ID role\nРоли: owner, manager, teacher, methodist, operations, smm, accountant, other")
+                await self._reply(msg, "Формат: /set_role USER_ID role\nРоли: " + ", ".join(sorted(VALID_ROLES)))
                 return
             try:
                 target_id = int(parts[0])
@@ -4199,7 +4216,7 @@ class BotHandlers:
                 return
             role = parts[1].strip().lower()
             if role not in VALID_ROLES:
-                await self._reply(msg, "Неизвестная роль. Роли: owner, manager, teacher, methodist, operations, smm, accountant, other")
+                await self._reply(msg, "Неизвестная роль. Роли: " + ", ".join(sorted(VALID_ROLES)))
                 return
             ok = self.storage.set_staff_role(target_id, role)
             await self._reply(msg, f"Роль обновлена: {target_id} -> {self.admin.role_label(role)}" if ok else "Не удалось обновить роль.")

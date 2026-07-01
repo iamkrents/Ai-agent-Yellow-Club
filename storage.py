@@ -1236,6 +1236,14 @@ class Storage:
             "byStaff": by_staff,
         }
 
+    def get_food_item_prices(self, menu_id: int) -> dict[int, float]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, price FROM food_items WHERE menu_id=?",
+                (int(menu_id),),
+            ).fetchall()
+        return {int(row["id"]): float(row["price"] or 0) for row in rows}
+
     def get_missing_children_with_parents(self, menu_id: int) -> list[dict[str, Any]]:
         """Return children who have not placed/skipped order for menu_id, with parent link info."""
         import json as _json

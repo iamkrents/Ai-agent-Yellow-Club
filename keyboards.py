@@ -14,6 +14,10 @@ ROLE_LABELS = {
     "smm": "🦄 Маркетинг / SMM",
     "accountant": "📂 Бухгалтер",
     "other": "👤 Другое",
+    "kitchen": "🍳 Кухня",
+    "restaurant": "🍽 Ресторан",
+    "intern": "🎓 Стажёр",
+    "client_manager": "💼 Клиент-менеджер",
 }
 
 ROLE_BY_BUTTON = {v: k for k, v in ROLE_LABELS.items()}

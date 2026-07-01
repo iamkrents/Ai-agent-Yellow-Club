@@ -55,6 +55,8 @@ ROLE_LABELS = {
     "operations": "Операционный менеджер",
     "other": "Сотрудник",
     "parent": "Родитель",
+    "kitchen": "Кухня",
+    "restaurant": "Ресторан",
 }
 TEST_ROLE_OPTIONS = [
     {"value": "owner", "label": "Админ (owner)", "needsTeacher": False},
@@ -62,6 +64,8 @@ TEST_ROLE_OPTIONS = [
     {"value": "methodist", "label": "Старший преподаватель (методист)", "needsTeacher": False},
     {"value": "intern", "label": "Стажер", "needsTeacher": True},
     {"value": "client_manager", "label": "Клиент-менеджер", "needsTeacher": False},
+    {"value": "kitchen", "label": "Кухня", "needsTeacher": False},
+    {"value": "restaurant", "label": "Ресторан", "needsTeacher": False},
 ]
 LESSON_ROLES = {"owner", "teacher", "methodist", "operations", "intern"}
 SCHEDULE_ROLES = {"owner", "teacher", "methodist", "operations"}
@@ -73,6 +77,8 @@ KPI_ROLES = {"client_manager", "owner", "operations", "methodist"}
 TEACHER_LIKE_ROLES = {"teacher", "methodist", "intern"}
 ADMIN_ROLES = {"owner", "methodist", "operations"}
 FULL_ADMIN_ROLES = {"owner", "operations"}
+KITCHEN_SUMMARY_ROLES = {"kitchen", "restaurant", "owner", "methodist", "operations"}
+FOOD_PRICE_ROLES = {"restaurant", "owner", "methodist", "operations"}
 ADMIN_TABS_BY_ROLE = {
     "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
     "operations": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
@@ -1053,6 +1059,7 @@ class MiniAppContext:
         can_order_staff_lunch = bool(getattr(self.settings, "food_module_enabled", False)) and role in _staff_food_roles
         if can_order_staff_lunch and "food-lunch" not in admin_tabs:
             admin_tabs = list(admin_tabs) + ["food-lunch"]
+        food_enabled = bool(getattr(self.settings, "food_module_enabled", False))
         return {
             "canUseLessons": role in LESSON_ROLES,
             "canUseSchedule": role in SCHEDULE_ROLES,
@@ -1066,11 +1073,13 @@ class MiniAppContext:
             "canManageUsers": role in FULL_ADMIN_ROLES,
             "canUseNotionDiagnostics": role in FULL_ADMIN_ROLES,
             "canUseTestRoles": self._can_use_role_test(user_id),
-            "canAskAgent": role != "parent",
+            "canAskAgent": role not in ("parent", "kitchen", "restaurant"),
             "isParent": role == "parent",
             "adminTabs": admin_tabs,
             "foodMenuOcrEnabled": bool(getattr(self.settings, "food_menu_ocr_enabled", False)) and role in ADMIN_ROLES,
             "canOrderStaffLunch": can_order_staff_lunch,
+            "canUseFoodKitchenSummary": food_enabled and role in KITCHEN_SUMMARY_ROLES,
+            "canSeeFoodPrices": food_enabled and role in FOOD_PRICE_ROLES,
         }
 
     def me(self, auth: dict[str, Any]) -> dict[str, Any]:
@@ -2689,7 +2698,7 @@ class MiniAppContext:
 
     def _is_staff_food_role(self, auth: dict[str, Any]) -> bool:
         role = self._role_for_user(int(auth["user_id"]))
-        return role not in ("", "parent") and bool(getattr(self.settings, "food_module_enabled", False))
+        return role not in ("", "parent", "kitchen", "restaurant") and bool(getattr(self.settings, "food_module_enabled", False))
 
     def food_staff_my_order(self, auth: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
@@ -2774,6 +2783,163 @@ class MiniAppContext:
         user_id = int(auth["user_id"])
         order = self.storage.upsert_food_staff_order(user_id, menu_id, {}, "skipped")
         return {"ok": True, "order": order}
+
+    # --- Food module: kitchen / restaurant read-only summary ---
+
+    def _require_kitchen_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
+        user_id = int(auth["user_id"])
+        role = self._role_for_user(user_id)
+        if role not in KITCHEN_SUMMARY_ROLES:
+            return {"ok": False, "error": "Доступ только для кухни, ресторана и администраторов."}
+        return None
+
+    def food_kitchen_menus(self, auth: dict[str, Any]) -> dict[str, Any]:
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        denied = self._require_kitchen_access(auth)
+        if denied:
+            return denied
+        menus = self.storage.list_food_menus()
+        published = [m for m in menus if m.get("status") == "published"]
+        return {"ok": True, "menus": published}
+
+    def food_kitchen_summary(self, auth: dict[str, Any], menu_id: str) -> dict[str, Any]:
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        denied = self._require_kitchen_access(auth)
+        if denied:
+            return denied
+        user_id = int(auth["user_id"])
+        role = self._role_for_user(user_id)
+        show_prices = role in FOOD_PRICE_ROLES
+        try:
+            mid = int(menu_id)
+        except (ValueError, TypeError):
+            return {"ok": False, "error": "Неверный menu_id"}
+        summary = self.storage.get_food_menu_summary(mid)
+        if not summary:
+            return {"ok": False, "error": "Меню не найдено"}
+        item_prices: dict[int, float] = self.storage.get_food_item_prices(mid) if show_prices else {}
+        location_map: dict[str, str] = {
+            "YC1": getattr(self.settings, "food_location_yc1", "") or "Кульман 1/1",
+            "YC2": getattr(self.settings, "food_location_yc2", "") or "Мстиславца 6",
+            "YC3": getattr(self.settings, "food_location_yc3", "") or "Адрес не указан",
+            "unknown": "Адрес не определён",
+        }
+        code_order = {"YC1": 0, "YC2": 1, "YC3": 2, "YC4": 3, "YC5": 4, "unknown": 99}
+        groups: dict[str, list[Any]] = {}
+        for ch in summary.get("byChildren", []):
+            groups.setdefault(ch.get("groupCode", "unknown"), []).append(ch)
+        menu_loc_code = str((summary.get("menu") or {}).get("location_code") or "").strip().upper()
+        full_by_staff = summary.get("byStaff", [])
+        global_item_meta: dict[int, dict[str, Any]] = {int(bi["item_id"]): bi for bi in summary.get("byItems", [])}
+        sorted_codes = sorted(groups.keys(), key=lambda c: code_order.get(c, 50))
+        by_locations = []
+        overall_total = 0.0
+        for idx, code in enumerate(sorted_codes):
+            ch_list = groups[code]
+            loc = location_map.get(code, f"Адрес не определён ({code})")
+            if menu_loc_code:
+                loc_staff = [s for s in full_by_staff if (s.get("locationCode") or "").upper() == code or
+                             (s.get("locationCode") or "").upper() == menu_loc_code == code]
+            else:
+                loc_staff = full_by_staff if idx == 0 else []
+            loc_item_counts: dict[int, int] = {}
+            loc_item_meta: dict[int, dict[str, Any]] = {}
+            # Build children entries
+            children_orders = []
+            for ch in ch_list:
+                if ch["status"] == "submitted":
+                    child_total = 0.0
+                    child_items = []
+                    for it in ch.get("itemDetails", []):
+                        iid = int(it["item_id"])
+                        qty = int(it.get("quantity", 1) or 1)
+                        loc_item_counts[iid] = loc_item_counts.get(iid, 0) + qty
+                        loc_item_meta[iid] = it
+                        ie: dict[str, Any] = {"name": it["name"], "quantity": qty}
+                        if show_prices:
+                            p = item_prices.get(iid, 0.0)
+                            ie["price"] = p
+                            ie["total"] = round(p * qty, 2)
+                            child_total += p * qty
+                        child_items.append(ie)
+                    ce: dict[str, Any] = {"name": ch["childName"], "status": "submitted", "items": child_items}
+                    if show_prices:
+                        ce["total"] = round(child_total, 2)
+                    children_orders.append(ce)
+                elif ch["status"] == "skipped":
+                    children_orders.append({"name": ch["childName"], "status": "skipped", "items": []})
+            # Build staff entries
+            staff_orders = []
+            for s in loc_staff:
+                if s.get("status") == "submitted":
+                    staff_total = 0.0
+                    staff_items = []
+                    for it in s.get("itemDetails", []):
+                        iid = int(it["item_id"])
+                        qty = int(it.get("quantity", 1) or 1)
+                        loc_item_counts[iid] = loc_item_counts.get(iid, 0) + qty
+                        if iid not in loc_item_meta:
+                            loc_item_meta[iid] = global_item_meta.get(iid, it)
+                        ie = {"name": it["name"], "quantity": qty}
+                        if show_prices:
+                            p = item_prices.get(iid, 0.0)
+                            ie["price"] = p
+                            ie["total"] = round(p * qty, 2)
+                            staff_total += p * qty
+                        staff_items.append(ie)
+                    se: dict[str, Any] = {"name": s["staffName"], "status": "submitted", "items": staff_items}
+                    if show_prices:
+                        se["total"] = round(staff_total, 2)
+                    staff_orders.append(se)
+                elif s.get("status") == "skipped":
+                    staff_orders.append({"name": s["staffName"], "status": "skipped", "items": []})
+            # Build items summary for this location
+            loc_by_items = []
+            loc_total = 0.0
+            for iid, meta in loc_item_meta.items():
+                count = loc_item_counts.get(iid, 0)
+                ie = {"name": meta.get("name"), "count": count}
+                if show_prices:
+                    p = item_prices.get(iid, 0.0)
+                    ie["price"] = p
+                    ie["total"] = round(p * count, 2)
+                    loc_total += p * count
+                loc_by_items.append(ie)
+            if show_prices:
+                overall_total += loc_total
+            loc_entry: dict[str, Any] = {
+                "groupCode": code,
+                "location": loc,
+                "submittedOrders": sum(1 for c in ch_list if c["status"] == "submitted"),
+                "skippedOrders": sum(1 for c in ch_list if c["status"] == "skipped"),
+                "missingOrders": sum(1 for c in ch_list if c["status"] == "missing"),
+                "byItems": loc_by_items,
+                "byChildren": children_orders,
+                "byStaff": staff_orders,
+                "missingChildren": [c["childName"] for c in ch_list if c["status"] == "missing"],
+                "noFoodChildren": [c["childName"] for c in ch_list if c["status"] == "skipped"],
+            }
+            if show_prices:
+                loc_entry["locationTotal"] = round(loc_total, 2)
+            by_locations.append(loc_entry)
+        result: dict[str, Any] = {
+            "ok": True,
+            "menu": {
+                "id": summary["menu"]["id"],
+                "menu_date": summary["menu"].get("menu_date"),
+                "title": summary["menu"].get("title"),
+                "status": summary["menu"].get("status"),
+                "deadline_at": summary["menu"].get("deadline_at"),
+                "location_code": summary["menu"].get("location_code"),
+            },
+            "byLocations": by_locations,
+            "showPrices": show_prices,
+        }
+        if show_prices:
+            result["overallTotal"] = round(overall_total, 2)
+        return result
 
     def food_shift_report(self, auth: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
@@ -5412,6 +5578,13 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.food_auto_reminder_status(auth))
                 if path == "/api/food/reports/shift":
                     return self._send_json(CTX.food_shift_report(auth, params))
+                if path == "/api/food/kitchen/menus":
+                    return self._send_json(CTX.food_kitchen_menus(auth))
+                if path.startswith("/api/food/kitchen/menus/"):
+                    _krest = path[len("/api/food/kitchen/menus/"):]
+                    _kparts = _krest.split("/")
+                    if len(_kparts) == 2 and _kparts[1] == "summary":
+                        return self._send_json(CTX.food_kitchen_summary(auth, _kparts[0]))
                 if path.startswith("/api/food/menus/"):
                     _menu_rest = path[len("/api/food/menus/"):]
                     _menu_parts = _menu_rest.split("/")

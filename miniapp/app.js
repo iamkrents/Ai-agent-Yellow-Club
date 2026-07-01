@@ -130,6 +130,11 @@ const state = {
   foodMenuData: null,
   foodMenuSelected: null,
   foodMenuDrafts: {},
+  kitchenMenus: null,
+  kitchenSelectedMenuId: null,
+  kitchenSummaryData: null,
+  kitchenSummaryBusy: false,
+  kitchenCopyNotice: "",
 };
 
 function $(id) { return document.getElementById(id); }
@@ -142,6 +147,8 @@ const ROLE_LABELS = {
   operations: "Операционный менеджер",
   other: "Сотрудник",
   parent: "Родитель",
+  kitchen: "Кухня",
+  restaurant: "Ресторан",
 };
 function roleLabel(role) { return ROLE_LABELS[role] || role || "роль"; }
 function roleCaps() { return state.me?.capabilities || {}; }
@@ -152,6 +159,8 @@ function canUseOpenSlots() { return !!roleCaps().canUseOpenSlots; }
 function canUseReports() { return !!roleCaps().canUseReports; }
 function canUseInternship() { return !!roleCaps().canUseInternship; }
 function canAskAgent() { return roleCaps().canAskAgent !== false; }
+function canUseFoodKitchenSummary() { return !!roleCaps().canUseFoodKitchenSummary; }
+function canSeeFoodPrices() { return !!roleCaps().canSeeFoodPrices; }
 function canUseFoodMenuOcr() {
   return Boolean(
     state.me?.foodMenuOcrEnabled ||
@@ -1073,8 +1082,30 @@ function setupRoleUi() {
     $("roleBadge").textContent = "Родитель";
   }
 
-  // Staff lunch tab: show for ALL staff (not parent), runs LAST to override intern/MVP hiding
-  if (role && role !== "parent") {
+  // Kitchen role: show only kitchen tab
+  if (role === "kitchen") {
+    document.querySelectorAll(".tab[data-tab]").forEach(t => {
+      t.classList.toggle("hidden", t.dataset.tab !== "kitchen");
+    });
+    document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.add("hidden"));
+    document.querySelectorAll(".kitchen-only").forEach(el => el.classList.remove("hidden"));
+    $("appTitle").textContent = "Кухня · Yellow Club";
+    $("roleBadge").textContent = "Кухня";
+  }
+
+  // Restaurant role: show only restaurant tab
+  if (role === "restaurant") {
+    document.querySelectorAll(".tab[data-tab]").forEach(t => {
+      t.classList.toggle("hidden", t.dataset.tab !== "restaurant");
+    });
+    document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.add("hidden"));
+    document.querySelectorAll(".restaurant-only").forEach(el => el.classList.remove("hidden"));
+    $("appTitle").textContent = "Ресторан · Yellow Club";
+    $("roleBadge").textContent = "Ресторан";
+  }
+
+  // Staff lunch tab: show for ALL staff (not parent/kitchen/restaurant), runs LAST to override intern/MVP hiding
+  if (role && !["parent", "kitchen", "restaurant"].includes(role)) {
     document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.remove("hidden"));
   } else {
     document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.add("hidden"));
@@ -6955,14 +6986,319 @@ async function loadFoodShiftReport(resultEl, startDate, endDate) {
   }
 }
 
+// --- Kitchen / Restaurant read-only summary panel ---
+
 function _fmtDate(iso) {
   if (!iso) return "";
   const [y, m, d] = iso.split("-");
   return `${d}.${m}.${y}`;
 }
 
+function _fmtDateWeekday(iso) {
+  if (!iso) return "";
+  const days = ["Воскресенье", "Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"];
+  const [y, m, d] = iso.split("-");
+  const date = new Date(Number(y), Number(m) - 1, Number(d));
+  return `${days[date.getDay()]}, ${d}.${m}.${y}`;
+}
+
 function _fmtBYN(val) {
   return Number(val || 0).toFixed(2) + " BYN";
+}
+
+async function loadKitchenMenus() {
+  try {
+    const data = await apiGet("/api/food/kitchen/menus");
+    state.kitchenMenus = data.menus || [];
+    if (!state.kitchenSelectedMenuId && state.kitchenMenus.length > 0) {
+      state.kitchenSelectedMenuId = String(state.kitchenMenus[0].id);
+    }
+    renderKitchenPanel();
+    if (state.kitchenSelectedMenuId) await loadKitchenSummary(state.kitchenSelectedMenuId);
+  } catch (e) {
+    const role = state.me?.role || "kitchen";
+    const el = $(role === "restaurant" ? "restaurantPanelContent" : "kitchenPanelContent");
+    if (el) el.innerHTML = `<div class="kitchen-panel-notice">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function loadKitchenSummary(menuId) {
+  if (!menuId) return;
+  state.kitchenSummaryBusy = true;
+  state.kitchenSummaryData = null;
+  renderKitchenPanel();
+  try {
+    const data = await apiGet(`/api/food/kitchen/menus/${encodeURIComponent(menuId)}/summary`);
+    state.kitchenSummaryData = data;
+    state.kitchenSummaryBusy = false;
+    renderKitchenPanel();
+  } catch (e) {
+    state.kitchenSummaryBusy = false;
+    state.kitchenSummaryData = { ok: false, error: e.message };
+    renderKitchenPanel();
+  }
+}
+
+function renderKitchenPanel() {
+  const role = state.me?.role || "kitchen";
+  const isRestaurant = role === "restaurant";
+  const containerId = isRestaurant ? "restaurantPanelContent" : "kitchenPanelContent";
+  const root = $(containerId);
+  if (!root) return;
+
+  const menus = state.kitchenMenus || [];
+  const title = isRestaurant ? "Ресторан" : "Кухня";
+  const subtitle = isRestaurant ? "Итоговый заказ с ценами" : "Итоговый заказ для приготовления";
+
+  let menuSelectHtml = "";
+  if (menus.length === 0) {
+    menuSelectHtml = `<div class="kitchen-panel-notice">Нет опубликованных меню.</div>`;
+  } else {
+    const opts = menus.map(m => {
+      const label = m.title ? `${escapeHtml(m.title)} (${_fmtDate(m.menu_date)})` : _fmtDate(m.menu_date);
+      const sel = String(m.id) === String(state.kitchenSelectedMenuId) ? " selected" : "";
+      return `<option value="${escapeHtml(String(m.id))}"${sel}>${label}</option>`;
+    }).join("");
+    menuSelectHtml = `<div class="kitchen-menu-selector"><select id="kitchenMenuSelect">${opts}</select></div>`;
+  }
+
+  let actionsHtml = `<div class="kitchen-panel-actions">
+    <button type="button" id="kitchenRefreshBtn">🔄 Обновить</button>
+    <button type="button" id="kitchenCopyBtn">📋 Скопировать заказ</button>
+    ${isRestaurant ? `<button type="button" id="kitchenCopyPriceBtn">💰 Скопировать с ценами</button>` : ""}
+  </div>`;
+
+  let summaryHtml = "";
+  if (state.kitchenSummaryBusy) {
+    summaryHtml = `<div class="kitchen-panel-notice">Загружаю данные...</div>`;
+  } else if (!state.kitchenSummaryData) {
+    summaryHtml = menus.length > 0 ? `<div class="kitchen-panel-notice">Выберите меню.</div>` : "";
+  } else if (!state.kitchenSummaryData.ok) {
+    summaryHtml = `<div class="kitchen-panel-notice">${escapeHtml(state.kitchenSummaryData.error || "Ошибка загрузки")}</div>`;
+  } else {
+    summaryHtml = _renderKitchenSummaryHtml(state.kitchenSummaryData, isRestaurant);
+  }
+
+  const copyNotice = state.kitchenCopyNotice ? `<div class="kitchen-copy-ok">${escapeHtml(state.kitchenCopyNotice)}</div>` : "";
+
+  root.innerHTML = `
+    <div class="${isRestaurant ? "restaurant-panel" : "kitchen-panel"}">
+      <div class="kitchen-panel-header">
+        <h2 class="kitchen-panel-title">${escapeHtml(title)}</h2>
+        <p class="kitchen-panel-subtitle">${escapeHtml(subtitle)}</p>
+      </div>
+      ${menuSelectHtml}
+      ${actionsHtml}
+      ${copyNotice}
+      ${summaryHtml}
+    </div>`;
+
+  root.querySelector("#kitchenMenuSelect")?.addEventListener("change", e => {
+    state.kitchenSelectedMenuId = e.target.value;
+    state.kitchenCopyNotice = "";
+    loadKitchenSummary(state.kitchenSelectedMenuId);
+  });
+  root.querySelector("#kitchenRefreshBtn")?.addEventListener("click", () => {
+    state.kitchenCopyNotice = "";
+    loadKitchenMenus();
+  });
+  root.querySelector("#kitchenCopyBtn")?.addEventListener("click", () => copyKitchenOrder(false));
+  root.querySelector("#kitchenCopyPriceBtn")?.addEventListener("click", () => copyKitchenOrder(true));
+}
+
+function _renderKitchenSummaryHtml(data, showPrices) {
+  const menu = data.menu || {};
+  const byLocations = data.byLocations || [];
+  const dateStr = _fmtDateWeekday(menu.menu_date);
+  let html = `<div class="kitchen-deadline-info">Дедлайн: ${menu.deadline_at ? new Date(menu.deadline_at).toLocaleString("ru-RU") : "не задан"}</div>`;
+  for (const loc of byLocations) {
+    html += _renderKitchenLocationHtml(loc, showPrices);
+  }
+  if (showPrices && data.overallTotal !== undefined) {
+    html += `<div class="kitchen-overall-total"><span>Общая сумма</span><span>${_fmtBYN(data.overallTotal)}</span></div>`;
+  }
+  return html;
+}
+
+function _renderKitchenLocationHtml(loc, showPrices) {
+  const byItems = loc.byItems || [];
+  const children = (loc.byChildren || []).filter(c => c.status === "submitted");
+  const skipped = (loc.noFoodChildren || []);
+  const missing = (loc.missingChildren || []);
+  const staffOrders = (loc.byStaff || []).filter(s => s.status === "submitted");
+  const staffSkipped = (loc.byStaff || []).filter(s => s.status === "skipped");
+
+  let html = `<div class="kitchen-location-block">
+    <h3 class="kitchen-location-title">${escapeHtml(loc.location || loc.groupCode)}</h3>
+    <div class="kitchen-location-meta">
+      <span>Заказали: <b>${loc.submittedOrders || 0}</b></span>
+      <span>Без питания: <b>${loc.skippedOrders || 0}</b></span>
+      ${loc.missingOrders ? `<span>Ожидаем: <b>${loc.missingOrders}</b></span>` : ""}
+    </div>`;
+
+  if (byItems.length > 0) {
+    html += `<div class="kitchen-section-title">Итог по блюдам</div><div class="kitchen-items-list">`;
+    for (const it of byItems) {
+      html += `<div class="kitchen-item-row">
+        <span class="kitchen-item-name">${escapeHtml(it.name || "")}</span>
+        <span class="kitchen-item-count">${it.count} шт.</span>`;
+      if (showPrices && it.price !== undefined) {
+        html += `<span class="kitchen-item-price">${_fmtBYN(it.price)}</span><span class="kitchen-item-total">= ${_fmtBYN(it.total)}</span>`;
+      }
+      html += `</div>`;
+    }
+    html += `</div>`;
+    if (showPrices && loc.locationTotal !== undefined) {
+      html += `<div class="kitchen-location-total"><span>Итого по филиалу</span><span>${_fmtBYN(loc.locationTotal)}</span></div>`;
+    }
+  }
+
+  if (children.length > 0) {
+    html += `<div class="kitchen-section-title">Заказы по детям</div>`;
+    for (const ch of children) {
+      html += `<div class="kitchen-person-block">
+        <div class="kitchen-person-name">${escapeHtml(ch.name)}</div>
+        <ul class="kitchen-person-items">`;
+      for (const it of (ch.items || [])) {
+        let line = escapeHtml(it.name || "");
+        if (it.quantity > 1) line += ` × ${it.quantity}`;
+        if (showPrices && it.price !== undefined) {
+          line += it.quantity > 1 ? ` × ${_fmtBYN(it.price)} = ${_fmtBYN(it.total)}` : ` — ${_fmtBYN(it.price)}`;
+        }
+        html += `<li>${line}</li>`;
+      }
+      html += `</ul>`;
+      if (showPrices && ch.total !== undefined) {
+        html += `<div class="kitchen-person-total">Итого: ${_fmtBYN(ch.total)}</div>`;
+      }
+      html += `</div>`;
+    }
+  }
+
+  if (staffOrders.length > 0) {
+    html += `<div class="kitchen-section-title">Сотрудники</div>`;
+    for (const s of staffOrders) {
+      html += `<div class="kitchen-person-block">
+        <div class="kitchen-person-name">${escapeHtml(s.name)}</div>
+        <ul class="kitchen-person-items">`;
+      for (const it of (s.items || [])) {
+        let line = escapeHtml(it.name || "");
+        if (it.quantity > 1) line += ` × ${it.quantity}`;
+        if (showPrices && it.price !== undefined) {
+          line += it.quantity > 1 ? ` × ${_fmtBYN(it.price)} = ${_fmtBYN(it.total)}` : ` — ${_fmtBYN(it.price)}`;
+        }
+        html += `<li>${line}</li>`;
+      }
+      html += `</ul>`;
+      if (showPrices && s.total !== undefined) {
+        html += `<div class="kitchen-person-total">Итого: ${_fmtBYN(s.total)}</div>`;
+      }
+      html += `</div>`;
+    }
+  }
+
+  if (skipped.length > 0 || staffSkipped.length > 0) {
+    html += `<div class="kitchen-section-title">Без питания</div><div class="kitchen-no-food-list">`;
+    for (const name of skipped) html += `<div class="kitchen-no-food-item">${escapeHtml(name)}</div>`;
+    for (const s of staffSkipped) html += `<div class="kitchen-no-food-item">${escapeHtml(s.name)}</div>`;
+    html += `</div>`;
+  }
+
+  html += `</div>`;
+  return html;
+}
+
+function _buildKitchenCopyText(withPrices) {
+  const data = state.kitchenSummaryData;
+  if (!data || !data.ok) return "";
+  const menu = data.menu || {};
+  const dateStr = _fmtDateWeekday(menu.menu_date);
+  let lines = [`Питание Yellow Club`, dateStr, ""];
+  for (const loc of (data.byLocations || [])) {
+    lines.push(loc.location || loc.groupCode);
+    lines.push("");
+    const byItems = loc.byItems || [];
+    if (byItems.length > 0) {
+      lines.push("ИТОГ ПО БЛЮДАМ:");
+      for (const it of byItems) {
+        let line = `${it.name} - ${it.count} шт.`;
+        if (withPrices && it.price !== undefined) line += ` × ${_fmtBYN(it.price)} = ${_fmtBYN(it.total)}`;
+        lines.push(line);
+      }
+      if (withPrices && loc.locationTotal !== undefined) {
+        lines.push("");
+        lines.push(`ИТОГО ПО ФИЛИАЛУ:`);
+        lines.push(_fmtBYN(loc.locationTotal));
+      }
+      lines.push("");
+    }
+    const children = (loc.byChildren || []).filter(c => c.status === "submitted");
+    if (children.length > 0) {
+      lines.push("ЗАКАЗЫ ПО ДЕТЯМ:");
+      for (const ch of children) {
+        lines.push(`${ch.name}:`);
+        for (const it of (ch.items || [])) {
+          let line = `• ${it.name}`;
+          if (it.quantity > 1) {
+            line = withPrices && it.price !== undefined
+              ? `• ${it.name} - ${it.quantity} шт. × ${_fmtBYN(it.price)} = ${_fmtBYN(it.total)}`
+              : `• ${it.name} - ${it.quantity} шт.`;
+          } else if (withPrices && it.price !== undefined) {
+            line = `• ${it.name} - ${_fmtBYN(it.price)}`;
+          }
+          lines.push(line);
+        }
+        if (withPrices && ch.total !== undefined) lines.push(`Итого: ${_fmtBYN(ch.total)}`);
+      }
+      lines.push("");
+    }
+    const staffOrders = (loc.byStaff || []).filter(s => s.status === "submitted");
+    if (staffOrders.length > 0) {
+      lines.push("СОТРУДНИКИ:");
+      for (const s of staffOrders) {
+        lines.push(`${s.name}:`);
+        for (const it of (s.items || [])) {
+          let line = `• ${it.name}`;
+          if (it.quantity > 1) {
+            line = withPrices && it.price !== undefined
+              ? `• ${it.name} - ${it.quantity} шт. × ${_fmtBYN(it.price)} = ${_fmtBYN(it.total)}`
+              : `• ${it.name} - ${it.quantity} шт.`;
+          } else if (withPrices && it.price !== undefined) {
+            line = `• ${it.name} - ${_fmtBYN(it.price)}`;
+          }
+          lines.push(line);
+        }
+        if (withPrices && s.total !== undefined) lines.push(`Итого: ${_fmtBYN(s.total)}`);
+      }
+      lines.push("");
+    }
+    const noFood = [...(loc.noFoodChildren || []), ...(loc.byStaff || []).filter(s => s.status === "skipped").map(s => s.name)];
+    if (noFood.length > 0) {
+      lines.push("БЕЗ ПИТАНИЯ:");
+      for (const name of noFood) lines.push(name);
+      lines.push("");
+    }
+    lines.push("---");
+    lines.push("");
+  }
+  if (withPrices && data.overallTotal !== undefined) {
+    lines.push(`ОБЩАЯ СУММА:`);
+    lines.push(_fmtBYN(data.overallTotal));
+  }
+  return lines.join("\n").trim();
+}
+
+async function copyKitchenOrder(withPrices) {
+  const text = _buildKitchenCopyText(withPrices);
+  if (!text) { state.kitchenCopyNotice = "Нет данных для копирования"; renderKitchenPanel(); return; }
+  try {
+    await navigator.clipboard.writeText(text);
+    state.kitchenCopyNotice = "✓ Скопировано";
+  } catch (e) {
+    state.kitchenCopyNotice = "Не удалось скопировать: " + e.message;
+  }
+  renderKitchenPanel();
+  setTimeout(() => { state.kitchenCopyNotice = ""; renderKitchenPanel(); }, 3000);
 }
 
 function _renderFoodReportResult(el, data, startDate, endDate) {
@@ -7295,9 +7631,18 @@ async function reloadCabinetAfterRoleChange() {
   state.foodOrderExpanded = {};
   state.foodMenuData = null;
   state.foodMenuSelected = null;
+  state.kitchenMenus = null;
+  state.kitchenSelectedMenuId = null;
+  state.kitchenSummaryData = null;
+  state.kitchenCopyNotice = "";
   renderLessons();
   renderTasks();
   await loadMe();
+  const _role = state.me?.role || "";
+  if (_role === "kitchen" || _role === "restaurant") {
+    await loadKitchenMenus();
+    return;
+  }
   await Promise.all([
     canUseLessons() ? loadLessons() : Promise.resolve(renderLessonsUnavailable()),
     canUseSchedule() ? loadWorkSchedule() : Promise.resolve(renderWorkScheduleUnavailable()),
@@ -7392,6 +7737,11 @@ async function boot() {
   });
   try {
     await loadMe();
+    const role = state.me?.role || "";
+    if (role === "kitchen" || role === "restaurant") {
+      await loadKitchenMenus();
+      return;
+    }
     clearWorkSlotForm();
     await Promise.all([
       canUseLessons() ? loadLessons() : Promise.resolve(renderLessonsUnavailable()),

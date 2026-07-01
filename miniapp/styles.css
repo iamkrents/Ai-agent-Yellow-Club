@@ -6402,3 +6402,39 @@ body { -webkit-overflow-scrolling: touch; }
 .food-deadline-result { padding: 6px 10px; border-radius: 6px; font-size: 13px; margin-top: 6px; }
 .food-deadline-result--error { background: #fdecea; color: #c0392b; }
 .food-deadline-result--ok { background: #eafaf1; color: #1a7a3a; }
+
+/* v7.0.15 — kitchen / restaurant read-only summary */
+.kitchen-panel, .restaurant-panel { padding: 0 0 24px; }
+.kitchen-panel-header, .restaurant-panel-header { padding: 16px 16px 8px; }
+.kitchen-panel-title { font-size: 20px; font-weight: 700; margin: 0 0 4px; }
+.kitchen-panel-subtitle { font-size: 13px; color: var(--color-text-secondary, #888); margin: 0; }
+.kitchen-menu-selector { padding: 0 16px 12px; }
+.kitchen-menu-selector select { width: 100%; padding: 10px 12px; border: 1.5px solid var(--border-color, #e0e0e0); border-radius: 10px; font-size: 15px; background: var(--bg-card, #fff); color: var(--color-text, #222); }
+.kitchen-panel-actions { display: flex; gap: 8px; padding: 0 16px 12px; flex-wrap: wrap; }
+.kitchen-panel-actions button { flex: 1; min-width: 120px; padding: 10px 14px; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; border: 1.5px solid var(--border-color, #e0e0e0); background: var(--bg-card, #fff); color: var(--color-text, #222); transition: background 0.15s; }
+.kitchen-panel-actions button:active { background: var(--bg-secondary, #f0f0f0); }
+.kitchen-location-block { margin: 12px 16px 0; background: var(--bg-card, #fff); border-radius: 12px; border: 1.5px solid var(--border-color, #e0e0e0); overflow: hidden; }
+.kitchen-location-title { font-size: 16px; font-weight: 700; padding: 12px 16px 8px; border-bottom: 1px solid var(--border-color, #e0e0e0); background: var(--bg-secondary, #f5f5f5); margin: 0; }
+.kitchen-location-meta { display: flex; gap: 12px; padding: 8px 16px; font-size: 13px; color: var(--color-text-secondary, #888); border-bottom: 1px solid var(--border-color, #e0e0e0); flex-wrap: wrap; }
+.kitchen-section-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--color-text-secondary, #777); padding: 10px 16px 4px; margin: 0; }
+.kitchen-items-list { padding: 4px 16px 8px; }
+.kitchen-item-row { display: flex; justify-content: space-between; align-items: baseline; padding: 5px 0; border-bottom: 1px solid var(--border-color-light, #f0f0f0); font-size: 14px; gap: 8px; }
+.kitchen-item-row:last-child { border-bottom: none; }
+.kitchen-item-name { flex: 1; color: var(--color-text, #222); }
+.kitchen-item-count { font-weight: 700; color: var(--color-accent, #d4a000); white-space: nowrap; }
+.kitchen-item-price { color: var(--color-text-secondary, #888); font-size: 13px; white-space: nowrap; }
+.kitchen-item-total { font-weight: 600; color: var(--color-text, #222); white-space: nowrap; }
+.kitchen-person-block { padding: 6px 16px; border-bottom: 1px solid var(--border-color-light, #f0f0f0); }
+.kitchen-person-block:last-child { border-bottom: none; }
+.kitchen-person-name { font-size: 14px; font-weight: 600; color: var(--color-text, #222); margin-bottom: 2px; }
+.kitchen-person-total { font-size: 13px; color: var(--color-text-secondary, #888); margin-top: 2px; }
+.kitchen-person-items { list-style: none; margin: 2px 0 0; padding: 0; }
+.kitchen-person-items li { font-size: 13px; color: var(--color-text, #333); padding: 1px 0 1px 12px; position: relative; }
+.kitchen-person-items li::before { content: "•"; position: absolute; left: 0; color: var(--color-accent, #d4a000); }
+.kitchen-no-food-list { padding: 4px 16px 10px; }
+.kitchen-no-food-item { font-size: 13px; color: var(--color-text-secondary, #888); padding: 2px 0; }
+.kitchen-location-total { display: flex; justify-content: space-between; padding: 10px 16px; border-top: 2px solid var(--border-color, #e0e0e0); font-weight: 700; font-size: 15px; background: var(--bg-secondary, #f5f5f5); }
+.kitchen-overall-total { margin: 12px 16px 0; background: #fffbe6; border: 2px solid #e0c000; border-radius: 12px; padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; font-size: 17px; font-weight: 700; }
+.kitchen-panel-notice { margin: 12px 16px 0; padding: 12px 16px; background: var(--bg-secondary, #f5f5f5); border-radius: 10px; font-size: 14px; color: var(--color-text-secondary, #888); text-align: center; }
+.kitchen-copy-ok { color: #1a7a3a; font-size: 13px; margin-top: 4px; text-align: center; }
+.kitchen-deadline-info { font-size: 12px; color: var(--color-text-secondary, #999); padding: 0 16px 8px; }
