@@ -6825,6 +6825,16 @@ async function renderStaffFoodLunch(root) {
       root.querySelector("#staffLunchRefresh")?.addEventListener("click", () => renderStaffFoodLunch(root));
       return;
     }
+    // Teacher branch context banner
+    let teacherBannerHtml = "";
+    if (menusData.isTeacherBranch) {
+      const locs = Array.isArray(menusData.teacherLocationCodes) && menusData.teacherLocationCodes.length
+        ? menusData.teacherLocationCodes.map(_ycLocationLabel).join(", ")
+        : null;
+      const nameHtml = menusData.teacherDisplayName ? ` · ${escapeHtml(menusData.teacherDisplayName)}` : "";
+      const locHtml = locs ? `<br><span class="staff-teacher-branch-loc">Филиал: ${escapeHtml(locs)}</span>` : "";
+      teacherBannerHtml = `<div class="staff-teacher-branch-banner">Обед преподавателя${nameHtml}${locHtml}</div>`;
+    }
     // Load existing staff orders for all menus
     const staffOrders = {};
     await Promise.all(menus.map(async m => {
@@ -6897,6 +6907,7 @@ async function renderStaffFoodLunch(root) {
 
     root.innerHTML = `<div class="food-debug-card">
       <div class="food-menu-panel-head"><h3>Мой обед</h3><button class="secondary" id="staffLunchRefresh">Обновить</button></div>
+      ${teacherBannerHtml}
       ${menusHtml}
     </div>`;
 
@@ -7226,10 +7237,13 @@ function _renderKitchenLocationHtml(loc, showPrices) {
   }
 
   if (staffOrders.length > 0) {
-    html += `<div class="kitchen-section-title">Сотрудники</div>`;
+    const hasTeachers = staffOrders.some(s => s.isTeacher);
+    const staffSectionTitle = hasTeachers ? "Сотрудники и преподаватели" : "Сотрудники";
+    html += `<div class="kitchen-section-title">${staffSectionTitle}</div>`;
     for (const s of staffOrders) {
+      const teacherTag = s.isTeacher ? `<span class="kitchen-teacher-tag">преп.</span>` : "";
       html += `<div class="kitchen-person-block">
-        <div class="kitchen-person-name">${escapeHtml(s.name)}</div>
+        <div class="kitchen-person-name">${escapeHtml(s.name)}${teacherTag}</div>
         <ul class="kitchen-person-items">`;
       for (const it of (s.items || [])) {
         let line = escapeHtml(it.name || "");
@@ -7304,9 +7318,11 @@ function _buildKitchenCopyText(withPrices) {
     }
     const staffOrders = (loc.byStaff || []).filter(s => s.status === "submitted");
     if (staffOrders.length > 0) {
-      lines.push("СОТРУДНИКИ:");
+      const hasTeachersCopy = staffOrders.some(s => s.isTeacher);
+      lines.push(hasTeachersCopy ? "СОТРУДНИКИ И ПРЕПОДАВАТЕЛИ:" : "СОТРУДНИКИ:");
       for (const s of staffOrders) {
-        lines.push(`${s.name}:`);
+        const teacherMark = s.isTeacher ? " [преп.]" : "";
+        lines.push(`${s.name}${teacherMark}:`);
         for (const it of (s.items || [])) {
           let line = `• ${it.name}`;
           if (it.quantity > 1) {

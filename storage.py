@@ -2172,29 +2172,60 @@ class Storage:
         return [dict(r) for r in rows]
 
     def teacher_has_lesson_on_date(self, mk_teacher_id: str, date_str: str) -> bool:
+        """Return True if teacher has any lesson on date_str.
+        Checks teacher_lesson_control first, then lesson_snapshots (MoyKlass background sync)."""
         if not mk_teacher_id or not date_str:
             return False
+        tid = str(mk_teacher_id).strip()
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT 1 FROM teacher_lesson_control WHERE mk_teacher_id=? AND lesson_date=? LIMIT 1",
-                (str(mk_teacher_id).strip(), str(date_str)),
+                (tid, str(date_str)),
             ).fetchone()
-        return row is not None
+            if row:
+                return True
+            # Fallback: lesson_snapshots contains all MoyKlass-synced lessons including future ones
+            snap_rows = conn.execute(
+                "SELECT teacher_ids FROM lesson_snapshots "
+                "WHERE lesson_date=? AND teacher_ids IS NOT NULL AND teacher_ids != ''",
+                (str(date_str),),
+            ).fetchall()
+        for snap in snap_rows:
+            ids = [x.strip() for x in str(snap["teacher_ids"] or "").split(",") if x.strip()]
+            if tid in ids:
+                return True
+        return False
 
     def get_teacher_lesson_locations(self, mk_teacher_id: str, date_str: str) -> list[str]:
-        """Return distinct YC location codes for a teacher's lessons on date_str."""
+        """Return distinct YC location codes for a teacher's lessons on date_str.
+        Checks teacher_lesson_control first; falls back to lesson_snapshots for future/unconfirmed lessons."""
         if not mk_teacher_id or not date_str:
             return []
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT DISTINCT group_name FROM teacher_lesson_control WHERE mk_teacher_id=? AND lesson_date=?",
-                (str(mk_teacher_id).strip(), str(date_str)),
-            ).fetchall()
+        tid = str(mk_teacher_id).strip()
         codes: list[str] = []
-        for row in rows:
-            c = normalize_food_location(row["group_name"] or "")
-            if c and c not in codes:
-                codes.append(c)
+        with self._connect() as conn:
+            # Primary: confirmed lesson records (populated when teacher views lessons in app)
+            ctrl_rows = conn.execute(
+                "SELECT DISTINCT group_name FROM teacher_lesson_control WHERE mk_teacher_id=? AND lesson_date=?",
+                (tid, str(date_str)),
+            ).fetchall()
+            for row in ctrl_rows:
+                c = normalize_food_location(row["group_name"] or "")
+                if c and c not in codes:
+                    codes.append(c)
+            if not codes:
+                # Fallback: lesson_snapshots (background MoyKlass sync, includes future lessons)
+                snap_rows = conn.execute(
+                    "SELECT group_name, teacher_ids FROM lesson_snapshots "
+                    "WHERE lesson_date=? AND teacher_ids IS NOT NULL AND teacher_ids != ''",
+                    (str(date_str),),
+                ).fetchall()
+                for row in snap_rows:
+                    ids = [x.strip() for x in str(row["teacher_ids"] or "").split(",") if x.strip()]
+                    if tid in ids:
+                        c = normalize_food_location(row["group_name"] or "")
+                        if c and c not in codes:
+                            codes.append(c)
         return codes
 
     def list_teachers_with_lesson_on_date(self, date_str: str) -> list[dict[str, Any]]:
@@ -2227,7 +2258,8 @@ class Storage:
 
     def find_teacher_candidates_by_name(self, full_name: str) -> list[dict[str, Any]]:
         """Return list of {mk_teacher_id, teacher_name} where teacher_name matches full_name (normalized).
-        Tries both "Имя Фамилия" and "Фамилия Имя" orderings. Safe: returns empty list if ambiguous."""
+        Tries both "Имя Фамилия" and "Фамилия Имя" orderings. Searches teacher_lesson_control AND
+        lesson_snapshots (background MoyKlass sync). Safe: skips ambiguous multi-teacher rows."""
         import re as _re
 
         def _norm(s: str) -> str:
@@ -2240,24 +2272,48 @@ class Storage:
         needle_parts = needle.split()
         needle_rev = " ".join(reversed(needle_parts)) if len(needle_parts) == 2 else ""
 
+        matches: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+
         with self._connect() as conn:
-            rows = conn.execute(
+            # Source 1: teacher_lesson_control (confirmed lessons, includes teacher_name per lesson)
+            ctrl_rows = conn.execute(
                 "SELECT DISTINCT mk_teacher_id, teacher_name FROM teacher_lesson_control "
                 "WHERE mk_teacher_id IS NOT NULL AND mk_teacher_id != '' "
                 "AND teacher_name IS NOT NULL AND teacher_name != ''",
             ).fetchall()
+            for row in ctrl_rows:
+                tid = str(row["mk_teacher_id"]).strip()
+                name = str(row["teacher_name"]).strip()
+                if tid in seen_ids:
+                    continue
+                norm_name = _norm(name)
+                if norm_name == needle or (needle_rev and norm_name == needle_rev):
+                    matches.append({"mk_teacher_id": tid, "teacher_name": name})
+                    seen_ids.add(tid)
 
-        matches: list[dict[str, Any]] = []
-        seen_ids: set[str] = set()
-        for row in rows:
-            tid = str(row["mk_teacher_id"]).strip()
-            name = str(row["teacher_name"]).strip()
-            if tid in seen_ids:
-                continue
-            norm_name = _norm(name)
-            if norm_name == needle or (needle_rev and norm_name == needle_rev):
-                matches.append({"mk_teacher_id": tid, "teacher_name": name})
-                seen_ids.add(tid)
+            # Source 2: lesson_snapshots (MoyKlass background sync, more up-to-date)
+            # teacher_names is a single string per snapshot row; teacher_ids is comma-separated.
+            # Only use rows where exactly 1 teacher_id is present to avoid ambiguous matches.
+            snap_rows = conn.execute(
+                "SELECT DISTINCT teacher_names, teacher_ids FROM lesson_snapshots "
+                "WHERE teacher_names IS NOT NULL AND teacher_names != '' "
+                "AND teacher_ids IS NOT NULL AND teacher_ids != '' "
+                "AND teacher_names NOT LIKE 'Преподаватель ID%'",
+            ).fetchall()
+            for row in snap_rows:
+                name = str(row["teacher_names"]).strip()
+                norm_name = _norm(name)
+                if not (norm_name == needle or (needle_rev and norm_name == needle_rev)):
+                    continue
+                ids = [x.strip() for x in str(row["teacher_ids"] or "").split(",") if x.strip()]
+                if len(ids) == 1:
+                    tid = ids[0]
+                    if tid not in seen_ids:
+                        matches.append({"mk_teacher_id": tid, "teacher_name": name})
+                        seen_ids.add(tid)
+                # If multiple teacher_ids per lesson and name matches: skip (ambiguous)
+
         return matches
 
     def mark_teacher_preparation(self, lesson_id: str | int, user_id: int | None, status: str, comment: str = "", **lesson_fields: Any) -> dict[str, Any]:

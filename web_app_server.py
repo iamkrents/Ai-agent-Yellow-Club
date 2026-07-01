@@ -2438,22 +2438,40 @@ class MiniAppContext:
         teacher_location_codes: list[str] = []
         mk_teacher_id_resolved = ""
         mk_resolve_method = ""
-        # Resolve teacher ID for any role that has it (not only teacher/intern).
-        # This covers users registered as "other" or any role but linked to a MoyKlass teacher.
+        teacher_display_name = ""
+        # Resolve teacher ID for ANY role — teacher link takes priority over role.
+        # An admin/owner may also be a MoyKlass teacher; their lunch must go to the right branch.
+        staff = self.storage.get_staff_user(user_id)
+        staff_full_name = str(staff.get("full_name") or "") if staff else ""
         mk_teacher_id_resolved, mk_resolve_method = self._resolve_teacher_mk_id(user_id)
         if mk_teacher_id_resolved:
             has_tomorrow_lesson = self.storage.teacher_has_lesson_on_date(mk_teacher_id_resolved, tomorrow_str)
             if has_tomorrow_lesson:
                 teacher_location_codes = self.storage.get_teacher_lesson_locations(mk_teacher_id_resolved, tomorrow_str)
+            # Prefer MoyKlass teacher name, fall back to staff full name
+            teacher_display_name = (
+                str(staff.get("mk_teacher_name") or "") if staff else ""
+            ) or staff_full_name
             log.info(
-                "food_staff_menus: user=%s role=%s mk=%s method=%s has_lesson=%s locs=%s",
-                user_id, role, mk_teacher_id_resolved, mk_resolve_method, has_tomorrow_lesson, teacher_location_codes,
+                "food_staff_menus: user=%s role=%s name=%r mk=%s method=%s "
+                "has_lesson=%s locs=%s",
+                user_id, role, staff_full_name, mk_teacher_id_resolved,
+                mk_resolve_method, has_tomorrow_lesson, teacher_location_codes,
             )
         elif role in {"teacher", "intern"}:
-            # Has teacher role but no mk_teacher_id linked — block and notify
+            # Teacher role but no mk_teacher_id linked — block and notify
             has_tomorrow_lesson = False
             teacher_not_linked = True
-            log.info("food_staff_menus: user=%s role=%s — teacher role but no mk_teacher_id", user_id, role)
+            log.warning(
+                "food_staff_menus: user=%s role=%s name=%r — teacher role but no mk_teacher_id; "
+                "use /mk_link_teacher to bind",
+                user_id, role, staff_full_name,
+            )
+        else:
+            log.info(
+                "food_staff_menus: user=%s role=%s name=%r — no teacherId; staff fallback",
+                user_id, role, staff_full_name,
+            )
         menus = self.storage.list_published_food_menus_with_items()
         tomorrow_menus = [m for m in menus if (m.get("menu_date") or "") == tomorrow_str]
         # Filter by teacher location: only if teacher has known locations AND menus have location_code
@@ -2472,6 +2490,8 @@ class MiniAppContext:
             "tomorrowDate": tomorrow_str,
             "teacherLocationCodes": teacher_location_codes,
             "mkResolveMethod": mk_resolve_method,
+            "teacherDisplayName": teacher_display_name,
+            "isTeacherBranch": bool(mk_teacher_id_resolved),
             "menus": tomorrow_menus,
         }
 
@@ -2768,42 +2788,65 @@ class MiniAppContext:
         self, user_id: int, menu: dict[str, Any], payload: dict[str, Any]
     ) -> str | dict[str, Any]:
         """Determine the location_code for a staff order.
-        Returns a location_code string, or an error dict if the user must pick a location.
 
-        Priority:
-        1. Teacher's lesson location on menu_date (if mk_teacher_id is known)
-           - 1 location: use it automatically
-           - >1 locations: require payload['location_code'] from the client, or return error
-           - 0 locations: fall back to menu.location_code (no lesson found for this date)
-        2. Menu's own location_code
-        3. Empty string (no location info)
+        Priority (teacher branch takes precedence over role/menu):
+        1. mk_teacher_id resolution (via link, auto-match by name in tlc + snapshots)
+        2. If found → get lesson locations on menu_date from teacher_lesson_control + lesson_snapshots
+           - 1 location: use automatically
+           - >1 locations: require payload['location_code'] or return error
+           - 0 locations: fallback to menu.location_code with warning log
+        3. If no teacherId found → fallback to menu.location_code
+        4. If menu has no location_code → empty string
         """
         menu_date = str(menu.get("menu_date") or "")
+        menu_loc = str(menu.get("location_code") or "").strip().upper()
+        staff = self.storage.get_staff_user(user_id)
+        role = self._role_for_user(user_id)
+        full_name = str(staff.get("full_name") or "") if staff else ""
+
         mk_teacher_id, mk_method = self._resolve_teacher_mk_id(user_id)
+        log.info(
+            "food_order_loc_start: user=%s role=%s name=%r mk=%s method=%s menu_date=%s menu_loc=%s",
+            user_id, role, full_name, mk_teacher_id or "(none)", mk_method or "not_found",
+            menu_date, menu_loc,
+        )
+
         if mk_teacher_id and menu_date:
             loc_codes = self.storage.get_teacher_lesson_locations(mk_teacher_id, menu_date)
             log.info(
-                "food_staff_order_loc: user=%s mk=%s (%s) date=%s locs=%s",
-                user_id, mk_teacher_id, mk_method, menu_date, loc_codes,
+                "food_order_loc_teacher: user=%s mk=%s lesson_locations=%s",
+                user_id, mk_teacher_id, loc_codes,
             )
             if len(loc_codes) == 1:
+                log.info("food_order_loc_result: user=%s → teacher branch loc=%s", user_id, loc_codes[0])
                 return loc_codes[0]
             if len(loc_codes) > 1:
                 preferred = str(payload.get("location_code") or "").strip().upper()
                 if preferred in loc_codes:
+                    log.info("food_order_loc_result: user=%s → teacher multi-loc, chosen=%s", user_id, preferred)
                     return preferred
+                log.info("food_order_loc_result: user=%s → multiple_locations, awaiting user choice", user_id)
                 return {
                     "ok": False,
                     "error": "multiple_locations",
                     "availableLocations": loc_codes,
                     "message": "У вас занятия в нескольких филиалах на эту дату. Выберите филиал для обеда.",
                 }
-            # No lesson found for this date — use menu location as fallback
-            log.info(
-                "food_staff_order_loc: no lesson for user=%s on %s, fallback to menu location=%s",
-                user_id, menu_date, menu.get("location_code"),
+            # teacherId found but no lesson on this date → warn and fall through
+            log.warning(
+                "food_order_loc_no_lesson: user=%s mk=%s date=%s — no lesson in tlc or snapshots; "
+                "falling back to menu_loc=%s. Check MoyKlass sync.",
+                user_id, mk_teacher_id, menu_date, menu_loc,
             )
-        return str(menu.get("location_code") or "").strip().upper()
+        elif not mk_teacher_id:
+            log.info(
+                "food_order_loc_no_teacher: user=%s role=%s name=%r — no teacherId found; "
+                "using menu_loc=%s",
+                user_id, role, full_name, menu_loc,
+            )
+
+        log.info("food_order_loc_result: user=%s → staff fallback loc=%s", user_id, menu_loc)
+        return menu_loc
 
     def food_staff_submit_order(self, auth: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
