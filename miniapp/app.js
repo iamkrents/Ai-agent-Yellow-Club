@@ -6761,6 +6761,28 @@ function _copyFoodSummary(title, dateStr, data) {
 }
 
 // ---- Staff food lunch (food-lunch tab) ----
+function _ycLocationLabel(code) {
+  const map = { YC1: "Кульман 1/1", YC2: "Мстиславца 6", YC3: "Адрес 3" };
+  return map[String(code).toUpperCase()] || code;
+}
+
+function _showStaffLocationPicker(root, menuId, availableLocations, onPick) {
+  const existing = root.querySelector(".staff-location-picker");
+  if (existing) existing.remove();
+  const card = root.querySelector(`[data-sl-menu-card="${menuId}"]`);
+  if (!card) return;
+  const div = document.createElement("div");
+  div.className = "staff-location-picker";
+  div.innerHTML = `<div class="staff-location-picker-label">Выберите филиал для обеда:</div>
+    <div class="staff-location-picker-btns">
+      ${availableLocations.map(lc => `<button class="secondary" data-loc="${escapeAttr(lc)}">${escapeHtml(_ycLocationLabel(lc))}</button>`).join("")}
+    </div>`;
+  div.querySelectorAll("[data-loc]").forEach(b => {
+    b.addEventListener("click", () => { div.remove(); onPick(b.dataset.loc); });
+  });
+  card.appendChild(div);
+}
+
 function _staffLunchDebugHtml(d) {
   const role = escapeHtml(state.me?.role || "?");
   const uid = escapeHtml(String(state.me?.userId || state.me?.user_id || "?"));
@@ -6769,10 +6791,12 @@ function _staffLunchDebugHtml(d) {
   const lesson = d ? (d.teacherNotLinked ? "нет teacherId" : d.hasTomorrowLesson ? "да" : "нет") : "загрузка";
   const locCodes = d ? (Array.isArray(d.teacherLocationCodes) && d.teacherLocationCodes.length ? d.teacherLocationCodes.join(", ") : "—") : "загрузка";
   const menus = d ? ((d.menus || []).length > 0 ? `найдено (${(d.menus || []).length})` : "не найдено") : "загрузка";
+  const resolveMethod = d ? escapeHtml(d.mkResolveMethod || "—") : "загрузка";
   return `<details class="staff-lunch-debug"><summary>debug</summary>
     <div>Роль: <b>${role}</b></div>
     <div>Telegram ID: <b>${uid}</b></div>
     <div>MoyKlass teacherId: <b>${mkId}</b></div>
+    <div>Способ определения teacherId: <b>${resolveMethod}</b></div>
     <div>Завтра (${tomorrow}) — занятие: <b>${lesson}</b></div>
     <div>Филиал (YC-код): <b>${escapeHtml(locCodes)}</b></div>
     <div>Меню на завтра: <b>${menus}</b></div>
@@ -6891,8 +6915,21 @@ async function renderStaffFoodLunch(root) {
         btn.disabled = true;
         try {
           const data = await apiPost("/api/food/staff/orders", { menu_id: menuId, items });
-          if (!data.ok) { setNotice(data.error || "Ошибка", "error"); }
-          else { setNotice("Выбор сохранён.", "ok"); renderStaffFoodLunch(root); }
+          if (!data.ok) {
+            if (data.error === "multiple_locations" && Array.isArray(data.availableLocations)) {
+              _showStaffLocationPicker(root, menuId, data.availableLocations, async (locCode) => {
+                btn.disabled = true;
+                try {
+                  const d2 = await apiPost("/api/food/staff/orders", { menu_id: menuId, items, location_code: locCode });
+                  if (!d2.ok) setNotice(d2.error || "Ошибка", "error");
+                  else { setNotice("Выбор сохранён.", "ok"); renderStaffFoodLunch(root); }
+                } catch (e2) { setNotice(e2.message, "error"); }
+                finally { btn.disabled = false; }
+              });
+            } else {
+              setNotice(data.error || "Ошибка", "error");
+            }
+          } else { setNotice("Выбор сохранён.", "ok"); renderStaffFoodLunch(root); }
         } catch (e) { setNotice(e.message, "error"); }
         finally { btn.disabled = false; }
       });
@@ -6903,8 +6940,21 @@ async function renderStaffFoodLunch(root) {
         btn.disabled = true;
         try {
           const data = await apiPost("/api/food/staff/orders/skip", { menu_id: menuId });
-          if (!data.ok) { setNotice(data.error || "Ошибка", "error"); }
-          else { setNotice("Отмечено: без питания.", "ok"); renderStaffFoodLunch(root); }
+          if (!data.ok) {
+            if (data.error === "multiple_locations" && Array.isArray(data.availableLocations)) {
+              _showStaffLocationPicker(root, menuId, data.availableLocations, async (locCode) => {
+                btn.disabled = true;
+                try {
+                  const d2 = await apiPost("/api/food/staff/orders/skip", { menu_id: menuId, location_code: locCode });
+                  if (!d2.ok) setNotice(d2.error || "Ошибка", "error");
+                  else { setNotice("Отмечено: без питания.", "ok"); renderStaffFoodLunch(root); }
+                } catch (e2) { setNotice(e2.message, "error"); }
+                finally { btn.disabled = false; }
+              });
+            } else {
+              setNotice(data.error || "Ошибка", "error");
+            }
+          } else { setNotice("Отмечено: без питания.", "ok"); renderStaffFoodLunch(root); }
         } catch (e) { setNotice(e.message, "error"); }
         finally { btn.disabled = false; }
       });

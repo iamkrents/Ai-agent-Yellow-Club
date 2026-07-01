@@ -592,6 +592,7 @@ class Storage:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_food_staff_orders_menu ON food_staff_orders(menu_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_food_staff_orders_user ON food_staff_orders(staff_user_id)")
+        self._ensure_column(conn, "food_staff_orders", "location_code", "location_code TEXT")
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS food_staff_order_items (
@@ -1204,13 +1205,15 @@ class Storage:
         staff_orders = self.list_food_staff_orders_for_menu(mid)
         by_staff = []
         for so in staff_orders:
+            order_loc = str(so.get("location_code") or "").strip().upper() or menu_location_code
+            is_teacher = bool(str(so.get("staff_mk_teacher_id") or "").strip()) or str(so.get("staff_role") or "") in ("teacher", "intern", "methodist")
             if so["status"] == "submitted":
                 item_details = [{"item_id": i["item_id"], "name": i["name"], "category": i["category"], "weight": i["weight"], "quantity": int(i.get("quantity", 1) or 1)} for i in so.get("items", [])]
                 display_name = str(so.get("staff_name") or so.get("staff_mk_teacher_name") or so.get("staff_username") or f"Сотрудник #{so['staff_user_id']}")
-                by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "status": "submitted", "itemDetails": item_details, "locationCode": menu_location_code})
+                by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "status": "submitted", "itemDetails": item_details, "locationCode": order_loc, "isTeacher": is_teacher})
             elif so["status"] == "skipped":
                 display_name = str(so.get("staff_name") or so.get("staff_mk_teacher_name") or so.get("staff_username") or f"Сотрудник #{so['staff_user_id']}")
-                by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "status": "skipped", "itemDetails": [], "locationCode": menu_location_code})
+                by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "status": "skipped", "itemDetails": [], "locationCode": order_loc, "isTeacher": is_teacher})
         # Add staff item counts to aggregate
         for so_entry in by_staff:
             if so_entry["status"] == "submitted":
@@ -1379,6 +1382,7 @@ class Storage:
         menu_id: int,
         item_quantities: dict,  # {item_id: quantity} — empty for skipped
         status: str = "submitted",
+        location_code: str = "",
     ) -> dict[str, Any]:
         now = now_iso()
         uid = int(staff_user_id)
@@ -1395,16 +1399,23 @@ class Storage:
                 "SELECT id FROM food_staff_orders WHERE menu_id=? AND staff_user_id=?",
                 (mid, uid),
             ).fetchone()
+            loc = str(location_code or "").strip().upper() or None
             if existing:
                 order_id = existing["id"]
-                conn.execute(
-                    "UPDATE food_staff_orders SET status=?, submitted_at=?, updated_at=? WHERE id=?",
-                    (status, now, now, order_id),
-                )
+                if loc is not None:
+                    conn.execute(
+                        "UPDATE food_staff_orders SET status=?, submitted_at=?, updated_at=?, location_code=? WHERE id=?",
+                        (status, now, now, loc, order_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE food_staff_orders SET status=?, submitted_at=?, updated_at=? WHERE id=?",
+                        (status, now, now, order_id),
+                    )
             else:
                 cur = conn.execute(
-                    "INSERT INTO food_staff_orders(created_at, updated_at, menu_id, staff_user_id, status, submitted_at) VALUES(?,?,?,?,?,?)",
-                    (now, now, mid, uid, status, now),
+                    "INSERT INTO food_staff_orders(created_at, updated_at, menu_id, staff_user_id, status, submitted_at, location_code) VALUES(?,?,?,?,?,?,?)",
+                    (now, now, mid, uid, status, now, loc),
                 )
                 order_id = cur.lastrowid
             conn.execute("DELETE FROM food_staff_order_items WHERE order_id=?", (order_id,))
@@ -1451,7 +1462,9 @@ class Storage:
                 """SELECT so.*,
                     su.full_name AS staff_name,
                     su.mk_teacher_name AS staff_mk_teacher_name,
-                    su.username AS staff_username
+                    su.username AS staff_username,
+                    su.mk_teacher_id AS staff_mk_teacher_id,
+                    su.role AS staff_role
                 FROM food_staff_orders so
                 LEFT JOIN staff_users su ON su.user_id = so.staff_user_id
                 WHERE so.menu_id=? ORDER BY so.id""",
@@ -2211,6 +2224,41 @@ class Storage:
                 (str(date_str),),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def find_teacher_candidates_by_name(self, full_name: str) -> list[dict[str, Any]]:
+        """Return list of {mk_teacher_id, teacher_name} where teacher_name matches full_name (normalized).
+        Tries both "Имя Фамилия" and "Фамилия Имя" orderings. Safe: returns empty list if ambiguous."""
+        import re as _re
+
+        def _norm(s: str) -> str:
+            s = str(s or "").lower().strip().replace("ё", "е")
+            return _re.sub(r"\s+", " ", s)
+
+        needle = _norm(full_name)
+        if not needle:
+            return []
+        needle_parts = needle.split()
+        needle_rev = " ".join(reversed(needle_parts)) if len(needle_parts) == 2 else ""
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT mk_teacher_id, teacher_name FROM teacher_lesson_control "
+                "WHERE mk_teacher_id IS NOT NULL AND mk_teacher_id != '' "
+                "AND teacher_name IS NOT NULL AND teacher_name != ''",
+            ).fetchall()
+
+        matches: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for row in rows:
+            tid = str(row["mk_teacher_id"]).strip()
+            name = str(row["teacher_name"]).strip()
+            if tid in seen_ids:
+                continue
+            norm_name = _norm(name)
+            if norm_name == needle or (needle_rev and norm_name == needle_rev):
+                matches.append({"mk_teacher_id": tid, "teacher_name": name})
+                seen_ids.add(tid)
+        return matches
 
     def mark_teacher_preparation(self, lesson_id: str | int, user_id: int | None, status: str, comment: str = "", **lesson_fields: Any) -> dict[str, Any]:
         status = (status or "not_started").strip()

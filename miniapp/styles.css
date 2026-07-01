@@ -6438,3 +6438,6 @@ body { -webkit-overflow-scrolling: touch; }
 .kitchen-panel-notice { margin: 12px 16px 0; padding: 12px 16px; background: var(--bg-secondary, #f5f5f5); border-radius: 10px; font-size: 14px; color: var(--color-text-secondary, #888); text-align: center; }
 .kitchen-copy-ok { color: #1a7a3a; font-size: 13px; margin-top: 4px; text-align: center; }
 .kitchen-deadline-info { font-size: 12px; color: var(--color-text-secondary, #999); padding: 0 16px 8px; }
+.staff-location-picker { margin-top: 12px; padding: 12px; background: var(--color-bg-secondary, #f5f5f5); border-radius: 10px; border: 1px solid var(--color-border, #e0e0e0); }
+.staff-location-picker-label { font-size: 14px; font-weight: 500; margin-bottom: 8px; color: var(--color-text, #222); }
+.staff-location-picker-btns { display: flex; gap: 8px; flex-wrap: wrap; }

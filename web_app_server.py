@@ -1034,6 +1034,34 @@ class MiniAppContext:
             return str(test.get("mk_teacher_id") or "").strip()
         return self.storage.get_staff_mk_teacher_id(user_id)
 
+    def _resolve_teacher_mk_id(self, user_id: int) -> tuple[str, str]:
+        """Resolve mk_teacher_id for user, with auto-match fallback by name.
+        Returns (mk_teacher_id, method) where method is 'linked', 'name_match', or ''.
+        If a unique name match is found, persists the link to avoid repeated lookups."""
+        existing = self._mk_teacher_id_for_user(user_id)
+        if existing:
+            return existing, "linked"
+        staff = self.storage.get_staff_user(user_id)
+        full_name = str(staff.get("full_name") or "") if staff else ""
+        if not full_name:
+            return "", ""
+        candidates = self.storage.find_teacher_candidates_by_name(full_name)
+        if len(candidates) == 1:
+            mk_id = candidates[0]["mk_teacher_id"]
+            teacher_name = candidates[0]["teacher_name"]
+            log.info(
+                "food: auto-matched user %s (%s) → teacherId %s by name",
+                user_id, full_name, mk_id,
+            )
+            self.storage.set_staff_mk_teacher(user_id, mk_id, teacher_name)
+            return mk_id, "name_match"
+        if len(candidates) > 1:
+            log.warning(
+                "food: ambiguous teacher name match for user %s (%s): %d candidates, no auto-link",
+                user_id, full_name, len(candidates),
+            )
+        return "", ""
+
     def _role_for_user(self, user_id: int) -> str:
         test = self.storage.get_staff_test_mode(user_id)
         if self._can_use_role_test(user_id) and test.get("enabled") and test.get("role"):
@@ -2249,6 +2277,11 @@ class MiniAppContext:
         by_locations = []
         menu_loc_code = str((summary.get("menu") or {}).get("location_code") or "").strip().upper()
         full_by_staff = summary.get("byStaff", [])
+        # Ensure staff-only locations appear even if no children in that location
+        for s in full_by_staff:
+            staff_loc = (s.get("locationCode") or "").upper()
+            if staff_loc and staff_loc not in groups:
+                groups[staff_loc] = []
         # Build a meta map from global byItems (includes staff items) for fallback lookup
         global_item_meta: dict[int, dict[str, Any]] = {
             int(bi["item_id"]): bi for bi in summary.get("byItems", [])
@@ -2260,12 +2293,18 @@ class MiniAppContext:
             loc_submitted = sum(1 for c in ch_list if c["status"] == "submitted")
             loc_skipped = sum(1 for c in ch_list if c["status"] == "skipped")
             loc_missing = sum(1 for c in ch_list if c["status"] == "missing")
-            # Determine this location's staff orders FIRST so their items can be counted too
-            if menu_loc_code:
-                loc_staff = [s for s in full_by_staff if (s.get("locationCode") or "").upper() == code or
-                             (s.get("locationCode") or "").upper() == menu_loc_code == code]
-            else:
-                loc_staff = full_by_staff if idx == 0 else []
+            # Determine this location's staff orders; use staff's own locationCode if set
+            loc_staff = []
+            for s in full_by_staff:
+                staff_loc = (s.get("locationCode") or "").upper()
+                if staff_loc:
+                    if staff_loc == code:
+                        loc_staff.append(s)
+                elif menu_loc_code:
+                    if code == menu_loc_code:
+                        loc_staff.append(s)
+                elif idx == 0:
+                    loc_staff.append(s)
             loc_item_counts: dict[int, int] = {}
             loc_item_children: dict[int, list[str]] = {}
             loc_item_meta: dict[int, dict[str, Any]] = {}
@@ -2397,15 +2436,24 @@ class MiniAppContext:
         has_tomorrow_lesson = True
         teacher_not_linked = False
         teacher_location_codes: list[str] = []
-        if role in {"teacher", "intern"}:
-            mk_teacher_id = self._mk_teacher_id_for_user(user_id)
-            if mk_teacher_id:
-                has_tomorrow_lesson = self.storage.teacher_has_lesson_on_date(mk_teacher_id, tomorrow_str)
-                if has_tomorrow_lesson:
-                    teacher_location_codes = self.storage.get_teacher_lesson_locations(mk_teacher_id, tomorrow_str)
-            else:
-                has_tomorrow_lesson = False
-                teacher_not_linked = True
+        mk_teacher_id_resolved = ""
+        mk_resolve_method = ""
+        # Resolve teacher ID for any role that has it (not only teacher/intern).
+        # This covers users registered as "other" or any role but linked to a MoyKlass teacher.
+        mk_teacher_id_resolved, mk_resolve_method = self._resolve_teacher_mk_id(user_id)
+        if mk_teacher_id_resolved:
+            has_tomorrow_lesson = self.storage.teacher_has_lesson_on_date(mk_teacher_id_resolved, tomorrow_str)
+            if has_tomorrow_lesson:
+                teacher_location_codes = self.storage.get_teacher_lesson_locations(mk_teacher_id_resolved, tomorrow_str)
+            log.info(
+                "food_staff_menus: user=%s role=%s mk=%s method=%s has_lesson=%s locs=%s",
+                user_id, role, mk_teacher_id_resolved, mk_resolve_method, has_tomorrow_lesson, teacher_location_codes,
+            )
+        elif role in {"teacher", "intern"}:
+            # Has teacher role but no mk_teacher_id linked — block and notify
+            has_tomorrow_lesson = False
+            teacher_not_linked = True
+            log.info("food_staff_menus: user=%s role=%s — teacher role but no mk_teacher_id", user_id, role)
         menus = self.storage.list_published_food_menus_with_items()
         tomorrow_menus = [m for m in menus if (m.get("menu_date") or "") == tomorrow_str]
         # Filter by teacher location: only if teacher has known locations AND menus have location_code
@@ -2423,6 +2471,7 @@ class MiniAppContext:
             "teacherNotLinked": teacher_not_linked,
             "tomorrowDate": tomorrow_str,
             "teacherLocationCodes": teacher_location_codes,
+            "mkResolveMethod": mk_resolve_method,
             "menus": tomorrow_menus,
         }
 
@@ -2715,6 +2764,47 @@ class MiniAppContext:
         order = self.storage.get_food_staff_order(user_id, menu_id)
         return {"ok": True, "order": order}
 
+    def _resolve_staff_order_location(
+        self, user_id: int, menu: dict[str, Any], payload: dict[str, Any]
+    ) -> str | dict[str, Any]:
+        """Determine the location_code for a staff order.
+        Returns a location_code string, or an error dict if the user must pick a location.
+
+        Priority:
+        1. Teacher's lesson location on menu_date (if mk_teacher_id is known)
+           - 1 location: use it automatically
+           - >1 locations: require payload['location_code'] from the client, or return error
+           - 0 locations: fall back to menu.location_code (no lesson found for this date)
+        2. Menu's own location_code
+        3. Empty string (no location info)
+        """
+        menu_date = str(menu.get("menu_date") or "")
+        mk_teacher_id, mk_method = self._resolve_teacher_mk_id(user_id)
+        if mk_teacher_id and menu_date:
+            loc_codes = self.storage.get_teacher_lesson_locations(mk_teacher_id, menu_date)
+            log.info(
+                "food_staff_order_loc: user=%s mk=%s (%s) date=%s locs=%s",
+                user_id, mk_teacher_id, mk_method, menu_date, loc_codes,
+            )
+            if len(loc_codes) == 1:
+                return loc_codes[0]
+            if len(loc_codes) > 1:
+                preferred = str(payload.get("location_code") or "").strip().upper()
+                if preferred in loc_codes:
+                    return preferred
+                return {
+                    "ok": False,
+                    "error": "multiple_locations",
+                    "availableLocations": loc_codes,
+                    "message": "У вас занятия в нескольких филиалах на эту дату. Выберите филиал для обеда.",
+                }
+            # No lesson found for this date — use menu location as fallback
+            log.info(
+                "food_staff_order_loc: no lesson for user=%s on %s, fallback to menu location=%s",
+                user_id, menu_date, menu.get("location_code"),
+            )
+        return str(menu.get("location_code") or "").strip().upper()
+
     def food_staff_submit_order(self, auth: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
@@ -2763,7 +2853,10 @@ class MiniAppContext:
                 except (TypeError, ValueError):
                     pass
         user_id = int(auth["user_id"])
-        order = self.storage.upsert_food_staff_order(user_id, menu_id, item_quantities, "submitted")
+        order_location_code = self._resolve_staff_order_location(user_id, menu, payload)
+        if isinstance(order_location_code, dict):
+            return order_location_code  # error response (multiple_locations)
+        order = self.storage.upsert_food_staff_order(user_id, menu_id, item_quantities, "submitted", location_code=order_location_code)
         return {"ok": True, "order": order}
 
     def food_staff_skip_order(self, auth: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -2781,7 +2874,10 @@ class MiniAppContext:
         if not menu or menu.get("status") != "published":
             return {"ok": False, "error": "menu_not_available"}
         user_id = int(auth["user_id"])
-        order = self.storage.upsert_food_staff_order(user_id, menu_id, {}, "skipped")
+        order_location_code = self._resolve_staff_order_location(user_id, menu, payload)
+        if isinstance(order_location_code, dict):
+            return order_location_code  # error response (multiple_locations)
+        order = self.storage.upsert_food_staff_order(user_id, menu_id, {}, "skipped", location_code=order_location_code)
         return {"ok": True, "order": order}
 
     # --- Food module: kitchen / restaurant read-only summary ---
@@ -2832,6 +2928,11 @@ class MiniAppContext:
             groups.setdefault(ch.get("groupCode", "unknown"), []).append(ch)
         menu_loc_code = str((summary.get("menu") or {}).get("location_code") or "").strip().upper()
         full_by_staff = summary.get("byStaff", [])
+        # Ensure staff-only locations appear even if no children in that location
+        for s in full_by_staff:
+            staff_loc = (s.get("locationCode") or "").upper()
+            if staff_loc and staff_loc not in groups:
+                groups[staff_loc] = []
         global_item_meta: dict[int, dict[str, Any]] = {int(bi["item_id"]): bi for bi in summary.get("byItems", [])}
         sorted_codes = sorted(groups.keys(), key=lambda c: code_order.get(c, 50))
         by_locations = []
@@ -2839,11 +2940,18 @@ class MiniAppContext:
         for idx, code in enumerate(sorted_codes):
             ch_list = groups[code]
             loc = location_map.get(code, f"Адрес не определён ({code})")
-            if menu_loc_code:
-                loc_staff = [s for s in full_by_staff if (s.get("locationCode") or "").upper() == code or
-                             (s.get("locationCode") or "").upper() == menu_loc_code == code]
-            else:
-                loc_staff = full_by_staff if idx == 0 else []
+            # Match staff to this location: use staff's own locationCode if set, else menu/first-block fallback
+            loc_staff = []
+            for s in full_by_staff:
+                staff_loc = (s.get("locationCode") or "").upper()
+                if staff_loc:
+                    if staff_loc == code:
+                        loc_staff.append(s)
+                elif menu_loc_code:
+                    if code == menu_loc_code:
+                        loc_staff.append(s)
+                elif idx == 0:
+                    loc_staff.append(s)
             loc_item_counts: dict[int, int] = {}
             loc_item_meta: dict[int, dict[str, Any]] = {}
             # Build children entries
