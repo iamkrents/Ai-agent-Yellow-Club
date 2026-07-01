@@ -3433,6 +3433,104 @@ class BotHandlers:
             await self._reply(msg, self._moyklass_binding_text(user.id))
             return
 
+        if cmd == "mk_debug_teacher":
+            if not self.admin.is_admin(user.id):
+                await self._reply(msg, "Диагностика доступна только владельцу/администратору.")
+                return
+            raw = args.strip().split()[0] if args.strip() else ""
+            if not raw.isdigit():
+                await self._reply(msg, "Формат: /mk_debug_teacher TELEGRAM_ID\nПример: /mk_debug_teacher 7850692063")
+                return
+            tg_id = int(raw)
+            lines = [f"🔍 Диагностика преподавателя: Telegram ID {tg_id}"]
+            staff = self.storage.get_staff_user(tg_id)
+            if staff:
+                lines.append(f"👤 staff_user: найден")
+                lines.append(f"   full_name: {staff.get('full_name') or '—'}")
+                lines.append(f"   username: @{staff.get('username') or '—'}")
+                lines.append(f"   role: {staff.get('role') or '—'}")
+                lines.append(f"   mk_teacher_id: {staff.get('mk_teacher_id') or '—'}")
+                lines.append(f"   mk_teacher_name: {staff.get('mk_teacher_name') or '—'}")
+                lines.append(f"   mk_linked_at: {staff.get('mk_linked_at') or '—'}")
+            else:
+                lines.append("👤 staff_user: НЕ найден")
+            # Direct link
+            linked_id = self.storage.get_staff_mk_teacher_id(tg_id)
+            if linked_id:
+                lines.append(f"\n✅ teacherId найден: {linked_id} (метод: прямая привязка)")
+            else:
+                lines.append("\n❌ teacherId: не привязан напрямую")
+            # Auto-match by name
+            if staff and staff.get("full_name"):
+                full_name = str(staff.get("full_name") or "")
+                candidates = self.storage.find_teacher_candidates_by_name(full_name)
+                translit = self.storage._translit_name(full_name.lower())
+                lines.append(f"\n🔎 Поиск по ФИО: '{full_name}'")
+                lines.append(f"   транслит: '{translit}'")
+                if candidates:
+                    lines.append(f"   Кандидаты ({len(candidates)}):")
+                    for c in candidates:
+                        lines.append(f"     teacherId={c['mk_teacher_id']} name={c['teacher_name']}")
+                    if len(candidates) == 1:
+                        lines.append("   → Можно автоматически связать ✅")
+                    else:
+                        lines.append("   → Несколько кандидатов, нужна ручная привязка")
+                else:
+                    lines.append("   → Кандидатов не найдено ❌")
+                    lines.append(f"   Используйте: /mk_find_teacher {full_name}")
+            # Recent snapshots with this teacher
+            if not linked_id and staff and staff.get("full_name"):
+                lines.append("\n📋 lesson_snapshots по имени — см. /mk_find_teacher")
+            lines.append(f"\n💡 Чтобы вручную привязать:")
+            lines.append(f"   /mk_link_teacher {tg_id} MK_TEACHER_ID Имя Фамилия")
+            await self._reply(msg, "\n".join(lines))
+            return
+
+        if cmd == "mk_find_teacher":
+            if not self.admin.is_admin(user.id):
+                await self._reply(msg, "Поиск доступен только владельцу/администратору.")
+                return
+            query = args.strip()
+            if not query:
+                await self._reply(msg, "Формат: /mk_find_teacher ФИО\nПример: /mk_find_teacher Александр Кренц")
+                return
+            candidates = self.storage.find_teacher_candidates_by_name(query)
+            translit = self.storage._translit_name(query.lower())
+            lines = [f"🔍 Поиск преподавателя: '{query}'"]
+            if translit != query.lower():
+                lines.append(f"   транслит: '{translit}'")
+            if not candidates:
+                lines.append("❌ Кандидатов не найдено")
+                lines.append("\nДругие варианты:")
+                lines.append("• Попробуйте другое написание имени")
+                lines.append("• Проверьте lesson_snapshots через /mk_report_probe")
+                lines.append("• Привяжите вручную: /mk_link_teacher TELEGRAM_ID MK_TEACHER_ID Имя Фамилия")
+            else:
+                lines.append(f"✅ Найдено кандидатов: {len(candidates)}")
+                for c in candidates:
+                    tid = c["mk_teacher_id"]
+                    tname = c["teacher_name"]
+                    lines.append(f"\n  teacherId: {tid}")
+                    lines.append(f"  Имя в МойКласс: {tname}")
+                    # Show lesson dates for this teacher
+                    try:
+                        with self.storage._connect() as conn:
+                            snap_rows = conn.execute(
+                                "SELECT DISTINCT lesson_date, group_name FROM lesson_snapshots "
+                                "WHERE teacher_ids LIKE ? ORDER BY lesson_date DESC LIMIT 5",
+                                (f"%{tid}%",),
+                            ).fetchall()
+                        if snap_rows:
+                            lines.append(f"  Занятия (последние {len(snap_rows)}):")
+                            for r in snap_rows:
+                                from storage import normalize_food_location
+                                loc = normalize_food_location(r["group_name"] or "") or "—"
+                                lines.append(f"    {r['lesson_date']} · {r['group_name']} · {loc}")
+                    except Exception:
+                        pass
+            await self._reply(msg, "\n".join(lines))
+            return
+
         if cmd in {"mk_names", "mk_name_list"}:
             if not self.admin.is_admin(user.id):
                 await self._reply(msg, "Названия МойКласс может смотреть только владелец.")

@@ -1181,13 +1181,13 @@ class Storage:
             if order and order["status"] == "submitted":
                 submitted += 1
                 item_details = [{"item_id": i["item_id"], "name": i["name"], "category": i["category"], "weight": i["weight"], "quantity": int(i.get("quantity", 1) or 1)} for i in order.get("items", [])]
-                by_children.append({"childName": ch["full_name"], "status": "submitted", "items": [i["name"] for i in order.get("items", [])], "itemDetails": item_details, "mk_student_id": sid, "groupCode": group_code, "groupSource": group_source})
+                by_children.append({"childName": ch["full_name"], "status": "submitted", "items": [i["name"] for i in order.get("items", [])], "itemDetails": item_details, "mk_student_id": sid, "groupCode": group_code, "groupSource": group_source, "orderId": order["id"]})
             elif order and order["status"] == "skipped":
                 skipped += 1
-                by_children.append({"childName": ch["full_name"], "status": "skipped", "items": [], "itemDetails": [], "mk_student_id": sid, "groupCode": group_code, "groupSource": group_source})
+                by_children.append({"childName": ch["full_name"], "status": "skipped", "items": [], "itemDetails": [], "mk_student_id": sid, "groupCode": group_code, "groupSource": group_source, "orderId": order["id"]})
             else:
                 missing += 1
-                by_children.append({"childName": ch["full_name"], "status": "missing", "items": [], "itemDetails": [], "mk_student_id": sid, "groupCode": group_code, "groupSource": group_source})
+                by_children.append({"childName": ch["full_name"], "status": "missing", "items": [], "itemDetails": [], "mk_student_id": sid, "groupCode": group_code, "groupSource": group_source, "orderId": None})
                 missing_children.append(ch["full_name"])
         item_counts: dict[int, int] = {}
         item_children: dict[int, list[str]] = {}
@@ -1207,13 +1207,17 @@ class Storage:
         for so in staff_orders:
             order_loc = str(so.get("location_code") or "").strip().upper() or menu_location_code
             is_teacher = bool(str(so.get("staff_mk_teacher_id") or "").strip()) or str(so.get("staff_role") or "") in ("teacher", "intern", "methodist")
+            # Prefer MoyKlass teacher name (set after teacher link/auto-match) for authoritative display
+            mk_teacher_name = str(so.get("staff_mk_teacher_name") or "").strip()
+            staff_full_name = str(so.get("staff_name") or "").strip()
+            staff_username = str(so.get("staff_username") or "").strip()
+            display_name = mk_teacher_name or staff_full_name or staff_username or f"Сотрудник #{so['staff_user_id']}"
+            order_row_id = so["id"]
             if so["status"] == "submitted":
                 item_details = [{"item_id": i["item_id"], "name": i["name"], "category": i["category"], "weight": i["weight"], "quantity": int(i.get("quantity", 1) or 1)} for i in so.get("items", [])]
-                display_name = str(so.get("staff_name") or so.get("staff_mk_teacher_name") or so.get("staff_username") or f"Сотрудник #{so['staff_user_id']}")
-                by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "status": "submitted", "itemDetails": item_details, "locationCode": order_loc, "isTeacher": is_teacher})
+                by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "orderId": order_row_id, "status": "submitted", "itemDetails": item_details, "locationCode": order_loc, "isTeacher": is_teacher})
             elif so["status"] == "skipped":
-                display_name = str(so.get("staff_name") or so.get("staff_mk_teacher_name") or so.get("staff_username") or f"Сотрудник #{so['staff_user_id']}")
-                by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "status": "skipped", "itemDetails": [], "locationCode": order_loc, "isTeacher": is_teacher})
+                by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "orderId": order_row_id, "status": "skipped", "itemDetails": [], "locationCode": order_loc, "isTeacher": is_teacher})
         # Add staff item counts to aggregate
         for so_entry in by_staff:
             if so_entry["status"] == "submitted":
@@ -1438,6 +1442,37 @@ class Storage:
         result = dict(row)
         result["items"] = [dict(i) for i in order_items]
         return result
+
+    def delete_food_child_order(self, order_id: int) -> Optional[dict[str, Any]]:
+        """Hard-delete a single child food_order by id. Returns deleted record info or None if not found."""
+        oid = int(order_id)
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM food_orders WHERE id=?", (oid,)).fetchone()
+            if not row:
+                return None
+            info = dict(row)
+            conn.execute("DELETE FROM food_order_items WHERE order_id=?", (oid,))
+            conn.execute("DELETE FROM food_orders WHERE id=?", (oid,))
+        return info
+
+    def delete_food_staff_order(self, order_id: int) -> Optional[dict[str, Any]]:
+        """Hard-delete a single staff food order by id. Returns deleted record info or None if not found."""
+        oid = int(order_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT so.*, su.full_name AS staff_name, su.mk_teacher_name AS staff_mk_teacher_name,
+                    su.username AS staff_username, su.role AS staff_role
+                   FROM food_staff_orders so
+                   LEFT JOIN staff_users su ON su.user_id = so.staff_user_id
+                   WHERE so.id=?""",
+                (oid,),
+            ).fetchone()
+            if not row:
+                return None
+            info = dict(row)
+            conn.execute("DELETE FROM food_staff_order_items WHERE order_id=?", (oid,))
+            conn.execute("DELETE FROM food_staff_orders WHERE id=?", (oid,))
+        return info
 
     def get_food_staff_order(self, staff_user_id: int, menu_id: int) -> Optional[dict[str, Any]]:
         with self._connect() as conn:
@@ -2256,6 +2291,59 @@ class Storage:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    # Latin→Cyrillic word aliases for teacher name matching.
+    # Keys are lowercased Latin words; values are the Cyrillic equivalents (also lowercased).
+    # Extend this dict when new teacher names with Latin spellings need to be supported.
+    _TEACHER_NAME_ALIASES: dict[str, str] = {
+        # Common first names
+        "alexandr": "александр", "alexander": "александр", "aleksander": "александр",
+        "aleksandr": "александр", "alex": "александр",
+        "alexei": "алексей", "alexey": "алексей", "aleksei": "алексей", "aleksey": "алексей",
+        "anna": "анна", "maria": "мария", "mary": "мария",
+        "natalia": "наталья", "natasha": "наташа", "natalya": "наталья", "nataliya": "наталья",
+        "olga": "ольга", "elena": "елена", "helen": "елена", "yelena": "елена",
+        "irina": "ирина", "iryna": "ирина", "oksana": "оксана",
+        "tatiana": "татьяна", "tatyana": "татьяна", "tanya": "татьяна",
+        "ekaterina": "екатерина", "katerina": "екатерина", "katya": "катя",
+        "svetlana": "светлана", "sveta": "светлана",
+        "victoria": "виктория", "vika": "виктория",
+        "mikhail": "михаил", "michael": "михаил", "misha": "михаил",
+        "nikita": "никита", "nikolai": "николай", "nikolay": "николай",
+        "pavel": "павел", "paul": "павел", "pasha": "павел",
+        "sergei": "сергей", "sergey": "сергей", "serhiy": "сергей",
+        "dmitri": "дмитрий", "dmitry": "дмитрий", "dmitriy": "дмитрий",
+        "andrei": "андрей", "andrey": "андрей", "andriy": "андрей",
+        "evgeni": "евгений", "evgeny": "евгений", "evgeniy": "евгений",
+        "roman": "роман", "viktor": "виктор", "maxim": "максим", "vadim": "вадим",
+        "igor": "игорь", "artem": "артём", "artyom": "артём",
+        "stanislav": "станислав", "vladislav": "владислав", "vlad": "владислав",
+        "yulia": "юлия", "julia": "юлия", "yuliya": "юлия",
+        "daria": "дарья", "darya": "дарья", "dasha": "дарья",
+        "polina": "полина", "kristina": "кристина", "vera": "вера",
+        "liudmila": "людмила", "ludmila": "людмила", "lyudmila": "людмила",
+        "valentina": "валентина", "galina": "галина", "tamara": "тамара",
+        "artur": "артур", "arthur": "артур", "valentin": "валентин",
+        "vadym": "вадим", "yuriy": "юрий", "yuri": "юрий", "yury": "юрий",
+        "boris": "борис", "arkady": "аркадий", "gennady": "геннадий",
+        "konstantin": "константин", "vitaly": "виталий", "anatoly": "анатолий",
+        # Common last names (extend as needed)
+        "krents": "кренц", "krenc": "кренц", "krentz": "кренц",
+        "skroba": "скроба",
+        "ivanov": "иванов", "petrov": "петров", "sidorov": "сидоров",
+        "kovalev": "ковалев", "kovalyov": "ковалёв",
+        "smirnov": "смирнов", "popov": "попов", "sokolov": "соколов",
+        "novikov": "новиков", "morozov": "морозов", "volkov": "волков",
+    }
+
+    @classmethod
+    def _translit_name(cls, text: str) -> str:
+        """Apply word-level Latin→Cyrillic alias mapping to a lowercased name string.
+        Returns a version of `text` where known Latin name words are replaced with Cyrillic.
+        Unknown words are left as-is (may remain Latin if no alias found)."""
+        import re as _re
+        words = _re.sub(r"\s+", " ", str(text or "").lower().strip()).split()
+        return " ".join(cls._TEACHER_NAME_ALIASES.get(w, w) for w in words)
+
     def find_teacher_candidates_by_name(self, full_name: str) -> list[dict[str, Any]]:
         """Return list of {mk_teacher_id, teacher_name} where teacher_name matches full_name (normalized).
         Tries both "Имя Фамилия" and "Фамилия Имя" orderings. Searches teacher_lesson_control AND
@@ -2269,8 +2357,21 @@ class Storage:
         needle = _norm(full_name)
         if not needle:
             return []
+        # Also try transliterating Latin words → Cyrillic so "Alexandr Krents" matches "Александр Кренц"
+        needle_translit = _norm(self._translit_name(needle))
+        # Build candidate needles: direct + translit + reversed variants
         needle_parts = needle.split()
         needle_rev = " ".join(reversed(needle_parts)) if len(needle_parts) == 2 else ""
+        needle_trans_parts = needle_translit.split()
+        needle_trans_rev = " ".join(reversed(needle_trans_parts)) if len(needle_trans_parts) == 2 else ""
+
+        def _matches(norm_name: str) -> bool:
+            return (
+                norm_name == needle
+                or (needle_rev and norm_name == needle_rev)
+                or (needle_translit and norm_name == needle_translit)
+                or (needle_trans_rev and norm_name == needle_trans_rev)
+            )
 
         matches: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
@@ -2287,8 +2388,7 @@ class Storage:
                 name = str(row["teacher_name"]).strip()
                 if tid in seen_ids:
                     continue
-                norm_name = _norm(name)
-                if norm_name == needle or (needle_rev and norm_name == needle_rev):
+                if _matches(_norm(name)):
                     matches.append({"mk_teacher_id": tid, "teacher_name": name})
                     seen_ids.add(tid)
 
@@ -2303,8 +2403,7 @@ class Storage:
             ).fetchall()
             for row in snap_rows:
                 name = str(row["teacher_names"]).strip()
-                norm_name = _norm(name)
-                if not (norm_name == needle or (needle_rev and norm_name == needle_rev)):
+                if not _matches(_norm(name)):
                     continue
                 ids = [x.strip() for x in str(row["teacher_ids"] or "").split(",") if x.strip()]
                 if len(ids) == 1:

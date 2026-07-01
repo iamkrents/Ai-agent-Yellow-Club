@@ -6497,6 +6497,8 @@ function _renderFoodMenuSummary(root, menuId, data) {
     ).join("");
   }
 
+  const canDeleteOrders = ["owner", "admin", "operations"].includes(state.me?.role || "");
+
   function _childOrderCard(ch) {
     const badge = ch.status === "submitted"
       ? `<span class="food-order-status food-order-status--submitted">Отправлен</span>`
@@ -6514,7 +6516,10 @@ function _renderFoodMenuSummary(root, menuId, data) {
     } else {
       cardBody = `<div class="food-child-order-note food-child-order-note--missing">Родитель ещё не отправил выбор</div>`;
     }
-    return `<div class="food-child-order-card"><div class="food-child-order-head"><span class="food-child-order-name">${escapeHtml(ch.childName)}</span>${badge}</div>${cardBody}</div>`;
+    const deleteBtn = canDeleteOrders && ch.orderId
+      ? `<button class="food-order-delete-btn" data-order-id="${ch.orderId}" data-order-type="child" data-display-name="${escapeAttr(ch.childName)}" data-menu-date="${escapeAttr(dateStr)}" title="Удалить заказ">✕</button>`
+      : "";
+    return `<div class="food-child-order-card"><div class="food-child-order-head"><span class="food-child-order-name">${escapeHtml(ch.childName)}</span>${badge}${deleteBtn}</div>${cardBody}</div>`;
   }
 
   const overallStats = `
@@ -6568,7 +6573,11 @@ function _renderFoodMenuSummary(root, menuId, data) {
       const items = s.status === "submitted" && s.itemDetails && s.itemDetails.length
         ? `<ul class="food-child-order-items">${s.itemDetails.map(it => { const q = parseInt(it.quantity||1,10); return `<li>${escapeHtml(it.name)}${q > 1 ? ` <b>× ${q}</b>` : ""}</li>`; }).join("")}</ul>`
         : "";
-      return `<div class="food-child-order-card"><div class="food-child-order-head"><span class="food-child-order-name">${escapeHtml(s.staffName)}</span>${badge}</div>${items}</div>`;
+      const teacherTag = s.isTeacher ? `<span class="kitchen-teacher-tag">преп.</span>` : "";
+      const deleteBtn = canDeleteOrders && s.orderId
+        ? `<button class="food-order-delete-btn" data-order-id="${s.orderId}" data-order-type="staff" data-display-name="${escapeAttr(s.staffName)}" data-menu-date="${escapeAttr(dateStr)}" title="Удалить заказ">✕</button>`
+        : "";
+      return `<div class="food-child-order-card"><div class="food-child-order-head"><span class="food-child-order-name">${escapeHtml(s.staffName)}${teacherTag}</span>${badge}${deleteBtn}</div>${items}</div>`;
     }).join("");
     return `<div class="food-summary-section" style="margin-top:10px">Заказы сотрудников</div>${cards}`;
   }
@@ -6607,6 +6616,58 @@ function _renderFoodMenuSummary(root, menuId, data) {
   root.querySelector("#fmSummaryRefresh")?.addEventListener("click", () => loadFoodMenuSummary(root, menuId));
   root.querySelector("#fmSummaryCopy")?.addEventListener("click", () => _copyFoodSummary(title, dateStr, data));
   root.querySelector("#fmRemindBtn")?.addEventListener("click", () => sendFoodReminder(root, menuId));
+
+  // Attach delete order handlers
+  root.querySelectorAll(".food-order-delete-btn").forEach(btn => {
+    btn.addEventListener("click", async (e) => {
+      const orderId = btn.dataset.orderId;
+      const orderType = btn.dataset.orderType;
+      const displayName = btn.dataset.displayName;
+      const menuDate = btn.dataset.menuDate;
+      if (!orderId || !orderType) return;
+      const confirmed = await _confirmFoodOrderDelete(displayName, menuDate);
+      if (!confirmed) return;
+      btn.disabled = true;
+      try {
+        const endpoint = orderType === "staff"
+          ? `/api/food/staff-orders/${orderId}/delete`
+          : `/api/food/orders/${orderId}/delete`;
+        const resp = await apiPost(endpoint, {});
+        if (!resp.ok) {
+          setNotice(resp.error || "Ошибка удаления", "error");
+          btn.disabled = false;
+          return;
+        }
+        setNotice("Заказ удалён", "success");
+        loadFoodMenuSummary(root, menuId);
+      } catch (err) {
+        setNotice("Ошибка сети при удалении", "error");
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+async function _confirmFoodOrderDelete(displayName, menuDate) {
+  return new Promise(resolve => {
+    const overlay = document.createElement("div");
+    overlay.className = "food-delete-overlay";
+    overlay.innerHTML = `
+      <div class="food-delete-dialog">
+        <div class="food-delete-dialog-title">Удалить заказ?</div>
+        <div class="food-delete-dialog-name">${escapeHtml(displayName || "")}</div>
+        ${menuDate ? `<div class="food-delete-dialog-date">Меню: ${escapeHtml(menuDate)}</div>` : ""}
+        <div class="food-delete-dialog-warn">Это действие уберёт заказ из сводки и итогов по блюдам.</div>
+        <div class="food-delete-dialog-btns">
+          <button class="secondary food-delete-cancel-btn">Отмена</button>
+          <button class="food-delete-confirm-btn">Удалить</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector(".food-delete-cancel-btn").addEventListener("click", () => { overlay.remove(); resolve(false); });
+    overlay.querySelector(".food-delete-confirm-btn").addEventListener("click", () => { overlay.remove(); resolve(true); });
+    overlay.addEventListener("click", e => { if (e.target === overlay) { overlay.remove(); resolve(false); } });
+  });
 }
 
 function _isMenuDeadlinePassed(deadline_at) {

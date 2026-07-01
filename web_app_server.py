@@ -2923,6 +2923,80 @@ class MiniAppContext:
         order = self.storage.upsert_food_staff_order(user_id, menu_id, {}, "skipped", location_code=order_location_code)
         return {"ok": True, "order": order}
 
+    _FOOD_DELETE_ROLES = {"owner", "admin", "operations"}
+
+    def _require_food_delete_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in self._FOOD_DELETE_ROLES:
+            return {"ok": False, "error": "Удалять заказы может только owner, admin или operations."}
+        return None
+
+    def food_delete_child_order(self, auth: dict[str, Any], order_id_str: str) -> dict[str, Any]:
+        """Admin: delete a child food order by its order id."""
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        denied = self._require_food_delete_access(auth)
+        if denied:
+            return denied
+        try:
+            order_id = int(order_id_str or 0)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Неверный order_id"}
+        if not order_id:
+            return {"ok": False, "error": "order_id обязателен"}
+        deleted = self.storage.delete_food_child_order(order_id)
+        if not deleted:
+            return {"ok": False, "error": "Заказ не найден"}
+        admin_uid = int(auth["user_id"])
+        admin_role = self._role_for_user(admin_uid)
+        log.info(
+            "food_order_deleted: admin=%s role=%s order_id=%s type=child menu_id=%s student=%s status=%s",
+            admin_uid, admin_role, order_id, deleted.get("menu_id"), deleted.get("mk_student_id"), deleted.get("status"),
+        )
+        return {
+            "ok": True,
+            "deleted_order_id": order_id,
+            "order_type": "child",
+            "menu_id": deleted.get("menu_id"),
+            "mk_student_id": deleted.get("mk_student_id"),
+        }
+
+    def food_delete_staff_order_by_id(self, auth: dict[str, Any], order_id_str: str) -> dict[str, Any]:
+        """Admin: delete a staff/teacher food order by its order id."""
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        denied = self._require_food_delete_access(auth)
+        if denied:
+            return denied
+        try:
+            order_id = int(order_id_str or 0)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Неверный order_id"}
+        if not order_id:
+            return {"ok": False, "error": "order_id обязателен"}
+        deleted = self.storage.delete_food_staff_order(order_id)
+        if not deleted:
+            return {"ok": False, "error": "Заказ не найден"}
+        admin_uid = int(auth["user_id"])
+        admin_role = self._role_for_user(admin_uid)
+        mk_name = str(deleted.get("staff_mk_teacher_name") or "").strip()
+        full_name = str(deleted.get("staff_name") or "").strip()
+        username = str(deleted.get("staff_username") or "").strip()
+        display_name = mk_name or full_name or username or f"Сотрудник #{deleted.get('staff_user_id')}"
+        log.info(
+            "food_order_deleted: admin=%s role=%s order_id=%s type=staff menu_id=%s user=%s name=%r loc=%s status=%s",
+            admin_uid, admin_role, order_id, deleted.get("menu_id"), deleted.get("staff_user_id"),
+            display_name, deleted.get("location_code"), deleted.get("status"),
+        )
+        return {
+            "ok": True,
+            "deleted_order_id": order_id,
+            "order_type": "staff",
+            "display_name": display_name,
+            "menu_id": deleted.get("menu_id"),
+            "staff_user_id": deleted.get("staff_user_id"),
+        }
+
     # --- Food module: kitchen / restaurant read-only summary ---
 
     def _require_kitchen_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
@@ -5857,6 +5931,16 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 return self._send_json(CTX.food_staff_skip_order(auth, body))
             if path == "/api/food/menus":
                 return self._send_json(CTX.food_create_menu(auth, body))
+            if path.startswith("/api/food/orders/"):
+                _orest = path[len("/api/food/orders/"):]
+                _oparts = _orest.split("/")
+                if len(_oparts) == 2 and _oparts[1] == "delete":
+                    return self._send_json(CTX.food_delete_child_order(auth, _oparts[0]))
+            if path.startswith("/api/food/staff-orders/"):
+                _srest = path[len("/api/food/staff-orders/"):]
+                _sparts = _srest.split("/")
+                if len(_sparts) == 2 and _sparts[1] == "delete":
+                    return self._send_json(CTX.food_delete_staff_order_by_id(auth, _sparts[0]))
             if path.startswith("/api/food/menus/"):
                 _mrest = path[len("/api/food/menus/"):]
                 _mparts = _mrest.split("/")
