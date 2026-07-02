@@ -137,6 +137,10 @@ const state = {
   kitchenCopyNotice: "",
   kitchenEditorData: null,
   kitchenEditorSelected: null,
+  kitchenAuditData: null,
+  kitchenAuditMenuId: null,
+  foodAdminAuditData: null,
+  foodAdminAuditMenuId: null,
 };
 
 function $(id) { return document.getElementById(id); }
@@ -6648,13 +6652,30 @@ function _renderFoodMenuSummary(root, menuId, data) {
     <div class="food-menu-actions" style="margin-top:16px">
       <button class="secondary" id="fmSummaryRefresh">Обновить сводку</button>
       <button class="secondary" id="fmSummaryCopy">Скопировать сводку</button>
+      <button class="secondary" id="fmAuditBtn">✅ Проверить сводку</button>
     </div>
+    <div id="fmAuditResult" style="display:none;margin-top:10px"></div>
   </div>`;
 
   root.querySelector("#fmSummaryBack")?.addEventListener("click", () => { if (state.foodMenuSelected) _renderFoodMenuDetail(root, state.foodMenuSelected); else { state.foodMenuData = null; loadFoodMenus(root); } });
   root.querySelector("#fmSummaryRefresh")?.addEventListener("click", () => loadFoodMenuSummary(root, menuId));
   root.querySelector("#fmSummaryCopy")?.addEventListener("click", () => _copyFoodSummary(title, dateStr, data));
   root.querySelector("#fmRemindBtn")?.addEventListener("click", () => sendFoodReminder(root, menuId));
+  root.querySelector("#fmAuditBtn")?.addEventListener("click", async () => {
+    const btn = root.querySelector("#fmAuditBtn");
+    const resultEl = root.querySelector("#fmAuditResult");
+    if (btn) btn.disabled = true;
+    if (resultEl) { resultEl.style.display = ""; resultEl.innerHTML = `<div style="color:#888;font-size:13px">Проверка...</div>`; }
+    try {
+      const auditData = await apiGet(`/api/food/menus/${menuId}/audit`);
+      if (resultEl) { resultEl.innerHTML = _renderAuditBlock(auditData); resultEl.style.display = ""; }
+      resultEl?.querySelector("#auditCopyBtn")?.addEventListener("click", () => _copyAuditReport(auditData));
+    } catch (e) {
+      if (resultEl) { resultEl.innerHTML = `<div style="color:#c0392b;font-size:13px">Ошибка проверки: ${escapeHtml(e.message)}</div>`; resultEl.style.display = ""; }
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
 
   // Attach delete order handlers
   root.querySelectorAll(".food-order-delete-btn").forEach(btn => {
@@ -7222,6 +7243,7 @@ function renderKitchenPanel() {
     <button type="button" id="kitchenRefreshBtn">🔄 Обновить</button>
     <button type="button" id="kitchenCopyBtn">📋 Скопировать заказ</button>
     ${canSeeFoodCostReport() ? `<button type="button" id="kitchenCopyPriceBtn">📊 Отчёт по стоимости</button>` : ""}
+    ${state.kitchenSelectedMenuId ? `<button type="button" id="kitchenAuditBtn" class="secondary">✅ Проверить сводку</button>` : ""}
   </div>`;
 
   let summaryHtml = "";
@@ -7236,6 +7258,8 @@ function renderKitchenPanel() {
   }
 
   const copyNotice = state.kitchenCopyNotice ? `<div class="kitchen-copy-ok">${escapeHtml(state.kitchenCopyNotice)}</div>` : "";
+  const auditHtml = (state.kitchenAuditData && state.kitchenAuditMenuId === state.kitchenSelectedMenuId)
+    ? `<div id="kitchenAuditResult" style="margin:8px 0">${_renderAuditBlock(state.kitchenAuditData)}</div>` : "";
 
   root.innerHTML = `
     <div class="kitchen-panel">
@@ -7246,20 +7270,42 @@ function renderKitchenPanel() {
       ${menuSelectHtml}
       ${actionsHtml}
       ${copyNotice}
+      ${auditHtml}
       ${summaryHtml}
     </div>`;
 
   root.querySelector("#kitchenMenuSelect")?.addEventListener("change", e => {
     state.kitchenSelectedMenuId = e.target.value;
     state.kitchenCopyNotice = "";
+    state.kitchenAuditData = null;
     loadKitchenSummary(state.kitchenSelectedMenuId);
   });
   root.querySelector("#kitchenRefreshBtn")?.addEventListener("click", () => {
     state.kitchenCopyNotice = "";
+    state.kitchenAuditData = null;
     loadKitchenMenus();
   });
   root.querySelector("#kitchenCopyBtn")?.addEventListener("click", () => copyKitchenOrder(false));
   root.querySelector("#kitchenCopyPriceBtn")?.addEventListener("click", () => copyKitchenOrder(true));
+  root.querySelector("#kitchenAuditBtn")?.addEventListener("click", async () => {
+    const menuId = state.kitchenSelectedMenuId;
+    if (!menuId) return;
+    const btn = root.querySelector("#kitchenAuditBtn");
+    if (btn) btn.disabled = true;
+    try {
+      const data = await apiGet(`/api/food/menus/${menuId}/audit`);
+      state.kitchenAuditData = data;
+      state.kitchenAuditMenuId = menuId;
+      renderKitchenPanel();
+    } catch (e) {
+      state.kitchenAuditData = { ok: false, error: e.message };
+      state.kitchenAuditMenuId = menuId;
+      renderKitchenPanel();
+    }
+  });
+  root.querySelector("#kitchenAuditCopyBtn")?.addEventListener("click", () => {
+    if (state.kitchenAuditData?.ok) _copyAuditReport(state.kitchenAuditData);
+  });
 }
 
 function _renderKitchenSummaryHtml(data, showPrices) {
@@ -7972,6 +8018,105 @@ function _confirmFoodMenuDelete(menuTitle, menuDate, isPublished, onConfirm) {
   overlay.querySelector(".food-delete-cancel-btn").addEventListener("click", () => overlay.remove());
   overlay.querySelector(".food-delete-confirm-btn").addEventListener("click", () => { overlay.remove(); onConfirm(); });
   overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
+}
+
+// ============================================================
+// Food summary audit (v7.0.22)
+// ============================================================
+
+function _renderAuditBlock(data) {
+  if (!data || !data.ok) {
+    const msg = data?.error || "Ошибка проверки";
+    return `<div class="food-audit-block food-audit-block--error"><span class="food-audit-icon">❌</span> ${escapeHtml(msg)}</div>`;
+  }
+  const status = data.auditStatus || "passed";
+  const icon = status === "passed" ? "✅" : status === "warning" ? "⚠️" : "❌";
+  const statusLabel = status === "passed" ? "Сводка проверена — всё сходится" : status === "warning" ? "Сводка требует проверки" : "В сводке есть ошибки";
+  const blockClass = status === "passed" ? "food-audit-block--ok" : status === "warning" ? "food-audit-block--warn" : "food-audit-block--error";
+  const s = data.summary || {};
+  const dateLabel = data.menuDate ? _formatMenuDate(data.menuDate) : "";
+  const titleLabel = data.menuTitle ? `${escapeHtml(data.menuTitle)} · ` : "";
+
+  let detailsHtml = `<details class="food-audit-details"><summary>Показать детали</summary>`;
+  // Location rows
+  if ((data.locations || []).length) {
+    detailsHtml += `<div class="food-audit-section">`;
+    for (const loc of data.locations) {
+      if (loc.locationCode === "unknown" && !loc.staffOrders && !loc.noFood) continue;
+      detailsHtml += `<div class="food-audit-loc">
+        <div class="food-audit-loc-name">${escapeHtml(loc.locationName || loc.locationCode)}</div>
+        <div class="food-audit-loc-row">заказов детей: <b>${loc.childOrders}</b> · сотрудников: <b>${loc.staffOrders}</b> · без питания: <b>${loc.noFood}</b></div>
+        <div class="food-audit-loc-row">блюд всего: <b>${loc.totalItemsQty}</b> · сумма: <b>${loc.totalAmount.toFixed(2)} BYN</b></div>`;
+      if ((loc.items || []).length) {
+        detailsHtml += `<ul class="food-audit-items">` + loc.items.map(it => `<li>${escapeHtml(it.itemName)} × ${it.qty}${it.amount ? ` = ${it.amount.toFixed(2)} BYN` : ""}</li>`).join("") + `</ul>`;
+      }
+      detailsHtml += `</div>`;
+    }
+    detailsHtml += `</div>`;
+  }
+  // Checks
+  const failedChecks = (data.checks || []).filter(c => c.status !== "passed");
+  if (failedChecks.length) {
+    detailsHtml += `<div class="food-audit-section">`;
+    for (const ch of failedChecks) {
+      const cl = ch.status === "error" ? "food-audit-check--error" : "food-audit-check--warn";
+      detailsHtml += `<div class="food-audit-check ${cl}">${escapeHtml(ch.message)}</div>`;
+    }
+    detailsHtml += `</div>`;
+  }
+  // All items summary
+  if ((data.items || []).length) {
+    detailsHtml += `<div class="food-audit-section"><div class="food-audit-section-title">Итог по блюдам (все адреса)</div><ul class="food-audit-items">` +
+      data.items.map(it => `<li>${escapeHtml(it.itemName)} × ${it.qty}${it.amount ? ` = ${it.amount.toFixed(2)} BYN` : ""}</li>`).join("") +
+      `</ul></div>`;
+  }
+  detailsHtml += `</details>`;
+
+  const errorsHtml = (data.errors || []).length
+    ? `<div class="food-audit-errors">${data.errors.map(e => `<div class="food-audit-err-row">❌ ${escapeHtml(e)}</div>`).join("")}</div>` : "";
+  const warningsHtml = (data.warnings || []).length
+    ? `<div class="food-audit-warnings">${data.warnings.map(w => `<div class="food-audit-warn-row">⚠️ ${escapeHtml(w)}</div>`).join("")}</div>` : "";
+
+  return `<div class="food-audit-block ${blockClass}">
+    <div class="food-audit-header"><span class="food-audit-icon">${icon}</span> <b>${escapeHtml(statusLabel)}</b></div>
+    <div class="food-audit-meta">${titleLabel}${escapeHtml(dateLabel)}</div>
+    <div class="food-audit-totals">
+      людей с заказом: <b>${s.totalPeople || 0}</b> · детей: <b>${s.childOrders || 0}</b> · сотр.: <b>${s.staffOrders || 0}</b> · без питания: <b>${s.noFood || 0}</b>
+    </div>
+    <div class="food-audit-totals">блюд всего: <b>${s.totalItemsQty || 0}</b> · сумма: <b>${(s.totalAmount || 0).toFixed(2)} BYN</b>${s.deletedChildOrders ? ` · удал. заказов: ${s.deletedChildOrders}` : ""}</div>
+    ${errorsHtml}${warningsHtml}
+    ${detailsHtml}
+    <div style="margin-top:8px"><button class="secondary btn-sm" id="auditCopyBtn">📋 Скопировать проверку</button></div>
+  </div>`;
+}
+
+function _copyAuditReport(data) {
+  if (!data || !data.ok) { setNotice("Нет данных для копирования", "error"); return; }
+  const s = data.summary || {};
+  const dateLabel = data.menuDate ? _formatMenuDate(data.menuDate) : "";
+  const titleLabel = data.menuTitle || dateLabel;
+  const statusText = data.auditStatus === "passed" ? "✅ всё сходится" : data.auditStatus === "warning" ? "⚠️ есть предупреждения" : "❌ есть ошибки";
+  let lines = [`Проверка сводки питания`, titleLabel, ``, `Статус: ${statusText}`, ``];
+  for (const loc of (data.locations || [])) {
+    if (loc.locationCode === "unknown" && !loc.staffOrders && !loc.noFood) continue;
+    lines.push(loc.locationName || loc.locationCode + ":");
+    lines.push(`Детей: ${loc.childOrders}`);
+    lines.push(`Сотрудников/преподавателей: ${loc.staffOrders}`);
+    lines.push(`Без питания: ${loc.noFood}`);
+    lines.push(`Блюд всего: ${loc.totalItemsQty}`);
+    lines.push(`Сумма: ${loc.totalAmount.toFixed(2)} BYN`);
+    lines.push(``);
+  }
+  lines.push(`Общая сумма: ${(s.totalAmount || 0).toFixed(2)} BYN`);
+  lines.push(``);
+  lines.push(`Ошибки: ${(data.errors || []).length ? data.errors.join("; ") : "нет"}`);
+  lines.push(`Предупреждения: ${(data.warnings || []).length ? data.warnings.join("; ") : "нет"}`);
+  const text = lines.join("\n");
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(() => setNotice("Проверка скопирована", "success")).catch(() => setNotice("Ошибка копирования", "error"));
+  } else {
+    setNotice("Буфер обмена недоступен", "error");
+  }
 }
 
 function _renderFoodReportResult(el, data, startDate, endDate) {

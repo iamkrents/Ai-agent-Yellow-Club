@@ -1538,6 +1538,55 @@ class Storage:
                 result.append(order)
         return result
 
+    def get_food_menu_audit_raw(self, menu_id: int) -> Optional[dict[str, Any]]:
+        """Return raw unfiltered data for audit: all orders (all statuses), all items, all staff orders."""
+        mid = int(menu_id)
+        with self._connect() as conn:
+            menu_row = conn.execute("SELECT * FROM food_menus WHERE id=?", (mid,)).fetchone()
+            if not menu_row:
+                return None
+            menu = dict(menu_row)
+            # All child orders for this menu, regardless of status
+            child_orders_rows = conn.execute(
+                "SELECT o.* FROM food_orders o WHERE o.menu_id=? ORDER BY o.id", (mid,)
+            ).fetchall()
+            child_orders = []
+            for orow in child_orders_rows:
+                o = dict(orow)
+                items = conn.execute(
+                    "SELECT oi.item_id, oi.quantity, oi.price_snapshot, fi.name, fi.category "
+                    "FROM food_order_items oi JOIN food_items fi ON fi.id=oi.item_id WHERE oi.order_id=?",
+                    (o["id"],),
+                ).fetchall()
+                o["items"] = [dict(i) for i in items]
+                child_orders.append(o)
+            # All staff orders for this menu, regardless of status
+            staff_orders_rows = conn.execute(
+                """SELECT so.*, su.full_name AS staff_name, su.mk_teacher_name AS staff_mk_teacher_name,
+                          su.username AS staff_username, su.mk_teacher_id AS staff_mk_teacher_id,
+                          su.role AS staff_role
+                   FROM food_staff_orders so
+                   LEFT JOIN staff_users su ON su.user_id = so.staff_user_id
+                   WHERE so.menu_id=? ORDER BY so.id""",
+                (mid,),
+            ).fetchall()
+            staff_orders = []
+            for orow in staff_orders_rows:
+                o = dict(orow)
+                items = conn.execute(
+                    "SELECT oi.item_id, oi.quantity, oi.price_snapshot, fi.name, fi.category "
+                    "FROM food_staff_order_items oi JOIN food_items fi ON fi.id=oi.item_id WHERE oi.order_id=?",
+                    (o["id"],),
+                ).fetchall()
+                o["items"] = [dict(i) for i in items]
+                staff_orders.append(o)
+            # All food items for this menu
+            food_items_rows = conn.execute(
+                "SELECT * FROM food_items WHERE menu_id=? ORDER BY category, sort_order, id", (mid,)
+            ).fetchall()
+            food_items = [dict(r) for r in food_items_rows]
+        return {"menu": menu, "childOrders": child_orders, "staffOrders": staff_orders, "foodItems": food_items}
+
     def get_published_menus_needing_auto_reminder(self, minutes_before_deadline: int) -> list[dict[str, Any]]:
         """Return published menus whose deadline is within minutes_before_deadline minutes from now."""
         from datetime import datetime, timedelta, timezone
