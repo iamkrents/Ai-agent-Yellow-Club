@@ -2143,6 +2143,29 @@ class Storage:
                     (username.strip(), now, int(user_id)),
                 )
 
+    def get_teacher_name_by_mk_id(self, mk_teacher_id: str | int) -> list[str]:
+        """Return distinct teacher names from teacher_lesson_control matching this mk_teacher_id."""
+        tid = str(mk_teacher_id or "").strip()
+        if not tid:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT teacher_name FROM teacher_lesson_control "
+                "WHERE mk_teacher_id=? AND teacher_name IS NOT NULL AND teacher_name != '' "
+                "ORDER BY teacher_name LIMIT 10",
+                (tid,),
+            ).fetchall()
+        return [str(r[0]).strip() for r in rows if str(r[0]).strip()]
+
+    def update_staff_mk_teacher_name(self, user_id: int, name: str) -> bool:
+        """Overwrite mk_teacher_name for a staff user (used by admin sync from MK)."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE staff_users SET mk_teacher_name=?, updated_at=? WHERE user_id=?",
+                (name.strip(), now_iso(), int(user_id)),
+            )
+            return cur.rowcount > 0
+
     def get_staff_by_mk_teacher_id(self, mk_teacher_id: str | int) -> Optional[dict[str, Any]]:
         teacher_id = str(mk_teacher_id or "").strip()
         if not teacher_id:

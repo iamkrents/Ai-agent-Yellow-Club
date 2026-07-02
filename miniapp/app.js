@@ -4846,9 +4846,11 @@ async function renderAdminContent() {
       const data = await apiGet("/api/admin/users");
       const canManage = !!roleCaps().canManageUsers;
       const myUid = Number(state.me?.userId || state.me?.user_id || 0);
-      // Full role label map for display in cards
+      console.log("Staff UI version: 7.0.26");
+
       const STAFF_ROLE_DISPLAY = {
         owner: "Владелец",
+        admin: "Администратор",
         teacher: "Преподаватель",
         methodist: "Методист",
         intern: "Стажёр",
@@ -4858,8 +4860,6 @@ async function renderAdminContent() {
         restaurant: "Кухня (alias)",
         other: "Другой",
       };
-      // v7.0.25: full role list including kitchen and owner
-      console.log("Staff UI version: 7.0.25");
       const roleOptions = [
         {v:"teacher",        l:"Преподаватель"},
         {v:"methodist",      l:"Методист"},
@@ -4867,34 +4867,60 @@ async function renderAdminContent() {
         {v:"client_manager", l:"Клиентский менеджер"},
         {v:"operations",     l:"Операционный менеджер"},
         {v:"kitchen",        l:"Кухня"},
+        {v:"admin",          l:"Администратор"},
         {v:"owner",          l:"Владелец"},
         {v:"other",          l:"Другой"},
       ];
+
       root.innerHTML = (data.items || []).map(u => {
         const uid = u.user_id;
         const isSelf = Number(uid) === myUid;
         const isOwner = u.role === "owner";
         const isInactive = u.status === "inactive";
-        // Show human-readable role label; fall back to raw value for unknown roles
+        const mkTeacherId = u.mk_teacher_id || "";
+        const mkTeacherName = u.mk_teacher_name || "";
+        // Backend supplies resolved_display_name (mk_teacher_name > full_name > username > fallback)
+        const displayName = u.resolved_display_name || u.mk_teacher_name || u.full_name || u.username || String(uid);
         const roleLbl = STAFF_ROLE_DISPLAY[u.role] || (u.role ? `Неизвестная роль: ${u.role}` : "-");
         const statusLbl = isInactive ? "Отключён" : (u.status || "active");
-
-        // Normalize restaurant → kitchen for select value matching
         const selectVal = u.role === "restaurant" ? "kitchen" : (u.role || "");
+
+        // Warnings from backend
+        const warningsHtml = (u.warnings || []).map(w =>
+          `<div style="font-size:12px;color:#c07000;margin-top:2px">⚠️ ${escapeHtml(w)}</div>`
+        ).join("");
+
+        // MK teacher name row (show only if different from display name or if source is moyklass)
+        const mkNameRow = mkTeacherId
+          ? `<div style="font-size:12px;color:#555;margin-top:2px"><b>Имя из МК:</b> ${escapeHtml(mkTeacherName || "не синхронизировано")}</div>`
+          : "";
 
         let roleChangeHtml = "";
         if (canManage && !isSelf) {
           const opts = roleOptions.map(o =>
             `<option value="${escapeAttr(o.v)}"${selectVal === o.v ? " selected" : ""}>${escapeHtml(o.l)}</option>`
           ).join("");
-          // Warn if current role not in dropdown (e.g. owner, restaurant shown as kitchen)
           const unknownNote = (!roleOptions.find(o => o.v === selectVal) && selectVal)
             ? `<div style="font-size:12px;color:#888;margin-top:2px">Текущая роль «${escapeHtml(u.role)}» — выберите из списка для изменения</div>`
             : "";
-          roleChangeHtml = `<div class="admin-user-role-change" data-uid="${escapeAttr(String(uid))}">
+          roleChangeHtml = `<div class="admin-user-role-change" data-uid="${escapeAttr(String(uid))}" style="margin-top:8px">
             <select class="admin-role-select">${opts}</select>
             <button type="button" class="admin-role-save-btn secondary" data-uid="${escapeAttr(String(uid))}">Сохранить</button>
           </div>${unknownNote}`;
+        }
+
+        // MK sync / unlink buttons
+        let mkActionsHtml = "";
+        if (canManage && mkTeacherId) {
+          mkActionsHtml = `
+            <button type="button" class="admin-sync-mk-btn secondary btn-sm" style="margin-top:6px;margin-right:4px"
+              data-uid="${escapeAttr(String(uid))}"
+              data-name="${escapeAttr(displayName)}">Обновить имя из МК</button>
+            <button type="button" class="admin-unlink-teacher-btn btn-sm" style="margin-top:6px;background:#e67e22;color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer"
+              data-uid="${escapeAttr(String(uid))}"
+              data-mk-id="${escapeAttr(mkTeacherId)}"
+              data-name="${escapeAttr(displayName)}"
+              data-role="${escapeAttr(u.role || "")}">Отвязать MK teacherId</button>`;
         }
 
         let deactivateHtml = "";
@@ -4902,21 +4928,24 @@ async function renderAdminContent() {
           if (isInactive) {
             deactivateHtml = `<button type="button" class="admin-activate-btn secondary btn-sm" style="margin-top:6px"
               data-uid="${escapeAttr(String(uid))}"
-              data-name="${escapeAttr(u.full_name || u.username || String(uid))}">Восстановить доступ</button>`;
+              data-name="${escapeAttr(displayName)}">Восстановить доступ</button>`;
           } else {
             deactivateHtml = `<button type="button" class="admin-deactivate-btn btn-sm" style="margin-top:6px;background:#c0392b;color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer"
               data-uid="${escapeAttr(String(uid))}"
               data-role="${escapeAttr(u.role || "")}"
-              data-name="${escapeAttr(u.full_name || u.username || String(uid))}">Отключить доступ</button>`;
+              data-name="${escapeAttr(displayName)}">Отключить доступ</button>`;
           }
         }
 
-        return adminCard(u.full_name || u.username || String(uid), [
+        return adminCard(displayName, [
           `<b>Роль:</b> ${escapeHtml(roleLbl)}`,
           `<b>Статус:</b> ${escapeHtml(statusLbl)}`,
           `<b>Telegram ID:</b> ${escapeHtml(String(uid || "-"))}`,
-          `<b>МК teacherId:</b> ${escapeHtml(u.mk_teacher_id || "-")}`,
+          `<b>МК teacherId:</b> ${escapeHtml(mkTeacherId || "-")}`,
+          mkNameRow,
+          warningsHtml,
           roleChangeHtml,
+          mkActionsHtml,
           deactivateHtml,
         ]);
       }).join("") || `<div class="empty">Нет сотрудников.</div>`;
@@ -4935,6 +4964,38 @@ async function renderAdminContent() {
               await renderAdminContent();
             } catch (e) { setNotice(e.message, "error"); }
             btn.disabled = false;
+          });
+        });
+
+        root.querySelectorAll(".admin-sync-mk-btn").forEach(btn => {
+          btn.addEventListener("click", async () => {
+            const uid = btn.dataset.uid;
+            const name = btn.dataset.name;
+            btn.disabled = true;
+            try {
+              const res = await apiPost(`/api/admin/staff/${uid}/sync-mk-name`, {});
+              if (!res.ok) throw new Error(res.error || "Ошибка");
+              setNotice(`Имя обновлено из МойКласс: ${res.new_name}`, "ok");
+              await renderAdminContent();
+            } catch (e) { setNotice(e.message, "error"); btn.disabled = false; }
+          });
+        });
+
+        root.querySelectorAll(".admin-unlink-teacher-btn").forEach(btn => {
+          btn.addEventListener("click", () => {
+            const uid = btn.dataset.uid;
+            const name = btn.dataset.name;
+            const mkId = btn.dataset.mkId;
+            const role = btn.dataset.role;
+            _confirmUnlinkTeacher(name, uid, mkId, STAFF_ROLE_DISPLAY[role] || role, async () => {
+              try {
+                const res = await apiPost(`/api/admin/staff/${uid}/unlink-teacher`, {});
+                if (!res.ok) throw new Error(res.error || "Ошибка");
+                const warn = (res.warnings || []).join(" ");
+                setNotice(`MK teacherId отвязан.${warn ? " " + warn : ""}`, "ok");
+                await renderAdminContent();
+              } catch (e) { setNotice(e.message, "error"); }
+            });
           });
         });
 
@@ -8094,6 +8155,28 @@ function _confirmFoodMenuDelete(menuTitle, menuDate, isPublished, onConfirm) {
       <div class="food-delete-dialog-btns">
         <button class="secondary food-delete-cancel-btn">Отмена</button>
         <button class="food-delete-confirm-btn" style="background:#c0392b">Удалить меню</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector(".food-delete-cancel-btn").addEventListener("click", () => overlay.remove());
+  overlay.querySelector(".food-delete-confirm-btn").addEventListener("click", () => { overlay.remove(); onConfirm(); });
+  overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
+}
+
+function _confirmUnlinkTeacher(name, uid, mkId, roleLabel, onConfirm) {
+  const overlay = document.createElement("div");
+  overlay.className = "food-delete-overlay";
+  overlay.innerHTML = `
+    <div class="food-delete-dialog">
+      <div class="food-delete-dialog-title">Отвязать MK teacherId?</div>
+      <div class="food-delete-dialog-name">${escapeHtml(name)}</div>
+      <div class="food-delete-dialog-date">Telegram ID: ${escapeHtml(String(uid))}</div>
+      <div class="food-delete-dialog-date">MK teacherId: ${escapeHtml(mkId)}</div>
+      <div class="food-delete-dialog-date">Роль: ${escapeHtml(roleLabel)}</div>
+      <div class="food-delete-dialog-warn">Пользователь останется в текущей роли, но больше не будет считаться преподавателем в питании.<br>История заказов сохранится.</div>
+      <div class="food-delete-dialog-btns">
+        <button class="secondary food-delete-cancel-btn">Отмена</button>
+        <button class="food-delete-confirm-btn" style="background:#e67e22">Отвязать</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);

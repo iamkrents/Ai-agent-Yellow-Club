@@ -74,14 +74,15 @@ REPORT_ROLES = {"client_manager", "owner", "operations", "methodist"}
 CLIENT_TASK_ROLES = {"client_manager", "owner", "operations"}
 KPI_ROLES = {"client_manager", "owner", "operations", "methodist"}
 TEACHER_LIKE_ROLES = {"teacher", "methodist", "intern"}
-ADMIN_ROLES = {"owner", "methodist", "operations"}
-FULL_ADMIN_ROLES = {"owner", "operations"}
-KITCHEN_SUMMARY_ROLES = {"kitchen", "restaurant", "owner", "methodist", "operations"}
-FOOD_PRICE_ROLES = {"kitchen", "restaurant", "owner", "methodist", "operations"}
-FOOD_MENU_EDIT_ROLES = {"kitchen", "restaurant", "owner", "methodist", "operations"}
+ADMIN_ROLES = {"owner", "admin", "methodist", "operations"}
+FULL_ADMIN_ROLES = {"owner", "admin", "operations"}
+KITCHEN_SUMMARY_ROLES = {"kitchen", "restaurant", "owner", "admin", "methodist", "operations"}
+FOOD_PRICE_ROLES = {"kitchen", "restaurant", "owner", "admin", "methodist", "operations"}
+FOOD_MENU_EDIT_ROLES = {"kitchen", "restaurant", "owner", "admin", "methodist", "operations"}
 FOOD_MENU_DELETE_ROLES = {"kitchen", "restaurant", "owner", "admin", "operations"}
 ADMIN_TABS_BY_ROLE = {
     "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
+    "admin": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
     "operations": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
     "methodist": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "notifications", "kpi", "interns"],
 }
@@ -3812,7 +3813,38 @@ class MiniAppContext:
         denied = self._require_admin_tab(auth, "users")
         if denied:
             return denied
-        return {"ok": True, "items": self.storage.list_staff_users(limit=300)}
+        raw = self.storage.list_staff_users(limit=300)
+        items: list[dict[str, Any]] = []
+        for u in raw:
+            mk_name = str(u.get("mk_teacher_name") or "").strip()
+            full_name = str(u.get("full_name") or "").strip()
+            username = str(u.get("username") or "").strip()
+            mk_teacher_id = str(u.get("mk_teacher_id") or "").strip()
+            role = str(u.get("role") or "")
+            if mk_name:
+                resolved = mk_name
+                source = "moyklass"
+            elif full_name:
+                resolved = full_name
+                source = "staff_user"
+            elif username:
+                resolved = username
+                source = "telegram"
+            else:
+                resolved = f"Сотрудник #{u['user_id']}"
+                source = "fallback"
+            u["resolved_display_name"] = resolved
+            u["display_name_source"] = source
+            warnings: list[str] = []
+            if mk_teacher_id and not mk_name:
+                warnings.append("MK teacherId указан, но имя преподавателя не найдено в кэше МойКласс")
+            if mk_teacher_id and role in ("kitchen", "restaurant"):
+                warnings.append("Есть MK teacherId — этот пользователь будет считаться преподавателем в питании")
+            if role == "teacher" and not mk_teacher_id:
+                warnings.append("Роль Преподаватель, но MK teacherId не привязан")
+            u["warnings"] = warnings
+            items.append(u)
+        return {"ok": True, "items": items}
 
     def admin_all_tasks(self, auth: dict[str, Any]) -> dict[str, Any]:
         denied = self._require_admin_tab(auth, "tasks")
@@ -4117,7 +4149,7 @@ class MiniAppContext:
         # Normalize restaurant alias to kitchen
         if role == "restaurant":
             role = "kitchen"
-        ALLOWED = {"teacher", "methodist", "intern", "client_manager", "operations", "kitchen", "other"}
+        ALLOWED = {"teacher", "methodist", "intern", "client_manager", "operations", "kitchen", "admin", "other"}
         # owner can only be granted by another owner
         if role == "owner":
             if caller_real != "owner":
@@ -4187,6 +4219,62 @@ class MiniAppContext:
             caller_uid, target_uid, target_role,
         )
         return {"ok": True, "telegram_user_id": target_uid, "status": "active"}
+
+    def admin_sync_mk_name(self, auth: dict[str, Any], target_uid_str: str) -> dict[str, Any]:
+        """Look up teacher name from MoyKlass lesson data by mk_teacher_id and persist it."""
+        caller_uid = int(auth["user_id"])
+        caller_real = self._base_role_for_user(caller_uid)
+        if caller_real not in FULL_ADMIN_ROLES:
+            return {"ok": False, "error": "Управление сотрудниками доступно только владельцу и операционному менеджеру."}
+        target_uid = _safe_int(target_uid_str)
+        if not target_uid:
+            return {"ok": False, "error": "Неверный user_id."}
+        target = self.storage.get_staff_user(target_uid)
+        if not target:
+            return {"ok": False, "error": "Сотрудник не найден."}
+        mk_teacher_id = str(target.get("mk_teacher_id") or "").strip()
+        if not mk_teacher_id:
+            return {"ok": False, "error": "У сотрудника не привязан MK teacherId."}
+        names = self.storage.get_teacher_name_by_mk_id(mk_teacher_id)
+        if not names:
+            return {"ok": False, "error": f"Не удалось найти преподавателя с MK teacherId={mk_teacher_id} в кэше МойКласс. Убедитесь, что синхронизация с МойКласс выполнялась."}
+        if len(names) > 1:
+            return {"ok": False, "error": f"Найдено несколько вариантов имён: {', '.join(names[:3])}. Уточните вручную.", "names": names}
+        new_name = names[0]
+        old_name = str(target.get("mk_teacher_name") or target.get("full_name") or "").strip()
+        self.storage.update_staff_mk_teacher_name(target_uid, new_name)
+        log.info(
+            "admin_staff_mk_name_synced admin_user_id=%s target_telegram_user_id=%s mk_teacher_id=%s old_name=%s new_name=%s",
+            caller_uid, target_uid, mk_teacher_id, old_name, new_name,
+        )
+        return {"ok": True, "telegram_user_id": target_uid, "mk_teacher_id": mk_teacher_id,
+                "old_name": old_name, "new_name": new_name}
+
+    def admin_unlink_teacher(self, auth: dict[str, Any], target_uid_str: str) -> dict[str, Any]:
+        """Remove mk_teacher_id / mk_teacher_name link from a staff user."""
+        caller_uid = int(auth["user_id"])
+        caller_real = self._base_role_for_user(caller_uid)
+        if caller_real not in FULL_ADMIN_ROLES:
+            return {"ok": False, "error": "Управление сотрудниками доступно только владельцу и операционному менеджеру."}
+        target_uid = _safe_int(target_uid_str)
+        if not target_uid:
+            return {"ok": False, "error": "Неверный user_id."}
+        target = self.storage.get_staff_user(target_uid)
+        if not target:
+            return {"ok": False, "error": "Сотрудник не найден."}
+        old_mk_teacher_id = str(target.get("mk_teacher_id") or "").strip()
+        role = str(target.get("role") or "")
+        if not old_mk_teacher_id:
+            return {"ok": False, "error": "У сотрудника нет привязанного MK teacherId."}
+        self.storage.clear_staff_mk_teacher(target_uid)
+        log.info(
+            "admin_staff_teacher_unlinked admin_user_id=%s target_telegram_user_id=%s old_mk_teacher_id=%s role=%s",
+            caller_uid, target_uid, old_mk_teacher_id, role,
+        )
+        warnings: list[str] = []
+        if role == "teacher":
+            warnings.append("У пользователя роль Преподаватель, но MK teacherId отвязан. При необходимости смените роль.")
+        return {"ok": True, "telegram_user_id": target_uid, "old_mk_teacher_id": old_mk_teacher_id, "warnings": warnings}
 
     def admin_intern_review_work(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         denied = self._require_admin_tab(auth, "interns")
@@ -6361,6 +6449,12 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/admin/staff/") and path.endswith("/activate"):
                 _staff_uid = path[len("/api/admin/staff/"):-len("/activate")]
                 return self._send_json(CTX.admin_activate_staff(auth, _staff_uid))
+            if path.startswith("/api/admin/staff/") and path.endswith("/sync-mk-name"):
+                _staff_uid = path[len("/api/admin/staff/"):-len("/sync-mk-name")]
+                return self._send_json(CTX.admin_sync_mk_name(auth, _staff_uid))
+            if path.startswith("/api/admin/staff/") and path.endswith("/unlink-teacher"):
+                _staff_uid = path[len("/api/admin/staff/"):-len("/unlink-teacher")]
+                return self._send_json(CTX.admin_unlink_teacher(auth, _staff_uid))
             if path == "/api/food/link-child":
                 return self._send_json(CTX.food_link_child(auth, body))
             if path == "/api/food/debug/sync-camp-children":
