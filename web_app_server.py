@@ -56,7 +56,7 @@ ROLE_LABELS = {
     "other": "Сотрудник",
     "parent": "Родитель",
     "kitchen": "Кухня",
-    "restaurant": "Ресторан",
+    "restaurant": "Кухня",
 }
 TEST_ROLE_OPTIONS = [
     {"value": "owner", "label": "Админ (owner)", "needsTeacher": False},
@@ -65,7 +65,6 @@ TEST_ROLE_OPTIONS = [
     {"value": "intern", "label": "Стажер", "needsTeacher": True},
     {"value": "client_manager", "label": "Клиент-менеджер", "needsTeacher": False},
     {"value": "kitchen", "label": "Кухня", "needsTeacher": False},
-    {"value": "restaurant", "label": "Ресторан", "needsTeacher": False},
 ]
 LESSON_ROLES = {"owner", "teacher", "methodist", "operations", "intern"}
 SCHEDULE_ROLES = {"owner", "teacher", "methodist", "operations"}
@@ -78,7 +77,7 @@ TEACHER_LIKE_ROLES = {"teacher", "methodist", "intern"}
 ADMIN_ROLES = {"owner", "methodist", "operations"}
 FULL_ADMIN_ROLES = {"owner", "operations"}
 KITCHEN_SUMMARY_ROLES = {"kitchen", "restaurant", "owner", "methodist", "operations"}
-FOOD_PRICE_ROLES = {"restaurant", "owner", "methodist", "operations"}
+FOOD_PRICE_ROLES = {"kitchen", "restaurant", "owner", "methodist", "operations"}
 ADMIN_TABS_BY_ROLE = {
     "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
     "operations": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
@@ -1108,6 +1107,7 @@ class MiniAppContext:
             "canOrderStaffLunch": can_order_staff_lunch,
             "canUseFoodKitchenSummary": food_enabled and role in KITCHEN_SUMMARY_ROLES,
             "canSeeFoodPrices": food_enabled and role in FOOD_PRICE_ROLES,
+            "canSeeFoodCostReport": food_enabled and role in FOOD_PRICE_ROLES,
         }
 
     def me(self, auth: dict[str, Any]) -> dict[str, Any]:
@@ -3003,7 +3003,7 @@ class MiniAppContext:
         user_id = int(auth["user_id"])
         role = self._role_for_user(user_id)
         if role not in KITCHEN_SUMMARY_ROLES:
-            return {"ok": False, "error": "Доступ только для кухни, ресторана и администраторов."}
+            return {"ok": False, "error": "Доступ только для кухни и администраторов."}
         return None
 
     def food_kitchen_menus(self, auth: dict[str, Any]) -> dict[str, Any]:

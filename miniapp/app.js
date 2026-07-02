@@ -148,7 +148,7 @@ const ROLE_LABELS = {
   other: "Сотрудник",
   parent: "Родитель",
   kitchen: "Кухня",
-  restaurant: "Ресторан",
+  restaurant: "Кухня",
 };
 function roleLabel(role) { return ROLE_LABELS[role] || role || "роль"; }
 function roleCaps() { return state.me?.capabilities || {}; }
@@ -161,6 +161,7 @@ function canUseInternship() { return !!roleCaps().canUseInternship; }
 function canAskAgent() { return roleCaps().canAskAgent !== false; }
 function canUseFoodKitchenSummary() { return !!roleCaps().canUseFoodKitchenSummary; }
 function canSeeFoodPrices() { return !!roleCaps().canSeeFoodPrices; }
+function canSeeFoodCostReport() { return !!roleCaps().canSeeFoodCostReport; }
 function canUseFoodMenuOcr() {
   return Boolean(
     state.me?.foodMenuOcrEnabled ||
@@ -1093,15 +1094,15 @@ function setupRoleUi() {
     $("roleBadge").textContent = "Кухня";
   }
 
-  // Restaurant role: show only restaurant tab
+  // Restaurant role: backward-compatible alias — shows kitchen screen
   if (role === "restaurant") {
     document.querySelectorAll(".tab[data-tab]").forEach(t => {
-      t.classList.toggle("hidden", t.dataset.tab !== "restaurant");
+      t.classList.toggle("hidden", t.dataset.tab !== "kitchen");
     });
     document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.add("hidden"));
-    document.querySelectorAll(".restaurant-only").forEach(el => el.classList.remove("hidden"));
-    $("appTitle").textContent = "Ресторан · Yellow Club";
-    $("roleBadge").textContent = "Ресторан";
+    document.querySelectorAll(".kitchen-only").forEach(el => el.classList.remove("hidden"));
+    $("appTitle").textContent = "Кухня · Yellow Club";
+    $("roleBadge").textContent = "Кухня";
   }
 
   // Staff lunch tab: show for ALL staff (not parent/kitchen/restaurant), runs LAST to override intern/MVP hiding
@@ -7138,8 +7139,7 @@ async function loadKitchenMenus() {
     renderKitchenPanel();
     if (state.kitchenSelectedMenuId) await loadKitchenSummary(state.kitchenSelectedMenuId);
   } catch (e) {
-    const role = state.me?.role || "kitchen";
-    const el = $(role === "restaurant" ? "restaurantPanelContent" : "kitchenPanelContent");
+    const el = $("kitchenPanelContent");
     if (el) el.innerHTML = `<div class="kitchen-panel-notice">${escapeHtml(e.message)}</div>`;
   }
 }
@@ -7162,15 +7162,11 @@ async function loadKitchenSummary(menuId) {
 }
 
 function renderKitchenPanel() {
-  const role = state.me?.role || "kitchen";
-  const isRestaurant = role === "restaurant";
-  const containerId = isRestaurant ? "restaurantPanelContent" : "kitchenPanelContent";
-  const root = $(containerId);
+  const root = $("kitchenPanelContent");
   if (!root) return;
 
   const menus = state.kitchenMenus || [];
-  const title = isRestaurant ? "Ресторан" : "Кухня";
-  const subtitle = isRestaurant ? "Итоговый заказ с ценами" : "Итоговый заказ для приготовления";
+  const showPrices = !!(state.kitchenSummaryData?.showPrices);
 
   let menuSelectHtml = "";
   if (menus.length === 0) {
@@ -7187,7 +7183,7 @@ function renderKitchenPanel() {
   let actionsHtml = `<div class="kitchen-panel-actions">
     <button type="button" id="kitchenRefreshBtn">🔄 Обновить</button>
     <button type="button" id="kitchenCopyBtn">📋 Скопировать заказ</button>
-    ${isRestaurant ? `<button type="button" id="kitchenCopyPriceBtn">💰 Скопировать с ценами</button>` : ""}
+    ${canSeeFoodCostReport() ? `<button type="button" id="kitchenCopyPriceBtn">📊 Отчёт по стоимости</button>` : ""}
   </div>`;
 
   let summaryHtml = "";
@@ -7198,16 +7194,16 @@ function renderKitchenPanel() {
   } else if (!state.kitchenSummaryData.ok) {
     summaryHtml = `<div class="kitchen-panel-notice">${escapeHtml(state.kitchenSummaryData.error || "Ошибка загрузки")}</div>`;
   } else {
-    summaryHtml = _renderKitchenSummaryHtml(state.kitchenSummaryData, isRestaurant);
+    summaryHtml = _renderKitchenSummaryHtml(state.kitchenSummaryData, showPrices);
   }
 
   const copyNotice = state.kitchenCopyNotice ? `<div class="kitchen-copy-ok">${escapeHtml(state.kitchenCopyNotice)}</div>` : "";
 
   root.innerHTML = `
-    <div class="${isRestaurant ? "restaurant-panel" : "kitchen-panel"}">
+    <div class="kitchen-panel">
       <div class="kitchen-panel-header">
-        <h2 class="kitchen-panel-title">${escapeHtml(title)}</h2>
-        <p class="kitchen-panel-subtitle">${escapeHtml(subtitle)}</p>
+        <h2 class="kitchen-panel-title">Кухня</h2>
+        <p class="kitchen-panel-subtitle">Итоговый заказ для приготовления</p>
       </div>
       ${menuSelectHtml}
       ${actionsHtml}
@@ -7338,7 +7334,9 @@ function _buildKitchenCopyText(withPrices) {
   if (!data || !data.ok) return "";
   const menu = data.menu || {};
   const dateStr = _fmtDateWeekday(menu.menu_date);
-  let lines = [`Питание Yellow Club`, dateStr, ""];
+  let lines = withPrices
+    ? [`Питание Yellow Club — отчёт по стоимости`, dateStr, ""]
+    : [`Питание Yellow Club`, dateStr, ""];
   for (const loc of (data.byLocations || [])) {
     lines.push(loc.location || loc.groupCode);
     lines.push("");
