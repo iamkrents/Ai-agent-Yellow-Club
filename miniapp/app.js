@@ -4845,31 +4845,80 @@ async function renderAdminContent() {
     if (tab === "users") {
       const data = await apiGet("/api/admin/users");
       const canManage = !!roleCaps().canManageUsers;
+      const myUid = Number(state.me?.userId || state.me?.user_id || 0);
+      // Full role label map for display in cards
+      const STAFF_ROLE_DISPLAY = {
+        owner: "Владелец",
+        teacher: "Преподаватель",
+        methodist: "Методист",
+        intern: "Стажёр",
+        client_manager: "Клиентский менеджер",
+        operations: "Операционный менеджер",
+        kitchen: "Кухня",
+        restaurant: "Кухня (alias)",
+        other: "Другой",
+      };
+      // Options for the change-role dropdown; restaurant not offered as a new choice
       const roleOptions = [
-        {v:"teacher", l:"Преподаватель"},
-        {v:"methodist", l:"Методист"},
-        {v:"intern", l:"Стажёр"},
+        {v:"teacher",        l:"Преподаватель"},
+        {v:"methodist",      l:"Методист"},
+        {v:"intern",         l:"Стажёр"},
         {v:"client_manager", l:"Клиентский менеджер"},
-        {v:"operations", l:"Операционный менеджер"},
-        {v:"other", l:"Другой"},
+        {v:"operations",     l:"Операционный менеджер"},
+        {v:"kitchen",        l:"Кухня"},
+        {v:"other",          l:"Другой"},
       ];
       root.innerHTML = (data.items || []).map(u => {
         const uid = u.user_id;
-        const roleChangeHtml = canManage && u.role !== "owner" ? `
-          <div class="admin-user-role-change" data-uid="${escapeHtml(uid)}">
-            <select class="admin-role-select">
-              ${roleOptions.map(o => `<option value="${o.v}"${u.role === o.v ? " selected" : ""}>${o.l}</option>`).join("")}
-            </select>
-            <button type="button" class="admin-role-save-btn secondary" data-uid="${escapeHtml(uid)}">Сохранить</button>
-          </div>` : "";
+        const isSelf = Number(uid) === myUid;
+        const isOwner = u.role === "owner";
+        const isInactive = u.status === "inactive";
+        // Show human-readable role label; fall back to raw value for unknown roles
+        const roleLbl = STAFF_ROLE_DISPLAY[u.role] || (u.role ? `Неизвестная роль: ${u.role}` : "-");
+        const statusLbl = isInactive ? "Отключён" : (u.status || "active");
+
+        // Normalize restaurant → kitchen for select value matching
+        const selectVal = u.role === "restaurant" ? "kitchen" : (u.role || "");
+
+        let roleChangeHtml = "";
+        if (canManage && !isSelf) {
+          const opts = roleOptions.map(o =>
+            `<option value="${escapeAttr(o.v)}"${selectVal === o.v ? " selected" : ""}>${escapeHtml(o.l)}</option>`
+          ).join("");
+          // Warn if current role not in dropdown (e.g. owner, restaurant shown as kitchen)
+          const unknownNote = (!roleOptions.find(o => o.v === selectVal) && selectVal)
+            ? `<div style="font-size:12px;color:#888;margin-top:2px">Текущая роль «${escapeHtml(u.role)}» — выберите из списка для изменения</div>`
+            : "";
+          roleChangeHtml = `<div class="admin-user-role-change" data-uid="${escapeAttr(String(uid))}">
+            <select class="admin-role-select">${opts}</select>
+            <button type="button" class="admin-role-save-btn secondary" data-uid="${escapeAttr(String(uid))}">Сохранить</button>
+          </div>${unknownNote}`;
+        }
+
+        let deactivateHtml = "";
+        if (canManage && !isSelf && !isOwner) {
+          if (isInactive) {
+            deactivateHtml = `<button type="button" class="admin-activate-btn secondary btn-sm" style="margin-top:6px"
+              data-uid="${escapeAttr(String(uid))}"
+              data-name="${escapeAttr(u.full_name || u.username || String(uid))}">Восстановить доступ</button>`;
+          } else {
+            deactivateHtml = `<button type="button" class="admin-deactivate-btn btn-sm" style="margin-top:6px;background:#c0392b;color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer"
+              data-uid="${escapeAttr(String(uid))}"
+              data-role="${escapeAttr(u.role || "")}"
+              data-name="${escapeAttr(u.full_name || u.username || String(uid))}">Отключить доступ</button>`;
+          }
+        }
+
         return adminCard(u.full_name || u.username || String(uid), [
-          `<b>Роль:</b> ${escapeHtml(u.role || "-")}`,
-          `<b>Статус:</b> ${escapeHtml(u.status || "-")}`,
-          `<b>Telegram ID:</b> ${escapeHtml(uid || "-")}`,
+          `<b>Роль:</b> ${escapeHtml(roleLbl)}`,
+          `<b>Статус:</b> ${escapeHtml(statusLbl)}`,
+          `<b>Telegram ID:</b> ${escapeHtml(String(uid || "-"))}`,
           `<b>МК teacherId:</b> ${escapeHtml(u.mk_teacher_id || "-")}`,
           roleChangeHtml,
+          deactivateHtml,
         ]);
       }).join("") || `<div class="empty">Нет сотрудников.</div>`;
+
       if (canManage) {
         root.querySelectorAll(".admin-role-save-btn").forEach(btn => {
           btn.addEventListener("click", async () => {
@@ -4881,8 +4930,39 @@ async function renderAdminContent() {
               const res = await apiPost("/api/admin/set-user-role", { user_id: Number(uid), role: sel.value });
               if (!res.ok) throw new Error(res.error || "Ошибка");
               setNotice(`Роль изменена на «${sel.options[sel.selectedIndex].text}»`, "ok");
+              await renderAdminContent();
             } catch (e) { setNotice(e.message, "error"); }
             btn.disabled = false;
+          });
+        });
+
+        root.querySelectorAll(".admin-deactivate-btn").forEach(btn => {
+          btn.addEventListener("click", () => {
+            const uid = btn.dataset.uid;
+            const name = btn.dataset.name;
+            const role = btn.dataset.role;
+            _confirmStaffDeactivate(name, uid, STAFF_ROLE_DISPLAY[role] || role, async () => {
+              try {
+                const res = await apiPost(`/api/admin/staff/${uid}/deactivate`, {});
+                if (!res.ok) throw new Error(res.error || "Ошибка");
+                setNotice(`Доступ отключён: ${name}`, "ok");
+                await renderAdminContent();
+              } catch (e) { setNotice(e.message, "error"); }
+            });
+          });
+        });
+
+        root.querySelectorAll(".admin-activate-btn").forEach(btn => {
+          btn.addEventListener("click", async () => {
+            const uid = btn.dataset.uid;
+            const name = btn.dataset.name;
+            btn.disabled = true;
+            try {
+              const res = await apiPost(`/api/admin/staff/${uid}/activate`, {});
+              if (!res.ok) throw new Error(res.error || "Ошибка");
+              setNotice(`Доступ восстановлен: ${name}`, "ok");
+              await renderAdminContent();
+            } catch (e) { setNotice(e.message, "error"); btn.disabled = false; }
           });
         });
       }
@@ -8012,6 +8092,27 @@ function _confirmFoodMenuDelete(menuTitle, menuDate, isPublished, onConfirm) {
       <div class="food-delete-dialog-btns">
         <button class="secondary food-delete-cancel-btn">Отмена</button>
         <button class="food-delete-confirm-btn" style="background:#c0392b">Удалить меню</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector(".food-delete-cancel-btn").addEventListener("click", () => overlay.remove());
+  overlay.querySelector(".food-delete-confirm-btn").addEventListener("click", () => { overlay.remove(); onConfirm(); });
+  overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
+}
+
+function _confirmStaffDeactivate(name, uid, roleLabel, onConfirm) {
+  const overlay = document.createElement("div");
+  overlay.className = "food-delete-overlay";
+  overlay.innerHTML = `
+    <div class="food-delete-dialog">
+      <div class="food-delete-dialog-title">Отключить доступ сотруднику?</div>
+      <div class="food-delete-dialog-name">${escapeHtml(name)}</div>
+      <div class="food-delete-dialog-date">Telegram ID: ${escapeHtml(String(uid))}</div>
+      <div class="food-delete-dialog-date">Роль: ${escapeHtml(roleLabel)}</div>
+      <div class="food-delete-dialog-warn">Сотрудник больше не сможет использовать Mini App.<br>История заказов и действий сохранится.</div>
+      <div class="food-delete-dialog-btns">
+        <button class="secondary food-delete-cancel-btn">Отмена</button>
+        <button class="food-delete-confirm-btn" style="background:#c0392b">Отключить доступ</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);

@@ -4114,14 +4114,79 @@ class MiniAppContext:
             return {"ok": False, "error": "Смена роли доступна только владельцу и операционному менеджеру."}
         user_id = _safe_int(body.get("user_id") or 0)
         role = str(body.get("role") or "").strip().lower()
-        ALLOWED = {"teacher", "methodist", "intern", "client_manager", "operations", "other"}
+        # Normalize restaurant alias to kitchen
+        if role == "restaurant":
+            role = "kitchen"
+        ALLOWED = {"teacher", "methodist", "intern", "client_manager", "operations", "kitchen", "other"}
+        # owner can only be granted by another owner
+        if role == "owner":
+            if caller_real != "owner":
+                return {"ok": False, "error": "Назначить роль владельца может только другой владелец."}
+            ALLOWED = ALLOWED | {"owner"}
         if not user_id or role not in ALLOWED:
-            return {"ok": False, "error": "Укажите user_id и роль (teacher/methodist/intern/client_manager/operations/other)."}
-        target_real = self._base_role_for_user(user_id)
-        if target_real == "owner" and caller_real != "owner":
-            return {"ok": False, "error": "Нельзя изменить роль owner без прав owner."}
+            return {"ok": False, "error": f"Укажите user_id и допустимую роль. Получено: «{role}»"}
+        if user_id == caller_uid:
+            return {"ok": False, "error": "Нельзя изменить собственную роль через этот интерфейс."}
+        target = self.storage.get_staff_user(user_id)
+        if not target:
+            return {"ok": False, "error": "Сотрудник не найден."}
+        old_role = str(target.get("role") or "")
+        if old_role == "owner" and caller_real != "owner":
+            return {"ok": False, "error": "Нельзя изменить роль владельца без прав владельца."}
         self.storage.set_staff_role(user_id, role)
-        return {"ok": True, "user_id": user_id, "role": role}
+        log.info(
+            "admin_staff_role_changed admin_user_id=%s target_telegram_user_id=%s old_role=%s new_role=%s",
+            caller_uid, user_id, old_role, role,
+        )
+        return {"ok": True, "telegram_user_id": user_id, "old_role": old_role, "new_role": role}
+
+    def admin_deactivate_staff(self, auth: dict[str, Any], target_uid_str: str) -> dict[str, Any]:
+        caller_uid = int(auth["user_id"])
+        caller_real = self._base_role_for_user(caller_uid)
+        if caller_real not in FULL_ADMIN_ROLES:
+            return {"ok": False, "error": "Управление доступом сотрудников доступно только владельцу и операционному менеджеру."}
+        target_uid = _safe_int(target_uid_str)
+        if not target_uid:
+            return {"ok": False, "error": "Неверный user_id."}
+        if target_uid == caller_uid:
+            return {"ok": False, "error": "Нельзя отключить доступ самому себе."}
+        target = self.storage.get_staff_user(target_uid)
+        if not target:
+            return {"ok": False, "error": "Сотрудник не найден."}
+        target_role = str(target.get("role") or "")
+        if target_role == "owner":
+            if caller_real != "owner":
+                return {"ok": False, "error": "Нельзя отключить владельца без прав владельца."}
+            active_owners = [u for u in self.storage.list_staff_users(limit=500)
+                             if u.get("role") == "owner" and u.get("status") == "active"]
+            if len(active_owners) <= 1:
+                return {"ok": False, "error": "Нельзя отключить последнего владельца."}
+        old_status = str(target.get("status") or "active")
+        self.storage.deactivate_staff_user(target_uid)
+        log.info(
+            "admin_staff_deactivated admin_user_id=%s target_telegram_user_id=%s old_role=%s old_status=%s new_status=inactive",
+            caller_uid, target_uid, target_role, old_status,
+        )
+        return {"ok": True, "telegram_user_id": target_uid, "status": "inactive"}
+
+    def admin_activate_staff(self, auth: dict[str, Any], target_uid_str: str) -> dict[str, Any]:
+        caller_uid = int(auth["user_id"])
+        caller_real = self._base_role_for_user(caller_uid)
+        if caller_real not in FULL_ADMIN_ROLES:
+            return {"ok": False, "error": "Управление доступом сотрудников доступно только владельцу и операционному менеджеру."}
+        target_uid = _safe_int(target_uid_str)
+        if not target_uid:
+            return {"ok": False, "error": "Неверный user_id."}
+        target = self.storage.get_staff_user(target_uid)
+        if not target:
+            return {"ok": False, "error": "Сотрудник не найден."}
+        target_role = str(target.get("role") or "")
+        self.storage.activate_staff_user(target_uid)
+        log.info(
+            "admin_staff_activated admin_user_id=%s target_telegram_user_id=%s role=%s",
+            caller_uid, target_uid, target_role,
+        )
+        return {"ok": True, "telegram_user_id": target_uid, "status": "active"}
 
     def admin_intern_review_work(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         denied = self._require_admin_tab(auth, "interns")
@@ -6290,6 +6355,12 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 return self._send_json(CTX.set_test_role(auth, body))
             if path == "/api/admin/set-user-role":
                 return self._send_json(CTX.admin_set_user_role(auth, body))
+            if path.startswith("/api/admin/staff/") and path.endswith("/deactivate"):
+                _staff_uid = path[len("/api/admin/staff/"):-len("/deactivate")]
+                return self._send_json(CTX.admin_deactivate_staff(auth, _staff_uid))
+            if path.startswith("/api/admin/staff/") and path.endswith("/activate"):
+                _staff_uid = path[len("/api/admin/staff/"):-len("/activate")]
+                return self._send_json(CTX.admin_activate_staff(auth, _staff_uid))
             if path == "/api/food/link-child":
                 return self._send_json(CTX.food_link_child(auth, body))
             if path == "/api/food/debug/sync-camp-children":

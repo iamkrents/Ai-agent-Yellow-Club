@@ -2081,6 +2081,11 @@ class Storage:
             cur = conn.execute("UPDATE staff_users SET status='inactive', updated_at=? WHERE user_id=?", (now_iso(), user_id))
             return cur.rowcount > 0
 
+    def activate_staff_user(self, user_id: int) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("UPDATE staff_users SET status='active', updated_at=? WHERE user_id=?", (now_iso(), user_id))
+            return cur.rowcount > 0
+
     def set_staff_mk_teacher(self, user_id: int, mk_teacher_id: str | int, mk_teacher_name: str = "") -> bool:
         """Link Telegram staff user to MoyKlass teacherId.
 
