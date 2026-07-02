@@ -1539,16 +1539,24 @@ class Storage:
         return result
 
     def get_food_menu_audit_raw(self, menu_id: int) -> Optional[dict[str, Any]]:
-        """Return raw unfiltered data for audit: all orders (all statuses), all items, all staff orders."""
+        """Return raw unfiltered data for audit: all orders (all statuses), all items, all staff orders.
+        Child orders include camp_children fields so _get_food_group_info can resolve location."""
         mid = int(menu_id)
         with self._connect() as conn:
             menu_row = conn.execute("SELECT * FROM food_menus WHERE id=?", (mid,)).fetchone()
             if not menu_row:
                 return None
             menu = dict(menu_row)
-            # All child orders for this menu, regardless of status
+            # All child orders — join camp_children to get group_name/mk_class_name/classroom/raw_json
+            # so _get_food_group_info can determine the YC location code.
             child_orders_rows = conn.execute(
-                "SELECT o.* FROM food_orders o WHERE o.menu_id=? ORDER BY o.id", (mid,)
+                """SELECT o.*,
+                          c.full_name AS child_name,
+                          c.group_name, c.mk_class_name, c.classroom, c.raw_json
+                   FROM food_orders o
+                   LEFT JOIN camp_children c ON c.mk_student_id = o.mk_student_id AND c.active = 1
+                   WHERE o.menu_id=? ORDER BY o.id""",
+                (mid,),
             ).fetchall()
             child_orders = []
             for orow in child_orders_rows:

@@ -8042,7 +8042,7 @@ function _renderAuditBlock(data) {
   if ((data.locations || []).length) {
     detailsHtml += `<div class="food-audit-section">`;
     for (const loc of data.locations) {
-      if (loc.locationCode === "unknown" && !loc.staffOrders && !loc.noFood) continue;
+      if (loc.locationCode === "unknown" && !loc.childOrders && !loc.staffOrders && !loc.noFood) continue;
       detailsHtml += `<div class="food-audit-loc">
         <div class="food-audit-loc-name">${escapeHtml(loc.locationName || loc.locationCode)}</div>
         <div class="food-audit-loc-row">заказов детей: <b>${loc.childOrders}</b> · сотрудников: <b>${loc.staffOrders}</b> · без питания: <b>${loc.noFood}</b></div>
@@ -8098,16 +8098,22 @@ function _copyAuditReport(data) {
   const statusText = data.auditStatus === "passed" ? "✅ всё сходится" : data.auditStatus === "warning" ? "⚠️ есть предупреждения" : "❌ есть ошибки";
   let lines = [`Проверка сводки питания`, titleLabel, ``, `Статус: ${statusText}`, ``];
   for (const loc of (data.locations || [])) {
-    if (loc.locationCode === "unknown" && !loc.staffOrders && !loc.noFood) continue;
-    lines.push(loc.locationName || loc.locationCode + ":");
-    lines.push(`Детей: ${loc.childOrders}`);
-    lines.push(`Сотрудников/преподавателей: ${loc.staffOrders}`);
-    lines.push(`Без питания: ${loc.noFood}`);
-    lines.push(`Блюд всего: ${loc.totalItemsQty}`);
-    lines.push(`Сумма: ${loc.totalAmount.toFixed(2)} BYN`);
+    if (loc.locationCode === "unknown" && !loc.childOrders && !loc.staffOrders && !loc.noFood) continue;
+    lines.push(`📍 ${loc.locationName || loc.locationCode}:`);
+    lines.push(`  Детей: ${loc.childOrders}`);
+    lines.push(`  Сотрудников/преподавателей: ${loc.staffOrders}`);
+    lines.push(`  Без питания: ${loc.noFood}`);
+    lines.push(`  Блюд всего: ${loc.totalItemsQty}`);
+    lines.push(`  Сумма: ${loc.totalAmount.toFixed(2)} BYN`);
+    if ((loc.items || []).length) {
+      for (const it of loc.items) {
+        lines.push(`    - ${it.itemName} × ${it.qty}${it.amount ? ` = ${it.amount.toFixed(2)} BYN` : ""}`);
+      }
+    }
     lines.push(``);
   }
-  lines.push(`Общая сумма: ${(s.totalAmount || 0).toFixed(2)} BYN`);
+  lines.push(`ИТОГО: людей ${s.totalPeople || 0} (детей ${s.childOrders || 0} + сотр. ${s.staffOrders || 0})`);
+  lines.push(`ИТОГО: блюд ${s.totalItemsQty || 0}, сумма ${(s.totalAmount || 0).toFixed(2)} BYN`);
   lines.push(``);
   lines.push(`Ошибки: ${(data.errors || []).length ? data.errors.join("; ") : "нет"}`);
   lines.push(`Предупреждения: ${(data.warnings || []).length ? data.warnings.join("; ") : "нет"}`);

@@ -3231,6 +3231,7 @@ class MiniAppContext:
 
     def food_summary_audit(self, auth: dict[str, Any], menu_id: str) -> dict[str, Any]:
         """Read-only audit: recompute totals from raw DB data and run consistency checks."""
+        from storage import _get_food_group_info as _gfgi
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
         denied = self._require_food_menu_edit(auth)
@@ -3253,13 +3254,15 @@ class MiniAppContext:
         food_items = raw["foodItems"]
         item_price_map: dict[int, float] = {int(fi["id"]): float(fi.get("price") or 0) for fi in food_items}
         item_name_map: dict[int, str] = {int(fi["id"]): fi.get("name") or "" for fi in food_items}
-        item_available_map: dict[int, bool] = {int(fi["id"]): bool(fi.get("is_available", 1)) for fi in food_items}
         known_item_ids: set[int] = set(item_price_map.keys())
-        location_map: dict[str, str] = {
+        loc_names: dict[str, str] = {
             "YC1": getattr(self.settings, "food_location_yc1", "") or "Кульман 1/1",
             "YC2": getattr(self.settings, "food_location_yc2", "") or "Мстиславца 6",
             "YC3": getattr(self.settings, "food_location_yc3", "") or "Адрес не указан",
+            "unknown": "Без адреса / требует проверки",
         }
+        # Always include YC1 and YC2 in results even if empty
+        known_codes = ["YC1", "YC2"]
         checks: list[dict[str, Any]] = []
         warnings: list[str] = []
         errors: list[str] = []
@@ -3297,7 +3300,7 @@ class MiniAppContext:
 
         # --- CHECK: no-food excluded from item totals ---
         _add_check("NO_FOOD_EXCLUDED_FROM_ITEMS", "passed",
-                   f"'Без питания' в итог по блюдам не включено. Пропущено: детей {len(skipped_child)}, сотр. {len(skipped_staff)}")
+                   f"'Без питания' в итог по блюдам не включено. Детей: {len(skipped_child)}, сотр.: {len(skipped_staff)}")
 
         # --- CHECK: unique child orders ---
         child_student_ids = [o.get("mk_student_id") for o in active_child]
@@ -3315,9 +3318,9 @@ class MiniAppContext:
         else:
             _add_check("STAFF_ORDERS_UNIQUE", "passed", "Дублей заказов сотрудников нет.")
 
-        # --- Compute item totals from raw orders ---
+        # --- Compute global item totals and validate ---
         raw_item_qty: dict[int, int] = {}
-        unknown_items: list[str] = []
+        unknown_menu_items: list[str] = []
         qty_invalid = 0
         prices_missing: list[str] = []
         for o in active_child + active_staff:
@@ -3328,11 +3331,10 @@ class MiniAppContext:
                     qty_invalid += 1
                 raw_item_qty[iid] = raw_item_qty.get(iid, 0) + qty
                 if iid not in known_item_ids:
-                    unknown_items.append(it.get("name") or f"id={iid}")
+                    unknown_menu_items.append(it.get("name") or f"id={iid}")
         for iid in raw_item_qty:
             if iid in known_item_ids and item_price_map.get(iid, 0.0) == 0.0:
-                name = item_name_map.get(iid) or f"id={iid}"
-                prices_missing.append(name)
+                prices_missing.append(item_name_map.get(iid) or f"id={iid}")
 
         # --- CHECK: quantity valid ---
         if qty_invalid > 0:
@@ -3349,23 +3351,24 @@ class MiniAppContext:
         else:
             _add_check("PRICES_EXIST_OR_WARN", "passed", "Цены есть у всех блюд в заказах.")
 
-        # --- CHECK: unknown items ---
-        if unknown_items:
-            _add_check("MENU_ITEMS_EXIST", "warning", f"Заказы содержат блюда, которых нет в меню: {', '.join(set(unknown_items[:3]))}")
+        if unknown_menu_items:
+            _add_check("MENU_ITEMS_EXIST", "warning",
+                       f"Заказы содержат блюда вне меню: {', '.join(set(unknown_menu_items[:3]))}")
 
-        # --- Compute money totals ---
+        # --- Global totals ---
         total_amount = round(sum(item_price_map.get(iid, 0.0) * qty for iid, qty in raw_item_qty.items()), 2)
         total_items_qty = sum(raw_item_qty.values())
 
-        # --- Location grouping ---
+        # --- Location data structure ---
         menu_loc = str(menu.get("location_code") or "").strip().upper()
+
         loc_data: dict[str, dict[str, Any]] = {}
 
-        def _get_loc(code: str) -> dict[str, Any]:
+        def _ensure_loc(code: str) -> dict[str, Any]:
             if code not in loc_data:
                 loc_data[code] = {
                     "locationCode": code,
-                    "locationName": location_map.get(code, f"Адрес не определён ({code})"),
+                    "locationName": loc_names.get(code, f"Адрес не определён ({code})"),
                     "childOrders": 0,
                     "staffOrders": 0,
                     "noFoodChild": 0,
@@ -3375,48 +3378,68 @@ class MiniAppContext:
                 }
             return loc_data[code]
 
-        orders_missing_loc: list[str] = []
+        # Initialise always-present codes
+        for c in known_codes:
+            _ensure_loc(c)
+
+        # --- Assign children to locations using the same _get_food_group_info logic as regular summary ---
+        child_no_loc: list[str] = []
         for o in active_child:
-            raw_j = o.get("parent_telegram_id") or ""
-            # Children don't store location directly; their location comes from groupCode / groupSource in summary.
-            # For audit: we mark 'unknown' for now — the summary grouping is per mk_student_id group_name
-            _get_loc("unknown")["childOrders"] += 1
+            group_code = _gfgi(o).get("groupCode", "unknown")
+            if not group_code or group_code == "unknown":
+                child_no_loc.append(str(o.get("child_name") or o.get("mk_student_id") or "неизвестный ребёнок"))
+                group_code = "unknown"
+            entry = _ensure_loc(group_code)
+            entry["childOrders"] += 1
+            for it in o.get("items") or []:
+                iid = int(it.get("item_id") or 0)
+                qty = int(it.get("quantity") or 1)
+                entry["itemQty"][iid] = entry["itemQty"].get(iid, 0) + qty
+                entry["amount"] += item_price_map.get(iid, 0.0) * qty
+
+        for o in skipped_child:
+            group_code = _gfgi(o).get("groupCode", "unknown")
+            _ensure_loc(group_code)["noFoodChild"] += 1
+
+        # --- Assign staff/teachers to locations ---
+        orders_missing_loc: list[str] = []
         for o in active_staff:
             loc = str(o.get("location_code") or "").strip().upper() or menu_loc
             if not loc:
                 loc = "unknown"
-                orders_missing_loc.append(
-                    str(o.get("staff_name") or f"staff_user_id={o.get('staff_user_id')}")
-                )
-            loc_entry = _get_loc(loc)
-            loc_entry["staffOrders"] += 1
+                orders_missing_loc.append(str(o.get("staff_name") or f"staff_user_id={o.get('staff_user_id')}"))
+            entry = _ensure_loc(loc)
+            entry["staffOrders"] += 1
             for it in o.get("items") or []:
                 iid = int(it.get("item_id") or 0)
                 qty = int(it.get("quantity") or 1)
-                loc_entry["itemQty"][iid] = loc_entry["itemQty"].get(iid, 0) + qty
-                loc_entry["amount"] += item_price_map.get(iid, 0.0) * qty
-        for o in skipped_child:
-            _get_loc("unknown")["noFoodChild"] += 1
+                entry["itemQty"][iid] = entry["itemQty"].get(iid, 0) + qty
+                entry["amount"] += item_price_map.get(iid, 0.0) * qty
+
         for o in skipped_staff:
             loc = str(o.get("location_code") or "").strip().upper() or menu_loc or "unknown"
-            _get_loc(loc)["noFoodStaff"] += 1
+            _ensure_loc(loc)["noFoodStaff"] += 1
 
         # --- CHECK: orders have location ---
-        if orders_missing_loc:
+        if child_no_loc:
+            msg = f"Дети без определённого адреса: {', '.join(child_no_loc[:3])}"
+            if len(child_no_loc) > 3:
+                msg += f" и ещё {len(child_no_loc) - 3}"
+            _add_check("ORDERS_HAVE_LOCATION", "warning", msg)
+        elif orders_missing_loc:
             msg = f"Сотрудники без указания филиала: {', '.join(orders_missing_loc[:3])}"
             if len(orders_missing_loc) > 3:
                 msg += f" и ещё {len(orders_missing_loc) - 3}"
             _add_check("ORDERS_HAVE_LOCATION", "warning", msg)
         else:
-            _add_check("ORDERS_HAVE_LOCATION", "passed", "У всех заказов сотрудников указан филиал.")
+            _add_check("ORDERS_HAVE_LOCATION", "passed", "У всех заказов определён адрес.")
 
         # --- CHECK: teacher branch resolved ---
         teachers_no_branch = []
         for o in active_staff:
             is_teacher = bool(str(o.get("staff_mk_teacher_id") or "").strip()) or \
                          str(o.get("staff_role") or "") in ("teacher", "intern", "methodist")
-            loc = str(o.get("location_code") or "").strip()
-            if is_teacher and not loc:
+            if is_teacher and not str(o.get("location_code") or "").strip():
                 teachers_no_branch.append(str(o.get("staff_name") or f"id={o.get('staff_user_id')}"))
         if teachers_no_branch:
             _add_check("TEACHER_BRANCH_RESOLVED", "warning",
@@ -3424,55 +3447,45 @@ class MiniAppContext:
         else:
             _add_check("TEACHER_BRANCH_RESOLVED", "passed", "Все преподаватели с определённым филиалом.")
 
-        # Build location summaries (staff part known; child part unknown without joining group tables)
-        # We report what we can compute from raw orders
-        loc_totals_sum = round(sum(e["amount"] for e in loc_data.values()), 2)
-
-        # --- CHECK: item totals match ---
-        staff_item_qty: dict[int, int] = {}
-        for o in active_staff:
-            for it in o.get("items") or []:
-                iid = int(it.get("item_id") or 0)
-                qty = int(it.get("quantity") or 1)
-                staff_item_qty[iid] = staff_item_qty.get(iid, 0) + qty
-        child_item_qty: dict[int, int] = {}
-        for o in active_child:
-            for it in o.get("items") or []:
-                iid = int(it.get("item_id") or 0)
-                qty = int(it.get("quantity") or 1)
-                child_item_qty[iid] = child_item_qty.get(iid, 0) + qty
-        combined_qty: dict[int, int] = {k: child_item_qty.get(k, 0) + staff_item_qty.get(k, 0) for k in set(child_item_qty) | set(staff_item_qty)}
+        # --- CHECK: item totals match orders ---
+        combined_qty: dict[int, int] = {}
+        for entry in loc_data.values():
+            for iid, qty in entry["itemQty"].items():
+                combined_qty[iid] = combined_qty.get(iid, 0) + qty
         if combined_qty == raw_item_qty:
-            _add_check("ITEM_TOTALS_MATCH_ORDERS", "passed", "Итог по блюдам совпадает с заказами детей и сотрудников.")
+            _add_check("ITEM_TOTALS_MATCH_ORDERS", "passed", "Итог по блюдам совпадает с заказами по всем адресам.")
         else:
             _add_check("ITEM_TOTALS_MATCH_ORDERS", "error", "Итог по блюдам не совпадает с суммой заказов.")
 
-        # --- Location totals match global ---
-        # Note: children location comes from summary grouping; we can't recompute it here without joining group data.
-        # We check what we have: staff location totals
-        _add_check("LOCATION_TOTALS_MATCH_GLOBAL_TOTAL", "passed",
-                   "Суммы по заказам сотрудников по филиалам посчитаны.")
+        # --- CHECK: location totals match global ---
+        loc_qty_sum = sum(sum(e["itemQty"].values()) for e in loc_data.values())
+        loc_amount_sum = round(sum(e["amount"] for e in loc_data.values()), 2)
+        if loc_qty_sum == total_items_qty and abs(loc_amount_sum - total_amount) < 0.01:
+            _add_check("LOCATION_TOTALS_MATCH_GLOBAL_TOTAL", "passed",
+                       f"Сумма по адресам {loc_amount_sum:.2f} BYN = общей сумме {total_amount:.2f} BYN.")
+        else:
+            _add_check("LOCATION_TOTALS_MATCH_GLOBAL_TOTAL", "error",
+                       f"Сумма по адресам {loc_amount_sum:.2f} BYN ≠ общей сумме {total_amount:.2f} BYN.")
 
         # --- CHECK: money totals ---
         _add_check("MONEY_TOTALS_MATCH", "passed",
-                   f"Пересчитанная сумма: {total_amount:.2f} BYN (на основе {total_items_qty} порций).")
+                   f"Пересчитанная сумма: {total_amount:.2f} BYN ({total_items_qty} порций).")
 
-        # --- Build items summary ---
+        # --- Build global items summary ---
         items_summary = []
         for iid, qty in sorted(raw_item_qty.items(), key=lambda x: -x[1]):
             name = item_name_map.get(iid) or f"item_id={iid}"
             price = item_price_map.get(iid, 0.0)
-            items_summary.append({
-                "itemId": iid,
-                "itemName": name,
-                "qty": qty,
-                "price": price,
-                "amount": round(price * qty, 2),
-            })
+            items_summary.append({"itemId": iid, "itemName": name, "qty": qty, "price": price,
+                                   "amount": round(price * qty, 2)})
 
-        # --- Build location results ---
+        # --- Build per-location results (YC1 first, then YC2, then others, unknown last) ---
+        code_order = {c: i for i, c in enumerate(known_codes)}
+        sorted_codes = sorted(loc_data.keys(),
+                              key=lambda c: (0 if c in code_order else (1 if c != "unknown" else 2), code_order.get(c, 0), c))
         loc_results = []
-        for code, entry in sorted(loc_data.items(), key=lambda x: x[0]):
+        for code in sorted_codes:
+            entry = loc_data[code]
             loc_items = []
             for iid, qty in sorted(entry["itemQty"].items(), key=lambda x: -x[1]):
                 name = item_name_map.get(iid) or f"item_id={iid}"
@@ -3490,7 +3503,11 @@ class MiniAppContext:
             })
 
         overall_status = "failed" if errors else ("warning" if warnings else "passed")
-        result = {
+        # Per-location stats for logging
+        yc1 = loc_data.get("YC1", {})
+        yc2 = loc_data.get("YC2", {})
+        unk = loc_data.get("unknown", {})
+        result: dict[str, Any] = {
             "ok": True,
             "menuId": mid,
             "menuDate": menu.get("menu_date"),
@@ -3513,8 +3530,16 @@ class MiniAppContext:
             "errors": errors,
         }
         log.info(
-            "food_summary_audit_run user_id=%s role=%s menu_id=%s menu_date=%s status=%s errors=%s warnings=%s people=%s amount=%s",
-            user_id, role, mid, menu.get("menu_date"), overall_status, len(errors), len(warnings), total_people, total_amount,
+            "food_summary_audit_run user_id=%s role=%s menu_id=%s menu_date=%s status=%s "
+            "errors=%s warnings=%s "
+            "yc1_people=%s yc1_amount=%.2f yc2_people=%s yc2_amount=%.2f "
+            "unknown_people=%s unknown_amount=%.2f total_people=%s total_amount=%.2f",
+            user_id, role, mid, menu.get("menu_date"), overall_status,
+            len(errors), len(warnings),
+            yc1.get("childOrders", 0) + yc1.get("staffOrders", 0), yc1.get("amount", 0.0),
+            yc2.get("childOrders", 0) + yc2.get("staffOrders", 0), yc2.get("amount", 0.0),
+            unk.get("childOrders", 0) + unk.get("staffOrders", 0), unk.get("amount", 0.0),
+            total_people, total_amount,
         )
         return result
 
