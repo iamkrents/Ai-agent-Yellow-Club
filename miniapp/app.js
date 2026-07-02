@@ -66,6 +66,14 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
+console.log("MiniApp version: v7.0.29");
+window.addEventListener("error", (ev) => {
+  console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
+});
+window.addEventListener("unhandledrejection", (ev) => {
+  console.error("[unhandled rejection]", ev.reason);
+});
+
 const state = {
   me: null,
   lessons: [],
@@ -504,6 +512,14 @@ function setNotice(text, type = "") {
   if (!el) return;
   el.textContent = text;
   el.className = `notice ${type}`.trim();
+}
+function safeUserError(e) {
+  const msg = (typeof e === "string" ? e : (e?.message || "")).trim();
+  if (!msg) return "Не удалось выполнить операцию. Попробуйте ещё раз.";
+  if (/the string did not match|typeerror|domexception|cannot read prop|unexpected token|undefined is not|null is not|invalidstateerror|is not a function|network error|failed to fetch|script error/i.test(msg)) {
+    return "Не удалось выполнить операцию. Попробуйте ещё раз.";
+  }
+  return msg;
 }
 async function apiGet(path) {
   const res = await fetch(apiUrl(path), { cache: "no-store" });
@@ -2124,7 +2140,7 @@ async function syncClientTasks() {
     state.tasks = state.clientTasks;
     setNotice(`МойКласс проверен: задач создано/обновлено ${sync.createdOrUpdated || 0}`, "ok");
   } catch (e) {
-    setNotice(e.message, "error");
+    setNotice(safeUserError(e), "error");
   } finally {
     state.clientTasksSyncing = false;
     renderClientTasks();
@@ -2159,7 +2175,7 @@ async function saveClientTask(event) {
     state.clientTaskEditingId = "";
     setNotice("Задача сохранена", "ok");
     renderClientTasks();
-  } catch (e) { setNotice(e.message, "error"); }
+  } catch (e) { setNotice(safeUserError(e), "error"); }
 }
 async function updateClientTaskStatus(taskId, status) {
   try {
@@ -2176,7 +2192,7 @@ async function updateClientTaskStatus(taskId, status) {
     }
     setNotice(cleanStatus === "done" ? "Задача отмечена выполненной" : cleanStatus === "cancelled" ? "Задача отменена" : "Статус задачи обновлён", "ok");
     renderClientTasks();
-  } catch (e) { setNotice(e.message, "error"); }
+  } catch (e) { setNotice(safeUserError(e), "error"); }
 }
 
 async function loadClientTaskOpenSlotsForWeek(week) {
@@ -2210,7 +2226,7 @@ async function loadClientTaskSlots(taskId) {
   } catch (e) {
     state.clientTaskSlotResults[id] = [];
     state.clientTaskSlotNotes[id] = [e.message || String(e)];
-    setNotice(e.message || String(e), "error");
+    setNotice(safeUserError(e), "error");
   } finally {
     state.clientTaskSlotsLoading[id] = false;
     renderClientTasks();
@@ -2980,7 +2996,7 @@ function _bindInternEvents(track) {
         setNotice("Записан на наблюдение! Посмотрите занятие и оставьте комментарий.", "ok");
         await loadInternTrack();
       } catch (e) {
-        setNotice(e.message, "error");
+        setNotice(safeUserError(e), "error");
         btn.disabled = false;
       }
     });
@@ -3004,7 +3020,7 @@ function _bindInternEvents(track) {
         setNotice("Запись создана. Посмотрите занятие и оставьте комментарий.", "ok");
         await loadInternTrack();
       } catch (e) {
-        setNotice(e.message, "error");
+        setNotice(safeUserError(e), "error");
         if (btn) btn.disabled = false;
       }
     });
@@ -3027,7 +3043,7 @@ function _bindInternEvents(track) {
         state.internTrack = data.track ?? null;
         renderInternTrack();
       } catch (e) {
-        setNotice(e.message, "error");
+        setNotice(safeUserError(e), "error");
         if (btn) btn.disabled = false;
       }
     });
@@ -3071,7 +3087,7 @@ function _bindInternEvents(track) {
         state.internOpenStep = null;
         renderInternTrack();
       } catch (e) {
-        setNotice(e.message, "error");
+        setNotice(safeUserError(e), "error");
         if (btn) btn.disabled = false;
       }
     });
@@ -3098,7 +3114,7 @@ function _bindInternEvents(track) {
         state.internOpenStep = null;
         renderInternTrack();
       } catch (e) {
-        setNotice(e.message, "error");
+        setNotice(safeUserError(e), "error");
         if (btn) btn.disabled = false;
       }
     });
@@ -3124,7 +3140,7 @@ function _bindInternEvents(track) {
         state.internTrack = data.track ?? null;
         renderInternTrack();
       } catch (e) {
-        setNotice(e.message, "error");
+        setNotice(safeUserError(e), "error");
         if (btn) btn.disabled = false;
       }
     });
@@ -3410,7 +3426,7 @@ function _bindAdminInternEvents(root) {
         if (!data.ok) throw new Error(data.error || "Ошибка");
         setNotice(status === "accepted" ? "Работа принята. Стажёр уведомлён." : "Работа отклонена. Стажёр уведомлён.", "ok");
         await renderAdminContent();
-      } catch (e) { setNotice(e.message, "error"); btn.disabled = false; }
+      } catch (e) { setNotice(safeUserError(e), "error"); btn.disabled = false; }
     });
   });
 
@@ -3428,7 +3444,7 @@ function _bindAdminInternEvents(root) {
         if (!data.ok) throw new Error(data.error || "Ошибка");
         setNotice(outcome === "passed" ? "Стажёр допущен! Он уведомлён." : "Пробное не принято. Стажёр уведомлён.", "ok");
         await renderAdminContent();
-      } catch (e) { setNotice(e.message, "error"); btn.disabled = false; }
+      } catch (e) { setNotice(safeUserError(e), "error"); btn.disabled = false; }
     });
   });
 
@@ -3466,10 +3482,10 @@ async function loadReports() {
     const data = await apiGet(`/api/reports/monthly?month=${encodeURIComponent(month)}`);
     state.reportsData = data;
     state.reportsMonth = data.month || month;
-    if (monthInput) monthInput.value = state.reportsMonth;
+    if (monthInput && /^\d{4}-\d{2}$/.test(state.reportsMonth)) monthInput.value = state.reportsMonth;
     setNotice(`Отчёт за ${state.reportsMonth} сформирован`, "ok");
   } catch (e) {
-    setNotice(e.message, "error");
+    console.error("[loadReports]", e);
     state.reportsData = null;
   } finally {
     state.reportsBusy = false;
@@ -3498,7 +3514,7 @@ async function syncTasksFromReports(type = "all") {
     activateTab("tasks");
     renderClientTasks();
   } catch (e) {
-    setNotice(e.message, "error");
+    setNotice(safeUserError(e), "error");
   }
 }
 
@@ -3703,7 +3719,7 @@ async function saveWorkSlot(event) {
     clearWorkSlotForm();
     setNotice("Рабочее окно сохранено.", "ok");
   } catch (e) {
-    setNotice(e.message || String(e), "error");
+    setNotice(safeUserError(e), "error");
   }
 }
 
@@ -3717,7 +3733,7 @@ async function deleteWorkSlot(slotId) {
     clearWorkSlotForm();
     setNotice("Рабочее окно удалено.", "ok");
   } catch (e) {
-    setNotice(e.message || String(e), "error");
+    setNotice(safeUserError(e), "error");
   }
 }
 
@@ -4296,7 +4312,7 @@ async function runCheckboxAction(lessonId, action, input) {
     if (state.selectedLesson?.lesson?.id === lessonId) updateCloseSummary(state.selectedLesson.lesson);
     renderLessonsQuietly();
     input.disabled = false;
-    setNotice(e.message, "error");
+    setNotice(safeUserError(e), "error");
   }
 }
 
@@ -4469,7 +4485,7 @@ function renderLessonModal(data) {
       window.setTimeout(loadLessons, 250);
       await loadTasks();
       if (canUseAdmin()) await loadAdmin();
-    } catch (e) { setNotice(e.message, "error"); }
+    } catch (e) { setNotice(safeUserError(e), "error"); }
   });
   showLessonModal();
 }
@@ -4499,7 +4515,7 @@ async function openLesson(id, opts = {}) {
     renderLessonModal(data);
     if (!silent) setNotice("Занятие открыто", "ok");
   } catch (e) {
-    setNotice(e.message, "error");
+    setNotice(safeUserError(e), "error");
   }
 }
 
@@ -4524,7 +4540,7 @@ async function uploadPrepResult(lessonId) {
     await loadTasks();
     if (canUseAdmin()) await loadAdmin();
   } catch (e) {
-    setNotice(e.message, "error");
+    setNotice(safeUserError(e), "error");
   }
 }
 
@@ -4563,7 +4579,7 @@ async function generateReport(lessonId, variant = "normal") {
     box.querySelectorAll("[data-action]").forEach(btn => btn.addEventListener("click", () => runAction(lessonId, btn.dataset.action)));
     setNotice("Отчёт сформирован", "ok");
   } catch (e) {
-    setNotice(e.message, "error");
+    setNotice(safeUserError(e), "error");
   }
 }
 
@@ -4608,7 +4624,7 @@ async function runAction(lessonId, action) {
     await loadTasks();
     if (canUseAdmin()) await loadAdmin();
   } catch (e) {
-    setNotice(e.message, "error");
+    setNotice(safeUserError(e), "error");
   }
 }
 
@@ -4627,11 +4643,15 @@ async function loadLessons() {
     renderLessonsUnavailable();
     return;
   }
-  const data = await apiGet("/api/lessons?days=7");
-  state.lessons = data.items || [];
-  renderLessons();
-  renderTasks();
-  scheduleLessonPreload(state.lessons);
+  try {
+    const data = await apiGet("/api/lessons?days=7");
+    state.lessons = data.items || [];
+    renderLessons();
+    renderTasks();
+    scheduleLessonPreload(state.lessons);
+  } catch (e) {
+    console.error("[loadLessons]", e);
+  }
 }
 
 function scheduleLessonPreload(items) {
@@ -4652,17 +4672,21 @@ function scheduleLessonPreload(items) {
   schedule();
 }
 async function loadTasks() {
-  if (isClientManagerRole()) {
-    const data = await apiGet(`/api/client-tasks?status=${encodeURIComponent(state.clientTaskStatusFilter || "active")}&type=${encodeURIComponent(state.clientTaskTypeFilter || "all")}`);
-    state.clientTasks = data.items || [];
-    state.clientTaskAutoSync = data.autoSync || state.clientTaskAutoSync;
-    state.tasks = state.clientTasks;
+  try {
+    if (isClientManagerRole()) {
+      const data = await apiGet(`/api/client-tasks?status=${encodeURIComponent(state.clientTaskStatusFilter || "active")}&type=${encodeURIComponent(state.clientTaskTypeFilter || "all")}`);
+      state.clientTasks = data.items || [];
+      state.clientTaskAutoSync = data.autoSync || state.clientTaskAutoSync;
+      state.tasks = state.clientTasks;
+      renderTasks();
+      return;
+    }
+    const data = await apiGet("/api/tasks");
+    state.tasks = data.items || [];
     renderTasks();
-    return;
+  } catch (e) {
+    console.error("[loadTasks]", e);
   }
-  const data = await apiGet("/api/tasks");
-  state.tasks = data.items || [];
-  renderTasks();
 }
 
 function renderAdmin() {
@@ -4964,7 +4988,7 @@ async function renderAdminContent() {
               if (!res.ok) throw new Error(res.error || "Ошибка");
               setNotice(`Роль изменена на «${sel.options[sel.selectedIndex].text}»`, "ok");
               await renderAdminContent();
-            } catch (e) { setNotice(e.message, "error"); }
+            } catch (e) { setNotice(safeUserError(e), "error"); }
             btn.disabled = false;
           });
         });
@@ -4979,7 +5003,7 @@ async function renderAdminContent() {
               if (!res.ok) throw new Error(res.error || "Ошибка");
               setNotice(`Имя обновлено из МойКласс: ${res.new_name}`, "ok");
               await renderAdminContent();
-            } catch (e) { setNotice(e.message, "error"); btn.disabled = false; }
+            } catch (e) { setNotice(safeUserError(e), "error"); btn.disabled = false; }
           });
         });
 
@@ -4996,7 +5020,7 @@ async function renderAdminContent() {
                 const warn = (res.warnings || []).join(" ");
                 setNotice(`MK teacherId отвязан.${warn ? " " + warn : ""}`, "ok");
                 await renderAdminContent();
-              } catch (e) { setNotice(e.message, "error"); }
+              } catch (e) { setNotice(safeUserError(e), "error"); }
             });
           });
         });
@@ -5012,7 +5036,7 @@ async function renderAdminContent() {
                 if (!res.ok) throw new Error(res.error || "Ошибка");
                 setNotice(`Доступ отключён: ${name}`, "ok");
                 await renderAdminContent();
-              } catch (e) { setNotice(e.message, "error"); }
+              } catch (e) { setNotice(safeUserError(e), "error"); }
             });
           });
         });
@@ -5027,7 +5051,7 @@ async function renderAdminContent() {
               if (!res.ok) throw new Error(res.error || "Ошибка");
               setNotice(`Доступ восстановлен: ${name}`, "ok");
               await renderAdminContent();
-            } catch (e) { setNotice(e.message, "error"); btn.disabled = false; }
+            } catch (e) { setNotice(safeUserError(e), "error"); btn.disabled = false; }
           });
         });
       }
@@ -5626,7 +5650,7 @@ async function generateCampCodesAll() {
       if (btn) btn.disabled = false;
     }
   } catch (e) {
-    setNotice(e.message, "error");
+    setNotice(safeUserError(e), "error");
     if (btn) btn.disabled = false;
   }
 }
@@ -5641,7 +5665,7 @@ async function generateCodeForChild(mkId) {
       setNotice(data.error || "Ошибка создания кода", "error");
     }
   } catch (e) {
-    setNotice(e.message, "error");
+    setNotice(safeUserError(e), "error");
   }
 }
 
@@ -5668,7 +5692,7 @@ async function relinkChild(mkId, childName, hasParent) {
     await loadCampChildren();
   } catch (e) {
     if (resultEl) { resultEl.textContent = e.message; resultEl.className = "camp-child-relink-result camp-child-relink-result--error"; resultEl.style.display = ""; }
-    setNotice(e.message, "error");
+    setNotice(safeUserError(e), "error");
   }
 }
 
@@ -6017,7 +6041,7 @@ async function submitFoodOrder(menuId, mkStudentId, items) {
     state.foodOrderExpanded[`${mkStudentId}_${menuId}`] = false;
     setNotice("Выбор питания сохранён. Вы можете изменить его до дедлайна.", "ok");
     renderParentFoodMenu();
-  } catch (e) { setNotice(e.message, "error"); }
+  } catch (e) { setNotice(safeUserError(e), "error"); }
 }
 
 async function skipFoodOrder(menuId, mkStudentId) {
@@ -6032,7 +6056,7 @@ async function skipFoodOrder(menuId, mkStudentId) {
     state.foodOrderExpanded[`${mkStudentId}_${menuId}`] = false;
     setNotice("Отметка сохранена. Вы можете изменить выбор до дедлайна.", "ok");
     renderParentFoodMenu();
-  } catch (e) { setNotice(e.message, "error"); }
+  } catch (e) { setNotice(safeUserError(e), "error"); }
 }
 
 function _formatMenuDate(dateStr) {
@@ -6384,7 +6408,7 @@ async function publishFoodMenu(root, menuId) {
     setNotice("Меню опубликовано", "ok");
     state.foodMenuData = null;
     await loadFoodMenus(root);
-  } catch (e) { setNotice(e.message, "error"); }
+  } catch (e) { setNotice(safeUserError(e), "error"); }
 }
 
 async function closeFoodMenu(root, menuId) {
@@ -6394,7 +6418,7 @@ async function closeFoodMenu(root, menuId) {
     setNotice("Меню закрыто", "ok");
     state.foodMenuData = null;
     await loadFoodMenus(root);
-  } catch (e) { setNotice(e.message, "error"); }
+  } catch (e) { setNotice(safeUserError(e), "error"); }
 }
 
 function _renderFoodMenuDetail(root, menu) {
@@ -6618,7 +6642,7 @@ async function closeFoodMenuDetail(root, menuId, menu) {
     setNotice("Меню закрыто", "ok");
     state.foodMenuSelected = data.menu;
     _renderFoodMenuDetail(root, data.menu);
-  } catch (e) { setNotice(e.message, "error"); }
+  } catch (e) { setNotice(safeUserError(e), "error"); }
 }
 
 async function addFoodItem(root, menuId) {
@@ -6644,7 +6668,7 @@ async function hideFoodItem(root, itemId, menuId) {
     const data = await apiPost(`/api/food/items/${itemId}/hide`, {});
     if (!data.ok) { setNotice(data.error || "Ошибка", "error"); return; }
     await openFoodMenu(root, menuId);
-  } catch (e) { setNotice(e.message, "error"); }
+  } catch (e) { setNotice(safeUserError(e), "error"); }
 }
 
 async function restoreFoodItem(root, itemId, menuId) {
@@ -6652,7 +6676,7 @@ async function restoreFoodItem(root, itemId, menuId) {
     const data = await apiPost(`/api/food/items/${itemId}/restore`, {});
     if (!data.ok) { setNotice(data.error || "Ошибка", "error"); return; }
     await openFoodMenu(root, menuId);
-  } catch (e) { setNotice(e.message, "error"); }
+  } catch (e) { setNotice(safeUserError(e), "error"); }
 }
 
 async function loadFoodMenuSummary(root, menuId) {
@@ -6661,7 +6685,7 @@ async function loadFoodMenuSummary(root, menuId) {
     const data = await apiGet(`/api/food/menus/${menuId}/summary`);
     if (!data.ok) { setNotice(data.error || "Ошибка загрузки сводки", "error"); state.foodMenuSelected && _renderFoodMenuDetail(root, state.foodMenuSelected); return; }
     _renderFoodMenuSummary(root, menuId, data);
-  } catch (e) { setNotice(e.message, "error"); }
+  } catch (e) { setNotice(safeUserError(e), "error"); }
 }
 
 function _renderFoodMenuSummary(root, menuId, data) {
@@ -7999,7 +8023,7 @@ async function _kitchenHideItem(root, itemId, menuId) {
     const data = await apiPost(`/api/food/items/${itemId}/hide`, {});
     if (!data.ok) { setNotice(data.error || "Ошибка", "error"); return; }
     await _kitchenOpenMenuDetail(root, menuId);
-  } catch (e) { setNotice(e.message, "error"); }
+  } catch (e) { setNotice(safeUserError(e), "error"); }
 }
 
 async function _kitchenRestoreItem(root, itemId, menuId) {
@@ -8007,7 +8031,7 @@ async function _kitchenRestoreItem(root, itemId, menuId) {
     const data = await apiPost(`/api/food/items/${itemId}/restore`, {});
     if (!data.ok) { setNotice(data.error || "Ошибка", "error"); return; }
     await _kitchenOpenMenuDetail(root, menuId);
-  } catch (e) { setNotice(e.message, "error"); }
+  } catch (e) { setNotice(safeUserError(e), "error"); }
 }
 
 async function _kitchenPublishMenu(root, menuId) {
@@ -8021,7 +8045,7 @@ async function _kitchenPublishMenu(root, menuId) {
     state.kitchenMenus = null;
     await _kitchenOpenMenuDetail(root, menuId);
     await loadKitchenMenus();
-  } catch (e) { setNotice(e.message, "error"); }
+  } catch (e) { setNotice(safeUserError(e), "error"); }
 }
 
 async function _kitchenAddFoodItemsBulk(root, menuId) {
@@ -8610,16 +8634,25 @@ async function reviewPrepResult(fileId, decision) {
     await apiPost("/api/admin/prep-result-review", { fileId, decision, comment });
     setNotice(decision === "approved" ? "Результат подтверждён, преподавателю отправлена обратная связь" : "Результат отклонён, преподавателю отправлена обратная связь", "ok");
     await loadAdmin();
-  } catch (e) { setNotice(e.message, "error"); }
+  } catch (e) { setNotice(safeUserError(e), "error"); }
 }
-async function loadAdmin() { if (!canUseAdmin()) return; const data = await apiGet("/api/admin/overview"); state.admin = data; renderAdmin(); }
+async function loadAdmin() {
+  if (!canUseAdmin()) return;
+  try {
+    const data = await apiGet("/api/admin/overview");
+    state.admin = data;
+    renderAdmin();
+  } catch (e) {
+    console.error("[loadAdmin]", e);
+  }
+}
 async function runScheduleCheck(notify) {
   try {
     setNotice("Проверяю МойКласс...", "");
     const data = await apiPost("/api/admin/schedule-check", { days: 30, notify });
     setNotice(`Проверка МойКласс: новых ${data.new?.length || 0}, изменённых ${data.changed?.length || 0}, задач ${data.tasks?.length || 0}, уведомлений ${data.sent || 0}`, "ok");
     await loadAdmin(); await loadTasks();
-  } catch (e) { setNotice(e.message, "error"); }
+  } catch (e) { setNotice(safeUserError(e), "error"); }
 }
 
 async function reloadCabinetAfterRoleChange() {
@@ -8678,7 +8711,7 @@ async function applyTestRole() {
     await apiPost("/api/test-role", { role, mkTeacherId, enabled: true });
     await reloadCabinetAfterRoleChange();
   } catch (e) {
-    setNotice(e.message, "error");
+    setNotice(safeUserError(e), "error");
   }
 }
 
@@ -8688,7 +8721,7 @@ async function clearTestRole() {
     await apiPost("/api/test-role", { enabled: false });
     await reloadCabinetAfterRoleChange();
   } catch (e) {
-    setNotice(e.message, "error");
+    setNotice(safeUserError(e), "error");
   }
 }
 
@@ -8780,6 +8813,6 @@ async function boot() {
       loadTasks(),
     ]);
     if (canUseAdmin()) await loadAdmin();
-  } catch (e) { setNotice(e.message, "error"); }
+  } catch (e) { console.error("[boot]", e); setNotice("Не удалось загрузить данные. Обновите страницу.", "error"); }
 }
 boot();
