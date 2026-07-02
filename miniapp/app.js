@@ -4858,7 +4858,8 @@ async function renderAdminContent() {
         restaurant: "Кухня (alias)",
         other: "Другой",
       };
-      // Options for the change-role dropdown; restaurant not offered as a new choice
+      // v7.0.25: full role list including kitchen and owner
+      console.log("Staff UI version: 7.0.25");
       const roleOptions = [
         {v:"teacher",        l:"Преподаватель"},
         {v:"methodist",      l:"Методист"},
@@ -4866,6 +4867,7 @@ async function renderAdminContent() {
         {v:"client_manager", l:"Клиентский менеджер"},
         {v:"operations",     l:"Операционный менеджер"},
         {v:"kitchen",        l:"Кухня"},
+        {v:"owner",          l:"Владелец"},
         {v:"other",          l:"Другой"},
       ];
       root.innerHTML = (data.items || []).map(u => {
