@@ -168,6 +168,7 @@ function canCreateFoodMenu() { return !!roleCaps().canCreateFoodMenu; }
 function canEditFoodMenuDraft() { return !!roleCaps().canEditFoodMenuDraft; }
 function canPublishFoodMenu() { return !!roleCaps().canPublishFoodMenu; }
 function canEditFoodDeadline() { return !!roleCaps().canEditFoodDeadline; }
+function canDeleteFoodMenu() { return !!roleCaps().canDeleteFoodMenu; }
 function canUseFoodMenuOcr() {
   return Boolean(
     state.me?.foodMenuOcrEnabled ||
@@ -6113,6 +6114,7 @@ function _renderFoodMenuList(root) {
             ${canPublish ? `<button class="primary btn-sm" data-publish-menu="${m.id}">Опубликовать</button>` : ""}
             ${canClose ? `<button class="secondary btn-sm" data-close-menu="${m.id}">Закрыть</button>` : ""}
             <button class="secondary btn-sm" data-edit-deadline="${m.id}">Изменить дедлайн</button>
+            ${canDeleteFoodMenu() ? `<button class="secondary danger btn-sm" data-delete-menu="${m.id}" data-delete-menu-title="${escapeAttr(m.title || dateStr)}" data-delete-menu-date="${escapeAttr(dateStr)}" data-delete-menu-published="${m.status === 'published' ? '1' : '0'}">Удалить</button>` : ""}
           </div>
           <div id="fmDlForm-${m.id}" style="display:none">${_deadlineEditFormHtml(m.id, m.deadline_at)}</div>
         </div>`;
@@ -6169,6 +6171,30 @@ function _renderFoodMenuList(root) {
   });
   root.querySelectorAll("[data-dl-quick]").forEach(btn => {
     btn.addEventListener("click", () => _applyDeadlineQuick(root, parseInt(btn.dataset.mid), btn.dataset.dlQuick));
+  });
+  root.querySelectorAll("[data-delete-menu]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const menuId = parseInt(btn.dataset.deleteMenu);
+      const title = btn.dataset.deleteMenuTitle || "";
+      const date = btn.dataset.deleteMenuDate || "";
+      const isPublished = btn.dataset.deleteMenuPublished === "1";
+      _confirmFoodMenuDelete(title, date, isPublished, async () => {
+        btn.disabled = true;
+        const result = await _doDeleteFoodMenu(menuId);
+        if (!result.ok) {
+          btn.disabled = false;
+          if (result.error === "has_orders") {
+            setNotice(result.message || "Нельзя удалить меню: по нему уже есть заказы.", "error");
+          } else {
+            setNotice(result.error || "Ошибка удаления меню", "error");
+          }
+          return;
+        }
+        setNotice("Меню удалено", "success");
+        state.foodMenuData = null;
+        loadFoodMenus(root);
+      });
+    });
   });
 }
 
@@ -7504,6 +7530,7 @@ function _renderKitchenEditorList(root) {
           <div style="display:flex;gap:6px;flex-shrink:0;align-items:center;flex-wrap:wrap">
             <button class="secondary btn-sm" data-ke-open="${m.id}">Открыть</button>
             ${canPub && canPublishFoodMenu() ? `<button class="primary btn-sm" data-ke-publish="${m.id}">Опубликовать</button>` : ""}
+            ${canDeleteFoodMenu() ? `<button class="secondary danger btn-sm" data-ke-delete="${m.id}" data-ke-delete-title="${escapeAttr(m.title || dateStr)}" data-ke-delete-date="${escapeAttr(dateStr)}" data-ke-delete-published="${m.status === 'published' ? '1' : '0'}">Удалить</button>` : ""}
           </div>
         </div>`;
       }).join("")
@@ -7537,6 +7564,32 @@ function _renderKitchenEditorList(root) {
   });
   root.querySelectorAll("[data-ke-publish]").forEach(btn => {
     btn.addEventListener("click", () => _kitchenPublishMenu(root, parseInt(btn.dataset.kePublish)));
+  });
+  root.querySelectorAll("[data-ke-delete]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const menuId = parseInt(btn.dataset.keDelete);
+      const title = btn.dataset.keDeleteTitle || "";
+      const date = btn.dataset.keDeleteDate || "";
+      const isPublished = btn.dataset.keDeletePublished === "1";
+      _confirmFoodMenuDelete(title, date, isPublished, async () => {
+        btn.disabled = true;
+        const result = await _doDeleteFoodMenu(menuId);
+        if (!result.ok) {
+          btn.disabled = false;
+          if (result.error === "has_orders") {
+            setNotice(result.message || "Нельзя удалить меню: по нему уже есть заказы.", "error");
+          } else {
+            setNotice(result.error || "Ошибка удаления", "error");
+          }
+          return;
+        }
+        setNotice("Меню удалено", "success");
+        state.kitchenEditorData = null;
+        state.kitchenMenus = null;
+        loadKitchenEditor(root);
+        loadKitchenMenus();
+      });
+    });
   });
 }
 
@@ -7617,6 +7670,8 @@ function _renderKitchenEditorDetail(root, menu) {
 
   const publishBtn = (menu.status === "draft" && canPublishFoodMenu())
     ? `<button class="primary btn-sm" id="keDetailPublishBtn">Опубликовать</button>` : "";
+  const deleteMenuBtn = canDeleteFoodMenu()
+    ? `<button class="secondary danger btn-sm" id="keDetailDeleteBtn">Удалить меню</button>` : "";
   const statusNote = menu.status === "published"
     ? `<div style="color:#1a7a3a;font-size:13px;font-weight:600;margin-top:4px">✓ Меню опубликовано — родители могут делать заказы</div>`
     : `<div style="color:#888;font-size:12px;margin-top:4px">Черновик — не виден родителям до публикации</div>`;
@@ -7647,6 +7702,7 @@ function _renderKitchenEditorDetail(root, menu) {
       ${itemsWarning}
       <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
         ${publishBtn}
+        ${deleteMenuBtn}
       </div>
     </div>
     <div style="padding:0 16px">${catHtml}</div>
@@ -7685,6 +7741,28 @@ function _renderKitchenEditorDetail(root, menu) {
 
   root.querySelector("#keBackBtn")?.addEventListener("click", () => { state.kitchenEditorSelected = null; state.kitchenEditorData = null; loadKitchenEditor(root); });
   root.querySelector("#keDetailPublishBtn")?.addEventListener("click", () => _kitchenPublishMenu(root, menu.id));
+  root.querySelector("#keDetailDeleteBtn")?.addEventListener("click", () => {
+    const title = menu.title || _formatMenuDate(menu.menu_date);
+    const dateStr = _formatMenuDate(menu.menu_date);
+    const isPublished = menu.status === "published";
+    _confirmFoodMenuDelete(title, dateStr, isPublished, async () => {
+      const result = await _doDeleteFoodMenu(menu.id);
+      if (!result.ok) {
+        if (result.error === "has_orders") {
+          setNotice(result.message || "Нельзя удалить меню: по нему уже есть заказы.", "error");
+        } else {
+          setNotice(result.error || "Ошибка удаления", "error");
+        }
+        return;
+      }
+      setNotice("Меню удалено", "success");
+      state.kitchenEditorData = null;
+      state.kitchenEditorSelected = null;
+      state.kitchenMenus = null;
+      loadKitchenEditor(root);
+      loadKitchenMenus();
+    });
+  });
   root.querySelectorAll("[data-ke-hide]").forEach(btn => btn.addEventListener("click", () => _kitchenHideItem(root, parseInt(btn.dataset.keHide), menu.id)));
   root.querySelectorAll("[data-ke-restore]").forEach(btn => btn.addEventListener("click", () => _kitchenRestoreItem(root, parseInt(btn.dataset.keRestore), menu.id)));
   root.querySelector("#keAddItemBtn")?.addEventListener("click", () => _kitchenAddFoodItem(root, menu.id));
@@ -7862,6 +7940,38 @@ async function _kitchenUploadOcr(root, menuId) {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+// Shared helpers for food menu deletion (used by kitchen editor and admin panel)
+async function _doDeleteFoodMenu(menuId) {
+  try {
+    return await apiPost(`/api/food/menus/${menuId}/delete`, {});
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+function _confirmFoodMenuDelete(menuTitle, menuDate, isPublished, onConfirm) {
+  const warningExtra = isPublished
+    ? `<div class="food-delete-dialog-warn">Меню уже опубликовано. Удалить можно только если по нему ещё нет заказов.</div>`
+    : `<div class="food-delete-dialog-warn">Это действие уберёт меню из списка и оно не будет доступно для заказов.</div>`;
+  const overlay = document.createElement("div");
+  overlay.className = "food-delete-overlay";
+  overlay.innerHTML = `
+    <div class="food-delete-dialog">
+      <div class="food-delete-dialog-title">Удалить меню?</div>
+      <div class="food-delete-dialog-name">${escapeHtml(menuTitle)}</div>
+      <div class="food-delete-dialog-date">${escapeHtml(menuDate)}</div>
+      ${warningExtra}
+      <div class="food-delete-dialog-btns">
+        <button class="secondary food-delete-cancel-btn">Отмена</button>
+        <button class="food-delete-confirm-btn" style="background:#c0392b">Удалить меню</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector(".food-delete-cancel-btn").addEventListener("click", () => overlay.remove());
+  overlay.querySelector(".food-delete-confirm-btn").addEventListener("click", () => { overlay.remove(); onConfirm(); });
+  overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
 }
 
 function _renderFoodReportResult(el, data, startDate, endDate) {

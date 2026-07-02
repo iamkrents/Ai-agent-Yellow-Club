@@ -612,6 +612,8 @@ class Storage:
         except Exception:
             pass
         self._ensure_column(conn, "food_menus", "location_code", "location_code TEXT")
+        self._ensure_column(conn, "food_menus", "deleted_at", "deleted_at TEXT")
+        self._ensure_column(conn, "food_menus", "deleted_by", "deleted_by INTEGER")
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS food_reminder_log (
@@ -940,11 +942,31 @@ class Storage:
                 SELECT m.*, COUNT(i.id) AS items_count
                 FROM food_menus m
                 LEFT JOIN food_items i ON i.menu_id = m.id AND i.is_available = 1
-                WHERE m.status != 'archived'
+                WHERE m.status NOT IN ('archived', 'deleted')
                 GROUP BY m.id
                 ORDER BY m.menu_date ASC, m.id ASC
             """).fetchall()
         return [dict(r) for r in rows]
+
+    def count_food_menu_orders(self, menu_id: int) -> dict[str, int]:
+        mid = int(menu_id)
+        with self._connect() as conn:
+            child_count = conn.execute(
+                "SELECT COUNT(*) FROM food_orders WHERE menu_id=? AND status NOT IN ('skipped','cancelled')", (mid,)
+            ).fetchone()[0]
+            staff_count = conn.execute(
+                "SELECT COUNT(*) FROM food_staff_orders WHERE menu_id=? AND status NOT IN ('skipped','cancelled')", (mid,)
+            ).fetchone()[0]
+        return {"child": child_count, "staff": staff_count, "total": child_count + staff_count}
+
+    def soft_delete_food_menu(self, menu_id: int, deleted_by: int) -> Optional[dict[str, Any]]:
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE food_menus SET status='deleted', deleted_at=?, deleted_by=?, updated_at=? WHERE id=?",
+                (now, deleted_by, now, int(menu_id)),
+            )
+        return self.get_food_menu(menu_id)
 
     def get_food_menu(self, menu_id: int) -> Optional[dict[str, Any]]:
         with self._connect() as conn:

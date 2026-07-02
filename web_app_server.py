@@ -79,6 +79,7 @@ FULL_ADMIN_ROLES = {"owner", "operations"}
 KITCHEN_SUMMARY_ROLES = {"kitchen", "restaurant", "owner", "methodist", "operations"}
 FOOD_PRICE_ROLES = {"kitchen", "restaurant", "owner", "methodist", "operations"}
 FOOD_MENU_EDIT_ROLES = {"kitchen", "restaurant", "owner", "methodist", "operations"}
+FOOD_MENU_DELETE_ROLES = {"kitchen", "restaurant", "owner", "admin", "operations"}
 ADMIN_TABS_BY_ROLE = {
     "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
     "operations": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
@@ -1112,6 +1113,7 @@ class MiniAppContext:
             "canEditFoodMenuDraft": food_enabled and role in FOOD_MENU_EDIT_ROLES,
             "canPublishFoodMenu": food_enabled and role in FOOD_MENU_EDIT_ROLES,
             "canEditFoodDeadline": food_enabled and role in ADMIN_ROLES,
+            "canDeleteFoodMenu": food_enabled and role in FOOD_MENU_DELETE_ROLES,
             "foodMenuOcrEnabled": bool(getattr(self.settings, "food_menu_ocr_enabled", False)) and role in FOOD_MENU_EDIT_ROLES,
         }
 
@@ -2064,6 +2066,53 @@ class MiniAppContext:
         if not menu:
             return {"ok": False, "error": "Меню не найдено"}
         return {"ok": True, "menu": menu}
+
+    def food_delete_menu(self, auth: dict[str, Any], menu_id: str) -> dict[str, Any]:
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        user_id = int(auth["user_id"])
+        role = self._role_for_user(user_id)
+        if role not in FOOD_MENU_DELETE_ROLES:
+            return {"ok": False, "error": "Нет прав для удаления меню."}
+        try:
+            mid = int(menu_id)
+        except (ValueError, TypeError):
+            return {"ok": False, "error": "Неверный menu_id"}
+        menu = self.storage.get_food_menu(mid)
+        if not menu:
+            return {"ok": False, "error": "Меню не найдено или уже удалено."}
+        if menu.get("status") == "deleted":
+            return {"ok": False, "error": "Меню уже удалено."}
+        counts = self.storage.count_food_menu_orders(mid)
+        if counts["total"] > 0:
+            log.warning(
+                "food_menu_delete_blocked user_id=%s role=%s menu_id=%s menu_date=%s child=%s staff=%s",
+                user_id, role, mid, menu.get("menu_date"), counts["child"], counts["staff"],
+            )
+            return {
+                "ok": False,
+                "error": "has_orders",
+                "message": (
+                    f"Нельзя удалить меню: по нему уже есть заказы — "
+                    f"детей: {counts['child']}, сотрудников: {counts['staff']}. "
+                    "Удалите заказы вручную или обратитесь к администратору."
+                ),
+                "child_orders": counts["child"],
+                "staff_orders": counts["staff"],
+            }
+        status_before = menu.get("status", "draft")
+        items_count = len(menu.get("items") or [])
+        self.storage.soft_delete_food_menu(mid, user_id)
+        log.info(
+            "food_menu_deleted admin_user_id=%s role=%s menu_id=%s menu_date=%s status_before=%s items=%s deleted_mode=soft",
+            user_id, role, mid, menu.get("menu_date"), status_before, items_count,
+        )
+        return {
+            "ok": True,
+            "deleted_menu_id": mid,
+            "menu_date": menu.get("menu_date"),
+            "deleted_mode": "soft",
+        }
 
     def food_update_deadline(self, auth: dict[str, Any], menu_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
@@ -5971,6 +6020,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.food_publish_menu(auth, _mparts[0]))
                 if len(_mparts) == 2 and _mparts[1] == "close":
                     return self._send_json(CTX.food_close_menu(auth, _mparts[0]))
+                if len(_mparts) == 2 and _mparts[1] == "delete":
+                    return self._send_json(CTX.food_delete_menu(auth, _mparts[0]))
                 if len(_mparts) == 2 and _mparts[1] == "items":
                     return self._send_json(CTX.food_add_item(auth, _mparts[0], body))
                 if len(_mparts) == 2 and _mparts[1] == "remind-missing":
