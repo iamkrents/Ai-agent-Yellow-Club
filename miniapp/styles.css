@@ -81,8 +81,9 @@ a.button-link { display: block; text-align: center; text-decoration: none; borde
 }
 .hidden { display: none !important; }
 .tabs { grid-template-columns: repeat(4, 1fr); }
-.subtabs { display: flex; gap: 8px; overflow-x: auto; margin: 14px 0; padding-bottom: 4px; }
-.subtab { white-space: nowrap; background: #fff; border: 1px solid var(--line); box-shadow: none; padding: 9px 12px; }
+.subtabs { display: flex; gap: 8px; overflow-x: auto; margin: 14px 0; padding: 4px 0 8px; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.subtabs::-webkit-scrollbar { display: none; }
+.subtab { white-space: nowrap; background: #fff; border: 1px solid var(--line); box-shadow: none; padding: 9px 12px; flex-shrink: 0; min-height: 44px; display: flex; align-items: center; }
 .subtab.active { background: var(--ink); color: #fff; }
 .admin-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin: 12px 0; }
 .stat-card { background: #fff; border: 1px solid var(--line); border-radius: 18px; padding: 14px; box-shadow: 0 3px 16px rgba(26,38,66,.05); }
@@ -6086,7 +6087,8 @@ body.is-telegram-webapp .app-shell {
 /* v6.8.2 food menu admin */
 .food-menu-panel-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .food-menu-panel-head h3 { margin: 0; font-size: 1.05rem; }
-.food-menu-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.food-menu-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; width: 100%; }
+.food-menu-actions button { flex: 1 1 auto; min-width: 120px; min-height: 44px; }
 .food-menu-create-form { background: var(--color-surface, #f5f5f5); border: 1px solid var(--border, #e0e0e0); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
 .food-menu-create-form h4 { margin: 0 0 10px; font-size: 0.95rem; }
 .food-menu-form-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
@@ -6096,7 +6098,9 @@ body.is-telegram-webapp .app-shell {
 .food-menu-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .food-menu-card-title { font-weight: 700; font-size: 1rem; }
 .food-menu-card-meta { font-size: 13px; color: var(--color-text-secondary, #666); margin-top: 2px; }
-.food-menu-card-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.food-menu-card-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; width: 100%; }
+.food-menu-card-actions button, .food-menu-card-actions .btn-sm { flex: 1 1 auto; min-width: 90px; min-height: 44px; }
+.btn-sm { padding: 8px 12px; font-size: 13px; min-height: 44px; }
 .food-menu-status { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; vertical-align: middle; }
 .food-menu-status--draft { background: #f0f0f0; color: #555; border: 1px solid #ddd; }
 .food-menu-status--published { background: #e8f5e9; color: #1b5e20; border: 1px solid #a5d6a7; }
@@ -6411,7 +6415,7 @@ body { -webkit-overflow-scrolling: touch; }
 .kitchen-menu-selector { padding: 0 16px 12px; }
 .kitchen-menu-selector select { width: 100%; padding: 10px 12px; border: 1.5px solid var(--border-color, #e0e0e0); border-radius: 10px; font-size: 15px; background: var(--bg-card, #fff); color: var(--color-text, #222); }
 .kitchen-panel-actions { display: flex; gap: 8px; padding: 0 16px 12px; flex-wrap: wrap; }
-.kitchen-panel-actions button { flex: 1; min-width: 120px; padding: 10px 14px; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; border: 1.5px solid var(--border-color, #e0e0e0); background: var(--bg-card, #fff); color: var(--color-text, #222); transition: background 0.15s; }
+.kitchen-panel-actions button { flex: 1 1 auto; min-width: 90px; min-height: 44px; padding: 10px 14px; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; border: 1.5px solid var(--border-color, #e0e0e0); background: var(--bg-card, #fff); color: var(--color-text, #222); transition: background 0.15s; }
 .kitchen-panel-actions button:active { background: var(--bg-secondary, #f0f0f0); }
 .kitchen-location-block { margin: 12px 16px 0; background: var(--bg-card, #fff); border-radius: 12px; border: 1.5px solid var(--border-color, #e0e0e0); overflow: hidden; }
 .kitchen-location-title { font-size: 16px; font-weight: 700; padding: 12px 16px 8px; border-bottom: 1px solid var(--border-color, #e0e0e0); background: var(--bg-secondary, #f5f5f5); margin: 0; }

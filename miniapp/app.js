@@ -8701,7 +8701,20 @@ function initTabs() {
     });
   });
 }
+function setupKeyboardDismiss() {
+  const INTERACTIVE = 'input, textarea, select, button, a, label, [role="button"], [contenteditable]';
+  document.addEventListener("touchstart", (e) => {
+    const active = document.activeElement;
+    if (!active) return;
+    const tag = (active.tagName || "").toLowerCase();
+    if (!["input", "textarea", "select"].includes(tag) && active.getAttribute("contenteditable") !== "true") return;
+    if (e.target.closest(INTERACTIVE)) return;
+    active.blur();
+  }, { passive: true });
+}
+
 async function boot() {
+  setupKeyboardDismiss();
   initTabs();
   $("refreshLessons").addEventListener("click", loadLessons);
   $("refreshTasks").addEventListener("click", loadTasks);
