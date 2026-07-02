@@ -6303,7 +6303,8 @@ details > summary:focus {
 .food-remind-result--error { background: #fdecea; color: #c0392b; }
 .food-remind-no-parent { margin-top: 8px; padding: 8px 12px; background: #fff3cd; color: #856404; border-radius: 8px; font-size: 13px; }
 .food-remind-result--info { background: var(--bg-secondary, #f5f5f5); color: var(--color-text, #222); }
-.food-notify-block { display: flex; flex-direction: column; gap: 0; }
+.food-notify-block { display: flex; flex-direction: column; gap: 0; width: 100%; box-sizing: border-box; margin-bottom: 12px; }
+.food-notify-block > button { width: 100%; }
 
 /* v7.0.1 — food data status block in debug panel */
 .food-debug-data-status { background: var(--bg-secondary, #f5f5f5); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
@@ -6396,7 +6397,8 @@ body { -webkit-overflow-scrolling: touch; }
 .food-menu-dl-status--active { color: #1a5fa8; font-weight: 600; }
 .food-menu-dl-status--passed { color: #c0392b; font-weight: 600; }
 .food-menu-dl-status--none { color: var(--color-text-secondary, #888); }
-.food-menu-deadline-block { margin: 6px 0 10px; padding: 10px 12px; background: var(--bg-secondary, #f5f5f5); border-radius: 8px; }
+.food-menu-deadline-block { margin: 6px 0 10px; padding: 10px 12px; background: var(--bg-secondary, #f5f5f5); border-radius: 8px; width: 100%; box-sizing: border-box; }
+.food-menu-deadline-block > button { display: block; width: 100%; margin-top: 8px; }
 .food-deadline-form { padding: 8px 0 2px; }
 .food-deadline-form-title { font-weight: 600; font-size: 14px; margin-bottom: 8px; }
 .food-deadline-row { display: flex; gap: 10px; flex-wrap: wrap; }

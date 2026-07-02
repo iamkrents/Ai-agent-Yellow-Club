@@ -145,7 +145,8 @@ const state = {
 
 function $(id) { return document.getElementById(id); }
 const ROLE_LABELS = {
-  owner: "Админ",
+  owner: "Владелец",
+  admin: "Администратор",
   teacher: "Преподаватель",
   methodist: "Старший преподаватель",
   intern: "Стажер",
@@ -4617,7 +4618,8 @@ async function loadMe() {
   setupRoleUi();
   const roleText = state.me.roleLabel || roleLabel(state.me.role);
   const testText = state.me.testMode?.enabled ? " · тестовая роль" : "";
-  setNotice(`${state.me.fullName || "Сотрудник"}: ${roleText}${testText}${data.me.devMode ? " · dev" : ""}`, "ok");
+  const displayName = state.me.resolvedDisplayName || state.me.mkTeacherName || state.me.fullName || "Сотрудник";
+  setNotice(`${displayName}: ${roleText}${testText}${data.me.devMode ? " · dev" : ""}`, "ok");
 }
 async function loadLessons() {
   if (!canUseLessons()) {
@@ -7196,16 +7198,16 @@ async function renderStaffFoodLunch(root) {
                 btn.disabled = true;
                 try {
                   const d2 = await apiPost("/api/food/staff/orders", { menu_id: menuId, items, location_code: locCode });
-                  if (!d2.ok) setNotice(d2.error || "Ошибка", "error");
-                  else { setNotice("Выбор сохранён.", "ok"); renderStaffFoodLunch(root); }
-                } catch (e2) { setNotice(e2.message, "error"); }
+                  if (!d2.ok) setNotice(d2.error || "Ошибка при сохранении выбора", "error");
+                  else { setNotice("Выбор сохранён.", "ok"); renderStaffFoodLunch(root).catch(err => console.warn("[staff-lunch] reload:", err.message)); }
+                } catch (e2) { setNotice("Не удалось сохранить выбор. Попробуйте ещё раз.", "error"); }
                 finally { btn.disabled = false; }
               });
             } else {
-              setNotice(data.error || "Ошибка", "error");
+              setNotice(data.error || "Ошибка при сохранении выбора", "error");
             }
-          } else { setNotice("Выбор сохранён.", "ok"); renderStaffFoodLunch(root); }
-        } catch (e) { setNotice(e.message, "error"); }
+          } else { setNotice("Выбор сохранён.", "ok"); renderStaffFoodLunch(root).catch(err => console.warn("[staff-lunch] reload:", err.message)); }
+        } catch (e) { setNotice("Не удалось сохранить выбор. Попробуйте ещё раз.", "error"); }
         finally { btn.disabled = false; }
       });
     });
@@ -7222,15 +7224,15 @@ async function renderStaffFoodLunch(root) {
                 try {
                   const d2 = await apiPost("/api/food/staff/orders/skip", { menu_id: menuId, location_code: locCode });
                   if (!d2.ok) setNotice(d2.error || "Ошибка", "error");
-                  else { setNotice("Отмечено: без питания.", "ok"); renderStaffFoodLunch(root); }
-                } catch (e2) { setNotice(e2.message, "error"); }
+                  else { setNotice("Отмечено: без питания.", "ok"); renderStaffFoodLunch(root).catch(err => console.warn("[staff-lunch] reload:", err.message)); }
+                } catch (e2) { setNotice("Не удалось сохранить выбор. Попробуйте ещё раз.", "error"); }
                 finally { btn.disabled = false; }
               });
             } else {
               setNotice(data.error || "Ошибка", "error");
             }
-          } else { setNotice("Отмечено: без питания.", "ok"); renderStaffFoodLunch(root); }
-        } catch (e) { setNotice(e.message, "error"); }
+          } else { setNotice("Отмечено: без питания.", "ok"); renderStaffFoodLunch(root).catch(err => console.warn("[staff-lunch] reload:", err.message)); }
+        } catch (e) { setNotice("Не удалось сохранить выбор. Попробуйте ещё раз.", "error"); }
         finally { btn.disabled = false; }
       });
     });
@@ -7259,7 +7261,9 @@ async function renderStaffFoodLunch(root) {
       });
     });
   } catch (e) {
-    root.innerHTML = `<div class="food-debug-card"><div class="food-debug-error">${escapeHtml(e.message)}</div></div>`;
+    console.error("[staff-lunch] render error:", e.message);
+    root.innerHTML = `<div class="food-debug-card"><div class="food-debug-error">Не удалось загрузить меню. Проверьте соединение и обновите страницу.</div><button class="secondary" id="staffLunchRetry" style="margin-top:8px">Обновить</button></div>`;
+    root.querySelector("#staffLunchRetry")?.addEventListener("click", () => renderStaffFoodLunch(root));
   }
 }
 

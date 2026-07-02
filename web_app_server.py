@@ -47,7 +47,8 @@ log = logging.getLogger("yellow_club_miniapp")
 WEB_DIR = BASE_DIR / "miniapp"
 
 ROLE_LABELS = {
-    "owner": "Админ",
+    "owner": "Владелец",
+    "admin": "Администратор",
     "teacher": "Преподаватель",
     "methodist": "Старший преподаватель",
     "intern": "Стажер",
@@ -1140,6 +1141,20 @@ class MiniAppContext:
         can_test = self._can_use_role_test(user_id)
         test_mode = self.storage.get_staff_test_mode(user_id) if can_test else {"enabled": False, "role": "", "mk_teacher_id": ""}
         capabilities = self._capabilities_for_user(user_id)
+        _mk_name = str(staff.get("mk_teacher_name") or "").strip()
+        _full_name = str(staff.get("full_name") or "").strip()
+        _tg_name = str((auth.get("user") or {}).get("first_name") or "").strip()
+        _username = str(staff.get("username") or (auth.get("user") or {}).get("username") or "").strip()
+        if _mk_name:
+            _resolved_display_name = _mk_name
+        elif _full_name:
+            _resolved_display_name = _full_name
+        elif _tg_name:
+            _resolved_display_name = _tg_name
+        elif _username:
+            _resolved_display_name = _username
+        else:
+            _resolved_display_name = f"Сотрудник #{user_id}"
         data = {
             "userId": user_id,
             "telegramUser": auth.get("user") or {},
@@ -1147,10 +1162,11 @@ class MiniAppContext:
             "roleLabel": ROLE_LABELS.get(role, role or "роль"),
             "realRole": real_role,
             "realRoleLabel": ROLE_LABELS.get(real_role, real_role or "роль"),
-            "fullName": staff.get("full_name") or (auth.get("user") or {}).get("first_name") or "Сотрудник",
-            "username": staff.get("username") or (auth.get("user") or {}).get("username") or "",
+            "fullName": _full_name or _tg_name or "Сотрудник",
+            "username": _username,
+            "resolvedDisplayName": _resolved_display_name,
             "mkTeacherId": self._mk_teacher_id_for_user(user_id),
-            "mkTeacherName": staff.get("mk_teacher_name") or "",
+            "mkTeacherName": _mk_name,
             "profile": profile,
             "isSeniorTeacher": role == "methodist" or user_id in set(int(x) for x in (self.settings.senior_teacher_ids or []) if x),
             "devMode": bool(auth.get("dev")),
