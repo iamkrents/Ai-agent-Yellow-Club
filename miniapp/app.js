@@ -135,6 +135,8 @@ const state = {
   kitchenSummaryData: null,
   kitchenSummaryBusy: false,
   kitchenCopyNotice: "",
+  kitchenEditorData: null,
+  kitchenEditorSelected: null,
 };
 
 function $(id) { return document.getElementById(id); }
@@ -162,6 +164,10 @@ function canAskAgent() { return roleCaps().canAskAgent !== false; }
 function canUseFoodKitchenSummary() { return !!roleCaps().canUseFoodKitchenSummary; }
 function canSeeFoodPrices() { return !!roleCaps().canSeeFoodPrices; }
 function canSeeFoodCostReport() { return !!roleCaps().canSeeFoodCostReport; }
+function canCreateFoodMenu() { return !!roleCaps().canCreateFoodMenu; }
+function canEditFoodMenuDraft() { return !!roleCaps().canEditFoodMenuDraft; }
+function canPublishFoodMenu() { return !!roleCaps().canPublishFoodMenu; }
+function canEditFoodDeadline() { return !!roleCaps().canEditFoodDeadline; }
 function canUseFoodMenuOcr() {
   return Boolean(
     state.me?.foodMenuOcrEnabled ||
@@ -1083,13 +1089,14 @@ function setupRoleUi() {
     $("roleBadge").textContent = "Родитель";
   }
 
-  // Kitchen role: show only kitchen tab
+  // Kitchen role: show kitchen + kitchen-editor tabs
   if (role === "kitchen") {
     document.querySelectorAll(".tab[data-tab]").forEach(t => {
-      t.classList.toggle("hidden", t.dataset.tab !== "kitchen");
+      t.classList.toggle("hidden", t.dataset.tab !== "kitchen" && t.dataset.tab !== "kitchen-editor");
     });
     document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.add("hidden"));
     document.querySelectorAll(".kitchen-only").forEach(el => el.classList.remove("hidden"));
+    document.querySelectorAll(".kitchen-editor-only").forEach(el => el.classList.remove("hidden"));
     $("appTitle").textContent = "Кухня · Yellow Club";
     $("roleBadge").textContent = "Кухня";
   }
@@ -1097,10 +1104,11 @@ function setupRoleUi() {
   // Restaurant role: backward-compatible alias — shows kitchen screen
   if (role === "restaurant") {
     document.querySelectorAll(".tab[data-tab]").forEach(t => {
-      t.classList.toggle("hidden", t.dataset.tab !== "kitchen");
+      t.classList.toggle("hidden", t.dataset.tab !== "kitchen" && t.dataset.tab !== "kitchen-editor");
     });
     document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.add("hidden"));
     document.querySelectorAll(".kitchen-only").forEach(el => el.classList.remove("hidden"));
+    document.querySelectorAll(".kitchen-editor-only").forEach(el => el.classList.remove("hidden"));
     $("appTitle").textContent = "Кухня · Yellow Club";
     $("roleBadge").textContent = "Кухня";
   }
@@ -1152,6 +1160,10 @@ function activateTab(name) {
   if (name === "my-children") { if (state.myChildren === null) loadMyChildren(); else renderMyChildren(); }
   if (name === "food") { if (state.activeMenus === null) loadActiveMenus(); else renderParentFoodMenu(); }
   if (name === "my-lunch") { renderStaffFoodLunch($("myLunchContent")); }
+  if (name === "kitchen-editor") {
+    const root = $("kitchenEditorContent");
+    if (root && !state.kitchenEditorData) loadKitchenEditor(root);
+  }
 }
 
 function renderTestRolePanel() {
@@ -7426,6 +7438,432 @@ async function copyKitchenOrder(withPrices) {
   setTimeout(() => { state.kitchenCopyNotice = ""; renderKitchenPanel(); }, 3000);
 }
 
+// ============================================================
+// Kitchen editor — create / edit food menus (v7.0.20)
+// ============================================================
+
+function _kitchenTomorrow() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function _kitchenDefaultDeadline() {
+  const d = new Date();
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}T20:00`;
+}
+
+async function loadKitchenEditor(root) {
+  if (!root) return;
+  root.innerHTML = `<div class="kitchen-panel-notice">Загрузка меню...</div>`;
+  try {
+    const data = await apiGet("/api/food/menus");
+    state.kitchenEditorData = data.menus || [];
+    state.kitchenEditorSelected = null;
+    _renderKitchenEditorList(root);
+  } catch (e) {
+    root.innerHTML = `<div class="kitchen-panel-notice">Ошибка: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function _renderKitchenEditorList(root) {
+  const menus = state.kitchenEditorData || [];
+  const tomorrow = _kitchenTomorrow();
+  const defaultDeadline = _kitchenDefaultDeadline();
+
+  const createFormHtml = canCreateFoodMenu() ? `
+    <div class="kitchen-editor-create-form" id="kitchenEditorCreateForm" style="display:none">
+      <h4 style="margin:0 0 12px;font-size:16px;font-weight:700">Создать меню</h4>
+      <div class="food-menu-form-row"><label>Дата меню</label><input type="date" id="keDate" value="${tomorrow}" min="${localIsoDate(new Date())}"></div>
+      <div class="food-menu-form-row"><label>Название (необязательно)</label><input type="text" id="keTitle" placeholder="Например: Пятница" maxlength="100"></div>
+      <div class="food-menu-form-row"><label>Филиал</label><select id="keLocation"><option value="">— Общее (все филиалы) —</option><option value="YC1">YC1 · Кульман 1/1</option><option value="YC2">YC2 · Мстиславца 6</option><option value="YC3">YC3</option></select></div>
+      <div class="food-menu-form-row"><label>Дедлайн заказа</label><input type="datetime-local" id="keDeadline" value="${defaultDeadline}"></div>
+      <div class="food-menu-actions" style="margin-top:10px">
+        <button class="primary" id="keCreateBtn">Создать</button>
+        <button class="secondary" id="keCancelBtn">Отмена</button>
+      </div>
+      <div id="keCreateError" style="display:none;color:#c0392b;font-size:13px;margin-top:6px"></div>
+    </div>` : "";
+
+  const menuCardsHtml = menus.length
+    ? menus.map(m => {
+        const dateStr = _formatMenuDate(m.menu_date);
+        const statusBadge = _foodMenuStatusBadge(m.status);
+        const locBadge = m.location_code ? `<span class="food-loc-badge">${escapeHtml(m.location_code)}</span>` : "";
+        const canPub = m.status === "draft";
+        const deadlineHtml = m.deadline_at
+          ? `<div style="font-size:12px;color:#888;margin-top:2px">Дедлайн: ${escapeHtml(_formatDeadline(m.deadline_at))}</div>`
+          : "";
+        return `<div class="kitchen-editor-menu-card">
+          <div style="flex:1 1 auto;min-width:0">
+            <div style="font-size:15px;font-weight:600">${escapeHtml(m.title || dateStr)} ${statusBadge}${locBadge}</div>
+            <div style="font-size:13px;color:#888;margin-top:2px">${escapeHtml(dateStr)} · блюд: ${m.items_count ?? 0}</div>
+            ${deadlineHtml}
+          </div>
+          <div style="display:flex;gap:6px;flex-shrink:0;align-items:center;flex-wrap:wrap">
+            <button class="secondary btn-sm" data-ke-open="${m.id}">Открыть</button>
+            ${canPub && canPublishFoodMenu() ? `<button class="primary btn-sm" data-ke-publish="${m.id}">Опубликовать</button>` : ""}
+          </div>
+        </div>`;
+      }).join("")
+    : `<div class="kitchen-panel-notice">Меню ещё нет. Нажмите «+ Добавить меню».</div>`;
+
+  root.innerHTML = `<div class="kitchen-panel">
+    <div class="kitchen-panel-header">
+      <h2 class="kitchen-panel-title">Добавить меню</h2>
+      <p class="kitchen-panel-subtitle">Создание и подготовка меню питания</p>
+    </div>
+    <div style="padding:0 16px 8px;display:flex;gap:8px">
+      <button type="button" id="keRefreshBtn" class="secondary btn-sm">🔄 Обновить</button>
+      ${canCreateFoodMenu() ? `<button type="button" id="keNewBtn" class="primary btn-sm">+ Добавить меню</button>` : ""}
+    </div>
+    ${createFormHtml}
+    <div id="keMenuList" style="padding:0 16px 16px">${menuCardsHtml}</div>
+  </div>`;
+
+  root.querySelector("#keRefreshBtn")?.addEventListener("click", () => { state.kitchenEditorData = null; loadKitchenEditor(root); });
+  root.querySelector("#keNewBtn")?.addEventListener("click", () => {
+    const f = root.querySelector("#kitchenEditorCreateForm");
+    if (f) f.style.display = f.style.display === "none" ? "" : "none";
+  });
+  root.querySelector("#keCancelBtn")?.addEventListener("click", () => {
+    const f = root.querySelector("#kitchenEditorCreateForm");
+    if (f) f.style.display = "none";
+  });
+  root.querySelector("#keCreateBtn")?.addEventListener("click", () => _kitchenCreateMenu(root));
+  root.querySelectorAll("[data-ke-open]").forEach(btn => {
+    btn.addEventListener("click", () => _kitchenOpenMenuDetail(root, parseInt(btn.dataset.keOpen)));
+  });
+  root.querySelectorAll("[data-ke-publish]").forEach(btn => {
+    btn.addEventListener("click", () => _kitchenPublishMenu(root, parseInt(btn.dataset.kePublish)));
+  });
+}
+
+async function _kitchenCreateMenu(root) {
+  const menuDate = root.querySelector("#keDate")?.value || "";
+  const title = (root.querySelector("#keTitle")?.value || "").trim();
+  const deadline = root.querySelector("#keDeadline")?.value || "";
+  const locationCode = root.querySelector("#keLocation")?.value || "";
+  const errEl = root.querySelector("#keCreateError");
+  if (!menuDate) { if (errEl) { errEl.textContent = "Укажите дату меню"; errEl.style.display = ""; } return; }
+
+  // Check for existing menu on same date
+  const existing = (state.kitchenEditorData || []).find(m => m.menu_date === menuDate);
+  if (existing) {
+    if (existing.status === "published") {
+      if (errEl) { errEl.textContent = `Меню на эту дату уже опубликовано (${_formatMenuDate(menuDate)}). Откройте его в списке.`; errEl.style.display = ""; }
+    } else {
+      if (errEl) { errEl.textContent = `Меню на эту дату уже существует (черновик). Откройте его в списке.`; errEl.style.display = ""; }
+    }
+    return;
+  }
+  if (errEl) errEl.style.display = "none";
+  try {
+    const data = await apiPost("/api/food/menus", { menu_date: menuDate, title: title || null, deadline_at: deadline || null, location_code: locationCode || null });
+    if (!data.ok) { if (errEl) { errEl.textContent = data.error || "Ошибка"; errEl.style.display = ""; } return; }
+    state.kitchenEditorData = null;
+    await _kitchenOpenMenuDetail(root, data.menu.id);
+  } catch (e) {
+    if (errEl) { errEl.textContent = e.message; errEl.style.display = ""; }
+  }
+}
+
+async function _kitchenOpenMenuDetail(root, menuId) {
+  root.innerHTML = `<div class="kitchen-panel-notice">Загрузка...</div>`;
+  try {
+    const resp = await fetch(`/api/food/menus/${menuId}?` + new URLSearchParams({ initData }), { headers: { "X-Init-Data": initData } });
+    const data = await resp.json();
+    if (!data.ok) { root.innerHTML = `<div class="kitchen-panel-notice">${escapeHtml(data.error || "Ошибка")}</div>`; return; }
+    state.kitchenEditorSelected = data.menu;
+    _renderKitchenEditorDetail(root, data.menu);
+  } catch (e) {
+    root.innerHTML = `<div class="kitchen-panel-notice">Ошибка: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function _renderKitchenEditorDetail(root, menu) {
+  if (!menu) { state.kitchenEditorSelected = null; loadKitchenEditor(root); return; }
+  const dateStr = _formatMenuDate(menu.menu_date);
+  const items = Array.isArray(menu.items) ? menu.items : [];
+  const catOrder = [...FOOD_CATEGORIES];
+  const cats = {};
+  items.forEach(item => {
+    const cat = _normalizeFoodCategory(item.name, item.category || "Другое");
+    cats[cat] = cats[cat] || [];
+    cats[cat].push(item);
+  });
+  const allCats = [...new Set([...catOrder, ...Object.keys(cats)])].filter(c => cats[c] && cats[c].length);
+
+  const catHtml = allCats.length
+    ? allCats.map(cat => {
+        const catItems = cats[cat] || [];
+        const itemsHtml = catItems.map(item => `
+          <div class="food-item-row${item.is_available ? "" : " food-item-hidden"}" data-item-id="${item.id}">
+            <span class="food-item-name">${escapeHtml(item.name || "")}</span>
+            ${item.weight ? `<span class="food-item-weight">${escapeHtml(item.weight)}</span>` : ""}
+            ${item.price ? `<span class="food-item-price">${Number(item.price).toFixed(2)}&nbsp;BYN</span>` : ""}
+            <div class="food-item-actions">
+              ${item.is_available
+                ? `<button class="secondary btn-sm" data-ke-hide="${item.id}">Скрыть</button>`
+                : `<button class="secondary btn-sm" data-ke-restore="${item.id}">Вернуть</button>`}
+            </div>
+          </div>`).join("");
+        return `<div class="food-category-block"><div class="food-category-label">${escapeHtml(cat)}</div>${itemsHtml}</div>`;
+      }).join("")
+    : `<div style="padding:12px 0;color:#888;font-size:14px">Блюд пока нет. Добавьте через форму ниже или загрузите фото.</div>`;
+
+  const catOptions = FOOD_CATEGORIES.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
+
+  const publishBtn = (menu.status === "draft" && canPublishFoodMenu())
+    ? `<button class="primary btn-sm" id="keDetailPublishBtn">Опубликовать</button>` : "";
+  const statusNote = menu.status === "published"
+    ? `<div style="color:#1a7a3a;font-size:13px;font-weight:600;margin-top:4px">✓ Меню опубликовано — родители могут делать заказы</div>`
+    : `<div style="color:#888;font-size:12px;margin-top:4px">Черновик — не виден родителям до публикации</div>`;
+  const deadlineNote = menu.deadline_at
+    ? `<div style="font-size:12px;color:#888;margin-top:4px">Дедлайн заказа: ${escapeHtml(_formatDeadline(menu.deadline_at))}</div>` : "";
+  const itemsWarning = (!items.length && menu.status === "draft")
+    ? `<div style="color:#c0392b;font-size:13px;margin:8px 0">⚠ Добавьте блюда перед публикацией</div>` : "";
+
+  const ocrSection = canUseFoodMenuOcr() ? `
+    <div class="food-ocr-section" style="margin-top:14px">
+      <h4>Распознать меню по фото</h4>
+      <div class="food-ocr-inputs">
+        <input type="file" id="keOcrInput" accept="image/*" style="font-size:16px;flex:1 1 auto;min-width:0">
+        <button class="secondary" id="keOcrBtn">Распознать фото</button>
+      </div>
+      <div id="keOcrStatus" class="food-ocr-status" style="display:none;margin-top:8px;font-size:13px"></div>
+    </div>` : "";
+
+  root.innerHTML = `<div class="kitchen-panel" style="padding-bottom:32px">
+    <div style="display:flex;align-items:center;gap:10px;padding:14px 16px 8px">
+      <button class="secondary btn-sm" id="keBackBtn">← Назад</button>
+      <span style="font-size:16px;font-weight:700">${escapeHtml(menu.title || dateStr)} ${_foodMenuStatusBadge(menu.status)}</span>
+    </div>
+    <div style="padding:0 16px 10px">
+      <div style="font-size:13px;color:#888">${escapeHtml(dateStr)}</div>
+      ${statusNote}
+      ${deadlineNote}
+      ${itemsWarning}
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+        ${publishBtn}
+      </div>
+    </div>
+    <div style="padding:0 16px">${catHtml}</div>
+    <div class="food-item-add-form" style="margin:14px 16px 0">
+      <h4>Добавить блюдо</h4>
+      <div class="food-menu-form-row"><label>Категория</label><select id="keItemCat">${catOptions}</select></div>
+      <div class="food-item-form-grid">
+        <div class="food-item-form-name"><input type="text" id="keItemName" placeholder="Название блюда" maxlength="200"></div>
+        <input type="text" id="keItemWeight" placeholder="Вес (250/20 г)" style="grid-column:1/-1">
+        <input type="text" id="keItemPrice" placeholder="Стоимость (BYN, необяз.)" style="grid-column:1/-1">
+      </div>
+      <div class="food-menu-actions"><button class="primary" id="keAddItemBtn">Добавить блюдо</button></div>
+      <div id="keAddItemError" style="display:none;color:#c0392b;font-size:13px;margin-top:4px"></div>
+    </div>
+    <div class="food-item-add-form" style="margin:14px 16px 0">
+      <h4>Быстро добавить список</h4>
+      <textarea id="keBulkText" rows="10" placeholder="СУПЫ&#10;Борщ холодный на кефире — 250 г&#10;&#10;ВТОРОЕ&#10;Котлета куриная — 105 г&#10;&#10;НАПИТКИ&#10;Сок яблочный — 0.2 л" style="width:100%;box-sizing:border-box;font-size:16px;min-height:160px;resize:vertical;border:1px solid var(--border,#ccc);border-radius:8px;padding:8px 10px;background:var(--card-bg,#fff);color:var(--color-text,#222)"></textarea>
+      <div class="food-menu-actions" style="margin-top:8px;gap:8px">
+        <button class="secondary" id="keBulkParseBtn">Разобрать</button>
+        <button class="secondary" id="keBulkClearBtn">Очистить</button>
+      </div>
+      <div id="keBulkPreview" style="display:none;margin-top:10px"></div>
+    </div>
+    ${ocrSection}
+  </div>`;
+
+  // Restore draft state
+  const draft = state.foodMenuDrafts[menu.id];
+  const bulkEl = root.querySelector("#keBulkText");
+  if (draft?.bulkText && bulkEl) bulkEl.value = draft.bulkText;
+  if (draft?.ocrStatus) {
+    const ocrStatusEl = root.querySelector("#keOcrStatus");
+    if (ocrStatusEl) { ocrStatusEl.textContent = draft.ocrStatus.message; ocrStatusEl.className = `food-ocr-status food-ocr-status--${draft.ocrStatus.type}`; ocrStatusEl.style.display = ""; }
+  }
+  if (draft?.parsedItems?.length) _kitchenRenderBulkPreview(root, menu.id, draft.parsedItems);
+
+  root.querySelector("#keBackBtn")?.addEventListener("click", () => { state.kitchenEditorSelected = null; state.kitchenEditorData = null; loadKitchenEditor(root); });
+  root.querySelector("#keDetailPublishBtn")?.addEventListener("click", () => _kitchenPublishMenu(root, menu.id));
+  root.querySelectorAll("[data-ke-hide]").forEach(btn => btn.addEventListener("click", () => _kitchenHideItem(root, parseInt(btn.dataset.keHide), menu.id)));
+  root.querySelectorAll("[data-ke-restore]").forEach(btn => btn.addEventListener("click", () => _kitchenRestoreItem(root, parseInt(btn.dataset.keRestore), menu.id)));
+  root.querySelector("#keAddItemBtn")?.addEventListener("click", () => _kitchenAddFoodItem(root, menu.id));
+  root.querySelector("#keBulkParseBtn")?.addEventListener("click", () => _kitchenParseBulkPreview(root, menu.id));
+  root.querySelector("#keBulkClearBtn")?.addEventListener("click", () => {
+    delete state.foodMenuDrafts[menu.id];
+    if (bulkEl) bulkEl.value = "";
+    const preview = root.querySelector("#keBulkPreview");
+    if (preview) { preview.innerHTML = ""; preview.style.display = "none"; }
+    const ocrInput = root.querySelector("#keOcrInput");
+    if (ocrInput) ocrInput.value = "";
+    const ocrStatusEl = root.querySelector("#keOcrStatus");
+    if (ocrStatusEl) { ocrStatusEl.textContent = ""; ocrStatusEl.style.display = "none"; }
+  });
+  root.querySelector("#keBulkText")?.addEventListener("input", e => {
+    if (!state.foodMenuDrafts[menu.id]) state.foodMenuDrafts[menu.id] = {};
+    state.foodMenuDrafts[menu.id].bulkText = e.target.value;
+  });
+  root.querySelector("#keOcrBtn")?.addEventListener("click", () => _kitchenUploadOcr(root, menu.id));
+}
+
+async function _kitchenAddFoodItem(root, menuId) {
+  const category = root.querySelector("#keItemCat")?.value || "Другое";
+  const name = (root.querySelector("#keItemName")?.value || "").trim();
+  const weight = (root.querySelector("#keItemWeight")?.value || "").trim();
+  const priceRaw = (root.querySelector("#keItemPrice")?.value || "").replace(",", ".").replace(/BYN|руб\.?/gi, "").trim();
+  const price = parseFloat(priceRaw) || 0;
+  const errEl = root.querySelector("#keAddItemError");
+  if (!name) { if (errEl) { errEl.textContent = "Укажите название блюда"; errEl.style.display = ""; } return; }
+  try {
+    const data = await apiPost(`/api/food/menus/${menuId}/items`, { category, name, weight: weight || null, price });
+    if (!data.ok) { if (errEl) { errEl.textContent = data.error || "Ошибка"; errEl.style.display = ""; } return; }
+    await _kitchenOpenMenuDetail(root, menuId);
+  } catch (e) {
+    if (errEl) { errEl.textContent = e.message; errEl.style.display = ""; }
+  }
+}
+
+async function _kitchenHideItem(root, itemId, menuId) {
+  try {
+    const data = await apiPost(`/api/food/items/${itemId}/hide`, {});
+    if (!data.ok) { setNotice(data.error || "Ошибка", "error"); return; }
+    await _kitchenOpenMenuDetail(root, menuId);
+  } catch (e) { setNotice(e.message, "error"); }
+}
+
+async function _kitchenRestoreItem(root, itemId, menuId) {
+  try {
+    const data = await apiPost(`/api/food/items/${itemId}/restore`, {});
+    if (!data.ok) { setNotice(data.error || "Ошибка", "error"); return; }
+    await _kitchenOpenMenuDetail(root, menuId);
+  } catch (e) { setNotice(e.message, "error"); }
+}
+
+async function _kitchenPublishMenu(root, menuId) {
+  if (!canPublishFoodMenu()) { setNotice("Нет прав для публикации меню", "error"); return; }
+  try {
+    const data = await apiPost(`/api/food/menus/${menuId}/publish`, {});
+    if (!data.ok) { setNotice(data.error || "Ошибка публикации", "error"); return; }
+    setNotice("Меню опубликовано — родители могут делать заказы", "ok");
+    state.kitchenEditorData = null;
+    // Reload the kitchen menus list (summary tab) so new menu appears there
+    state.kitchenMenus = null;
+    await _kitchenOpenMenuDetail(root, menuId);
+    await loadKitchenMenus();
+  } catch (e) { setNotice(e.message, "error"); }
+}
+
+async function _kitchenAddFoodItemsBulk(root, menuId) {
+  const btn = root.querySelector("#keBulkAddAllBtn");
+  const statusEl = root.querySelector("#keBulkAddStatus");
+  const items = [...root.querySelectorAll(".ke-bulk-item-row")].map(row => {
+    const priceRaw = (row.querySelector(".keBulkPrice")?.value || "").replace(",", ".").replace(/BYN|руб\.?/gi, "").trim();
+    return {
+      category: row.querySelector(".keBulkCat")?.value || "Другое",
+      name: (row.querySelector(".keBulkName")?.value || "").trim(),
+      weight: (row.querySelector(".keBulkWeight")?.value || "").trim() || null,
+      price: parseFloat(priceRaw) || 0,
+    };
+  }).filter(it => it.name.length >= 1);
+  if (!items.length) { if (statusEl) statusEl.textContent = "Нет блюд для добавления."; return; }
+  if (btn) btn.disabled = true;
+  let added = 0;
+  for (const it of items) {
+    try {
+      const data = await apiPost(`/api/food/menus/${menuId}/items`, { category: it.category, name: it.name, weight: it.weight || null, price: it.price || 0 });
+      if (data.ok) added++;
+    } catch (_) { /* continue */ }
+  }
+  if (statusEl) statusEl.textContent = `Добавлено блюд: ${added}`;
+  delete state.foodMenuDrafts[menuId];
+  await _kitchenOpenMenuDetail(root, menuId);
+}
+
+function _kitchenRenderBulkPreview(root, menuId, items) {
+  const preview = root.querySelector("#keBulkPreview");
+  if (!preview) return;
+  if (!items || !items.length) {
+    preview.innerHTML = `<div style="color:#c0392b;font-size:13px">Блюда не найдены. Проверьте формат текста.</div>`;
+    preview.style.display = "";
+    return;
+  }
+  const inStyle = "font-size:16px;border:1px solid var(--border,#ccc);border-radius:6px;padding:4px 8px;background:var(--card-bg,#fff);color:var(--color-text,#222)";
+  const rowsHtml = items.map((it, idx) => `
+    <div class="ke-bulk-item-row" data-idx="${idx}">
+      <select class="keBulkCat" style="${inStyle};flex:0 0 auto;padding:4px 6px">
+        ${FOOD_CATEGORIES.map(c => `<option value="${escapeAttr(c)}"${c === it.category ? " selected" : ""}>${escapeHtml(c)}</option>`).join("")}
+      </select>
+      <input type="text" class="keBulkName" value="${escapeAttr(it.name)}" placeholder="Название" maxlength="200" style="${inStyle};flex:1 1 auto;min-width:0">
+      <input type="text" class="keBulkWeight" value="${escapeAttr(it.weight || "")}" placeholder="Вес" style="${inStyle};width:90px;flex:0 0 auto">
+      <input type="text" class="keBulkPrice" value="${it.internalPrice != null ? escapeAttr(String(it.internalPrice)) : ""}" placeholder="BYN" title="Стоимость (BYN)" style="${inStyle};width:72px;flex:0 0 auto">
+      <button class="secondary btn-sm keBulkDel" style="flex:0 0 auto;padding:4px 8px;font-size:13px">✕</button>
+    </div>`).join("");
+  preview.innerHTML = `
+    <div style="margin:0 0 8px;font-size:13px;color:#888">Найдено блюд: <b>${items.length}</b></div>
+    <div id="keBulkItemsContainer">${rowsHtml}</div>
+    <div style="font-size:12px;color:#888;margin:6px 0">Можно изменить категорию, название, вес и стоимость.</div>
+    <div class="food-menu-actions" style="margin-top:10px">
+      <button class="primary" id="keBulkAddAllBtn">Добавить все блюда</button>
+    </div>
+    <div id="keBulkAddStatus" style="font-size:13px;margin-top:6px"></div>`;
+  preview.style.display = "";
+  preview.querySelectorAll(".keBulkDel").forEach(btn => {
+    btn.addEventListener("click", () => { btn.closest(".ke-bulk-item-row")?.remove(); });
+  });
+  preview.querySelector("#keBulkAddAllBtn")?.addEventListener("click", () => _kitchenAddFoodItemsBulk(root, menuId));
+}
+
+function _kitchenParseBulkPreview(root, menuId) {
+  const text = root.querySelector("#keBulkText")?.value || "";
+  if (!state.foodMenuDrafts[menuId]) state.foodMenuDrafts[menuId] = {};
+  state.foodMenuDrafts[menuId].bulkText = text;
+  const items = parseFoodMenuText(text);
+  state.foodMenuDrafts[menuId].parsedItems = items;
+  _kitchenRenderBulkPreview(root, menuId, items);
+}
+
+async function _kitchenUploadOcr(root, menuId) {
+  const input = root.querySelector("#keOcrInput");
+  const statusEl = root.querySelector("#keOcrStatus");
+  const btn = root.querySelector("#keOcrBtn");
+  if (!input || !statusEl) return;
+  const file = input.files?.[0];
+  if (!file) { statusEl.textContent = "Выберите файл изображения."; statusEl.className = "food-ocr-status food-ocr-status--error"; statusEl.style.display = ""; return; }
+  if (file.size > 5 * 1024 * 1024) { statusEl.textContent = "Файл слишком большой (максимум 5 МБ)."; statusEl.className = "food-ocr-status food-ocr-status--error"; statusEl.style.display = ""; return; }
+  if (btn) btn.disabled = true;
+  statusEl.textContent = "Распознавание..."; statusEl.className = "food-ocr-status"; statusEl.style.display = "";
+  try {
+    const fd = new FormData();
+    appendAuthForm(fd);
+    fd.append("image", file, file.name);
+    const resp = await fetch(`/api/food/menus/${menuId}/ocr-preview`, { method: "POST", body: fd });
+    const data = await resp.json();
+    if (!data.ok) {
+      let errMsg = data.message || data.error || "Ошибка распознавания.";
+      if (data.error === "ocr_language_missing") {
+        const langs = Array.isArray(data.availableLanguages) && data.availableLanguages.length ? " Доступные языки: " + data.availableLanguages.join(", ") + "." : "";
+        errMsg = "В Tesseract не установлен русский язык." + langs;
+      }
+      statusEl.textContent = errMsg; statusEl.className = "food-ocr-status food-ocr-status--error"; return;
+    }
+    const rawText = data.rawText || "";
+    const bulkEl = root.querySelector("#keBulkText");
+    if (bulkEl) bulkEl.value = rawText;
+    const lowQuality = Array.isArray(data.warnings) && data.warnings.some(w => w.code === "ocr_low_quality");
+    const ocrStatusType = lowQuality ? "warn" : "ok";
+    const ocrStatusMsg = lowQuality ? "Текст распознан, но качество низкое. Проверьте фото или исправьте вручную." : "Текст распознан. Проверьте список перед добавлением.";
+    if (!state.foodMenuDrafts[menuId]) state.foodMenuDrafts[menuId] = {};
+    state.foodMenuDrafts[menuId].ocrStatus = { type: ocrStatusType, message: ocrStatusMsg };
+    state.foodMenuDrafts[menuId].bulkText = rawText;
+    statusEl.textContent = ocrStatusMsg; statusEl.className = `food-ocr-status food-ocr-status--${ocrStatusType}`;
+    _kitchenParseBulkPreview(root, menuId);
+  } catch (e) {
+    statusEl.textContent = "Ошибка соединения: " + e.message; statusEl.className = "food-ocr-status food-ocr-status--error";
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 function _renderFoodReportResult(el, data, startDate, endDate) {
   const totals = data.totals || {};
   const byDays = Array.isArray(data.byDays) ? data.byDays : [];
@@ -7760,6 +8198,8 @@ async function reloadCabinetAfterRoleChange() {
   state.kitchenSelectedMenuId = null;
   state.kitchenSummaryData = null;
   state.kitchenCopyNotice = "";
+  state.kitchenEditorData = null;
+  state.kitchenEditorSelected = null;
   renderLessons();
   renderTasks();
   await loadMe();

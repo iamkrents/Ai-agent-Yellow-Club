@@ -6456,3 +6456,7 @@ body { -webkit-overflow-scrolling: touch; }
 .food-delete-dialog-btns .secondary { flex: 1; }
 .food-delete-confirm-btn { flex: 1; padding: 10px; background: #c0392b; color: #fff; border: none; border-radius: 10px; font-size: 15px; font-weight: 700; cursor: pointer; }
 .food-delete-confirm-btn:hover { background: #a93226; }
+/* v7.0.20 — kitchen editor */
+.kitchen-editor-create-form { margin: 0 16px 12px; padding: 14px; background: var(--bg-secondary, #f5f5f5); border-radius: 12px; border: 1.5px solid var(--border-color, #e0e0e0); }
+.kitchen-editor-menu-card { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--border-color-light, #f0f0f0); }
+.kitchen-editor-menu-card:last-child { border-bottom: none; }

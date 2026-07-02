@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.0.19" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.0.20" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -66,7 +66,10 @@
         <span class="tab-icon">🍽</span><span class="tab-label">Питание</span>
       </button>
       <button class="tab kitchen-only hidden" data-tab="kitchen" type="button">
-        <span class="tab-icon">🍳</span><span class="tab-label">Кухня</span>
+        <span class="tab-icon">🍳</span><span class="tab-label">Сводка</span>
+      </button>
+      <button class="tab kitchen-editor-only hidden" data-tab="kitchen-editor" type="button">
+        <span class="tab-icon">➕</span><span class="tab-label">Меню</span>
       </button>
       <button class="tab restaurant-only hidden" data-tab="restaurant" type="button">
         <span class="tab-icon">🍽</span><span class="tab-label">Ресторан</span>
@@ -605,6 +608,10 @@
         <div id="kitchenPanelContent"></div>
       </section>
 
+      <section id="tab-kitchen-editor" class="tab-panel kitchen-editor-only hidden">
+        <div id="kitchenEditorContent"></div>
+      </section>
+
       <section id="tab-restaurant" class="tab-panel restaurant-only hidden">
         <div id="restaurantPanelContent"></div>
       </section>
@@ -619,6 +626,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=7.0.19"></script>
+  <script src="/static/app.js?v=7.0.20"></script>
 </body>
 </html>

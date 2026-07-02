@@ -78,6 +78,7 @@ ADMIN_ROLES = {"owner", "methodist", "operations"}
 FULL_ADMIN_ROLES = {"owner", "operations"}
 KITCHEN_SUMMARY_ROLES = {"kitchen", "restaurant", "owner", "methodist", "operations"}
 FOOD_PRICE_ROLES = {"kitchen", "restaurant", "owner", "methodist", "operations"}
+FOOD_MENU_EDIT_ROLES = {"kitchen", "restaurant", "owner", "methodist", "operations"}
 ADMIN_TABS_BY_ROLE = {
     "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
     "operations": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
@@ -1103,11 +1104,15 @@ class MiniAppContext:
             "canAskAgent": role not in ("parent", "kitchen", "restaurant"),
             "isParent": role == "parent",
             "adminTabs": admin_tabs,
-            "foodMenuOcrEnabled": bool(getattr(self.settings, "food_menu_ocr_enabled", False)) and role in ADMIN_ROLES,
             "canOrderStaffLunch": can_order_staff_lunch,
             "canUseFoodKitchenSummary": food_enabled and role in KITCHEN_SUMMARY_ROLES,
             "canSeeFoodPrices": food_enabled and role in FOOD_PRICE_ROLES,
             "canSeeFoodCostReport": food_enabled and role in FOOD_PRICE_ROLES,
+            "canCreateFoodMenu": food_enabled and role in FOOD_MENU_EDIT_ROLES,
+            "canEditFoodMenuDraft": food_enabled and role in FOOD_MENU_EDIT_ROLES,
+            "canPublishFoodMenu": food_enabled and role in FOOD_MENU_EDIT_ROLES,
+            "canEditFoodDeadline": food_enabled and role in ADMIN_ROLES,
+            "foodMenuOcrEnabled": bool(getattr(self.settings, "food_menu_ocr_enabled", False)) and role in FOOD_MENU_EDIT_ROLES,
         }
 
     def me(self, auth: dict[str, Any]) -> dict[str, Any]:
@@ -1970,7 +1975,7 @@ class MiniAppContext:
     def food_list_menus(self, auth: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
-        denied = self._require_admin(auth)
+        denied = self._require_food_menu_edit(auth)
         if denied:
             return denied
         menus = self.storage.list_food_menus()
@@ -1979,7 +1984,7 @@ class MiniAppContext:
     def food_get_menu(self, auth: dict[str, Any], menu_id: str) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
-        denied = self._require_admin(auth)
+        denied = self._require_food_menu_edit(auth)
         if denied:
             return denied
         try:
@@ -1994,12 +1999,21 @@ class MiniAppContext:
     def food_create_menu(self, auth: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
-        denied = self._require_admin(auth)
+        denied = self._require_food_menu_edit(auth)
         if denied:
             return denied
         menu_date = str(payload.get("menu_date") or "").strip()
         if not menu_date:
             return {"ok": False, "error": "menu_date обязателен"}
+        user_id = int(auth["user_id"])
+        role = self._role_for_user(user_id)
+        if role in {"kitchen", "restaurant"}:
+            from datetime import date as _date
+            try:
+                if _date.fromisoformat(menu_date) < _date.today():
+                    return {"ok": False, "error": "Нельзя создать меню на прошедшую дату."}
+            except ValueError:
+                return {"ok": False, "error": "Неверный формат даты"}
         title = str(payload.get("title") or "").strip() or None
         deadline_at = str(payload.get("deadline_at") or "").strip() or None
         location_code = str(payload.get("location_code") or "").strip().upper() or None
@@ -2024,7 +2038,7 @@ class MiniAppContext:
     def food_publish_menu(self, auth: dict[str, Any], menu_id: str) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
-        denied = self._require_admin(auth)
+        denied = self._require_food_menu_edit(auth)
         if denied:
             return denied
         try:
@@ -2092,7 +2106,7 @@ class MiniAppContext:
     def food_add_item(self, auth: dict[str, Any], menu_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
-        denied = self._require_admin(auth)
+        denied = self._require_food_menu_edit(auth)
         if denied:
             return denied
         try:
@@ -2118,7 +2132,7 @@ class MiniAppContext:
     def food_update_item(self, auth: dict[str, Any], item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
-        denied = self._require_admin(auth)
+        denied = self._require_food_menu_edit(auth)
         if denied:
             return denied
         try:
@@ -2134,7 +2148,7 @@ class MiniAppContext:
     def food_hide_item(self, auth: dict[str, Any], item_id: str) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
-        denied = self._require_admin(auth)
+        denied = self._require_food_menu_edit(auth)
         if denied:
             return denied
         try:
@@ -2149,7 +2163,7 @@ class MiniAppContext:
     def food_restore_item(self, auth: dict[str, Any], item_id: str) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
-        denied = self._require_admin(auth)
+        denied = self._require_food_menu_edit(auth)
         if denied:
             return denied
         try:
@@ -2350,7 +2364,7 @@ class MiniAppContext:
     def food_ocr_preview(self, auth: dict[str, Any], menu_id: str, files: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
-        denied = self._require_admin(auth)
+        denied = self._require_food_menu_edit(auth)
         if denied:
             return denied
         if not getattr(self.settings, "food_menu_ocr_enabled", False):
@@ -3195,6 +3209,13 @@ class MiniAppContext:
     def _require_admin(self, auth: dict[str, Any]) -> dict[str, Any] | None:
         if not self._is_admin_role(auth):
             return {"ok": False, "error": "Админ-панель доступна владельцу, старшему преподавателю, методисту и операционному менеджеру."}
+        return None
+
+    def _require_food_menu_edit(self, auth: dict[str, Any]) -> dict[str, Any] | None:
+        user_id = int(auth["user_id"])
+        role = self._role_for_user(user_id)
+        if role not in FOOD_MENU_EDIT_ROLES:
+            return {"ok": False, "error": "Создание и редактирование меню доступно кухне и администраторам."}
         return None
 
     def _require_test_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
