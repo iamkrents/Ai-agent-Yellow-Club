@@ -81,6 +81,7 @@ KITCHEN_SUMMARY_ROLES = {"kitchen", "restaurant", "owner", "admin", "methodist",
 FOOD_PRICE_ROLES = {"kitchen", "restaurant", "owner", "admin", "methodist", "operations"}
 FOOD_MENU_EDIT_ROLES = {"kitchen", "restaurant", "owner", "admin", "methodist", "operations"}
 FOOD_MENU_DELETE_ROLES = {"kitchen", "restaurant", "owner", "admin", "operations"}
+FOOD_ADMIN_EDIT_ROLES = {"owner", "admin", "operations"}
 ADMIN_TABS_BY_ROLE = {
     "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
     "admin": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
@@ -1117,6 +1118,7 @@ class MiniAppContext:
             "canEditFoodDeadline": food_enabled and role in ADMIN_ROLES,
             "canDeleteFoodMenu": food_enabled and role in FOOD_MENU_DELETE_ROLES,
             "foodMenuOcrEnabled": bool(getattr(self.settings, "food_menu_ocr_enabled", False)) and role in FOOD_MENU_EDIT_ROLES,
+            "canAdminFoodOrders": food_enabled and role in FOOD_ADMIN_EDIT_ROLES,
         }
 
     def me(self, auth: dict[str, Any]) -> dict[str, Any]:
@@ -3597,6 +3599,235 @@ class MiniAppContext:
         if role not in FOOD_MENU_EDIT_ROLES:
             return {"ok": False, "error": "Создание и редактирование меню доступно кухне и администраторам."}
         return None
+
+    def _require_food_admin_edit(self, auth: dict[str, Any]) -> dict[str, Any] | None:
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in FOOD_ADMIN_EDIT_ROLES:
+            return {"ok": False, "error": "Ручное добавление и редактирование заказов питания доступно только owner, admin, operations."}
+        return None
+
+    def food_admin_persons_for_menu(self, auth: dict[str, Any], menu_id: str) -> dict[str, Any]:
+        """GET: return list of children + staff for admin order form."""
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        denied = self._require_food_admin_edit(auth)
+        if denied:
+            return denied
+        try:
+            mid = int(menu_id)
+        except (ValueError, TypeError):
+            return {"ok": False, "error": "Неверный menu_id"}
+        menu = self.storage.get_food_menu(mid)
+        if not menu:
+            return {"ok": False, "error": "Меню не найдено"}
+        children = self.storage.list_camp_children(active_only=True)
+        staff_list = self.storage.list_staff_users(limit=200)
+        staff_food_roles = {"owner", "admin", "teacher", "methodist", "intern", "client_manager", "operations", "other"}
+        staff_out = [
+            {"userId": s["user_id"], "displayName": str(s.get("mk_teacher_name") or s.get("full_name") or s.get("username") or f"Сотрудник #{s['user_id']}"), "role": s.get("role", ""), "mkTeacherId": s.get("mk_teacher_id", "")}
+            for s in staff_list if s.get("role", "") in staff_food_roles
+        ]
+        children_out = [
+            {"mkStudentId": c["mk_student_id"], "fullName": c["full_name"], "groupName": c.get("group_name") or c.get("mk_class_name") or ""}
+            for c in children
+        ]
+        items_out = [
+            {"id": it["id"], "name": it["name"], "category": it.get("category") or "", "weight": it.get("weight") or "", "price": float(it.get("price") or 0)}
+            for it in (menu.get("items") or []) if it.get("is_available")
+        ]
+        return {"ok": True, "children": children_out, "staff": staff_out, "menuItems": items_out, "menu": {"id": menu["id"], "title": menu.get("title") or "", "menuDate": menu.get("menu_date") or "", "locationCode": menu.get("location_code") or ""}}
+
+    def food_admin_manual_child_order(self, auth: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        """POST: admin creates a manual child order after deadline."""
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        denied = self._require_food_admin_edit(auth)
+        if denied:
+            return denied
+        admin_uid = int(auth["user_id"])
+        admin_role = self._role_for_user(admin_uid)
+        try:
+            menu_id = int(payload.get("menu_id") or 0)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Неверный menu_id"}
+        if not menu_id:
+            return {"ok": False, "error": "menu_id обязателен"}
+        mk_student_id = str(payload.get("mk_student_id") or "").strip()
+        if not mk_student_id:
+            return {"ok": False, "error": "mk_student_id обязателен"}
+        menu = self.storage.get_food_menu(menu_id)
+        if not menu:
+            return {"ok": False, "error": "Меню не найдено"}
+        if menu.get("deleted_at"):
+            return {"ok": False, "error": "Меню удалено"}
+        available_items = [it for it in (menu.get("items") or []) if it.get("is_available")]
+        menu_item_ids = {int(it["id"]) for it in available_items}
+        raw_items = payload.get("items") or []
+        item_quantities: dict[int, int] = {}
+        for entry in raw_items:
+            try:
+                iid = int(entry["id"])
+                qty = min(99, max(1, int(entry.get("quantity", 1) or 1)))
+                if iid in menu_item_ids and qty > 0:
+                    item_quantities[iid] = qty
+            except (KeyError, TypeError, ValueError):
+                pass
+        if not item_quantities:
+            return {"ok": False, "error": "Выберите хотя бы одно блюдо"}
+        admin_comment = str(payload.get("comment") or "Добавлено администратором вручную").strip()
+        try:
+            order = self.storage.admin_create_food_child_order(menu_id, mk_student_id, item_quantities, admin_uid, admin_comment)
+        except ValueError as ve:
+            if "duplicate" in str(ve):
+                return {"ok": False, "error": "У этого ребёнка уже есть заказ на это меню. Откройте существующий заказ для редактирования."}
+            return {"ok": False, "error": str(ve)}
+        self.storage.log_food_order_audit(menu_id, order["id"], "child", "manual_create", admin_uid, admin_role, None, {"mk_student_id": mk_student_id, "items": item_quantities}, admin_comment)
+        log.info("food_order_manual_create: admin=%s role=%s menu_id=%s mk_student_id=%s items=%s", admin_uid, admin_role, menu_id, mk_student_id, item_quantities)
+        return {"ok": True, "order": order}
+
+    def food_admin_manual_staff_order(self, auth: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        """POST: admin creates a manual staff/teacher order after deadline."""
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        denied = self._require_food_admin_edit(auth)
+        if denied:
+            return denied
+        admin_uid = int(auth["user_id"])
+        admin_role = self._role_for_user(admin_uid)
+        try:
+            menu_id = int(payload.get("menu_id") or 0)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Неверный menu_id"}
+        if not menu_id:
+            return {"ok": False, "error": "menu_id обязателен"}
+        try:
+            staff_user_id = int(payload.get("staff_user_id") or 0)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Неверный staff_user_id"}
+        if not staff_user_id:
+            return {"ok": False, "error": "staff_user_id обязателен"}
+        location_code = str(payload.get("location_code") or "").strip().upper()
+        if location_code not in ("YC1", "YC2", "YC3"):
+            location_code = ""
+        menu = self.storage.get_food_menu(menu_id)
+        if not menu:
+            return {"ok": False, "error": "Меню не найдено"}
+        if menu.get("deleted_at"):
+            return {"ok": False, "error": "Меню удалено"}
+        available_items = [it for it in (menu.get("items") or []) if it.get("is_available")]
+        menu_item_ids = {int(it["id"]) for it in available_items}
+        raw_items = payload.get("items") or []
+        item_quantities: dict[int, int] = {}
+        for entry in raw_items:
+            try:
+                iid = int(entry["id"])
+                qty = min(99, max(1, int(entry.get("quantity", 1) or 1)))
+                if iid in menu_item_ids and qty > 0:
+                    item_quantities[iid] = qty
+            except (KeyError, TypeError, ValueError):
+                pass
+        if not item_quantities:
+            return {"ok": False, "error": "Выберите хотя бы одно блюдо"}
+        admin_comment = str(payload.get("comment") or "Добавлено администратором вручную").strip()
+        try:
+            order = self.storage.admin_create_food_staff_order(menu_id, staff_user_id, item_quantities, location_code, admin_uid, admin_comment)
+        except ValueError as ve:
+            if "duplicate" in str(ve):
+                return {"ok": False, "error": "У этого сотрудника уже есть заказ на это меню. Откройте существующий заказ для редактирования."}
+            return {"ok": False, "error": str(ve)}
+        self.storage.log_food_order_audit(menu_id, order["id"], "staff", "manual_create", admin_uid, admin_role, None, {"staff_user_id": staff_user_id, "items": item_quantities, "location_code": location_code}, admin_comment)
+        log.info("food_staff_order_manual_create: admin=%s role=%s menu_id=%s staff_user_id=%s loc=%s", admin_uid, admin_role, menu_id, staff_user_id, location_code)
+        return {"ok": True, "order": order}
+
+    def food_admin_edit_child_order(self, auth: dict[str, Any], order_id_str: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """POST: admin edits an existing child order items."""
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        denied = self._require_food_admin_edit(auth)
+        if denied:
+            return denied
+        admin_uid = int(auth["user_id"])
+        admin_role = self._role_for_user(admin_uid)
+        try:
+            order_id = int(order_id_str or 0)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Неверный order_id"}
+        existing = self.storage.get_food_child_order_by_id(order_id)
+        if not existing:
+            return {"ok": False, "error": "Заказ не найден"}
+        menu = self.storage.get_food_menu(existing["menu_id"])
+        if not menu:
+            return {"ok": False, "error": "Меню не найдено"}
+        available_items = [it for it in (menu.get("items") or []) if it.get("is_available")]
+        menu_item_ids = {int(it["id"]) for it in available_items}
+        raw_items = payload.get("items") or []
+        item_quantities: dict[int, int] = {}
+        for entry in raw_items:
+            try:
+                iid = int(entry["id"])
+                qty = min(99, max(1, int(entry.get("quantity", 1) or 1)))
+                if iid in menu_item_ids and qty > 0:
+                    item_quantities[iid] = qty
+            except (KeyError, TypeError, ValueError):
+                pass
+        if not item_quantities:
+            return {"ok": False, "error": "Выберите хотя бы одно блюдо"}
+        admin_comment = str(payload.get("comment") or "").strip() or "Изменено администратором"
+        old_items = {int(it["item_id"]): int(it.get("quantity", 1)) for it in (existing.get("items") or [])}
+        try:
+            order = self.storage.admin_update_food_child_order(order_id, item_quantities, admin_uid, admin_comment)
+        except ValueError as ve:
+            return {"ok": False, "error": str(ve)}
+        self.storage.log_food_order_audit(existing["menu_id"], order_id, "child", "admin_edit", admin_uid, admin_role, {"items": old_items}, {"items": item_quantities}, admin_comment)
+        log.info("food_order_admin_edit: admin=%s role=%s order_id=%s new_items=%s", admin_uid, admin_role, order_id, item_quantities)
+        return {"ok": True, "order": order}
+
+    def food_admin_edit_staff_order(self, auth: dict[str, Any], order_id_str: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """POST: admin edits an existing staff order items/location."""
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        denied = self._require_food_admin_edit(auth)
+        if denied:
+            return denied
+        admin_uid = int(auth["user_id"])
+        admin_role = self._role_for_user(admin_uid)
+        try:
+            order_id = int(order_id_str or 0)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Неверный order_id"}
+        existing = self.storage.get_food_staff_order_by_id(order_id)
+        if not existing:
+            return {"ok": False, "error": "Заказ не найден"}
+        menu = self.storage.get_food_menu(existing["menu_id"])
+        if not menu:
+            return {"ok": False, "error": "Меню не найдено"}
+        available_items = [it for it in (menu.get("items") or []) if it.get("is_available")]
+        menu_item_ids = {int(it["id"]) for it in available_items}
+        raw_items = payload.get("items") or []
+        item_quantities: dict[int, int] = {}
+        for entry in raw_items:
+            try:
+                iid = int(entry["id"])
+                qty = min(99, max(1, int(entry.get("quantity", 1) or 1)))
+                if iid in menu_item_ids and qty > 0:
+                    item_quantities[iid] = qty
+            except (KeyError, TypeError, ValueError):
+                pass
+        if not item_quantities:
+            return {"ok": False, "error": "Выберите хотя бы одно блюдо"}
+        location_code = str(payload.get("location_code") or "").strip().upper()
+        if location_code not in ("YC1", "YC2", "YC3"):
+            location_code = str(existing.get("location_code") or "").strip().upper()
+        admin_comment = str(payload.get("comment") or "").strip() or "Изменено администратором"
+        old_items = {int(it["item_id"]): int(it.get("quantity", 1)) for it in (existing.get("items") or [])}
+        old_loc = str(existing.get("location_code") or "")
+        try:
+            order = self.storage.admin_update_food_staff_order(order_id, item_quantities, location_code, admin_uid, admin_comment)
+        except ValueError as ve:
+            return {"ok": False, "error": str(ve)}
+        self.storage.log_food_order_audit(existing["menu_id"], order_id, "staff", "admin_edit", admin_uid, admin_role, {"items": old_items, "location_code": old_loc}, {"items": item_quantities, "location_code": location_code}, admin_comment)
+        log.info("food_staff_order_admin_edit: admin=%s role=%s order_id=%s loc=%s new_items=%s", admin_uid, admin_role, order_id, location_code, item_quantities)
+        return {"ok": True, "order": order}
 
     def _require_test_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
         user_id = int(auth["user_id"])
@@ -6372,6 +6603,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                         return self._send_json(CTX.food_menu_summary(auth, _menu_parts[0]))
                     if len(_menu_parts) == 2 and _menu_parts[1] == "audit":
                         return self._send_json(CTX.food_summary_audit(auth, _menu_parts[0]))
+                    if len(_menu_parts) == 2 and _menu_parts[1] == "admin-persons":
+                        return self._send_json(CTX.food_admin_persons_for_menu(auth, _menu_parts[0]))
                 return self._send_json({"ok": False, "error": "Unknown API route"}, status=404)
             self.send_error(404, "Not found")
         except Exception as exc:
@@ -6498,16 +6731,24 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 return self._send_json(CTX.food_staff_skip_order(auth, body))
             if path == "/api/food/menus":
                 return self._send_json(CTX.food_create_menu(auth, body))
+            if path == "/api/food/orders/admin-manual-child":
+                return self._send_json(CTX.food_admin_manual_child_order(auth, body))
+            if path == "/api/food/staff-orders/admin-manual-staff":
+                return self._send_json(CTX.food_admin_manual_staff_order(auth, body))
             if path.startswith("/api/food/orders/"):
                 _orest = path[len("/api/food/orders/"):]
                 _oparts = _orest.split("/")
                 if len(_oparts) == 2 and _oparts[1] == "delete":
                     return self._send_json(CTX.food_delete_child_order(auth, _oparts[0]))
+                if len(_oparts) == 2 and _oparts[1] == "admin-edit":
+                    return self._send_json(CTX.food_admin_edit_child_order(auth, _oparts[0], body))
             if path.startswith("/api/food/staff-orders/"):
                 _srest = path[len("/api/food/staff-orders/"):]
                 _sparts = _srest.split("/")
                 if len(_sparts) == 2 and _sparts[1] == "delete":
                     return self._send_json(CTX.food_delete_staff_order_by_id(auth, _sparts[0]))
+                if len(_sparts) == 2 and _sparts[1] == "admin-edit":
+                    return self._send_json(CTX.food_admin_edit_staff_order(auth, _sparts[0], body))
             if path.startswith("/api/food/menus/"):
                 _mrest = path[len("/api/food/menus/"):]
                 _mparts = _mrest.split("/")

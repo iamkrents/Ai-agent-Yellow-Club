@@ -66,7 +66,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.29");
+console.log("MiniApp version: v7.0.30");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -182,6 +182,7 @@ function canEditFoodMenuDraft() { return !!roleCaps().canEditFoodMenuDraft; }
 function canPublishFoodMenu() { return !!roleCaps().canPublishFoodMenu; }
 function canEditFoodDeadline() { return !!roleCaps().canEditFoodDeadline; }
 function canDeleteFoodMenu() { return !!roleCaps().canDeleteFoodMenu; }
+function canAdminFoodOrders() { return !!roleCaps().canAdminFoodOrders; }
 function canUseFoodMenuOcr() {
   return Boolean(
     state.me?.foodMenuOcrEnabled ||
@@ -6710,6 +6711,18 @@ function _renderFoodMenuSummary(root, menuId, data) {
   }
 
   const canDeleteOrders = ["owner", "admin", "operations"].includes(state.me?.role || "");
+  const isAdminEdit = canAdminFoodOrders();
+
+  function _adminBadge(adminSource, adminCreatedAt, adminUpdatedAt) {
+    if (!adminSource) return "";
+    const ts = adminUpdatedAt || adminCreatedAt;
+    let label = "добавлено админом";
+    if (adminSource === "admin_manual" && adminUpdatedAt) label = "изменено админом";
+    else if (adminSource === "admin_manual") label = "добавлено админом";
+    else if (adminUpdatedAt) label = "изменено админом";
+    const dtStr = ts ? (() => { try { const d = new Date(ts); return `${String(d.getDate()).padStart(2,"0")}.${String(d.getMonth()+1).padStart(2,"0")} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; } catch { return ""; } })() : "";
+    return `<span class="food-admin-badge">${escapeHtml(label)}${dtStr ? " " + dtStr : ""}</span>`;
+  }
 
   function _childOrderCard(ch) {
     const badge = ch.status === "submitted"
@@ -6731,7 +6744,14 @@ function _renderFoodMenuSummary(root, menuId, data) {
     const deleteBtn = canDeleteOrders && ch.orderId
       ? `<button class="food-order-delete-btn" data-order-id="${ch.orderId}" data-order-type="child" data-display-name="${escapeAttr(ch.childName)}" data-menu-date="${escapeAttr(dateStr)}" title="Удалить заказ">✕</button>`
       : "";
-    return `<div class="food-child-order-card"><div class="food-child-order-head"><span class="food-child-order-name">${escapeHtml(ch.childName)}</span>${badge}${deleteBtn}</div>${cardBody}</div>`;
+    const editBtn = isAdminEdit && ch.orderId
+      ? `<button class="food-admin-edit-btn" data-order-id="${ch.orderId}" data-order-type="child" data-menu-id="${menuId}" data-display-name="${escapeAttr(ch.childName)}" title="Редактировать заказ (администратор)">Редактировать</button>`
+      : "";
+    const addBtn = isAdminEdit && !ch.orderId && ch.mk_student_id
+      ? `<button class="food-admin-add-btn" data-mk-student-id="${escapeAttr(ch.mk_student_id)}" data-menu-id="${menuId}" data-display-name="${escapeAttr(ch.childName)}" title="Добавить заказ вручную">+ Добавить</button>`
+      : "";
+    const adminBadge = _adminBadge(ch.adminSource, ch.adminCreatedAt, ch.adminUpdatedAt);
+    return `<div class="food-child-order-card"><div class="food-child-order-head"><span class="food-child-order-name">${escapeHtml(ch.childName)}</span>${badge}${adminBadge}${editBtn}${addBtn}${deleteBtn}</div>${cardBody}</div>`;
   }
 
   const overallStats = `
@@ -6789,7 +6809,11 @@ function _renderFoodMenuSummary(root, menuId, data) {
       const deleteBtn = canDeleteOrders && s.orderId
         ? `<button class="food-order-delete-btn" data-order-id="${s.orderId}" data-order-type="staff" data-display-name="${escapeAttr(s.staffName)}" data-menu-date="${escapeAttr(dateStr)}" title="Удалить заказ">✕</button>`
         : "";
-      return `<div class="food-child-order-card"><div class="food-child-order-head"><span class="food-child-order-name">${escapeHtml(s.staffName)}${teacherTag}</span>${badge}${deleteBtn}</div>${items}</div>`;
+      const editBtn = isAdminEdit && s.orderId
+        ? `<button class="food-admin-edit-btn" data-order-id="${s.orderId}" data-order-type="staff" data-menu-id="${menuId}" data-display-name="${escapeAttr(s.staffName)}" title="Редактировать заказ (администратор)">Редактировать</button>`
+        : "";
+      const adminBadge = _adminBadge(s.adminSource, s.adminCreatedAt, s.adminUpdatedAt);
+      return `<div class="food-child-order-card"><div class="food-child-order-head"><span class="food-child-order-name">${escapeHtml(s.staffName)}${teacherTag}</span>${badge}${adminBadge}${editBtn}${deleteBtn}</div>${items}</div>`;
     }).join("");
     return `<div class="food-summary-section" style="margin-top:10px">Заказы сотрудников</div>${cards}`;
   }
@@ -6822,8 +6846,10 @@ function _renderFoodMenuSummary(root, menuId, data) {
       <button class="secondary" id="fmSummaryRefresh">Обновить сводку</button>
       <button class="secondary" id="fmSummaryCopy">Скопировать сводку</button>
       <button class="secondary" id="fmAuditBtn">✅ Проверить сводку</button>
+      ${isAdminEdit ? `<button class="secondary" id="fmAdminAddOrderBtn">+ Добавить заказ</button>` : ""}
     </div>
     <div id="fmAuditResult" style="display:none;margin-top:10px"></div>
+    <div id="fmAdminOrderFormWrap"></div>
   </div>`;
 
   root.querySelector("#fmSummaryBack")?.addEventListener("click", () => { if (state.foodMenuSelected) _renderFoodMenuDetail(root, state.foodMenuSelected); else { state.foodMenuData = null; loadFoodMenus(root); } });
@@ -6874,6 +6900,207 @@ function _renderFoodMenuSummary(root, menuId, data) {
         btn.disabled = false;
       }
     });
+  });
+
+  // Admin edit handlers
+  root.querySelectorAll(".food-admin-edit-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const formWrap = root.querySelector("#fmAdminOrderFormWrap");
+      _openFoodAdminOrderForm(formWrap || root, menuId, "edit", btn.dataset.orderId, btn.dataset.orderType, btn.dataset.displayName, () => loadFoodMenuSummary(root, menuId));
+    });
+  });
+  root.querySelectorAll(".food-admin-add-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const formWrap = root.querySelector("#fmAdminOrderFormWrap");
+      _openFoodAdminOrderForm(formWrap || root, menuId, "add-child", null, "child", btn.dataset.displayName, () => loadFoodMenuSummary(root, menuId), { mkStudentId: btn.dataset.mkStudentId });
+    });
+  });
+  root.querySelector("#fmAdminAddOrderBtn")?.addEventListener("click", () => {
+    const formWrap = root.querySelector("#fmAdminOrderFormWrap");
+    _openFoodAdminOrderForm(formWrap || root, menuId, "create", null, null, null, () => loadFoodMenuSummary(root, menuId));
+  });
+}
+
+async function _loadFoodAdminPersons(menuId) {
+  const data = await apiGet(`/api/food/menus/${menuId}/admin-persons`);
+  if (!data.ok) throw new Error(data.error || "Ошибка загрузки списка");
+  return data;
+}
+
+async function _openFoodAdminOrderForm(container, menuId, mode, orderId, orderType, displayName, onSuccess, extra) {
+  container.innerHTML = `<div class="food-admin-form-wrap"><div style="color:#888;font-size:13px;padding:12px 0">Загрузка данных меню...</div></div>`;
+  container.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  let persons;
+  try {
+    persons = await _loadFoodAdminPersons(menuId);
+  } catch (e) {
+    container.innerHTML = `<div class="food-admin-form-wrap"><div style="color:#c0392b;font-size:13px;padding:8px 0">Ошибка: ${escapeHtml(safeUserError(e))}</div><button class="secondary btn-sm" id="fmAdminFormClose">Закрыть</button></div>`;
+    container.querySelector("#fmAdminFormClose")?.addEventListener("click", () => { container.innerHTML = ""; });
+    return;
+  }
+
+  const menuItems = persons.menuItems || [];
+  const children = persons.children || [];
+  const staffList = persons.staff || [];
+  const menuTitle = persons.menu?.title || persons.menu?.menuDate || `Меню #${menuId}`;
+
+  const isEdit = mode === "edit";
+  const isAddChild = mode === "add-child";
+  const isCreate = mode === "create";
+
+  let formTitle = isEdit
+    ? `Редактировать заказ — ${escapeHtml(displayName || "")}`
+    : isAddChild
+    ? `Добавить заказ ребёнка — ${escapeHtml(displayName || "")}`
+    : "Добавить заказ вручную";
+
+  const personTypeOptions = isEdit
+    ? ""
+    : `<div class="food-admin-form-row">
+        <label class="food-admin-form-label">Тип заказа</label>
+        <select id="fmAdminPersonType" class="food-admin-select">
+          <option value="child"${isAddChild ? " selected" : ""}>Ребёнок</option>
+          <option value="staff">Сотрудник / Преподаватель</option>
+        </select>
+      </div>`;
+
+  const childSelectHtml = `<div class="food-admin-form-row" id="fmAdminChildRow">
+    <label class="food-admin-form-label">Ребёнок</label>
+    <select id="fmAdminChildSelect" class="food-admin-select">
+      <option value="">— выберите ребёнка —</option>
+      ${children.map(c => `<option value="${escapeAttr(c.mkStudentId)}"${(extra?.mkStudentId === c.mkStudentId || (isAddChild && extra?.mkStudentId === c.mkStudentId)) ? " selected" : ""}>${escapeHtml(c.fullName)}${c.groupName ? " · " + escapeHtml(c.groupName) : ""}</option>`).join("")}
+    </select>
+  </div>`;
+
+  const staffSelectHtml = `<div class="food-admin-form-row" id="fmAdminStaffRow" style="${isEdit && orderType === "child" ? "display:none" : (isCreate || (!isEdit && !isAddChild) ? "display:none" : "")}">
+    <label class="food-admin-form-label">Сотрудник</label>
+    <select id="fmAdminStaffSelect" class="food-admin-select">
+      <option value="">— выберите сотрудника —</option>
+      ${staffList.map(s => `<option value="${escapeAttr(String(s.userId))}">${escapeHtml(s.displayName)}${s.role ? " · " + escapeHtml(s.role) : ""}</option>`).join("")}
+    </select>
+  </div>`;
+
+  const locSelectHtml = `<div class="food-admin-form-row" id="fmAdminLocRow" style="${(isEdit && orderType === "child") || isAddChild ? "display:none" : ""}">
+    <label class="food-admin-form-label">Локация</label>
+    <select id="fmAdminLocSelect" class="food-admin-select">
+      <option value="">— не указана —</option>
+      <option value="YC1">YC1</option>
+      <option value="YC2">YC2</option>
+      <option value="YC3">YC3</option>
+    </select>
+  </div>`;
+
+  const itemsHtml = menuItems.length
+    ? menuItems.map(it => `
+      <div class="food-admin-item-row">
+        <label class="food-admin-item-label">
+          <span>${escapeHtml(it.name)}${it.weight ? ` · ${escapeHtml(it.weight)}` : ""}${it.price ? ` — ${it.price}₽` : ""}</span>
+          <input type="number" class="food-admin-item-qty" data-item-id="${escapeAttr(String(it.id))}" min="0" max="10" value="0" style="width:56px;margin-left:8px">
+        </input>
+        </label>
+      </div>`).join("")
+    : `<div style="color:#888;font-size:13px">В этом меню нет доступных блюд</div>`;
+
+  container.innerHTML = `<div class="food-admin-form-wrap">
+    <div class="food-admin-form-title">${formTitle}</div>
+    <div style="color:#888;font-size:12px;margin-bottom:10px">Меню: ${escapeHtml(menuTitle)}</div>
+    ${personTypeOptions}
+    ${isEdit ? "" : childSelectHtml}
+    ${isEdit ? "" : staffSelectHtml}
+    ${locSelectHtml}
+    <div class="food-admin-form-row">
+      <label class="food-admin-form-label">Блюда</label>
+      <div class="food-admin-items-list">${itemsHtml}</div>
+    </div>
+    <div class="food-admin-form-row">
+      <label class="food-admin-form-label">Комментарий</label>
+      <input type="text" id="fmAdminComment" class="food-admin-text-input" placeholder="Причина изменения (необязательно)" maxlength="200">
+    </div>
+    <div class="food-admin-form-actions">
+      <button class="primary" id="fmAdminFormSubmit">${isEdit ? "Сохранить изменения" : "Добавить заказ"}</button>
+      <button class="secondary" id="fmAdminFormCancel">Отмена</button>
+    </div>
+    <div id="fmAdminFormError" style="display:none;color:#c0392b;font-size:13px;margin-top:8px"></div>
+  </div>`;
+
+  const personTypeEl = container.querySelector("#fmAdminPersonType");
+  const childRowEl = container.querySelector("#fmAdminChildRow");
+  const staffRowEl = container.querySelector("#fmAdminStaffRow");
+  const locRowEl = container.querySelector("#fmAdminLocRow");
+
+  function _updateFormVisibility() {
+    if (!personTypeEl) return;
+    const t = personTypeEl.value;
+    if (childRowEl) childRowEl.style.display = t === "child" ? "" : "none";
+    if (staffRowEl) staffRowEl.style.display = t === "staff" ? "" : "none";
+    if (locRowEl) locRowEl.style.display = t === "staff" ? "" : "none";
+  }
+  personTypeEl?.addEventListener("change", _updateFormVisibility);
+  if (isCreate) _updateFormVisibility();
+
+  container.querySelector("#fmAdminFormCancel")?.addEventListener("click", () => { container.innerHTML = ""; });
+
+  container.querySelector("#fmAdminFormSubmit")?.addEventListener("click", async () => {
+    const submitBtn = container.querySelector("#fmAdminFormSubmit");
+    const errorEl = container.querySelector("#fmAdminFormError");
+    if (errorEl) { errorEl.style.display = "none"; errorEl.textContent = ""; }
+
+    const comment = (container.querySelector("#fmAdminComment")?.value || "").trim();
+    const qtyEls = container.querySelectorAll(".food-admin-item-qty");
+    const items = [];
+    qtyEls.forEach(el => {
+      const qty = parseInt(el.value || "0", 10);
+      if (qty > 0) items.push({ id: parseInt(el.dataset.itemId, 10), quantity: qty });
+    });
+    if (!items.length) {
+      if (errorEl) { errorEl.textContent = "Выберите хотя бы одно блюдо (количество > 0)"; errorEl.style.display = ""; }
+      return;
+    }
+
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      let resp;
+      if (isEdit) {
+        const endpoint = orderType === "staff"
+          ? `/api/food/staff-orders/${orderId}/admin-edit`
+          : `/api/food/orders/${orderId}/admin-edit`;
+        const locCode = orderType === "staff" ? (container.querySelector("#fmAdminLocSelect")?.value || "") : undefined;
+        const payload = { items, comment };
+        if (locCode !== undefined) payload.location_code = locCode;
+        resp = await apiPost(endpoint, payload);
+      } else {
+        const personType = personTypeEl ? personTypeEl.value : (isAddChild ? "child" : orderType || "child");
+        if (personType === "child") {
+          const mkStudentId = isAddChild ? (extra?.mkStudentId || "") : (container.querySelector("#fmAdminChildSelect")?.value || "");
+          if (!mkStudentId) {
+            if (errorEl) { errorEl.textContent = "Выберите ребёнка"; errorEl.style.display = ""; }
+            if (submitBtn) submitBtn.disabled = false;
+            return;
+          }
+          resp = await apiPost("/api/food/orders/admin-manual-child", { menu_id: parseInt(menuId, 10), mk_student_id: mkStudentId, items, comment });
+        } else {
+          const staffUserId = parseInt(container.querySelector("#fmAdminStaffSelect")?.value || "0", 10);
+          if (!staffUserId) {
+            if (errorEl) { errorEl.textContent = "Выберите сотрудника"; errorEl.style.display = ""; }
+            if (submitBtn) submitBtn.disabled = false;
+            return;
+          }
+          const locCode = container.querySelector("#fmAdminLocSelect")?.value || "";
+          resp = await apiPost("/api/food/staff-orders/admin-manual-staff", { menu_id: parseInt(menuId, 10), staff_user_id: staffUserId, location_code: locCode, items, comment });
+        }
+      }
+      if (!resp.ok) {
+        if (errorEl) { errorEl.textContent = resp.error || "Ошибка при сохранении"; errorEl.style.display = ""; }
+        if (submitBtn) submitBtn.disabled = false;
+        return;
+      }
+      setNotice(isEdit ? "Заказ обновлён" : "Заказ добавлен", "success");
+      container.innerHTML = "";
+      if (onSuccess) onSuccess();
+    } catch (e) {
+      if (errorEl) { errorEl.textContent = safeUserError(e); errorEl.style.display = ""; }
+      if (submitBtn) submitBtn.disabled = false;
+    }
   });
 }
 

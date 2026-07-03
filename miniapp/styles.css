@@ -6452,6 +6452,22 @@ body { -webkit-overflow-scrolling: touch; }
 .kitchen-teacher-tag { display: inline-block; font-size: 10px; font-weight: 700; color: #fff; background: #2ea86b; border-radius: 4px; padding: 1px 5px; margin-left: 6px; vertical-align: middle; }
 .food-order-delete-btn { flex-shrink: 0; margin-left: auto; padding: 2px 7px; font-size: 12px; font-weight: 700; color: #c0392b; background: transparent; border: 1.5px solid #e0b0b0; border-radius: 6px; cursor: pointer; line-height: 1.4; }
 .food-order-delete-btn:hover { background: #fdf0f0; border-color: #c0392b; }
+.food-admin-badge { display: inline-block; font-size: 11px; color: #7b5ea7; background: #f3eeff; border: 1px solid #d0bff0; border-radius: 8px; padding: 1px 7px; margin-left: 6px; white-space: nowrap; vertical-align: middle; }
+.food-admin-edit-btn { flex-shrink: 0; margin-left: 6px; padding: 2px 9px; font-size: 12px; color: #1a6fa8; background: transparent; border: 1.5px solid #b0d0ee; border-radius: 6px; cursor: pointer; line-height: 1.4; }
+.food-admin-edit-btn:hover { background: #eaf4ff; border-color: #1a6fa8; }
+.food-admin-add-btn { flex-shrink: 0; margin-left: 6px; padding: 2px 9px; font-size: 12px; color: #1a7a4a; background: transparent; border: 1.5px solid #a0d8b8; border-radius: 6px; cursor: pointer; line-height: 1.4; }
+.food-admin-add-btn:hover { background: #e6f7ee; border-color: #1a7a4a; }
+.food-admin-form-wrap { border: 1.5px solid #d0bff0; border-radius: 12px; padding: 16px; margin-top: 14px; background: #faf8ff; }
+.food-admin-form-title { font-size: 15px; font-weight: 700; color: #5a3a8a; margin-bottom: 12px; }
+.food-admin-form-row { margin-bottom: 12px; }
+.food-admin-form-label { display: block; font-size: 13px; font-weight: 600; color: #444; margin-bottom: 4px; }
+.food-admin-select { width: 100%; padding: 7px 10px; border: 1.5px solid #ccc; border-radius: 8px; font-size: 14px; background: #fff; }
+.food-admin-text-input { width: 100%; padding: 7px 10px; border: 1.5px solid #ccc; border-radius: 8px; font-size: 14px; background: #fff; box-sizing: border-box; }
+.food-admin-items-list { display: flex; flex-direction: column; gap: 6px; }
+.food-admin-item-row { display: flex; align-items: center; gap: 8px; }
+.food-admin-item-label { display: flex; align-items: center; justify-content: space-between; width: 100%; font-size: 13px; }
+.food-admin-item-qty { width: 52px; padding: 4px 6px; border: 1.5px solid #ccc; border-radius: 6px; font-size: 14px; text-align: center; }
+.food-admin-form-actions { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
 .food-delete-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 9999; padding: 16px; }
 .food-delete-dialog { background: #fff; border-radius: 16px; padding: 24px; max-width: 340px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,.18); }
 .food-delete-dialog-title { font-size: 18px; font-weight: 700; margin-bottom: 8px; }

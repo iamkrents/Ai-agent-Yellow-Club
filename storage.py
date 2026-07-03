@@ -649,6 +649,37 @@ class Storage:
         except Exception:
             pass
 
+        # v7.0.30: admin manual order tracking columns
+        self._ensure_column(conn, "food_orders", "admin_source", "admin_source TEXT")
+        self._ensure_column(conn, "food_orders", "admin_created_by", "admin_created_by INTEGER")
+        self._ensure_column(conn, "food_orders", "admin_created_at", "admin_created_at TEXT")
+        self._ensure_column(conn, "food_orders", "admin_updated_by", "admin_updated_by INTEGER")
+        self._ensure_column(conn, "food_orders", "admin_updated_at", "admin_updated_at TEXT")
+        self._ensure_column(conn, "food_orders", "admin_comment", "admin_comment TEXT")
+        self._ensure_column(conn, "food_staff_orders", "admin_source", "admin_source TEXT")
+        self._ensure_column(conn, "food_staff_orders", "admin_created_by", "admin_created_by INTEGER")
+        self._ensure_column(conn, "food_staff_orders", "admin_created_at", "admin_created_at TEXT")
+        self._ensure_column(conn, "food_staff_orders", "admin_updated_by", "admin_updated_by INTEGER")
+        self._ensure_column(conn, "food_staff_orders", "admin_updated_at", "admin_updated_at TEXT")
+        self._ensure_column(conn, "food_staff_orders", "admin_comment", "admin_comment TEXT")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS food_order_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                menu_id INTEGER NOT NULL,
+                order_id INTEGER,
+                order_type TEXT NOT NULL,
+                action TEXT NOT NULL,
+                actor_user_id INTEGER NOT NULL,
+                actor_role TEXT,
+                old_data TEXT,
+                new_data TEXT,
+                comment TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_food_audit_log_menu ON food_order_audit_log(menu_id, created_at)")
+
     # --- Food module: camp children ---
 
     def upsert_camp_child(self, child: dict[str, Any]) -> dict[str, Any]:
@@ -1203,13 +1234,13 @@ class Storage:
             if order and order["status"] == "submitted":
                 submitted += 1
                 item_details = [{"item_id": i["item_id"], "name": i["name"], "category": i["category"], "weight": i["weight"], "quantity": int(i.get("quantity", 1) or 1)} for i in order.get("items", [])]
-                by_children.append({"childName": ch["full_name"], "status": "submitted", "items": [i["name"] for i in order.get("items", [])], "itemDetails": item_details, "mk_student_id": sid, "groupCode": group_code, "groupSource": group_source, "orderId": order["id"]})
+                by_children.append({"childName": ch["full_name"], "status": "submitted", "items": [i["name"] for i in order.get("items", [])], "itemDetails": item_details, "mk_student_id": sid, "groupCode": group_code, "groupSource": group_source, "orderId": order["id"], "adminSource": order.get("admin_source"), "adminCreatedAt": order.get("admin_created_at"), "adminUpdatedAt": order.get("admin_updated_at"), "adminComment": order.get("admin_comment")})
             elif order and order["status"] == "skipped":
                 skipped += 1
-                by_children.append({"childName": ch["full_name"], "status": "skipped", "items": [], "itemDetails": [], "mk_student_id": sid, "groupCode": group_code, "groupSource": group_source, "orderId": order["id"]})
+                by_children.append({"childName": ch["full_name"], "status": "skipped", "items": [], "itemDetails": [], "mk_student_id": sid, "groupCode": group_code, "groupSource": group_source, "orderId": order["id"], "adminSource": order.get("admin_source"), "adminCreatedAt": order.get("admin_created_at"), "adminUpdatedAt": order.get("admin_updated_at"), "adminComment": order.get("admin_comment")})
             else:
                 missing += 1
-                by_children.append({"childName": ch["full_name"], "status": "missing", "items": [], "itemDetails": [], "mk_student_id": sid, "groupCode": group_code, "groupSource": group_source, "orderId": None})
+                by_children.append({"childName": ch["full_name"], "status": "missing", "items": [], "itemDetails": [], "mk_student_id": sid, "groupCode": group_code, "groupSource": group_source, "orderId": None, "adminSource": None, "adminCreatedAt": None, "adminUpdatedAt": None, "adminComment": None})
                 missing_children.append(ch["full_name"])
         item_counts: dict[int, int] = {}
         item_children: dict[int, list[str]] = {}
@@ -1237,9 +1268,9 @@ class Storage:
             order_row_id = so["id"]
             if so["status"] == "submitted":
                 item_details = [{"item_id": i["item_id"], "name": i["name"], "category": i["category"], "weight": i["weight"], "quantity": int(i.get("quantity", 1) or 1)} for i in so.get("items", [])]
-                by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "orderId": order_row_id, "status": "submitted", "itemDetails": item_details, "locationCode": order_loc, "isTeacher": is_teacher})
+                by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "orderId": order_row_id, "status": "submitted", "itemDetails": item_details, "locationCode": order_loc, "isTeacher": is_teacher, "adminSource": so.get("admin_source"), "adminCreatedAt": so.get("admin_created_at"), "adminUpdatedAt": so.get("admin_updated_at"), "adminComment": so.get("admin_comment")})
             elif so["status"] == "skipped":
-                by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "orderId": order_row_id, "status": "skipped", "itemDetails": [], "locationCode": order_loc, "isTeacher": is_teacher})
+                by_staff.append({"staffName": display_name, "staffUserId": so["staff_user_id"], "orderId": order_row_id, "status": "skipped", "itemDetails": [], "locationCode": order_loc, "isTeacher": is_teacher, "adminSource": so.get("admin_source"), "adminCreatedAt": so.get("admin_created_at"), "adminUpdatedAt": so.get("admin_updated_at"), "adminComment": so.get("admin_comment")})
         # Add staff item counts to aggregate
         for so_entry in by_staff:
             if so_entry["status"] == "submitted":
@@ -1495,6 +1526,292 @@ class Storage:
             conn.execute("DELETE FROM food_staff_order_items WHERE order_id=?", (oid,))
             conn.execute("DELETE FROM food_staff_orders WHERE id=?", (oid,))
         return info
+
+    # --- Food module: admin manual order management (v7.0.30) ---
+
+    def log_food_order_audit(
+        self,
+        menu_id: int,
+        order_id: Optional[int],
+        order_type: str,
+        action: str,
+        actor_user_id: int,
+        actor_role: str,
+        old_data: Any,
+        new_data: Any,
+        comment: str = "",
+    ) -> int:
+        import json as _json
+        now = now_iso()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO food_order_audit_log(created_at, menu_id, order_id, order_type, action, actor_user_id, actor_role, old_data, new_data, comment) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (now, int(menu_id), order_id, order_type, action, int(actor_user_id), actor_role,
+                 _json.dumps(old_data, ensure_ascii=False) if old_data is not None else None,
+                 _json.dumps(new_data, ensure_ascii=False) if new_data is not None else None,
+                 str(comment or "")),
+            )
+            return cur.lastrowid or 0
+
+    def find_food_child_order_for_menu(self, menu_id: int, mk_student_id: str) -> Optional[dict[str, Any]]:
+        """Find ANY submitted/skipped order for this child in this menu (regardless of parent_telegram_id)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM food_orders WHERE menu_id=? AND mk_student_id=? ORDER BY id DESC LIMIT 1",
+                (int(menu_id), str(mk_student_id)),
+            ).fetchone()
+            if not row:
+                return None
+            order = dict(row)
+            items = conn.execute(
+                "SELECT oi.item_id, oi.quantity, oi.price_snapshot, fi.name, fi.category, fi.weight FROM food_order_items oi JOIN food_items fi ON fi.id=oi.item_id WHERE oi.order_id=?",
+                (order["id"],),
+            ).fetchall()
+            order["items"] = [dict(i) for i in items]
+        return order
+
+    def get_food_child_order_by_id(self, order_id: int) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT o.*, c.full_name AS child_display_name
+                   FROM food_orders o
+                   LEFT JOIN camp_children c ON c.mk_student_id = o.mk_student_id AND c.active = 1
+                   WHERE o.id=?""",
+                (int(order_id),),
+            ).fetchone()
+            if not row:
+                return None
+            order = dict(row)
+            items = conn.execute(
+                "SELECT oi.item_id, oi.quantity, oi.price_snapshot, fi.name, fi.category, fi.weight FROM food_order_items oi JOIN food_items fi ON fi.id=oi.item_id WHERE oi.order_id=?",
+                (order["id"],),
+            ).fetchall()
+            order["items"] = [dict(i) for i in items]
+        return order
+
+    def get_food_staff_order_by_id(self, order_id: int) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT so.*, su.full_name AS staff_name, su.mk_teacher_name AS staff_mk_teacher_name,
+                          su.username AS staff_username, su.mk_teacher_id AS staff_mk_teacher_id,
+                          su.role AS staff_role
+                   FROM food_staff_orders so
+                   LEFT JOIN staff_users su ON su.user_id = so.staff_user_id
+                   WHERE so.id=?""",
+                (int(order_id),),
+            ).fetchone()
+            if not row:
+                return None
+            order = dict(row)
+            items = conn.execute(
+                "SELECT oi.item_id, oi.quantity, oi.price_snapshot, fi.name, fi.category, fi.weight FROM food_staff_order_items oi JOIN food_items fi ON fi.id=oi.item_id WHERE oi.order_id=?",
+                (order["id"],),
+            ).fetchall()
+            order["items"] = [dict(i) for i in items]
+        return order
+
+    def admin_create_food_child_order(
+        self,
+        menu_id: int,
+        mk_student_id: str,
+        item_quantities: dict,
+        admin_uid: int,
+        admin_comment: str = "",
+    ) -> dict[str, Any]:
+        now = now_iso()
+        mid = int(menu_id)
+        sid = str(mk_student_id)
+        safe_qty: dict[int, int] = {
+            int(iid): min(99, max(1, int(qty or 1)))
+            for iid, qty in (item_quantities or {}).items()
+            if int(qty or 0) > 0
+        }
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM food_orders WHERE menu_id=? AND mk_student_id=? ORDER BY id DESC LIMIT 1",
+                (mid, sid),
+            ).fetchone()
+            if existing:
+                raise ValueError("duplicate")
+            cur = conn.execute(
+                """INSERT INTO food_orders(created_at, updated_at, menu_id, parent_telegram_id, mk_student_id,
+                   status, total_price, submitted_at, admin_source, admin_created_by, admin_created_at, admin_comment)
+                   VALUES(?,?,?,?,?,?,0,?,?,?,?,?)""",
+                (now, now, mid, "admin:0", sid, "submitted", now,
+                 "admin_manual", int(admin_uid), now, str(admin_comment or "")),
+            )
+            order_id = cur.lastrowid
+            if safe_qty:
+                id_ph = ", ".join("?" for _ in safe_qty)
+                price_rows = conn.execute(
+                    f"SELECT id, price FROM food_items WHERE id IN ({id_ph})", list(safe_qty.keys())
+                ).fetchall()
+                price_map: dict[int, float] = {r["id"]: float(r["price"] or 0) for r in price_rows}
+                for iid, qty in safe_qty.items():
+                    conn.execute(
+                        "INSERT INTO food_order_items(created_at, order_id, item_id, quantity, price_snapshot) VALUES(?,?,?,?,?)",
+                        (now, order_id, iid, qty, price_map.get(iid, 0.0)),
+                    )
+            row = conn.execute("SELECT * FROM food_orders WHERE id=?", (order_id,)).fetchone()
+            order_items = conn.execute(
+                "SELECT oi.item_id, oi.quantity, fi.name, fi.category, fi.weight FROM food_order_items oi JOIN food_items fi ON fi.id=oi.item_id WHERE oi.order_id=?",
+                (order_id,),
+            ).fetchall()
+        result = dict(row)
+        result["items"] = [dict(i) for i in order_items]
+        return result
+
+    def admin_update_food_child_order(
+        self,
+        order_id: int,
+        item_quantities: dict,
+        admin_uid: int,
+        admin_comment: str = "",
+    ) -> dict[str, Any]:
+        now = now_iso()
+        oid = int(order_id)
+        safe_qty: dict[int, int] = {
+            int(iid): min(99, max(1, int(qty or 1)))
+            for iid, qty in (item_quantities or {}).items()
+            if int(qty or 0) > 0
+        }
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM food_orders WHERE id=?", (oid,)).fetchone()
+            if not row:
+                raise ValueError("not_found")
+            mid = row["menu_id"]
+            conn.execute(
+                """UPDATE food_orders SET status='submitted', updated_at=?,
+                   admin_updated_by=?, admin_updated_at=?, admin_comment=?
+                   WHERE id=?""",
+                (now, int(admin_uid), now, str(admin_comment or ""), oid),
+            )
+            conn.execute("DELETE FROM food_order_items WHERE order_id=?", (oid,))
+            if safe_qty:
+                id_ph = ", ".join("?" for _ in safe_qty)
+                price_rows = conn.execute(
+                    f"SELECT id, price FROM food_items WHERE id IN ({id_ph})", list(safe_qty.keys())
+                ).fetchall()
+                price_map: dict[int, float] = {r["id"]: float(r["price"] or 0) for r in price_rows}
+                for iid, qty in safe_qty.items():
+                    conn.execute(
+                        "INSERT INTO food_order_items(created_at, order_id, item_id, quantity, price_snapshot) VALUES(?,?,?,?,?)",
+                        (now, oid, iid, qty, price_map.get(iid, 0.0)),
+                    )
+            updated = conn.execute("SELECT * FROM food_orders WHERE id=?", (oid,)).fetchone()
+            order_items = conn.execute(
+                "SELECT oi.item_id, oi.quantity, fi.name, fi.category, fi.weight FROM food_order_items oi JOIN food_items fi ON fi.id=oi.item_id WHERE oi.order_id=?",
+                (oid,),
+            ).fetchall()
+        result = dict(updated)
+        result["items"] = [dict(i) for i in order_items]
+        return result
+
+    def admin_create_food_staff_order(
+        self,
+        menu_id: int,
+        staff_user_id: int,
+        item_quantities: dict,
+        location_code: str,
+        admin_uid: int,
+        admin_comment: str = "",
+    ) -> dict[str, Any]:
+        now = now_iso()
+        mid = int(menu_id)
+        uid = int(staff_user_id)
+        loc = str(location_code or "").strip().upper() or None
+        safe_qty: dict[int, int] = {
+            int(iid): min(99, max(1, int(qty or 1)))
+            for iid, qty in (item_quantities or {}).items()
+            if int(qty or 0) > 0
+        }
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM food_staff_orders WHERE menu_id=? AND staff_user_id=?",
+                (mid, uid),
+            ).fetchone()
+            if existing:
+                raise ValueError("duplicate")
+            cur = conn.execute(
+                """INSERT INTO food_staff_orders(created_at, updated_at, menu_id, staff_user_id, status,
+                   submitted_at, location_code, admin_source, admin_created_by, admin_created_at, admin_comment)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (now, now, mid, uid, "submitted", now, loc,
+                 "admin_manual", int(admin_uid), now, str(admin_comment or "")),
+            )
+            order_id = cur.lastrowid
+            if safe_qty:
+                id_ph = ", ".join("?" for _ in safe_qty)
+                price_rows = conn.execute(
+                    f"SELECT id, price FROM food_items WHERE id IN ({id_ph})", list(safe_qty.keys())
+                ).fetchall()
+                price_map: dict[int, float] = {r["id"]: float(r["price"] or 0) for r in price_rows}
+                for iid, qty in safe_qty.items():
+                    conn.execute(
+                        "INSERT INTO food_staff_order_items(created_at, order_id, item_id, quantity, price_snapshot) VALUES(?,?,?,?,?)",
+                        (now, order_id, iid, qty, price_map.get(iid, 0.0)),
+                    )
+            row = conn.execute("SELECT * FROM food_staff_orders WHERE id=?", (order_id,)).fetchone()
+            order_items = conn.execute(
+                "SELECT oi.item_id, oi.quantity, fi.name, fi.category, fi.weight FROM food_staff_order_items oi JOIN food_items fi ON fi.id=oi.item_id WHERE oi.order_id=?",
+                (order_id,),
+            ).fetchall()
+        result = dict(row)
+        result["items"] = [dict(i) for i in order_items]
+        return result
+
+    def admin_update_food_staff_order(
+        self,
+        order_id: int,
+        item_quantities: dict,
+        location_code: str,
+        admin_uid: int,
+        admin_comment: str = "",
+    ) -> dict[str, Any]:
+        now = now_iso()
+        oid = int(order_id)
+        loc = str(location_code or "").strip().upper() or None
+        safe_qty: dict[int, int] = {
+            int(iid): min(99, max(1, int(qty or 1)))
+            for iid, qty in (item_quantities or {}).items()
+            if int(qty or 0) > 0
+        }
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM food_staff_orders WHERE id=?", (oid,)).fetchone()
+            if not row:
+                raise ValueError("not_found")
+            if loc is not None:
+                conn.execute(
+                    """UPDATE food_staff_orders SET status='submitted', updated_at=?, location_code=?,
+                       admin_updated_by=?, admin_updated_at=?, admin_comment=? WHERE id=?""",
+                    (now, loc, int(admin_uid), now, str(admin_comment or ""), oid),
+                )
+            else:
+                conn.execute(
+                    """UPDATE food_staff_orders SET status='submitted', updated_at=?,
+                       admin_updated_by=?, admin_updated_at=?, admin_comment=? WHERE id=?""",
+                    (now, int(admin_uid), now, str(admin_comment or ""), oid),
+                )
+            conn.execute("DELETE FROM food_staff_order_items WHERE order_id=?", (oid,))
+            if safe_qty:
+                id_ph = ", ".join("?" for _ in safe_qty)
+                price_rows = conn.execute(
+                    f"SELECT id, price FROM food_items WHERE id IN ({id_ph})", list(safe_qty.keys())
+                ).fetchall()
+                price_map: dict[int, float] = {r["id"]: float(r["price"] or 0) for r in price_rows}
+                for iid, qty in safe_qty.items():
+                    conn.execute(
+                        "INSERT INTO food_staff_order_items(created_at, order_id, item_id, quantity, price_snapshot) VALUES(?,?,?,?,?)",
+                        (now, oid, iid, qty, price_map.get(iid, 0.0)),
+                    )
+            updated = conn.execute("SELECT * FROM food_staff_orders WHERE id=?", (oid,)).fetchone()
+            order_items = conn.execute(
+                "SELECT oi.item_id, oi.quantity, fi.name, fi.category, fi.weight FROM food_staff_order_items oi JOIN food_items fi ON fi.id=oi.item_id WHERE oi.order_id=?",
+                (oid,),
+            ).fetchall()
+        result = dict(updated)
+        result["items"] = [dict(i) for i in order_items]
+        return result
 
     def get_food_staff_order(self, staff_user_id: int, menu_id: int) -> Optional[dict[str, Any]]:
         with self._connect() as conn:
