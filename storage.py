@@ -1676,9 +1676,10 @@ class Storage:
             if int(qty or 0) > 0
         }
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM food_orders WHERE id=?", (oid,)).fetchone()
-            if not row:
+            _row = conn.execute("SELECT * FROM food_orders WHERE id=?", (oid,)).fetchone()
+            if not _row:
                 raise ValueError("not_found")
+            row = dict(_row)
             mid = row["menu_id"]
             existing_source = row.get("admin_source") or ""
             if existing_source:
@@ -1786,9 +1787,10 @@ class Storage:
             if int(qty or 0) > 0
         }
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM food_staff_orders WHERE id=?", (oid,)).fetchone()
-            if not row:
+            _row = conn.execute("SELECT * FROM food_staff_orders WHERE id=?", (oid,)).fetchone()
+            if not _row:
                 raise ValueError("not_found")
+            row = dict(_row)
             existing_source = row.get("admin_source") or ""
             if existing_source:
                 if loc is not None:
