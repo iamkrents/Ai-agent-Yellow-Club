@@ -66,7 +66,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.30");
+console.log("MiniApp version: v7.0.32");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -6441,7 +6441,7 @@ function _renderFoodMenuDetail(root, menu) {
           <div class="food-item-row${item.is_available ? "" : " food-item-hidden"}" data-item-id="${item.id}">
             <span class="food-item-name">${escapeHtml(item.name || "")}</span>
             ${item.weight ? `<span class="food-item-weight">${escapeHtml(item.weight)}</span>` : ""}
-            ${item.price ? `<span class="food-item-price">${Number(item.price).toFixed(2)}&nbsp;руб.</span>` : ""}
+            ${item.price ? `<span class="food-item-price">${Number(item.price).toFixed(2)}&nbsp;BYN</span>` : ""}
             <div class="food-item-actions">
               ${item.is_available
                 ? `<button class="secondary btn-sm" data-hide-item="${item.id}">Скрыть</button>`
@@ -6492,7 +6492,7 @@ function _renderFoodMenuDetail(root, menu) {
       <div class="food-item-form-grid">
         <div class="food-item-form-name"><input type="text" id="fiName" placeholder="Название блюда" maxlength="200"></div>
         <input type="text" id="fiWeight" placeholder="Вес (250/20 г)" style="grid-column:1/-1">
-        <input type="text" id="fiPrice" placeholder="Стоимость для отчёта (руб., необяз.)" style="grid-column:1/-1">
+        <input type="text" id="fiPrice" placeholder="Стоимость для отчёта (BYN, необяз.)" style="grid-column:1/-1">
       </div>
       <div class="food-menu-actions">
         <button class="primary" id="fiAddBtn">Добавить блюдо</button>
@@ -6713,15 +6713,23 @@ function _renderFoodMenuSummary(root, menuId, data) {
   const canDeleteOrders = ["owner", "admin", "operations"].includes(state.me?.role || "");
   const isAdminEdit = canAdminFoodOrders();
 
-  function _adminBadge(adminSource, adminCreatedAt, adminUpdatedAt) {
-    if (!adminSource) return "";
+  function _adminBadge(adminSource, adminCreatedAt, adminUpdatedAt, adminComment) {
+    const hasAdminAction = adminSource || adminCreatedAt || adminUpdatedAt;
+    if (!hasAdminAction) return "";
     const ts = adminUpdatedAt || adminCreatedAt;
-    let label = "добавлено админом";
-    if (adminSource === "admin_manual" && adminUpdatedAt) label = "изменено админом";
-    else if (adminSource === "admin_manual") label = "добавлено админом";
-    else if (adminUpdatedAt) label = "изменено админом";
+    let label;
+    if (adminUpdatedAt && adminCreatedAt && adminUpdatedAt !== adminCreatedAt) {
+      label = "изменено админом";
+    } else if (adminSource === "admin_manual" || adminSource === "admin_edit") {
+      label = adminUpdatedAt && adminUpdatedAt !== adminCreatedAt ? "изменено админом" : "добавлено админом";
+    } else if (adminUpdatedAt) {
+      label = "изменено админом";
+    } else {
+      label = "добавлено админом";
+    }
     const dtStr = ts ? (() => { try { const d = new Date(ts); return `${String(d.getDate()).padStart(2,"0")}.${String(d.getMonth()+1).padStart(2,"0")} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; } catch { return ""; } })() : "";
-    return `<span class="food-admin-badge">${escapeHtml(label)}${dtStr ? " " + dtStr : ""}</span>`;
+    const commentHtml = adminComment ? `<span class="food-admin-badge-comment"> · ${escapeHtml(adminComment)}</span>` : "";
+    return `<div class="food-admin-badge-wrap"><span class="food-admin-badge">${escapeHtml(label)}${dtStr ? " " + dtStr : ""}</span>${commentHtml}</div>`;
   }
 
   function _childOrderCard(ch) {
@@ -6745,13 +6753,13 @@ function _renderFoodMenuSummary(root, menuId, data) {
       ? `<button class="food-order-delete-btn" data-order-id="${ch.orderId}" data-order-type="child" data-display-name="${escapeAttr(ch.childName)}" data-menu-date="${escapeAttr(dateStr)}" title="Удалить заказ">✕</button>`
       : "";
     const editBtn = isAdminEdit && ch.orderId
-      ? `<button class="food-admin-edit-btn" data-order-id="${ch.orderId}" data-order-type="child" data-menu-id="${menuId}" data-display-name="${escapeAttr(ch.childName)}" title="Редактировать заказ (администратор)">Редактировать</button>`
+      ? `<button class="food-admin-edit-btn" data-order-id="${ch.orderId}" data-order-type="child" data-menu-id="${menuId}" data-display-name="${escapeAttr(ch.childName)}" data-items-json="${escapeAttr(JSON.stringify(ch.itemDetails || []))}" title="Редактировать заказ (администратор)">Редактировать</button>`
       : "";
     const addBtn = isAdminEdit && !ch.orderId && ch.mk_student_id
       ? `<button class="food-admin-add-btn" data-mk-student-id="${escapeAttr(ch.mk_student_id)}" data-menu-id="${menuId}" data-display-name="${escapeAttr(ch.childName)}" title="Добавить заказ вручную">+ Добавить</button>`
       : "";
-    const adminBadge = _adminBadge(ch.adminSource, ch.adminCreatedAt, ch.adminUpdatedAt);
-    return `<div class="food-child-order-card"><div class="food-child-order-head"><span class="food-child-order-name">${escapeHtml(ch.childName)}</span>${badge}${adminBadge}${editBtn}${addBtn}${deleteBtn}</div>${cardBody}</div>`;
+    const adminBadge = _adminBadge(ch.adminSource, ch.adminCreatedAt, ch.adminUpdatedAt, ch.adminComment);
+    return `<div class="food-child-order-card"><div class="food-child-order-head"><span class="food-child-order-name">${escapeHtml(ch.childName)}</span>${badge}${editBtn}${addBtn}${deleteBtn}</div>${adminBadge}${cardBody}</div>`;
   }
 
   const overallStats = `
@@ -6810,10 +6818,10 @@ function _renderFoodMenuSummary(root, menuId, data) {
         ? `<button class="food-order-delete-btn" data-order-id="${s.orderId}" data-order-type="staff" data-display-name="${escapeAttr(s.staffName)}" data-menu-date="${escapeAttr(dateStr)}" title="Удалить заказ">✕</button>`
         : "";
       const editBtn = isAdminEdit && s.orderId
-        ? `<button class="food-admin-edit-btn" data-order-id="${s.orderId}" data-order-type="staff" data-menu-id="${menuId}" data-display-name="${escapeAttr(s.staffName)}" title="Редактировать заказ (администратор)">Редактировать</button>`
+        ? `<button class="food-admin-edit-btn" data-order-id="${s.orderId}" data-order-type="staff" data-menu-id="${menuId}" data-display-name="${escapeAttr(s.staffName)}" data-items-json="${escapeAttr(JSON.stringify(s.itemDetails || []))}" data-location-code="${escapeAttr(s.locationCode || "")}" title="Редактировать заказ (администратор)">Редактировать</button>`
         : "";
-      const adminBadge = _adminBadge(s.adminSource, s.adminCreatedAt, s.adminUpdatedAt);
-      return `<div class="food-child-order-card"><div class="food-child-order-head"><span class="food-child-order-name">${escapeHtml(s.staffName)}${teacherTag}</span>${badge}${adminBadge}${editBtn}${deleteBtn}</div>${items}</div>`;
+      const adminBadge = _adminBadge(s.adminSource, s.adminCreatedAt, s.adminUpdatedAt, s.adminComment);
+      return `<div class="food-child-order-card"><div class="food-child-order-head"><span class="food-child-order-name">${escapeHtml(s.staffName)}${teacherTag}</span>${badge}${editBtn}${deleteBtn}</div>${adminBadge}${items}</div>`;
     }).join("");
     return `<div class="food-summary-section" style="margin-top:10px">Заказы сотрудников</div>${cards}`;
   }
@@ -6906,7 +6914,10 @@ function _renderFoodMenuSummary(root, menuId, data) {
   root.querySelectorAll(".food-admin-edit-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       const formWrap = root.querySelector("#fmAdminOrderFormWrap");
-      _openFoodAdminOrderForm(formWrap || root, menuId, "edit", btn.dataset.orderId, btn.dataset.orderType, btn.dataset.displayName, () => loadFoodMenuSummary(root, menuId));
+      let existingItems = [];
+      try { existingItems = JSON.parse(btn.dataset.itemsJson || "[]"); } catch {}
+      const existingLocation = btn.dataset.locationCode || "";
+      _openFoodAdminOrderForm(formWrap || root, menuId, "edit", btn.dataset.orderId, btn.dataset.orderType, btn.dataset.displayName, () => loadFoodMenuSummary(root, menuId), { existingItems, existingLocation });
     });
   });
   root.querySelectorAll(".food-admin-add-btn").forEach(btn => {
@@ -6990,15 +7001,24 @@ async function _openFoodAdminOrderForm(container, menuId, mode, orderId, orderTy
     </select>
   </div>`;
 
+  const existingQtyMap = {};
+  if (isEdit && extra?.existingItems) {
+    for (const it of extra.existingItems) {
+      const iid = it.item_id ?? it.itemId ?? it.id;
+      if (iid) existingQtyMap[String(iid)] = parseInt(it.quantity || 1, 10);
+    }
+  }
+
   const itemsHtml = menuItems.length
-    ? menuItems.map(it => `
-      <div class="food-admin-item-row">
-        <label class="food-admin-item-label">
-          <span>${escapeHtml(it.name)}${it.weight ? ` · ${escapeHtml(it.weight)}` : ""}${it.price ? ` — ${it.price}₽` : ""}</span>
-          <input type="number" class="food-admin-item-qty" data-item-id="${escapeAttr(String(it.id))}" min="0" max="10" value="0" style="width:56px;margin-left:8px">
-        </input>
-        </label>
-      </div>`).join("")
+    ? menuItems.map(it => {
+        const iid = String(it.id);
+        const qty = existingQtyMap[iid] ?? 0;
+        const priceStr = it.price ? ` — ${_fmtBYN(it.price)}` : "";
+        return `<div class="food-admin-item-row">
+          <div class="food-admin-item-info">${escapeHtml(it.name)}${it.weight ? `<br><span style="color:#888;font-size:12px">${escapeHtml(it.weight)}${priceStr}</span>` : (priceStr ? `<br><span style="color:#888;font-size:12px">${priceStr.trim()}</span>` : "")}</div>
+          <div class="food-admin-item-qty-wrap"><input type="number" class="food-admin-item-qty" data-item-id="${escapeAttr(iid)}" min="0" max="10" value="${qty}"></div>
+        </div>`;
+      }).join("")
     : `<div style="color:#888;font-size:13px">В этом меню нет доступных блюд</div>`;
 
   container.innerHTML = `<div class="food-admin-form-wrap">
@@ -7037,6 +7057,12 @@ async function _openFoodAdminOrderForm(container, menuId, mode, orderId, orderTy
   }
   personTypeEl?.addEventListener("change", _updateFormVisibility);
   if (isCreate) _updateFormVisibility();
+
+  // Pre-populate location select for staff edit
+  if (isEdit && orderType === "staff" && extra?.existingLocation) {
+    const locEl = container.querySelector("#fmAdminLocSelect");
+    if (locEl) locEl.value = extra.existingLocation;
+  }
 
   container.querySelector("#fmAdminFormCancel")?.addEventListener("click", () => { container.innerHTML = ""; });
 
@@ -8790,7 +8816,7 @@ function _renderBulkEditablePreview(root, menuId, items) {
       </select>
       <input type="text" class="fiBulkName" value="${escapeAttr(it.name)}" placeholder="Название" maxlength="200" style="${inStyle};flex:1 1 auto;min-width:0">
       <input type="text" class="fiBulkWeight" value="${escapeAttr(it.weight || "")}" placeholder="Вес" style="${inStyle};width:90px;flex:0 0 auto">
-      <input type="text" class="fiBulkPrice" value="${it.internalPrice != null ? escapeAttr(String(it.internalPrice)) : ""}" placeholder="Стоим." title="Стоимость для отчёта (руб.)" style="${inStyle};width:72px;flex:0 0 auto">
+      <input type="text" class="fiBulkPrice" value="${it.internalPrice != null ? escapeAttr(String(it.internalPrice)) : ""}" placeholder="BYN" title="Стоимость для отчёта (BYN)" style="${inStyle};width:72px;flex:0 0 auto">
       <button class="secondary btn-sm fiBulkDel" style="flex:0 0 auto;padding:4px 8px;font-size:13px">✕</button>
     </div>`).join("");
   preview.innerHTML = `

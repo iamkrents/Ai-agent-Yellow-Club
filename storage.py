@@ -1680,12 +1680,21 @@ class Storage:
             if not row:
                 raise ValueError("not_found")
             mid = row["menu_id"]
-            conn.execute(
-                """UPDATE food_orders SET status='submitted', updated_at=?,
-                   admin_updated_by=?, admin_updated_at=?, admin_comment=?
-                   WHERE id=?""",
-                (now, int(admin_uid), now, str(admin_comment or ""), oid),
-            )
+            existing_source = row.get("admin_source") or ""
+            if existing_source:
+                conn.execute(
+                    """UPDATE food_orders SET status='submitted', updated_at=?,
+                       admin_updated_by=?, admin_updated_at=?, admin_comment=?
+                       WHERE id=?""",
+                    (now, int(admin_uid), now, str(admin_comment or ""), oid),
+                )
+            else:
+                conn.execute(
+                    """UPDATE food_orders SET status='submitted', updated_at=?,
+                       admin_source=?, admin_updated_by=?, admin_updated_at=?, admin_comment=?
+                       WHERE id=?""",
+                    (now, "admin_edit", int(admin_uid), now, str(admin_comment or ""), oid),
+                )
             conn.execute("DELETE FROM food_order_items WHERE order_id=?", (oid,))
             if safe_qty:
                 id_ph = ", ".join("?" for _ in safe_qty)
@@ -1780,18 +1789,33 @@ class Storage:
             row = conn.execute("SELECT * FROM food_staff_orders WHERE id=?", (oid,)).fetchone()
             if not row:
                 raise ValueError("not_found")
-            if loc is not None:
-                conn.execute(
-                    """UPDATE food_staff_orders SET status='submitted', updated_at=?, location_code=?,
-                       admin_updated_by=?, admin_updated_at=?, admin_comment=? WHERE id=?""",
-                    (now, loc, int(admin_uid), now, str(admin_comment or ""), oid),
-                )
+            existing_source = row.get("admin_source") or ""
+            if existing_source:
+                if loc is not None:
+                    conn.execute(
+                        """UPDATE food_staff_orders SET status='submitted', updated_at=?, location_code=?,
+                           admin_updated_by=?, admin_updated_at=?, admin_comment=? WHERE id=?""",
+                        (now, loc, int(admin_uid), now, str(admin_comment or ""), oid),
+                    )
+                else:
+                    conn.execute(
+                        """UPDATE food_staff_orders SET status='submitted', updated_at=?,
+                           admin_updated_by=?, admin_updated_at=?, admin_comment=? WHERE id=?""",
+                        (now, int(admin_uid), now, str(admin_comment or ""), oid),
+                    )
             else:
-                conn.execute(
-                    """UPDATE food_staff_orders SET status='submitted', updated_at=?,
-                       admin_updated_by=?, admin_updated_at=?, admin_comment=? WHERE id=?""",
-                    (now, int(admin_uid), now, str(admin_comment or ""), oid),
-                )
+                if loc is not None:
+                    conn.execute(
+                        """UPDATE food_staff_orders SET status='submitted', updated_at=?, location_code=?,
+                           admin_source=?, admin_updated_by=?, admin_updated_at=?, admin_comment=? WHERE id=?""",
+                        (now, loc, "admin_edit", int(admin_uid), now, str(admin_comment or ""), oid),
+                    )
+                else:
+                    conn.execute(
+                        """UPDATE food_staff_orders SET status='submitted', updated_at=?,
+                           admin_source=?, admin_updated_by=?, admin_updated_at=?, admin_comment=? WHERE id=?""",
+                        (now, "admin_edit", int(admin_uid), now, str(admin_comment or ""), oid),
+                    )
             conn.execute("DELETE FROM food_staff_order_items WHERE order_id=?", (oid,))
             if safe_qty:
                 id_ph = ", ".join("?" for _ in safe_qty)

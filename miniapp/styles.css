@@ -6098,8 +6098,8 @@ body.is-telegram-webapp .app-shell {
 .food-menu-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .food-menu-card-title { font-weight: 700; font-size: 1rem; }
 .food-menu-card-meta { font-size: 13px; color: var(--color-text-secondary, #666); margin-top: 2px; }
-.food-menu-card-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; width: 100%; }
-.food-menu-card-actions button, .food-menu-card-actions .btn-sm { flex: 1 1 auto; min-width: 90px; min-height: 44px; }
+.food-menu-card-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; width: 100%; box-sizing: border-box; }
+.food-menu-card-actions button, .food-menu-card-actions .btn-sm { width: 100%; min-height: 44px; box-sizing: border-box; }
 .btn-sm { padding: 8px 12px; font-size: 13px; min-height: 44px; }
 .food-menu-status { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; vertical-align: middle; }
 .food-menu-status--draft { background: #f0f0f0; color: #555; border: 1px solid #ddd; }
@@ -6452,7 +6452,9 @@ body { -webkit-overflow-scrolling: touch; }
 .kitchen-teacher-tag { display: inline-block; font-size: 10px; font-weight: 700; color: #fff; background: #2ea86b; border-radius: 4px; padding: 1px 5px; margin-left: 6px; vertical-align: middle; }
 .food-order-delete-btn { flex-shrink: 0; margin-left: auto; padding: 2px 7px; font-size: 12px; font-weight: 700; color: #c0392b; background: transparent; border: 1.5px solid #e0b0b0; border-radius: 6px; cursor: pointer; line-height: 1.4; }
 .food-order-delete-btn:hover { background: #fdf0f0; border-color: #c0392b; }
-.food-admin-badge { display: inline-block; font-size: 11px; color: #7b5ea7; background: #f3eeff; border: 1px solid #d0bff0; border-radius: 8px; padding: 1px 7px; margin-left: 6px; white-space: nowrap; vertical-align: middle; }
+.food-admin-badge-wrap { padding: 4px 0 2px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.food-admin-badge { display: inline-block; font-size: 11px; color: #7b5ea7; background: #f3eeff; border: 1px solid #d0bff0; border-radius: 8px; padding: 2px 8px; white-space: nowrap; }
+.food-admin-badge-comment { font-size: 11px; color: #888; }
 .food-admin-edit-btn { flex-shrink: 0; margin-left: 6px; padding: 2px 9px; font-size: 12px; color: #1a6fa8; background: transparent; border: 1.5px solid #b0d0ee; border-radius: 6px; cursor: pointer; line-height: 1.4; }
 .food-admin-edit-btn:hover { background: #eaf4ff; border-color: #1a6fa8; }
 .food-admin-add-btn { flex-shrink: 0; margin-left: 6px; padding: 2px 9px; font-size: 12px; color: #1a7a4a; background: transparent; border: 1.5px solid #a0d8b8; border-radius: 6px; cursor: pointer; line-height: 1.4; }
@@ -6463,10 +6465,11 @@ body { -webkit-overflow-scrolling: touch; }
 .food-admin-form-label { display: block; font-size: 13px; font-weight: 600; color: #444; margin-bottom: 4px; }
 .food-admin-select { width: 100%; padding: 7px 10px; border: 1.5px solid #ccc; border-radius: 8px; font-size: 14px; background: #fff; }
 .food-admin-text-input { width: 100%; padding: 7px 10px; border: 1.5px solid #ccc; border-radius: 8px; font-size: 14px; background: #fff; box-sizing: border-box; }
-.food-admin-items-list { display: flex; flex-direction: column; gap: 6px; }
-.food-admin-item-row { display: flex; align-items: center; gap: 8px; }
-.food-admin-item-label { display: flex; align-items: center; justify-content: space-between; width: 100%; font-size: 13px; }
-.food-admin-item-qty { width: 52px; padding: 4px 6px; border: 1.5px solid #ccc; border-radius: 6px; font-size: 14px; text-align: center; }
+.food-admin-items-list { display: flex; flex-direction: column; gap: 8px; }
+.food-admin-item-row { display: flex; align-items: flex-start; gap: 12px; width: 100%; }
+.food-admin-item-info { flex: 1 1 0; font-size: 13px; line-height: 1.4; word-break: break-word; padding-top: 6px; }
+.food-admin-item-qty-wrap { flex: 0 0 64px; display: flex; align-items: center; justify-content: center; }
+.food-admin-item-qty { width: 56px; padding: 5px 6px; border: 1.5px solid #ccc; border-radius: 6px; font-size: 15px; text-align: center; -moz-appearance: textfield; }
 .food-admin-form-actions { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
 .food-delete-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 9999; padding: 16px; }
 .food-delete-dialog { background: #fff; border-radius: 16px; padding: 24px; max-width: 340px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,.18); }
