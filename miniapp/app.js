@@ -66,7 +66,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.34");
+console.log("MiniApp version: v7.0.35");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -4488,7 +4488,7 @@ function renderLessonModal(data) {
       await openLesson(lesson.id, { force: true });
       window.setTimeout(loadLessons, 250);
       await loadTasks();
-      if (canUseAdmin()) await loadAdmin();
+      if (canUseAdmin()) await safeRefresh("lesson-study-done", loadAdmin);
     } catch (e) { setNotice(safeUserError(e), "error"); }
   });
   showLessonModal();
@@ -4542,7 +4542,7 @@ async function uploadPrepResult(lessonId) {
     setNotice(data.message || "Результат отправлен", "ok");
     await openLesson(lessonId, { force: true });
     await loadTasks();
-    if (canUseAdmin()) await loadAdmin();
+    if (canUseAdmin()) await safeRefresh("prep-upload", loadAdmin);
   } catch (e) {
     setNotice(safeUserError(e), "error");
   }
@@ -4618,7 +4618,7 @@ async function runAction(lessonId, action) {
       renderLessonsQuietly();
       window.setTimeout(() => loadLessons(), 250);
       window.setTimeout(() => loadTasks(), 250);
-      if (canUseAdmin()) window.setTimeout(() => loadAdmin(), 300);
+      if (canUseAdmin()) window.setTimeout(() => safeRefresh("lesson-close", loadAdmin), 300);
       return;
     }
 
@@ -4626,7 +4626,7 @@ async function runAction(lessonId, action) {
     await openLesson(lessonId, { force: true });
     await loadLessons();
     await loadTasks();
-    if (canUseAdmin()) await loadAdmin();
+    if (canUseAdmin()) await safeRefresh("lesson-action", loadAdmin);
   } catch (e) {
     setNotice(safeUserError(e), "error");
   }
@@ -8914,9 +8914,69 @@ async function reviewPrepResult(fileId, decision) {
   try {
     await apiPost("/api/admin/prep-result-review", { fileId, decision, comment });
     setNotice(decision === "approved" ? "Результат подтверждён, преподавателю отправлена обратная связь" : "Результат отклонён, преподавателю отправлена обратная связь", "ok");
-    await loadAdmin();
+    await safeRefresh("prep-review", loadAdmin);
   } catch (e) { setNotice(safeUserError(e), "error"); }
 }
+// ---- v7.0.35: Navigation state protection ----
+
+function captureNavigationState() {
+  const activeTabEl = document.querySelector(".tab.active");
+  const snapshot = {
+    mainTab: activeTabEl?.dataset?.tab ?? null,
+    adminTab: state.adminTab,
+    foodMenuView: state.foodMenuView,
+    foodMenuSummaryMenuId: state.foodMenuSummaryMenuId,
+    foodMenuSelectedId: state.foodMenuSelected?.id ?? null,
+    isEditingFoodOrder: state.isEditingFoodOrder,
+    kitchenSelectedMenuId: state.kitchenSelectedMenuId,
+    kitchenEditorSelectedId: state.kitchenEditorSelected?.id ?? null,
+    internSection: state.internSection,
+    internOpenStep: state.internOpenStep,
+    selectedLessonId: state.selectedLesson?.id ?? null,
+    clientTaskExpandedId: state.clientTaskExpandedId,
+    scrollY: window.scrollY,
+  };
+  console.log("[nav] capture tab=" + snapshot.mainTab + " adminTab=" + snapshot.adminTab
+    + " foodView=" + snapshot.foodMenuView + " editing=" + snapshot.isEditingFoodOrder
+    + " scrollY=" + Math.round(snapshot.scrollY));
+  return snapshot;
+}
+
+function restoreNavigationState(snapshot) {
+  if (!snapshot) return;
+  // Restore admin sub-tab if it drifted (defensive)
+  if (snapshot.adminTab && state.adminTab !== snapshot.adminTab) {
+    state.adminTab = snapshot.adminTab;
+    document.querySelectorAll(".subtab").forEach(el =>
+      el.classList.toggle("active", el.dataset.adminTab === state.adminTab)
+    );
+  }
+  // Best-effort scroll restore after DOM settles
+  if (snapshot.scrollY > 0) {
+    requestAnimationFrame(() => window.scrollTo({ top: snapshot.scrollY }));
+  }
+  console.log("[nav] restore tab=" + snapshot.mainTab + " foodView=" + snapshot.foodMenuView
+    + " editing=" + snapshot.isEditingFoodOrder + " scrollY=" + Math.round(snapshot.scrollY));
+}
+
+async function safeRefresh(reason, refreshFn) {
+  const snapshot = captureNavigationState();
+  console.log("[refresh] start reason=" + reason + " tab=" + snapshot.mainTab
+    + " adminTab=" + snapshot.adminTab + " foodView=" + snapshot.foodMenuView);
+  if (state.isEditingFoodOrder) {
+    console.log("[refresh] skipped — food order form is open (reason=" + reason + ")");
+    return;
+  }
+  try {
+    await refreshFn();
+    restoreNavigationState(snapshot);
+    console.log("[refresh] done reason=" + reason);
+  } catch (e) {
+    console.error("[refresh] failed reason=" + reason, e);
+    // Don't reset the screen on error — keep current state
+  }
+}
+
 async function loadAdmin() {
   if (!canUseAdmin()) return;
   try {
@@ -8932,7 +8992,7 @@ async function runScheduleCheck(notify) {
     setNotice("Проверяю МойКласс...", "");
     const data = await apiPost("/api/admin/schedule-check", { days: 30, notify });
     setNotice(`Проверка МойКласс: новых ${data.new?.length || 0}, изменённых ${data.changed?.length || 0}, задач ${data.tasks?.length || 0}, уведомлений ${data.sent || 0}`, "ok");
-    await loadAdmin(); await loadTasks();
+    await safeRefresh("schedule-check", loadAdmin); await loadTasks();
   } catch (e) { setNotice(safeUserError(e), "error"); }
 }
 
