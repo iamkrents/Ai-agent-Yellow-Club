@@ -11,6 +11,11 @@
   --card: #ffffff;
   --bg: #f6f7fb;
   --shadow: 0 10px 30px rgba(26, 38, 66, 0.10);
+  /* v7.0.36 animation tokens */
+  --yc-ease: cubic-bezier(.2, .8, .2, 1);
+  --yc-fast: 120ms;
+  --yc-normal: 180ms;
+  --yc-slow: 240ms;
 }
 * { box-sizing: border-box; }
 html, body { min-height: 100%; }
@@ -1452,17 +1457,10 @@ button:active,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .modal,
-  .modal .modal-card,
-  .prep-check,
-  .close-check,
-  .card,
-  .proto-box,
-  button,
-  .sk-line,
-  .sk-pills span {
-    animation: none !important;
-    transition: none !important;
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
@@ -6511,3 +6509,98 @@ body { -webkit-overflow-scrolling: touch; }
 .food-audit-check { font-size: 13px; margin-bottom: 2px; }
 .food-audit-check--error { color: #c0392b; }
 .food-audit-check--warn { color: #b8860b; }
+
+/* =====================================================
+   v7.0.36 — Animation Layer
+   ===================================================== */
+
+/* --- Keyframes --- */
+@keyframes ycFadeIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes ycCardEnter {
+  from { opacity: 0; transform: translateY(6px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes ycSlideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes ycNoticeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Utility animation classes --- */
+.yc-fade-in     { animation: ycFadeIn    var(--yc-normal) var(--yc-ease) both; }
+.yc-slide-up    { animation: ycSlideUp   var(--yc-normal) var(--yc-ease) both; }
+.yc-card-enter  { animation: ycCardEnter var(--yc-normal) var(--yc-ease) both; }
+.yc-notice-enter { animation: ycNoticeIn var(--yc-fast)  var(--yc-ease) both; }
+.yc-list-enter  { animation: ycFadeIn    var(--yc-fast)  var(--yc-ease) both; }
+.yc-soft-update { animation: ycCardSoftPulse 380ms ease-out; }
+
+/* Press-feedback utility */
+.yc-pressable {
+  transition: transform var(--yc-fast) ease,
+              background-color var(--yc-fast) ease,
+              opacity var(--yc-fast) ease;
+}
+.yc-pressable:active:not(:disabled) { transform: scale(.97); }
+
+/* --- Tab panel switch --- */
+.tab-panel.active { animation: ycFadeIn var(--yc-fast) var(--yc-ease) both; }
+
+/* --- Notice bar --- */
+.notice.ok    { animation: ycNoticeIn var(--yc-fast) var(--yc-ease) both; }
+.notice.error { animation: ycNoticeIn var(--yc-fast) var(--yc-ease) both; }
+
+/* --- Lesson cards --- */
+.lc-card { animation: ycCardEnter var(--yc-normal) var(--yc-ease) both; }
+
+/* --- Task sections (animate container, not individual cards) --- */
+.task-section { animation: ycFadeIn var(--yc-fast) var(--yc-ease) both; }
+
+/* --- Intern track accordion --- */
+.intern-acc { animation: ycFadeIn var(--yc-normal) var(--yc-ease) both; }
+
+/* --- Food panel containers (replaced wholesale via innerHTML) --- */
+.food-debug-card { animation: ycFadeIn var(--yc-normal) var(--yc-ease) both; }
+
+/* --- Food menu cards (admin list) --- */
+.food-menu-card { animation: ycCardEnter var(--yc-normal) var(--yc-ease) both; }
+
+/* --- Admin manual order form (slides up like a drawer) --- */
+.food-admin-form-wrap { animation: ycSlideUp var(--yc-normal) var(--yc-ease) both; }
+
+/* --- Food audit block --- */
+.food-audit-block { animation: ycFadeIn var(--yc-fast) var(--yc-ease) both; }
+
+/* --- Parent food order cards --- */
+.parent-food-card { animation: ycCardEnter var(--yc-normal) var(--yc-ease) both; }
+.food-order-card,
+.food-order-card--collapsed { animation: ycCardEnter var(--yc-normal) var(--yc-ease) both; }
+
+/* --- Kitchen panels --- */
+.kitchen-panel,
+.restaurant-panel { animation: ycFadeIn var(--yc-fast) var(--yc-ease) both; }
+
+/* --- Kitchen editor menu cards --- */
+.kitchen-editor-menu-card { animation: ycFadeIn var(--yc-fast) var(--yc-ease) both; }
+
+/* --- Food admin action buttons (press feedback) --- */
+.food-admin-edit-btn,
+.food-admin-add-btn,
+.food-order-delete-btn {
+  transition: transform var(--yc-fast) ease,
+              background-color var(--yc-fast) ease,
+              opacity var(--yc-fast) ease;
+}
+.food-admin-edit-btn:active,
+.food-admin-add-btn:active,
+.food-order-delete-btn:active { transform: scale(.96); }
+
+/* --- Safety: no animation/transform on disabled buttons --- */
+button:disabled:active,
+button[disabled]:active,
+input:disabled { animation: none !important; transform: none !important; }

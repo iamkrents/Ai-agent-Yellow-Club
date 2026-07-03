@@ -66,7 +66,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.35");
+console.log("MiniApp version: v7.0.36");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -516,6 +516,10 @@ function setNotice(text, type = "") {
   if (!el) return;
   el.textContent = text;
   el.className = `notice ${type}`.trim();
+  // Restart CSS entry animation on each call
+  el.style.animation = "none";
+  void el.offsetHeight;
+  el.style.animation = "";
 }
 function safeUserError(e) {
   const msg = (typeof e === "string" ? e : (e?.message || "")).trim();
