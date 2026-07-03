@@ -66,7 +66,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.33");
+console.log("MiniApp version: v7.0.34");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -137,6 +137,9 @@ const state = {
   foodOrderExpanded: {},
   foodMenuData: null,
   foodMenuSelected: null,
+  foodMenuView: "list",
+  foodMenuSummaryMenuId: null,
+  isEditingFoodOrder: false,
   foodMenuDrafts: {},
   kitchenMenus: null,
   kitchenSelectedMenuId: null,
@@ -6209,19 +6212,37 @@ function _foodMenuStatusBadge(status) {
 }
 
 async function renderFoodMenuPanel(root) {
+  const view = state.foodMenuView || "list";
+  console.log("[food-nav] renderFoodMenuPanel view=" + view + " editing=" + state.isEditingFoodOrder + " menuId=" + state.foodMenuSummaryMenuId);
+  // Block background re-render while the admin form is open
+  if (state.isEditingFoodOrder && view === "summary") {
+    console.log("[food-nav] renderFoodMenuPanel: skipped — admin form is open");
+    return;
+  }
+  // Restore summary view
+  if (view === "summary" && state.foodMenuSummaryMenuId) {
+    await loadFoodMenuSummary(root, state.foodMenuSummaryMenuId);
+    return;
+  }
+  // Restore detail view
+  if (view === "detail" && state.foodMenuSelected) {
+    _renderFoodMenuDetail(root, state.foodMenuSelected);
+    return;
+  }
+  // Fall back to list
   if (!state.foodMenuData) {
     root.innerHTML = `<div class="food-debug-card"><div class="empty">Загрузка меню...</div></div>`;
     await loadFoodMenus(root);
     return;
   }
-  if (state.foodMenuSelected !== null) {
-    _renderFoodMenuDetail(root, state.foodMenuSelected);
-  } else {
-    _renderFoodMenuList(root);
-  }
+  _renderFoodMenuList(root);
 }
 
 async function loadFoodMenus(root) {
+  state.foodMenuView = "list";
+  state.foodMenuSelected = null;
+  state.foodMenuSummaryMenuId = null;
+  console.log("[food-nav] loadFoodMenus: resetting to list");
   try {
     const d = await apiGet("/api/food/menus");
     if (d.ok) state.foodMenuData = d.menus || [];
@@ -6231,11 +6252,11 @@ async function loadFoodMenus(root) {
     if (root) root.innerHTML = `<div class="food-debug-card"><div class="food-debug-error">Ошибка загрузки: ${escapeHtml(e.message)}</div></div>`;
     return;
   }
-  state.foodMenuSelected = null;
   if (root) _renderFoodMenuList(root);
 }
 
 function _renderFoodMenuList(root) {
+  state.foodMenuView = "list";
   const menus = state.foodMenuData || [];
   const todayLocal = localIsoDate(new Date());
   const aw = state.foodDebugLastResult?.activeCampWeek;
@@ -6423,7 +6444,8 @@ async function closeFoodMenu(root, menuId) {
 }
 
 function _renderFoodMenuDetail(root, menu) {
-  if (!menu) { state.foodMenuSelected = null; loadFoodMenus(root); return; }
+  if (!menu) { state.foodMenuSelected = null; state.foodMenuView = "list"; loadFoodMenus(root); return; }
+  state.foodMenuView = "detail";
   const dateStr = _formatMenuDate(menu.menu_date);
   const items = Array.isArray(menu.items) ? menu.items : [];
   const catOrder = [...FOOD_CATEGORIES];
@@ -6681,11 +6703,15 @@ async function restoreFoodItem(root, itemId, menuId) {
 }
 
 async function loadFoodMenuSummary(root, menuId) {
+  const savedScrollY = window.scrollY;
+  state.foodMenuView = "summary";
+  state.foodMenuSummaryMenuId = menuId;
   root.innerHTML = `<div class="food-debug-card"><div class="empty">Загрузка сводки...</div></div>`;
   try {
     const data = await apiGet(`/api/food/menus/${menuId}/summary`);
     if (!data.ok) { setNotice(data.error || "Ошибка загрузки сводки", "error"); state.foodMenuSelected && _renderFoodMenuDetail(root, state.foodMenuSelected); return; }
     _renderFoodMenuSummary(root, menuId, data);
+    if (savedScrollY > 0) setTimeout(() => window.scrollTo({ top: savedScrollY }), 0);
   } catch (e) { setNotice(safeUserError(e), "error"); }
 }
 
@@ -6939,6 +6965,7 @@ async function _loadFoodAdminPersons(menuId) {
 }
 
 async function _openFoodAdminOrderForm(container, menuId, mode, orderId, orderType, displayName, onSuccess, extra) {
+  state.isEditingFoodOrder = true;
   container.innerHTML = `<div class="food-admin-form-wrap"><div style="color:#888;font-size:13px;padding:12px 0">Загрузка данных меню...</div></div>`;
   container.scrollIntoView({ behavior: "smooth", block: "nearest" });
   let persons;
@@ -6946,7 +6973,7 @@ async function _openFoodAdminOrderForm(container, menuId, mode, orderId, orderTy
     persons = await _loadFoodAdminPersons(menuId);
   } catch (e) {
     container.innerHTML = `<div class="food-admin-form-wrap"><div style="color:#c0392b;font-size:13px;padding:8px 0">Ошибка: ${escapeHtml(safeUserError(e))}</div><button class="secondary btn-sm" id="fmAdminFormClose">Закрыть</button></div>`;
-    container.querySelector("#fmAdminFormClose")?.addEventListener("click", () => { container.innerHTML = ""; });
+    container.querySelector("#fmAdminFormClose")?.addEventListener("click", () => { state.isEditingFoodOrder = false; container.innerHTML = ""; });
     return;
   }
 
@@ -7064,7 +7091,7 @@ async function _openFoodAdminOrderForm(container, menuId, mode, orderId, orderTy
     if (locEl) locEl.value = extra.existingLocation;
   }
 
-  container.querySelector("#fmAdminFormCancel")?.addEventListener("click", () => { container.innerHTML = ""; });
+  container.querySelector("#fmAdminFormCancel")?.addEventListener("click", () => { state.isEditingFoodOrder = false; container.innerHTML = ""; });
 
   container.querySelector("#fmAdminFormSubmit")?.addEventListener("click", async () => {
     const submitBtn = container.querySelector("#fmAdminFormSubmit");
@@ -7121,6 +7148,7 @@ async function _openFoodAdminOrderForm(container, menuId, mode, orderId, orderTy
         return;
       }
       setNotice(isEdit ? "Заказ обновлён" : "Заказ добавлен", "success");
+      state.isEditingFoodOrder = false;
       container.innerHTML = "";
       if (onSuccess) onSuccess();
     } catch (e) {
@@ -8931,6 +8959,9 @@ async function reloadCabinetAfterRoleChange() {
   state.foodOrderExpanded = {};
   state.foodMenuData = null;
   state.foodMenuSelected = null;
+  state.foodMenuView = "list";
+  state.foodMenuSummaryMenuId = null;
+  state.isEditingFoodOrder = false;
   state.kitchenMenus = null;
   state.kitchenSelectedMenuId = null;
   state.kitchenSummaryData = null;
