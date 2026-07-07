@@ -4333,6 +4333,10 @@ class MiniAppContext:
             snap_today = snap_tomorrow = snap_7 = snap_14 = ctrl_count = 0
             locations: list[str] = []
             sample_lessons: list[dict] = []
+            # Snapshot DB stats — track all IDs seen even without match
+            snap_total_in_range = 0
+            snap_with_teacher_ids = 0
+            snap_unique_ids: list[str] = []  # sample of unique teacher IDs found in snapshots
             if mk_teacher_id:
                 with self.storage._connect() as conn:
                     for row in conn.execute(
@@ -4341,7 +4345,14 @@ class MiniAppContext:
                         "ORDER BY lesson_date, lesson_time",
                         (date_from, date_to_14),
                     ).fetchall():
-                        ids_in_snap = [x.strip() for x in str(row["teacher_ids"] or "").split(",") if x.strip()]
+                        snap_total_in_range += 1
+                        raw_ids_str = str(row["teacher_ids"] or "")
+                        ids_in_snap = [x.strip() for x in raw_ids_str.split(",") if x.strip()]
+                        if ids_in_snap:
+                            snap_with_teacher_ids += 1
+                            for sid in ids_in_snap:
+                                if sid not in snap_unique_ids:
+                                    snap_unique_ids.append(sid)
                         if mk_teacher_id not in ids_in_snap:
                             continue
                         d = str(row["lesson_date"] or "")
@@ -4396,10 +4407,12 @@ class MiniAppContext:
             food_enabled = bool(getattr(self.settings, "food_module_enabled", False))
             food_access = food_enabled and bool(mk_teacher_id) and snap_14 > 0 and bool(locations)
             class_orders_access = food_access and role in {"teacher", "methodist", "intern"}
+            id_in_any_snapshot = mk_teacher_id in snap_unique_ids if mk_teacher_id else False
             log.info(
                 "[teacher-diagnostics] uid=%s role=%s mk_teacher_id=%s status=%s "
-                "snap_14=%s ctrl=%s locations=%s reason=%s",
-                uid, role, mk_teacher_id, status, snap_14, ctrl_count, locations, reason,
+                "snap_14=%s ctrl=%s locations=%s reason=%s snap_total=%s id_in_any_snap=%s",
+                uid, role, mk_teacher_id, status, snap_14, ctrl_count,
+                locations, reason, snap_total_in_range, id_in_any_snapshot,
             )
             return {
                 "ok": True, "telegram_user_id": uid, "user_records": [user_record],
@@ -4417,6 +4430,13 @@ class MiniAppContext:
                 "locations": locations, "food_access": food_access,
                 "class_orders_access": class_orders_access,
                 "reason": reason, "sample_lessons": sample_lessons,
+                "snapshot_stats": {
+                    "total_in_db_next14": snap_total_in_range,
+                    "with_teacher_ids": snap_with_teacher_ids,
+                    "unique_ids_sample": snap_unique_ids[:30],
+                    "searched_id": mk_teacher_id,
+                    "id_found_in_snapshots": id_in_any_snapshot,
+                },
             }
         except Exception:
             log.exception("teacher_diagnostics error uid=%s", telegram_user_id)
@@ -4424,6 +4444,7 @@ class MiniAppContext:
 
     def teacher_diagnostics_refresh(self, auth: dict[str, Any], telegram_user_id: str) -> dict[str, Any]:
         """Trigger safe, non-destructive MoyKlass schedule sync for a specific teacher.
+        Uses full pagination to load ALL lessons from MoyKlass and match by teacher ID.
         Only accessible to owner/admin/operations."""
         denied = self._require_admin(auth)
         if denied:
@@ -4439,43 +4460,120 @@ class MiniAppContext:
         if not mk_teacher_id:
             return {"ok": False, "error": "MK teacherId не привязан — обновление невозможно. Сначала привяжите teacherId."}
         try:
-            result = self.moyklass.get_upcoming_lessons(days=30, limit=500)
-            if not result.ok:
-                return {
-                    "ok": False,
-                    "error": f"МойКласс не вернул расписание: {result.error or f'status={result.status}'}",
-                    "hint": "Проверьте подключение к МойКласс и запустите общий sync расписания.",
-                }
-            items = [x for x in extract_items(result.data) if isinstance(x, dict)]
-            synced = 0
-            for item in items:
+            today = date.today()
+            date_to = today + timedelta(days=45)
+            log.info(
+                "[moyklass-teacher-sync] start uid=%s mk_teacher_id=%s date_from=%s date_to=%s",
+                uid, mk_teacher_id, today.isoformat(), date_to.isoformat(),
+            )
+            fetch = self.moyklass.get_teacher_lessons_paginated(
+                teacher_id=mk_teacher_id,
+                date_from=today,
+                date_to=date_to,
+                max_pages=30,
+            )
+            total_loaded = fetch.get("total_loaded", 0)
+            pages_loaded = fetch.get("pages_loaded", 0)
+            strategy_used = fetch.get("strategy_used", "none")
+            matched_by_id = fetch.get("matched_by_id", 0)
+            total_in_range = fetch.get("total_in_range", 0)
+            field_stats = fetch.get("field_stats", {})
+            reason_if_zero = fetch.get("reason_if_zero", "")
+            teacher_lessons = fetch.get("matched", [])
+
+            log.info(
+                "[moyklass-teacher-sync] done uid=%s mk_teacher_id=%s total_loaded=%s pages=%s "
+                "in_range=%s matched_by_id=%s strategy=%s reason_if_zero=%s",
+                uid, mk_teacher_id, total_loaded, pages_loaded,
+                total_in_range, matched_by_id, strategy_used, reason_if_zero,
+            )
+
+            # Name-based fallback: check if any lesson has teacher name matching stored name
+            teacher_name_stored = str(user.get("mk_teacher_name") or "").strip().lower()
+            name_matched_ids: list[str] = []
+            if teacher_name_stored and matched_by_id == 0 and total_in_range > 0:
+                all_in_range = fetch.get("all_in_range", [])
+                for item in all_in_range:
+                    for field in ("teachers", "teacher", "staff"):
+                        val = item.get(field)
+                        objs = val if isinstance(val, list) else ([val] if isinstance(val, dict) else [])
+                        for obj in objs:
+                            if isinstance(obj, dict):
+                                obj_name = str(obj.get("name") or obj.get("fullName") or obj.get("fio") or "").strip().lower()
+                                if obj_name and teacher_name_stored and (
+                                    obj_name in teacher_name_stored or teacher_name_stored in obj_name
+                                ):
+                                    obj_id = str(obj.get("id") or obj.get("userId") or obj.get("teacherId") or "").strip()
+                                    if obj_id and obj_id not in name_matched_ids:
+                                        name_matched_ids.append(obj_id)
+                if name_matched_ids:
+                    log.info(
+                        "[moyklass-teacher-sync] name_match uid=%s teacher_name=%s found_ids=%s stored_id=%s",
+                        uid, teacher_name_stored, name_matched_ids, mk_teacher_id,
+                    )
+                    id_mismatch_warning = (
+                        f"Имя '{user.get('mk_teacher_name')}' найдено в расписании МойКласс, "
+                        f"но ID в занятиях: {', '.join(name_matched_ids)}, "
+                        f"а сохранённый teacherId={mk_teacher_id}. "
+                        f"Возможно, нужно обновить teacherId."
+                    )
+                else:
+                    id_mismatch_warning = ""
+            else:
+                id_mismatch_warning = ""
+
+            # Write ALL loaded lessons to lesson_snapshots
+            snaps_written = 0
+            for item in (fetch.get("all_in_range") or teacher_lessons):
                 lesson_id = str(_pick(item, ("id", "lessonId")) or "").strip()
                 if not lesson_id:
                     continue
                 snap = self._schedule_snapshot_from_item(item)
                 self.storage.upsert_lesson_snapshot(lesson_id, snap)
-                ids_in_snap = [x.strip() for x in str(snap.get("teacher_ids") or "").split(",") if x.strip()]
-                if mk_teacher_id in ids_in_snap:
-                    synced += 1
-                    self.storage.upsert_teacher_lesson_control(
-                        lesson_id,
-                        lesson_date=snap.get("lesson_date") or "",
-                        lesson_time=snap.get("lesson_time") or "",
-                        group_name=snap.get("group_name") or "",
-                        lesson_topic=snap.get("lesson_topic") or "",
-                        teacher_name=snap.get("teacher_names") or "",
-                        mk_teacher_id=mk_teacher_id,
-                        teacher_user_id=uid,
-                    )
+                snaps_written += 1
+
+            # Write matched teacher lessons to teacher_lesson_control
+            synced = 0
+            for item in teacher_lessons:
+                lesson_id = str(_pick(item, ("id", "lessonId")) or "").strip()
+                if not lesson_id:
+                    continue
+                snap = self._schedule_snapshot_from_item(item)
+                synced += 1
+                self.storage.upsert_teacher_lesson_control(
+                    lesson_id,
+                    lesson_date=snap.get("lesson_date") or "",
+                    lesson_time=snap.get("lesson_time") or "",
+                    group_name=snap.get("group_name") or "",
+                    lesson_topic=snap.get("lesson_topic") or "",
+                    teacher_name=snap.get("teacher_names") or "",
+                    mk_teacher_id=mk_teacher_id,
+                    teacher_user_id=uid,
+                )
+
             log.info(
-                "[teacher-diagnostics] refresh uid=%s mk_teacher_id=%s synced=%s total=%s",
-                uid, mk_teacher_id, synced, len(items),
+                "[moyklass-teacher-sync] saved uid=%s mk_teacher_id=%s synced=%s snaps_written=%s",
+                uid, mk_teacher_id, synced, snaps_written,
             )
+
             diag = self.teacher_diagnostics(auth, str(uid))
-            diag["refresh"] = {"synced": synced, "total_fetched": len(items)}
+            diag["refresh"] = {
+                "ok": True,
+                "synced_for_teacher": synced,
+                "matched_by_id": matched_by_id,
+                "total_loaded": total_loaded,
+                "total_in_range": total_in_range,
+                "pages_loaded": pages_loaded,
+                "strategy_used": strategy_used,
+                "date_range": fetch.get("date_range", {}),
+                "raw_teacher_field_stats": field_stats,
+                "name_matched_ids": name_matched_ids,
+                "id_mismatch_warning": id_mismatch_warning,
+                "reason_if_zero": reason_if_zero,
+            }
             return diag
         except Exception:
-            log.exception("teacher_diagnostics_refresh error uid=%s", uid)
+            log.exception("[moyklass-teacher-sync] refresh error uid=%s", uid)
             return {"ok": False, "error": "Ошибка обновления (см. лог сервера)"}
 
     def admin_all_tasks(self, auth: dict[str, Any]) -> dict[str, Any]:

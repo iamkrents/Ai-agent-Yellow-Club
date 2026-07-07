@@ -418,6 +418,264 @@ class MoyKlassClient:
         today = date.today()
         return self.get_lessons_between(today, today + timedelta(days=max(1, int(days))), limit=limit)
 
+    def get_teacher_lessons_paginated(
+        self,
+        teacher_id: str | int,
+        date_from: date,
+        date_to: date,
+        max_pages: int = 30,
+    ) -> dict[str, Any]:
+        """Fetch all lessons for a specific teacher with full pagination.
+
+        Tries three strategies in order:
+        1. Direct teacher filter (teacherId param) — most efficient if API supports it
+        2. Date-range with pagination through all pages — works when API respects dateFrom/dateTo
+        3. Full page scan without date filter — last resort fallback
+
+        Returns a rich diagnostic dict (not MoyKlassResult) with:
+        - matched: list of matching lesson items
+        - total_loaded: total lessons fetched across all pages
+        - pages_loaded: number of pages fetched
+        - strategy_used: which strategy succeeded
+        - teacher_field_stats: counts of which field shapes were seen
+        - unique_teacher_ids_sample: sample of IDs seen in teacher fields
+        - sample_raw_shapes: first few lesson shapes for debugging
+        - reason_if_zero: human-readable reason when matched=0
+        - date_range: {from, to}
+        """
+        tid = str(teacher_id or "").strip()
+        d1 = date_from
+        d2 = date_to
+        page_size = 200
+        matched: list[dict] = []
+        all_items: list[dict] = []
+        pages_loaded = 0
+        strategy_used = "none"
+
+        def _extract_ids(item: dict) -> list[str]:
+            """Extract all teacher IDs from a lesson item using every known field."""
+            results: list[str] = []
+
+            def _add_value(v: Any) -> None:
+                if v is None or v == "":
+                    return
+                s = str(v).strip()
+                if s and s not in results:
+                    results.append(s)
+
+            def _add_from_obj(obj: Any) -> None:
+                if isinstance(obj, dict):
+                    for k in ("id", "teacherId", "userId", "employeeId", "staffId", "managerId", "tutorId", "responsibleId"):
+                        _add_value(obj.get(k))
+                elif obj is not None and obj != "":
+                    _add_value(str(obj))
+
+            for field in ("teacherIds", "teacher_ids", "teachersIds", "teacher_id_list", "teacherId", "teacher_id"):
+                val = item.get(field)
+                if isinstance(val, list):
+                    for v in val:
+                        _add_from_obj(v)
+                elif val is not None and val != "":
+                    _add_value(str(val))
+
+            for field in ("teachers", "teacher", "staff", "staffs", "employees"):
+                val = item.get(field)
+                if isinstance(val, list):
+                    for v in val:
+                        _add_from_obj(v)
+                elif isinstance(val, dict):
+                    _add_from_obj(val)
+                elif val is not None and val != "":
+                    _add_value(str(val))
+
+            for field in ("employeeId", "employeeIds", "staffId", "managerId", "tutorId", "responsibleId", "userId"):
+                val = item.get(field)
+                if isinstance(val, list):
+                    for v in val:
+                        _add_value(str(v))
+                elif val is not None and val != "":
+                    _add_value(str(val))
+
+            return results
+
+        def _collect_field_stats(items: list[dict]) -> dict:
+            stats: dict[str, int] = {}
+            unique_ids: list[str] = []
+            shapes: list[dict] = []
+            for item in items:
+                for field in ("teacherId", "teacherIds", "teachers", "teacher", "teacher_id", "teacher_ids",
+                              "staff", "employees", "userId", "responsibleId", "employeeId", "staffId",
+                              "managerId", "tutorId"):
+                    if item.get(field) not in (None, "", [], {}):
+                        stats[field] = stats.get(field, 0) + 1
+                for iid in _extract_ids(item):
+                    if iid and iid not in unique_ids:
+                        unique_ids.append(iid)
+                if len(shapes) < 5:
+                    lid = str(_pick(item, ("id", "lessonId")) or "")
+                    shape: dict[str, Any] = {
+                        "lesson_id": lid,
+                        "date": _lesson_date_value(item) or "",
+                        "keys": [k for k in item.keys() if k not in ("students", "visits", "attendance", "records")],
+                    }
+                    for f in ("teacherId", "teacherIds", "teacher_id", "teachers", "teacher", "staff", "employees",
+                              "employeeId", "staffId", "managerId", "userId", "responsibleId"):
+                        if item.get(f) is not None:
+                            v = item[f]
+                            if isinstance(v, list) and len(v) > 3:
+                                shape[f + "_sample"] = v[:3]
+                            else:
+                                shape[f] = v
+                    shapes.append(shape)
+            return {"fields": stats, "unique_ids_sample": unique_ids[:20], "sample_shapes": shapes}
+
+        # Strategy 1: Direct teacher filter
+        teacher_param_variants = [
+            {"teacherId": tid, "dateFrom": d1.isoformat(), "dateTo": d2.isoformat(), "limit": str(page_size)},
+            {"teacher_id": tid, "dateFrom": d1.isoformat(), "dateTo": d2.isoformat(), "limit": str(page_size)},
+            {"teacherId": tid, "beginDate": d1.isoformat(), "endDate": d2.isoformat(), "limit": str(page_size)},
+            {"userId": tid, "dateFrom": d1.isoformat(), "dateTo": d2.isoformat(), "limit": str(page_size)},
+        ]
+        for tv_params in teacher_param_variants:
+            r = self.request("GET", "/v1/company/lessons", params=tv_params)
+            if not r.ok:
+                continue
+            items = [x for x in extract_items(r.data) if isinstance(x, dict)]
+            filtered = [x for x in items if d1 <= (parse_date(_lesson_date_value(x)) or d1) < d2]
+            if filtered:
+                matched = filtered
+                all_items = items
+                pages_loaded = 1
+                strategy_used = f"teacher_filter:{list(tv_params.keys())[0]}"
+                break
+
+        # Strategy 2: Date-range with full pagination
+        if not matched:
+            date_param_sets = [
+                {"dateFrom": d1.isoformat(), "dateTo": d2.isoformat()},
+                {"beginDate": d1.isoformat(), "endDate": d2.isoformat()},
+                {"startDate": d1.isoformat(), "endDate": d2.isoformat()},
+                {"date_from": d1.isoformat(), "date_to": d2.isoformat()},
+            ]
+            pagination_styles = [
+                ("offset", lambda pg: {"offset": str(pg * page_size)}),
+                ("skip", lambda pg: {"skip": str(pg * page_size)}),
+                ("page", lambda pg: {"page": str(pg + 1)}),
+            ]
+            for base_params in date_param_sets:
+                for pag_name, pag_fn in pagination_styles:
+                    seen_sigs: set[str] = set()
+                    page_items: list[dict] = []
+                    page_count = 0
+                    for pg in range(max_pages):
+                        params = {**base_params, "limit": str(page_size), **pag_fn(pg)}
+                        r = self.request("GET", "/v1/company/lessons", params=params)
+                        if not r.ok:
+                            break
+                        items = [x for x in extract_items(r.data) if isinstance(x, dict)]
+                        if not items:
+                            break
+                        sig = f"{_pick(items[0], ('id','lessonId'))}|{len(items)}"
+                        if sig in seen_sigs:
+                            break
+                        seen_sigs.add(sig)
+                        page_count += 1
+                        in_range = [x for x in items if d1 <= (parse_date(_lesson_date_value(x)) or d1) < d2]
+                        page_items.extend(in_range)
+                        all_items.extend(items)
+                        if len(items) < page_size:
+                            break
+                    if page_items:
+                        pages_loaded = page_count
+                        strategy_used = f"date_range+{pag_name}:{list(base_params.keys())[0]}"
+                        matched = page_items
+                        break
+                if matched:
+                    break
+
+        # Strategy 3: Full page scan without date filter (last resort)
+        if not matched:
+            for pag_name, pag_fn in [
+                ("offset", lambda pg: {"offset": str(pg * page_size)}),
+                ("page", lambda pg: {"page": str(pg + 1)}),
+            ]:
+                seen_sigs2: set[str] = set()
+                page_items2: list[dict] = []
+                page_count2 = 0
+                for pg in range(max_pages):
+                    params2 = {"limit": str(page_size), **pag_fn(pg)}
+                    r2 = self.request("GET", "/v1/company/lessons", params=params2)
+                    if not r2.ok:
+                        break
+                    items2 = [x for x in extract_items(r2.data) if isinstance(x, dict)]
+                    if not items2:
+                        break
+                    sig2 = f"{_pick(items2[0], ('id','lessonId'))}|{len(items2)}"
+                    if sig2 in seen_sigs2:
+                        break
+                    seen_sigs2.add(sig2)
+                    page_count2 += 1
+                    in_range2 = [x for x in items2 if d1 <= (parse_date(_lesson_date_value(x)) or d1) < d2]
+                    page_items2.extend(in_range2)
+                    all_items.extend(items2)
+                    dates2 = [parse_date(_lesson_date_value(x)) for x in items2]
+                    dates2 = [d for d in dates2 if d]
+                    if dates2 and min(dates2) > d2:
+                        break
+                    if len(items2) < page_size:
+                        break
+                if page_items2:
+                    pages_loaded = page_count2
+                    strategy_used = f"full_scan+{pag_name}"
+                    matched = page_items2
+                    all_items = list({_pick(x, ("id", "lessonId")): x for x in all_items}.values())
+                    break
+
+        # Filter matched by teacher ID
+        total_loaded = len(all_items)
+        teacher_matched = [x for x in matched if tid in _extract_ids(x)]
+        # Name-based fallback detection
+        name_matched_ids: list[str] = []
+        teacher_name_in_storage = ""
+        for item in all_items:
+            for field in ("teachers", "teacher", "staff"):
+                val = item.get(field)
+                objs = val if isinstance(val, list) else ([val] if isinstance(val, dict) else [])
+                for obj in objs:
+                    if isinstance(obj, dict):
+                        obj_name = str(obj.get("name") or obj.get("fullName") or obj.get("fio") or "").strip()
+                        obj_id = str(obj.get("id") or obj.get("userId") or obj.get("teacherId") or "").strip()
+                        if obj_id and obj_id not in name_matched_ids:
+                            name_matched_ids.append(obj_id)
+        field_stats = _collect_field_stats(all_items[:200])
+
+        reason_if_zero = ""
+        if not teacher_matched and total_loaded > 0:
+            if not matched:
+                reason_if_zero = "no_lessons_in_date_range"
+            elif len(matched) > 0 and not teacher_matched:
+                reason_if_zero = "teacher_id_not_present_in_loaded_lessons"
+                if len(all_items) >= page_size * max_pages:
+                    reason_if_zero += "+possible_pagination_truncated"
+            else:
+                reason_if_zero = "unknown"
+        elif total_loaded == 0:
+            reason_if_zero = "no_lessons_loaded_from_api"
+
+        return {
+            "matched": teacher_matched,
+            "all_in_range": matched,
+            "total_loaded": total_loaded,
+            "total_in_range": len(matched),
+            "pages_loaded": max(pages_loaded, 1 if total_loaded > 0 else 0),
+            "strategy_used": strategy_used,
+            "date_range": {"from": d1.isoformat(), "to": d2.isoformat()},
+            "teacher_id_searched": tid,
+            "matched_by_id": len(teacher_matched),
+            "field_stats": field_stats,
+            "reason_if_zero": reason_if_zero,
+        }
+
     def _filter_lessons_data_by_date(self, data: Any, d1: date, d2: date) -> list[dict[str, Any]]:
         items = extract_items(data)
         filtered: list[dict[str, Any]] = []
@@ -1781,46 +2039,85 @@ def _format_probe_section(items: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
+def _extract_id_value(v: Any) -> str:
+    """Safely convert a scalar to a non-empty string ID."""
+    if v is None or v == "" or isinstance(v, (list, dict)):
+        return ""
+    return str(v).strip()
+
+
+def _extract_ids_from_teacher_value(value: Any) -> list[str]:
+    """Extract IDs from any MoyKlass teacher-field value (scalar, list, dict, list-of-dicts)."""
+    results: list[str] = []
+    _ID_KEYS = ("id", "teacherId", "userId", "employeeId", "staffId", "managerId", "tutorId", "responsibleId")
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                for k in _ID_KEYS:
+                    v = _extract_id_value(item.get(k))
+                    if v and v not in results:
+                        results.append(v)
+            else:
+                v = _extract_id_value(item)
+                if v and v not in results:
+                    results.append(v)
+    elif isinstance(value, dict):
+        for k in _ID_KEYS:
+            v = _extract_id_value(value.get(k))
+            if v and v not in results:
+                results.append(v)
+    else:
+        v = _extract_id_value(value)
+        if v:
+            results.append(v)
+    return results
+
+
 def lesson_teacher_ids(item: dict[str, Any]) -> list[str]:
     """Extract all teacher IDs from a MoyKlass lesson object.
 
-    MoyKlass installations use different field names:
-    - teacherIds: [123, 456]       — flat list of integer IDs
-    - teacherId: 123               — single scalar ID
-    - teachers: [{"id": 123, ...}] — list of teacher objects (some installations)
-    - teacher:  {"id": 123, ...}   — single teacher object
-
-    All IDs are normalised to strings so they can be compared with stored mk_teacher_id.
+    MoyKlass installations use different field names. We check every known
+    variant so that accounts that store teachers differently still work.
+    All IDs are normalised to non-empty strings.
     """
     if not isinstance(item, dict):
         return []
-    # 1. teacherIds (flat list) or teacherId (scalar)
-    ids = item.get("teacherIds")
-    if ids is None:
-        ids = item.get("teacherId")
-    if isinstance(ids, list):
-        flat = [str(x).strip() for x in ids if str(x).strip()]
-        if flat:
-            return flat
-    elif ids not in (None, ""):
-        return [str(ids).strip()]
-    # 2. Fallback: teachers / teacher (list of objects or single object)
-    teachers = item.get("teachers") or item.get("teacher")
-    if isinstance(teachers, list):
-        result: list[str] = []
-        for t in teachers:
-            if isinstance(t, dict):
-                tid = t.get("id") or t.get("teacherId") or t.get("userId")
-                if tid:
-                    result.append(str(tid).strip())
-            elif t:
-                result.append(str(t).strip())
-        return [x for x in result if x]
-    if isinstance(teachers, dict):
-        tid = teachers.get("id") or teachers.get("teacherId") or teachers.get("userId")
-        if tid:
-            return [str(tid).strip()]
-    return []
+    results: list[str] = []
+
+    # Priority 1: flat ID fields (most common)
+    for field in ("teacherIds", "teacher_ids", "teachersIds", "teacher_id_list",
+                  "teacherId", "teacher_id"):
+        val = item.get(field)
+        if val is None:
+            continue
+        ids = _extract_ids_from_teacher_value(val)
+        for i in ids:
+            if i not in results:
+                results.append(i)
+
+    # Priority 2: structured teacher objects
+    for field in ("teachers", "teacher", "staff", "staffs", "employees"):
+        val = item.get(field)
+        if val is None or val in ("", [], {}):
+            continue
+        ids = _extract_ids_from_teacher_value(val)
+        for i in ids:
+            if i not in results:
+                results.append(i)
+
+    # Priority 3: other scalar staff-like fields (last resort)
+    if not results:
+        for field in ("employeeId", "employeeIds", "staffId", "managerId",
+                      "tutorId", "responsibleId"):
+            val = item.get(field)
+            if val is None:
+                continue
+            ids = _extract_ids_from_teacher_value(val)
+            for i in ids:
+                if i not in results:
+                    results.append(i)
+
+    return results
 
 
 def lesson_has_teacher(item: dict[str, Any], teacher_id: str | int) -> bool:

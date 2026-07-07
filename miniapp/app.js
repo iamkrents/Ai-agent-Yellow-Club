@@ -66,7 +66,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.38");
+console.log("MiniApp version: v7.0.39");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -7434,11 +7434,94 @@ const TEACHER_DIAG_REASONS = {
   no_user_record: "Пользователь не найден в базе. Нужно зарегистрироваться через бот.",
   inactive_user: "Пользователь деактивирован. Восстановите доступ в этой панели.",
   no_mk_teacher_id: "Роль Преподаватель, но MK teacherId не привязан. Привяжите teacherId через кнопку ниже.",
-  no_lessons_in_snapshots: "Привязка есть, но занятия в локальной базе не найдены. Возможно, новая неделя ещё не синхронизирована — нажмите «Обновить расписание».",
+  no_lessons_in_snapshots: "Привязка есть, но занятия в локальной базе не найдены. Нажмите «Обновить расписание» — это загрузит все страницы МойКласс.",
   lessons_exist_without_location: "Занятия найдены, но учебный класс/филиал (YC1/YC2) не определён по названию группы.",
   duplicate_staff_records: "Найдены дубли записей сотрудника. Проверьте активную роль.",
   server_error: "Ошибка сервера при диагностике. Проверьте логи.",
 };
+
+function _renderRefreshBlock(refresh) {
+  if (!refresh) return "";
+  const r = refresh;
+  const loaded = r.total_loaded ?? r.total_fetched ?? 0;
+  const pages = r.pages_loaded ?? 1;
+  const synced = r.synced_for_teacher ?? r.synced ?? 0;
+  const inRange = r.total_in_range ?? 0;
+  const strategy = r.strategy_used || "";
+  const dr = r.date_range || {};
+  const reasonZ = r.reason_if_zero || "";
+  const mismatch = r.id_mismatch_warning || "";
+  const nameIds = Array.isArray(r.name_matched_ids) && r.name_matched_ids.length ? r.name_matched_ids.join(", ") : "";
+  const syncColor = synced > 0 ? "var(--green)" : "var(--orange,#f90)";
+  let html = `<div class="teacher-diag-refresh-info" style="margin-top:8px">`;
+  html += `<b>Результат обновления:</b><br>`;
+  html += `загружено: <b>${loaded}</b> (страниц: ${pages})`;
+  if (dr.from) html += `, период: ${escapeHtml(dr.from)} — ${escapeHtml(dr.to || "")}`;
+  html += `<br>в периоде (все): <b>${inRange}</b>`;
+  html += `<br>совпадений по teacherId: <b style="color:${syncColor}">${synced}</b>`;
+  if (strategy) html += `<br><span style="font-size:11px;color:#888">Стратегия: ${escapeHtml(strategy)}</span>`;
+  if (reasonZ) html += `<br><span style="color:var(--orange,#f90)">Причина 0: ${escapeHtml(reasonZ)}</span>`;
+  if (mismatch) html += `<br><span style="color:var(--orange,#f90);font-size:12px">⚠️ ${escapeHtml(mismatch)}</span>`;
+  if (nameIds) html += `<br><span style="color:#888;font-size:12px">ID по имени в МК: ${escapeHtml(nameIds)}</span>`;
+  html += `</div>`;
+  return html;
+}
+
+function _renderRawFieldStats(stats) {
+  if (!stats) return "";
+  const fields = stats.fields || {};
+  const ids = (stats.unique_ids_sample || []);
+  const shapes = (stats.sample_shapes || []);
+  if (!Object.keys(fields).length && !ids.length) return "";
+  let html = `<details class="teacher-diag-tech"><summary>Техническая диагностика (raw поля МойКласс)</summary>`;
+  html += `<div class="teacher-diag-tech-body">`;
+  if (Object.keys(fields).length) {
+    html += `<div style="margin-bottom:4px"><b>Поля с данными о преподавателе (сколько занятий содержат поле):</b></div>`;
+    html += Object.entries(fields).sort((a,b) => b[1]-a[1]).map(([k,v]) =>
+      `<div style="font-size:12px;font-family:monospace">${escapeHtml(k)}: ${v}</div>`
+    ).join("");
+  }
+  if (ids.length) {
+    html += `<div style="margin:6px 0 2px"><b>Уникальные ID преподавателей в загруженных занятиях (до 20):</b></div>`;
+    html += `<div style="font-size:12px;font-family:monospace;word-break:break-all">${ids.map(escapeHtml).join(", ")}</div>`;
+  }
+  if (shapes.length) {
+    html += `<div style="margin:6px 0 2px"><b>Пример структур занятий:</b></div>`;
+    shapes.slice(0,3).forEach(s => {
+      const keys = (s.keys || []).join(", ");
+      html += `<div style="font-size:11px;font-family:monospace;margin-bottom:6px;padding:4px;background:var(--surface2,rgba(0,0,0,.07));border-radius:4px">`;
+      html += `id=${escapeHtml(s.lesson_id||"?")} date=${escapeHtml(s.date||"?")}<br>`;
+      html += `ключи: ${escapeHtml(keys)}<br>`;
+      for (const [k,v] of Object.entries(s)) {
+        if (["lesson_id","date","keys"].includes(k)) continue;
+        html += `${escapeHtml(k)}: <span style="color:#88f">${escapeHtml(JSON.stringify(v))}</span><br>`;
+      }
+      html += `</div>`;
+    });
+  }
+  html += `</div></details>`;
+  return html;
+}
+
+function _renderSnapshotStats(ss) {
+  if (!ss) return "";
+  const totalDb = ss.total_in_db_next14 ?? 0;
+  if (totalDb === 0) return "";
+  const withIds = ss.with_teacher_ids ?? 0;
+  const found = ss.id_found_in_snapshots;
+  const searchId = ss.searched_id || "";
+  const uniqueIds = (ss.unique_ids_sample || []);
+  const foundColor = found ? "var(--green)" : "var(--orange,#f90)";
+  let html = `<details class="teacher-diag-tech"><summary>Снэпшоты в базе (следующие 14 дней)</summary>`;
+  html += `<div class="teacher-diag-tech-body">`;
+  html += `<div style="font-size:12px">Занятий в базе: <b>${totalDb}</b>, из них с teacher_ids: <b>${withIds}</b></div>`;
+  html += `<div style="font-size:12px">Искали ID: <b style="font-family:monospace">${escapeHtml(searchId)}</b> → <b style="color:${foundColor}">${found ? "НАЙДЕН ✓" : "НЕ НАЙДЕН ✗"}</b></div>`;
+  if (uniqueIds.length) {
+    html += `<div style="margin-top:4px;font-size:11px;color:#888">IDs в базе: ${uniqueIds.map(escapeHtml).join(", ")}</div>`;
+  }
+  html += `</div></details>`;
+  return html;
+}
 
 function _renderTeacherDiagnosticsHtml(d, uid) {
   if (!d || !d.ok) {
@@ -7451,13 +7534,16 @@ function _renderTeacherDiagnosticsHtml(d, uid) {
   const statusIcon = statusOk ? "✅" : "⚠️";
   const locs = (d.locations || []).join(", ") || "не определены";
   const les = d.lessons || {};
-  const refreshInfo = d.refresh ? `<div class="teacher-diag-refresh-info">Обновление: загружено ${escapeHtml(String(d.refresh.total_fetched))} занятий, синхронизировано для этого преподавателя: ${escapeHtml(String(d.refresh.synced))}.</div>` : "";
+  const ss = d.snapshot_stats || null;
+  const refreshBlock = _renderRefreshBlock(d.refresh);
+  const rawFieldStats = d.refresh?.raw_teacher_field_stats ? _renderRawFieldStats(d.refresh.raw_teacher_field_stats) : "";
+  const snapshotStatsHtml = _renderSnapshotStats(ss);
   const sampleHtml = (d.sample_lessons || []).length
-    ? `<div class="teacher-diag-section">Примеры занятий:</div>` +
+    ? `<div class="teacher-diag-section" style="margin-top:8px">Примеры занятий из базы:</div>` +
       (d.sample_lessons || []).slice(0, 5).map(s =>
         `<div class="teacher-diag-row">${escapeHtml(s.date)} ${escapeHtml(s.time)} · ${escapeHtml(s.title || "(нет темы)")} · ${escapeHtml(s.location_code || "?")} · <span style="font-size:11px;color:#888">${escapeHtml(s.source)}</span></div>`
       ).join("")
-    : `<div class="teacher-diag-empty">Занятий в локальной базе не найдено.</div>`;
+    : `<div class="teacher-diag-empty" style="margin-top:6px">Занятий в локальной базе не найдено.</div>`;
   return `<div class="teacher-diag-panel">
     <div class="teacher-diag-status">${statusIcon} ${escapeHtml(reasonText)}</div>
     <div class="teacher-diag-grid">
@@ -7471,13 +7557,15 @@ function _renderTeacherDiagnosticsHtml(d, uid) {
       <span>Занятий 7 дн.</span><span>${escapeHtml(String(les.next_7_days ?? 0))}</span>
       <span>Занятий 14 дн.</span><span>${escapeHtml(String(les.next_14_days ?? 0))}</span>
       <span>В контроле</span><span>${escapeHtml(String(les.from_teacher_lesson_control ?? 0))}</span>
-      <span>Снэпшоты</span><span>${escapeHtml(String(les.from_lesson_snapshots ?? 0))}</span>
+      <span>В снэпшотах</span><span>${escapeHtml(String(les.from_lesson_snapshots ?? 0))}</span>
       <span>Филиалы</span><span>${escapeHtml(locs)}</span>
       <span>Доступ к обеду</span><span>${d.food_access ? "да" : "нет"}</span>
     </div>
-    ${refreshInfo}
+    ${snapshotStatsHtml}
+    ${refreshBlock}
+    ${rawFieldStats}
     ${sampleHtml}
-    <button class="secondary btn-sm teacher-diag-refresh-btn" style="margin-top:10px" data-diag-uid="${escapeAttr(String(uid))}">🔄 Обновить расписание преподавателя</button>
+    <button class="secondary btn-sm teacher-diag-refresh-btn" style="margin-top:12px" data-diag-uid="${escapeAttr(String(uid))}">🔄 Обновить расписание (все страницы)</button>
   </div>`;
 }
 
@@ -7486,24 +7574,28 @@ async function _loadTeacherDiagnostics(uid, containerEl) {
   try {
     const d = await apiGet(`/api/admin/teacher-diagnostics/${uid}`);
     containerEl.innerHTML = _renderTeacherDiagnosticsHtml(d, uid);
-    containerEl.querySelector(".teacher-diag-refresh-btn")?.addEventListener("click", async (e) => {
-      const btn = e.currentTarget;
-      btn.disabled = true;
-      btn.textContent = "Обновляю...";
-      try {
-        const d2 = await apiPost(`/api/admin/teacher-diagnostics/${uid}/refresh`, {});
-        containerEl.innerHTML = _renderTeacherDiagnosticsHtml(d2, uid);
-        containerEl.querySelector(".teacher-diag-refresh-btn")?.addEventListener("click", (ev) => {
-          _loadTeacherDiagnostics(uid, containerEl);
-        });
-      } catch (e2) {
-        btn.textContent = "Ошибка: " + safeUserError(e2);
-        btn.disabled = false;
-      }
-    });
+    _attachDiagRefreshBtn(uid, containerEl);
   } catch (e) {
     containerEl.innerHTML = `<div class="teacher-diag-panel teacher-diag-panel--error">Ошибка: ${escapeHtml(e.message)}</div>`;
   }
+}
+
+function _attachDiagRefreshBtn(uid, containerEl) {
+  const btn = containerEl.querySelector(".teacher-diag-refresh-btn");
+  if (!btn) return;
+  btn.addEventListener("click", async (e) => {
+    const b = e.currentTarget;
+    b.disabled = true;
+    b.textContent = "Загружаю все страницы МойКласс...";
+    try {
+      const d2 = await apiPost(`/api/admin/teacher-diagnostics/${uid}/refresh`, {});
+      containerEl.innerHTML = _renderTeacherDiagnosticsHtml(d2, uid);
+      _attachDiagRefreshBtn(uid, containerEl);
+    } catch (e2) {
+      b.textContent = "Ошибка: " + safeUserError(e2);
+      b.disabled = false;
+    }
+  });
 }
 
 // ---- Teacher class orders ----
