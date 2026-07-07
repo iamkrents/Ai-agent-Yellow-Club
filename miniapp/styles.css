@@ -6545,6 +6545,17 @@ body { -webkit-overflow-scrolling: touch; }
 .teacher-diag-row { font-size: 12px; padding: 2px 0; border-bottom: 1px solid var(--border, #f0f0f0); }
 .teacher-diag-empty { font-size: 12px; color: var(--color-text-secondary, #657089); }
 .teacher-diag-refresh-info { font-size: 12px; color: var(--ink); margin-bottom: 6px; line-height: 1.6; }
+.teacher-diag-refresh-error {
+  font-size: 13px;
+  background: #fff8f0;
+  border: 1.5px solid #f0a030;
+  border-radius: 8px;
+  padding: 10px 12px;
+  line-height: 1.6;
+}
+@media (prefers-color-scheme: dark) {
+  .teacher-diag-refresh-error { background: rgba(240,160,48,.1); border-color: #c07820; }
+}
 .teacher-diag-container { margin-top: 6px; }
 .teacher-diag-tech {
   margin-top: 8px;

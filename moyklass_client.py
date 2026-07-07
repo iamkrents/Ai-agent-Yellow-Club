@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -423,257 +424,299 @@ class MoyKlassClient:
         teacher_id: str | int,
         date_from: date,
         date_to: date,
-        max_pages: int = 30,
+        max_pages: int = 8,
+        per_req_timeout: int = 8,
+        total_timeout: int = 18,
     ) -> dict[str, Any]:
-        """Fetch all lessons for a specific teacher with full pagination.
+        """Fetch lessons for a specific teacher with budget-controlled pagination.
 
-        Tries three strategies in order:
-        1. Direct teacher filter (teacherId param) — most efficient if API supports it
-        2. Date-range with pagination through all pages — works when API respects dateFrom/dateTo
-        3. Full page scan without date filter — last resort fallback
+        Strategies (in order, cheapest first):
+        1. Direct teacherId filter — single request, fastest if API supports it
+        2. Date-range + offset pagination — loads pages for the date window
+        3. Full scan — last resort if date filter not supported, limited by budget
 
-        Returns a rich diagnostic dict (not MoyKlassResult) with:
-        - matched: list of matching lesson items
-        - total_loaded: total lessons fetched across all pages
-        - pages_loaded: number of pages fetched
-        - strategy_used: which strategy succeeded
-        - teacher_field_stats: counts of which field shapes were seen
-        - unique_teacher_ids_sample: sample of IDs seen in teacher fields
-        - sample_raw_shapes: first few lesson shapes for debugging
-        - reason_if_zero: human-readable reason when matched=0
-        - date_range: {from, to}
+        Hard limits:
+        - per_req_timeout: max seconds per individual HTTP request (default 8)
+        - total_timeout: max wall-clock seconds for the entire operation (default 18)
+        - max_pages: max pages per pagination strategy (default 8)
+
+        Returns a dict with ok/error_code/stage/details plus match data.
+        Always returns within ~total_timeout seconds.
         """
         tid = str(teacher_id or "").strip()
         d1 = date_from
         d2 = date_to
-        page_size = 200
+        page_size = 100  # smaller pages for faster per-request responses
+
+        t_start = time.monotonic()
+        timed_out = False
+        stage = "init"
+        last_error = ""
+        last_status = 0
+        pagination_attempts: list[dict[str, Any]] = []
         matched: list[dict] = []
         all_items: list[dict] = []
         pages_loaded = 0
         strategy_used = "none"
 
-        def _extract_ids(item: dict) -> list[str]:
-            """Extract all teacher IDs from a lesson item using every known field."""
-            results: list[str] = []
+        def _budget_left() -> float:
+            return max(0.0, total_timeout - (time.monotonic() - t_start))
 
-            def _add_value(v: Any) -> None:
-                if v is None or v == "":
-                    return
-                s = str(v).strip()
+        def _req(params: dict) -> MoyKlassResult:
+            nonlocal timed_out, last_error, last_status
+            remaining = _budget_left()
+            if remaining < 1.5:
+                timed_out = True
+                return MoyKlassResult(False, status=0, error="budget_exceeded", endpoint="/v1/company/lessons")
+            actual_t = max(2, min(per_req_timeout, int(remaining) - 1))
+            orig = self.timeout
+            self.timeout = actual_t
+            try:
+                result = self.request("GET", "/v1/company/lessons", params=params)
+                if not result.ok:
+                    last_status = result.status
+                    last_error = result.error[:200] if result.error else f"status={result.status}"
+                return result
+            finally:
+                self.timeout = orig
+
+        def _in_range(items: list[dict]) -> list[dict]:
+            return [x for x in items if d1 <= (parse_date(_lesson_date_value(x)) or d1) < d2]
+
+        def _sig(items: list[dict]) -> str:
+            if not items:
+                return ""
+            return f"{_pick(items[0], ('id','lessonId'))}|{len(items)}"
+
+        def _extract_ids_local(item: dict) -> list[str]:
+            results: list[str] = []
+            _ID_KEYS = ("id", "teacherId", "userId", "employeeId", "staffId", "managerId", "tutorId", "responsibleId")
+            def _add(v: Any) -> None:
+                s = str(v).strip() if v not in (None, "") else ""
                 if s and s not in results:
                     results.append(s)
-
-            def _add_from_obj(obj: Any) -> None:
-                if isinstance(obj, dict):
-                    for k in ("id", "teacherId", "userId", "employeeId", "staffId", "managerId", "tutorId", "responsibleId"):
-                        _add_value(obj.get(k))
-                elif obj is not None and obj != "":
-                    _add_value(str(obj))
-
-            for field in ("teacherIds", "teacher_ids", "teachersIds", "teacher_id_list", "teacherId", "teacher_id"):
+            for field in ("teacherIds", "teacher_ids", "teachersIds", "teacherId", "teacher_id"):
                 val = item.get(field)
                 if isinstance(val, list):
                     for v in val:
-                        _add_from_obj(v)
-                elif val is not None and val != "":
-                    _add_value(str(val))
-
+                        ([ _add(v.get(k)) for k in _ID_KEYS ] if isinstance(v, dict) else _add(v))
+                elif val not in (None, ""):
+                    _add(val)
             for field in ("teachers", "teacher", "staff", "staffs", "employees"):
                 val = item.get(field)
                 if isinstance(val, list):
                     for v in val:
-                        _add_from_obj(v)
+                        if isinstance(v, dict):
+                            [_add(v.get(k)) for k in _ID_KEYS]
+                        else:
+                            _add(v)
                 elif isinstance(val, dict):
-                    _add_from_obj(val)
-                elif val is not None and val != "":
-                    _add_value(str(val))
-
-            for field in ("employeeId", "employeeIds", "staffId", "managerId", "tutorId", "responsibleId", "userId"):
-                val = item.get(field)
-                if isinstance(val, list):
-                    for v in val:
-                        _add_value(str(v))
-                elif val is not None and val != "":
-                    _add_value(str(val))
-
+                    [_add(val.get(k)) for k in _ID_KEYS]
+                elif val not in (None, ""):
+                    _add(val)
+            if not results:
+                for field in ("employeeId", "employeeIds", "staffId", "managerId", "tutorId", "responsibleId", "userId"):
+                    val = item.get(field)
+                    if isinstance(val, list):
+                        [_add(v) for v in val]
+                    elif val not in (None, ""):
+                        _add(val)
             return results
 
-        def _collect_field_stats(items: list[dict]) -> dict:
+        def _field_stats(items: list[dict]) -> dict:
             stats: dict[str, int] = {}
             unique_ids: list[str] = []
             shapes: list[dict] = []
             for item in items:
-                for field in ("teacherId", "teacherIds", "teachers", "teacher", "teacher_id", "teacher_ids",
+                for field in ("teacherId", "teacherIds", "teachers", "teacher", "teacher_id",
                               "staff", "employees", "userId", "responsibleId", "employeeId", "staffId",
                               "managerId", "tutorId"):
                     if item.get(field) not in (None, "", [], {}):
                         stats[field] = stats.get(field, 0) + 1
-                for iid in _extract_ids(item):
-                    if iid and iid not in unique_ids:
+                for iid in _extract_ids_local(item):
+                    if iid not in unique_ids:
                         unique_ids.append(iid)
-                if len(shapes) < 5:
+                if len(shapes) < 4:
                     lid = str(_pick(item, ("id", "lessonId")) or "")
                     shape: dict[str, Any] = {
                         "lesson_id": lid,
                         "date": _lesson_date_value(item) or "",
                         "keys": [k for k in item.keys() if k not in ("students", "visits", "attendance", "records")],
                     }
-                    for f in ("teacherId", "teacherIds", "teacher_id", "teachers", "teacher", "staff", "employees",
+                    for f in ("teacherId", "teacherIds", "teachers", "teacher", "staff", "employees",
                               "employeeId", "staffId", "managerId", "userId", "responsibleId"):
                         if item.get(f) is not None:
                             v = item[f]
-                            if isinstance(v, list) and len(v) > 3:
-                                shape[f + "_sample"] = v[:3]
-                            else:
-                                shape[f] = v
+                            shape[f] = v[:3] if isinstance(v, list) and len(v) > 3 else v
                     shapes.append(shape)
             return {"fields": stats, "unique_ids_sample": unique_ids[:20], "sample_shapes": shapes}
 
-        # Strategy 1: Direct teacher filter
-        teacher_param_variants = [
+        # ── Stage 1: Direct teacher filter (cheapest: 1 request per variant) ──
+        stage = "direct_filter"
+        teacher_filter_variants = [
             {"teacherId": tid, "dateFrom": d1.isoformat(), "dateTo": d2.isoformat(), "limit": str(page_size)},
             {"teacher_id": tid, "dateFrom": d1.isoformat(), "dateTo": d2.isoformat(), "limit": str(page_size)},
             {"teacherId": tid, "beginDate": d1.isoformat(), "endDate": d2.isoformat(), "limit": str(page_size)},
-            {"userId": tid, "dateFrom": d1.isoformat(), "dateTo": d2.isoformat(), "limit": str(page_size)},
         ]
-        for tv_params in teacher_param_variants:
-            r = self.request("GET", "/v1/company/lessons", params=tv_params)
+        for tv in teacher_filter_variants:
+            if timed_out or _budget_left() < 1.5:
+                timed_out = True
+                break
+            r = _req(tv)
             if not r.ok:
                 continue
             items = [x for x in extract_items(r.data) if isinstance(x, dict)]
-            filtered = [x for x in items if d1 <= (parse_date(_lesson_date_value(x)) or d1) < d2]
-            if filtered:
-                matched = filtered
+            ir = _in_range(items)
+            if ir:
+                matched = ir
                 all_items = items
                 pages_loaded = 1
-                strategy_used = f"teacher_filter:{list(tv_params.keys())[0]}"
+                strategy_used = f"direct_filter:{list(tv.keys())[0]}"
                 break
 
-        # Strategy 2: Date-range with full pagination
-        if not matched:
-            date_param_sets = [
+        # ── Stage 2: Date-range with pagination ──
+        if not matched and not timed_out:
+            stage = "date_range_pagination"
+            date_variants = [
                 {"dateFrom": d1.isoformat(), "dateTo": d2.isoformat()},
                 {"beginDate": d1.isoformat(), "endDate": d2.isoformat()},
-                {"startDate": d1.isoformat(), "endDate": d2.isoformat()},
-                {"date_from": d1.isoformat(), "date_to": d2.isoformat()},
             ]
-            pagination_styles = [
-                ("offset", lambda pg: {"offset": str(pg * page_size)}),
-                ("skip", lambda pg: {"skip": str(pg * page_size)}),
-                ("page", lambda pg: {"page": str(pg + 1)}),
+            pag_styles = [
+                ("offset", lambda pg, sz=page_size: {"offset": str(pg * sz)}),
+                ("skip",   lambda pg, sz=page_size: {"skip": str(pg * sz)}),
+                ("page",   lambda pg: {"page": str(pg + 1)}),
             ]
-            for base_params in date_param_sets:
-                for pag_name, pag_fn in pagination_styles:
-                    seen_sigs: set[str] = set()
+            for dv in date_variants:
+                if matched or timed_out:
+                    break
+                for pag_name, pag_fn in pag_styles:
+                    if matched or timed_out:
+                        break
+                    seen: set[str] = set()
                     page_items: list[dict] = []
                     page_count = 0
+                    repeated = False
                     for pg in range(max_pages):
-                        params = {**base_params, "limit": str(page_size), **pag_fn(pg)}
-                        r = self.request("GET", "/v1/company/lessons", params=params)
+                        if timed_out or _budget_left() < 1.5:
+                            timed_out = True
+                            break
+                        params = {**dv, "limit": str(page_size), **pag_fn(pg)}
+                        r = _req(params)
                         if not r.ok:
                             break
                         items = [x for x in extract_items(r.data) if isinstance(x, dict)]
                         if not items:
                             break
-                        sig = f"{_pick(items[0], ('id','lessonId'))}|{len(items)}"
-                        if sig in seen_sigs:
+                        s = _sig(items)
+                        if s in seen:
+                            repeated = True
                             break
-                        seen_sigs.add(sig)
+                        seen.add(s)
                         page_count += 1
-                        in_range = [x for x in items if d1 <= (parse_date(_lesson_date_value(x)) or d1) < d2]
-                        page_items.extend(in_range)
+                        ir = _in_range(items)
+                        page_items.extend(ir)
                         all_items.extend(items)
                         if len(items) < page_size:
                             break
+                    pagination_attempts.append({
+                        "param": pag_name,
+                        "date_key": list(dv.keys())[0],
+                        "pages_loaded": page_count,
+                        "items_found": len(page_items),
+                        "repeated_page": repeated,
+                        "timed_out": timed_out,
+                    })
                     if page_items:
                         pages_loaded = page_count
-                        strategy_used = f"date_range+{pag_name}:{list(base_params.keys())[0]}"
+                        strategy_used = f"date_range+{pag_name}:{list(dv.keys())[0]}"
                         matched = page_items
                         break
-                if matched:
-                    break
 
-        # Strategy 3: Full page scan without date filter (last resort)
-        if not matched:
-            for pag_name, pag_fn in [
-                ("offset", lambda pg: {"offset": str(pg * page_size)}),
-                ("page", lambda pg: {"page": str(pg + 1)}),
-            ]:
-                seen_sigs2: set[str] = set()
-                page_items2: list[dict] = []
-                page_count2 = 0
-                for pg in range(max_pages):
-                    params2 = {"limit": str(page_size), **pag_fn(pg)}
-                    r2 = self.request("GET", "/v1/company/lessons", params=params2)
-                    if not r2.ok:
-                        break
-                    items2 = [x for x in extract_items(r2.data) if isinstance(x, dict)]
-                    if not items2:
-                        break
-                    sig2 = f"{_pick(items2[0], ('id','lessonId'))}|{len(items2)}"
-                    if sig2 in seen_sigs2:
-                        break
-                    seen_sigs2.add(sig2)
-                    page_count2 += 1
-                    in_range2 = [x for x in items2 if d1 <= (parse_date(_lesson_date_value(x)) or d1) < d2]
-                    page_items2.extend(in_range2)
-                    all_items.extend(items2)
-                    dates2 = [parse_date(_lesson_date_value(x)) for x in items2]
-                    dates2 = [d for d in dates2 if d]
-                    if dates2 and min(dates2) > d2:
-                        break
-                    if len(items2) < page_size:
-                        break
-                if page_items2:
-                    pages_loaded = page_count2
-                    strategy_used = f"full_scan+{pag_name}"
-                    matched = page_items2
-                    all_items = list({_pick(x, ("id", "lessonId")): x for x in all_items}.values())
+        # ── Stage 3: Full scan (last resort, only if budget allows) ──
+        if not matched and not timed_out and _budget_left() >= 4.0:
+            stage = "full_scan"
+            seen3: set[str] = set()
+            page_items3: list[dict] = []
+            page_count3 = 0
+            for pg in range(min(max_pages, 5)):  # hard cap at 5 pages for full scan
+                if timed_out or _budget_left() < 1.5:
+                    timed_out = True
                     break
+                r3 = _req({"limit": str(page_size), "offset": str(pg * page_size)})
+                if not r3.ok:
+                    break
+                items3 = [x for x in extract_items(r3.data) if isinstance(x, dict)]
+                if not items3:
+                    break
+                s3 = _sig(items3)
+                if s3 in seen3:
+                    break
+                seen3.add(s3)
+                page_count3 += 1
+                ir3 = _in_range(items3)
+                page_items3.extend(ir3)
+                all_items.extend(items3)
+                dates3 = [parse_date(_lesson_date_value(x)) for x in items3]
+                dates3 = [dd for dd in dates3 if dd]
+                if dates3 and min(dates3) > d2:
+                    break
+                if len(items3) < page_size:
+                    break
+            if page_items3:
+                pages_loaded = page_count3
+                strategy_used = "full_scan+offset"
+                matched = page_items3
 
-        # Filter matched by teacher ID
+        # ── Analyse results ──
         total_loaded = len(all_items)
-        teacher_matched = [x for x in matched if tid in _extract_ids(x)]
-        # Name-based fallback detection
+        teacher_matched = [x for x in matched if tid in _extract_ids_local(x)]
+
+        # Name-based detection (are there lessons with a teacher whose name matches stored name?)
         name_matched_ids: list[str] = []
-        teacher_name_in_storage = ""
-        for item in all_items:
+        for item in all_items[:200]:
             for field in ("teachers", "teacher", "staff"):
                 val = item.get(field)
                 objs = val if isinstance(val, list) else ([val] if isinstance(val, dict) else [])
                 for obj in objs:
                     if isinstance(obj, dict):
-                        obj_name = str(obj.get("name") or obj.get("fullName") or obj.get("fio") or "").strip()
                         obj_id = str(obj.get("id") or obj.get("userId") or obj.get("teacherId") or "").strip()
                         if obj_id and obj_id not in name_matched_ids:
                             name_matched_ids.append(obj_id)
-        field_stats = _collect_field_stats(all_items[:200])
+
+        field_stats = _field_stats(all_items[:200])
+        elapsed_ms = int((time.monotonic() - t_start) * 1000)
 
         reason_if_zero = ""
-        if not teacher_matched and total_loaded > 0:
-            if not matched:
+        if not teacher_matched:
+            if timed_out:
+                reason_if_zero = "timeout"
+            elif total_loaded == 0:
+                reason_if_zero = "no_lessons_loaded_from_api"
+            elif not matched:
                 reason_if_zero = "no_lessons_in_date_range"
-            elif len(matched) > 0 and not teacher_matched:
-                reason_if_zero = "teacher_id_not_present_in_loaded_lessons"
-                if len(all_items) >= page_size * max_pages:
-                    reason_if_zero += "+possible_pagination_truncated"
             else:
-                reason_if_zero = "unknown"
-        elif total_loaded == 0:
-            reason_if_zero = "no_lessons_loaded_from_api"
+                reason_if_zero = "teacher_id_not_present_in_loaded_lessons"
 
         return {
+            "ok": True,
             "matched": teacher_matched,
             "all_in_range": matched,
             "total_loaded": total_loaded,
             "total_in_range": len(matched),
             "pages_loaded": max(pages_loaded, 1 if total_loaded > 0 else 0),
             "strategy_used": strategy_used,
+            "stage_reached": stage,
             "date_range": {"from": d1.isoformat(), "to": d2.isoformat()},
             "teacher_id_searched": tid,
             "matched_by_id": len(teacher_matched),
             "field_stats": field_stats,
             "reason_if_zero": reason_if_zero,
+            "timed_out": timed_out,
+            "elapsed_ms": elapsed_ms,
+            "pagination_attempts": pagination_attempts,
+            "last_error": last_error,
+            "last_status": last_status,
+            "name_matched_ids": name_matched_ids,
         }
 
     def _filter_lessons_data_by_date(self, data: Any, d1: date, d2: date) -> list[dict[str, Any]]:

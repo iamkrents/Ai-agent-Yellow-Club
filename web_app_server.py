@@ -4444,7 +4444,7 @@ class MiniAppContext:
 
     def teacher_diagnostics_refresh(self, auth: dict[str, Any], telegram_user_id: str) -> dict[str, Any]:
         """Trigger safe, non-destructive MoyKlass schedule sync for a specific teacher.
-        Uses full pagination to load ALL lessons from MoyKlass and match by teacher ID.
+        Budget-controlled: completes within ~20s and always returns a structured JSON response.
         Only accessible to owner/admin/operations."""
         denied = self._require_admin(auth)
         if denied:
@@ -4452,16 +4452,21 @@ class MiniAppContext:
         try:
             uid = int(telegram_user_id or 0)
         except (ValueError, TypeError):
-            return {"ok": False, "error": "Неверный telegram_user_id"}
+            return {"ok": False, "error_code": "invalid_uid", "error": "Неверный telegram_user_id"}
         user = self.storage.get_staff_user(uid)
         if not user:
-            return {"ok": False, "error": "Пользователь не найден"}
+            return {"ok": False, "error_code": "user_not_found", "error": "Пользователь не найден"}
         mk_teacher_id = str(user.get("mk_teacher_id") or "").strip()
         if not mk_teacher_id:
-            return {"ok": False, "error": "MK teacherId не привязан — обновление невозможно. Сначала привяжите teacherId."}
+            return {
+                "ok": False,
+                "error_code": "no_teacher_id",
+                "error": "MK teacherId не привязан — обновление невозможно. Сначала привяжите teacherId.",
+            }
+        today = date.today()
+        date_to = today + timedelta(days=45)
+        fetch: dict[str, Any] = {}
         try:
-            today = date.today()
-            date_to = today + timedelta(days=45)
             log.info(
                 "[moyklass-teacher-sync] start uid=%s mk_teacher_id=%s date_from=%s date_to=%s",
                 uid, mk_teacher_id, today.isoformat(), date_to.isoformat(),
@@ -4470,60 +4475,117 @@ class MiniAppContext:
                 teacher_id=mk_teacher_id,
                 date_from=today,
                 date_to=date_to,
-                max_pages=30,
+                max_pages=8,
+                per_req_timeout=8,
+                total_timeout=18,
             )
-            total_loaded = fetch.get("total_loaded", 0)
-            pages_loaded = fetch.get("pages_loaded", 0)
-            strategy_used = fetch.get("strategy_used", "none")
-            matched_by_id = fetch.get("matched_by_id", 0)
-            total_in_range = fetch.get("total_in_range", 0)
-            field_stats = fetch.get("field_stats", {})
-            reason_if_zero = fetch.get("reason_if_zero", "")
-            teacher_lessons = fetch.get("matched", [])
+        except Exception as exc:
+            exc_type = type(exc).__name__
+            exc_msg = str(exc)[:300]
+            log.exception("[moyklass-teacher-sync] fetch_exception uid=%s mk_teacher_id=%s", uid, mk_teacher_id)
+            error_code = "moyklass_timeout" if "timed out" in exc_msg.lower() else "moyklass_api_error"
+            return {
+                "ok": False,
+                "error_code": error_code,
+                "error": "МойКласс не ответил на запрос расписания.",
+                "refresh": {
+                    "ok": False,
+                    "error_code": error_code,
+                    "stage": "fetch",
+                    "total_loaded": 0,
+                    "pages_loaded": 0,
+                    "exception_type": exc_type,
+                    "exception_message": exc_msg,
+                },
+            }
 
-            log.info(
-                "[moyklass-teacher-sync] done uid=%s mk_teacher_id=%s total_loaded=%s pages=%s "
-                "in_range=%s matched_by_id=%s strategy=%s reason_if_zero=%s",
-                uid, mk_teacher_id, total_loaded, pages_loaded,
-                total_in_range, matched_by_id, strategy_used, reason_if_zero,
+        total_loaded = fetch.get("total_loaded", 0)
+        pages_loaded = fetch.get("pages_loaded", 0)
+        strategy_used = fetch.get("strategy_used", "none")
+        matched_by_id = fetch.get("matched_by_id", 0)
+        total_in_range = fetch.get("total_in_range", 0)
+        field_stats = fetch.get("field_stats", {})
+        reason_if_zero = fetch.get("reason_if_zero", "")
+        timed_out = bool(fetch.get("timed_out", False))
+        stage_reached = fetch.get("stage_reached", "unknown")
+        elapsed_ms = fetch.get("elapsed_ms", 0)
+        pagination_attempts = fetch.get("pagination_attempts", [])
+        last_error = fetch.get("last_error", "")
+        last_status = fetch.get("last_status", 0)
+        teacher_lessons = fetch.get("matched", [])
+
+        log.info(
+            "[moyklass-teacher-sync] fetch done uid=%s mk_teacher_id=%s total=%s pages=%s "
+            "in_range=%s by_id=%s strategy=%s timed_out=%s elapsed_ms=%s reason=%s",
+            uid, mk_teacher_id, total_loaded, pages_loaded,
+            total_in_range, matched_by_id, strategy_used, timed_out, elapsed_ms, reason_if_zero,
+        )
+
+        # If MoyKlass returned nothing at all — treat as API error
+        if total_loaded == 0 and not timed_out:
+            error_code = "moyklass_api_error" if last_status and last_status >= 400 else "no_lessons_from_api"
+            log.warning(
+                "[moyklass-teacher-sync] empty_response uid=%s last_status=%s last_error=%s",
+                uid, last_status, last_error,
             )
+            diag_partial = self.teacher_diagnostics(auth, str(uid))
+            diag_partial["refresh"] = {
+                "ok": False,
+                "error_code": error_code,
+                "synced_for_teacher": 0,
+                "total_loaded": 0,
+                "pages_loaded": 0,
+                "stage": stage_reached,
+                "strategy_used": strategy_used,
+                "date_range": fetch.get("date_range", {}),
+                "raw_teacher_field_stats": field_stats,
+                "reason_if_zero": reason_if_zero,
+                "last_status": last_status,
+                "last_error": last_error,
+                "pagination_attempts": pagination_attempts,
+                "elapsed_ms": elapsed_ms,
+            }
+            return diag_partial
 
-            # Name-based fallback: check if any lesson has teacher name matching stored name
-            teacher_name_stored = str(user.get("mk_teacher_name") or "").strip().lower()
-            name_matched_ids: list[str] = []
-            if teacher_name_stored and matched_by_id == 0 and total_in_range > 0:
-                all_in_range = fetch.get("all_in_range", [])
-                for item in all_in_range:
-                    for field in ("teachers", "teacher", "staff"):
-                        val = item.get(field)
-                        objs = val if isinstance(val, list) else ([val] if isinstance(val, dict) else [])
-                        for obj in objs:
-                            if isinstance(obj, dict):
-                                obj_name = str(obj.get("name") or obj.get("fullName") or obj.get("fio") or "").strip().lower()
-                                if obj_name and teacher_name_stored and (
-                                    obj_name in teacher_name_stored or teacher_name_stored in obj_name
-                                ):
-                                    obj_id = str(obj.get("id") or obj.get("userId") or obj.get("teacherId") or "").strip()
-                                    if obj_id and obj_id not in name_matched_ids:
-                                        name_matched_ids.append(obj_id)
-                if name_matched_ids:
-                    log.info(
-                        "[moyklass-teacher-sync] name_match uid=%s teacher_name=%s found_ids=%s stored_id=%s",
-                        uid, teacher_name_stored, name_matched_ids, mk_teacher_id,
-                    )
-                    id_mismatch_warning = (
-                        f"Имя '{user.get('mk_teacher_name')}' найдено в расписании МойКласс, "
-                        f"но ID в занятиях: {', '.join(name_matched_ids)}, "
-                        f"а сохранённый teacherId={mk_teacher_id}. "
-                        f"Возможно, нужно обновить teacherId."
-                    )
-                else:
-                    id_mismatch_warning = ""
-            else:
-                id_mismatch_warning = ""
+        # Name-based mismatch detection
+        teacher_name_stored = str(user.get("mk_teacher_name") or "").strip().lower()
+        name_matched_ids: list[str] = fetch.get("name_matched_ids") or []
+        # Re-check against stored name (fetch returns all IDs; narrow by name match here)
+        id_mismatch_warning = ""
+        if teacher_name_stored and matched_by_id == 0 and total_in_range > 0:
+            all_in_range = fetch.get("all_in_range", [])
+            name_ids_from_range: list[str] = []
+            for item in all_in_range:
+                for field in ("teachers", "teacher", "staff"):
+                    val = item.get(field)
+                    objs = val if isinstance(val, list) else ([val] if isinstance(val, dict) else [])
+                    for obj in objs:
+                        if isinstance(obj, dict):
+                            obj_name = str(
+                                obj.get("name") or obj.get("fullName") or obj.get("fio") or ""
+                            ).strip().lower()
+                            if obj_name and (obj_name in teacher_name_stored or teacher_name_stored in obj_name):
+                                obj_id = str(
+                                    obj.get("id") or obj.get("userId") or obj.get("teacherId") or ""
+                                ).strip()
+                                if obj_id and obj_id not in name_ids_from_range:
+                                    name_ids_from_range.append(obj_id)
+            if name_ids_from_range:
+                name_matched_ids = name_ids_from_range
+                id_mismatch_warning = (
+                    f"Имя '{user.get('mk_teacher_name')}' найдено в расписании МойКласс, "
+                    f"но ID в занятиях: {', '.join(name_ids_from_range)}, "
+                    f"а сохранённый teacherId={mk_teacher_id}. "
+                    f"Возможно, нужно обновить teacherId."
+                )
+                log.warning(
+                    "[moyklass-teacher-sync] id_mismatch uid=%s name=%s stored_id=%s found_ids=%s",
+                    uid, teacher_name_stored, mk_teacher_id, name_ids_from_range,
+                )
 
-            # Write ALL loaded lessons to lesson_snapshots
-            snaps_written = 0
+        # Persist results (save even partial/timeout results)
+        snaps_written = 0
+        try:
             for item in (fetch.get("all_in_range") or teacher_lessons):
                 lesson_id = str(_pick(item, ("id", "lessonId")) or "").strip()
                 if not lesson_id:
@@ -4531,9 +4593,11 @@ class MiniAppContext:
                 snap = self._schedule_snapshot_from_item(item)
                 self.storage.upsert_lesson_snapshot(lesson_id, snap)
                 snaps_written += 1
+        except Exception:
+            log.exception("[moyklass-teacher-sync] snapshot_write_error uid=%s", uid)
 
-            # Write matched teacher lessons to teacher_lesson_control
-            synced = 0
+        synced = 0
+        try:
             for item in teacher_lessons:
                 lesson_id = str(_pick(item, ("id", "lessonId")) or "").strip()
                 if not lesson_id:
@@ -4550,31 +4614,52 @@ class MiniAppContext:
                     mk_teacher_id=mk_teacher_id,
                     teacher_user_id=uid,
                 )
-
-            log.info(
-                "[moyklass-teacher-sync] saved uid=%s mk_teacher_id=%s synced=%s snaps_written=%s",
-                uid, mk_teacher_id, synced, snaps_written,
-            )
-
-            diag = self.teacher_diagnostics(auth, str(uid))
-            diag["refresh"] = {
-                "ok": True,
-                "synced_for_teacher": synced,
-                "matched_by_id": matched_by_id,
-                "total_loaded": total_loaded,
-                "total_in_range": total_in_range,
-                "pages_loaded": pages_loaded,
-                "strategy_used": strategy_used,
-                "date_range": fetch.get("date_range", {}),
-                "raw_teacher_field_stats": field_stats,
-                "name_matched_ids": name_matched_ids,
-                "id_mismatch_warning": id_mismatch_warning,
-                "reason_if_zero": reason_if_zero,
-            }
-            return diag
         except Exception:
-            log.exception("[moyklass-teacher-sync] refresh error uid=%s", uid)
-            return {"ok": False, "error": "Ошибка обновления (см. лог сервера)"}
+            log.exception("[moyklass-teacher-sync] lesson_control_write_error uid=%s", uid)
+
+        log.info(
+            "[moyklass-teacher-sync] saved uid=%s mk_teacher_id=%s synced=%s snaps=%s timed_out=%s",
+            uid, mk_teacher_id, synced, snaps_written, timed_out,
+        )
+
+        # Determine final error_code for refresh block
+        if timed_out:
+            refresh_error_code = "moyklass_timeout"
+        elif matched_by_id == 0 and total_in_range == 0:
+            refresh_error_code = "no_lessons_in_date_range"
+        elif matched_by_id == 0:
+            refresh_error_code = "teacher_not_found_in_lessons"
+        else:
+            refresh_error_code = ""
+
+        try:
+            diag = self.teacher_diagnostics(auth, str(uid))
+        except Exception:
+            log.exception("[moyklass-teacher-sync] post_diag_error uid=%s", uid)
+            diag = {"ok": True, "telegram_user_id": uid, "reason": "diagnostics_unavailable"}
+
+        diag["refresh"] = {
+            "ok": synced > 0,
+            "error_code": refresh_error_code,
+            "synced_for_teacher": synced,
+            "matched_by_id": matched_by_id,
+            "total_loaded": total_loaded,
+            "total_in_range": total_in_range,
+            "pages_loaded": pages_loaded,
+            "strategy_used": strategy_used,
+            "stage": stage_reached,
+            "date_range": fetch.get("date_range", {}),
+            "raw_teacher_field_stats": field_stats,
+            "name_matched_ids": name_matched_ids,
+            "id_mismatch_warning": id_mismatch_warning,
+            "reason_if_zero": reason_if_zero,
+            "timed_out": timed_out,
+            "elapsed_ms": elapsed_ms,
+            "pagination_attempts": pagination_attempts,
+            "last_error": last_error,
+            "last_status": last_status,
+        }
+        return diag
 
     def admin_all_tasks(self, auth: dict[str, Any]) -> dict[str, Any]:
         denied = self._require_admin_tab(auth, "tasks")

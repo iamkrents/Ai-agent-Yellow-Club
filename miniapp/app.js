@@ -66,7 +66,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.39");
+console.log("MiniApp version: v7.0.40");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -7440,29 +7440,82 @@ const TEACHER_DIAG_REASONS = {
   server_error: "Ошибка сервера при диагностике. Проверьте логи.",
 };
 
+const _REFRESH_ERROR_HINTS = {
+  moyklass_timeout: "МойКласс отвечал слишком медленно. Попробуйте ещё раз позже или проверьте подключение к МойКласс.",
+  moyklass_api_error: "МойКласс вернул ошибку. Проверьте статус API и правильность API-ключа.",
+  no_lessons_from_api: "МойКласс не вернул ни одного занятия. Возможно, ещё нет расписания на этот период.",
+  no_lessons_in_date_range: "Занятия в МойКласс за указанный период не найдены. Убедитесь, что занятия созданы.",
+  teacher_not_found_in_lessons: "teacherId не найден ни в одном занятии. Проверьте правильность MK teacherId.",
+  pagination_failed: "Пагинация МойКласс не работает — API возвращает одни и те же страницы. Попробуйте повторить позже.",
+  sync_failed: "Не удалось сохранить занятия в базу. Проверьте состояние сервера.",
+  unknown_error: "Неизвестная ошибка. Проверьте логи сервера.",
+};
+
 function _renderRefreshBlock(refresh) {
   if (!refresh) return "";
   const r = refresh;
-  const loaded = r.total_loaded ?? r.total_fetched ?? 0;
-  const pages = r.pages_loaded ?? 1;
-  const synced = r.synced_for_teacher ?? r.synced ?? 0;
+  const loaded = r.total_loaded ?? 0;
+  const pages = r.pages_loaded ?? 0;
+  const synced = r.synced_for_teacher ?? 0;
   const inRange = r.total_in_range ?? 0;
   const strategy = r.strategy_used || "";
+  const stage = r.stage || "";
   const dr = r.date_range || {};
   const reasonZ = r.reason_if_zero || "";
   const mismatch = r.id_mismatch_warning || "";
   const nameIds = Array.isArray(r.name_matched_ids) && r.name_matched_ids.length ? r.name_matched_ids.join(", ") : "";
+  const timedOut = !!r.timed_out;
+  const errCode = r.error_code || "";
+  const elapsedMs = r.elapsed_ms || 0;
+  const paginationAttempts = Array.isArray(r.pagination_attempts) ? r.pagination_attempts : [];
+
+  // Error / partial result block
+  if (errCode && errCode !== "") {
+    const hint = _REFRESH_ERROR_HINTS[errCode] || "";
+    const syncColor = synced > 0 ? "var(--green)" : "var(--orange,#f90)";
+    let html = `<div class="teacher-diag-refresh-error" style="margin-top:8px">`;
+    html += `<b>${timedOut ? "⏱ Превышено время ожидания" : "⚠️ Не удалось синхронизировать расписание"}</b><br>`;
+    html += `<div style="font-size:12px;margin-top:4px">`;
+    html += `Код: <span style="font-family:monospace">${escapeHtml(errCode)}</span>`;
+    if (stage) html += ` · Этап: ${escapeHtml(stage)}`;
+    html += `<br>Загружено занятий: <b>${loaded}</b> (страниц: ${pages})`;
+    if (inRange) html += ` · В периоде: <b>${inRange}</b>`;
+    if (synced > 0) html += `<br>Сохранено для этого преподавателя: <b style="color:${syncColor}">${synced}</b>`;
+    if (elapsedMs) html += `<br>Время выполнения: ${(elapsedMs/1000).toFixed(1)} с`;
+    if (r.last_status) html += `<br>Последний HTTP статус МойКласс: ${r.last_status}`;
+    if (hint) html += `<br><span style="color:var(--muted,#657089)">${escapeHtml(hint)}</span>`;
+    if (reasonZ) html += `<br><span style="color:var(--orange,#f90)">Причина: ${escapeHtml(reasonZ)}</span>`;
+    if (mismatch) html += `<br><span style="color:var(--orange,#f90)">⚠️ ${escapeHtml(mismatch)}</span>`;
+    if (nameIds) html += `<br><span style="color:#888">ID по имени в МК: ${escapeHtml(nameIds)}</span>`;
+    if (paginationAttempts.length) {
+      html += `<details style="margin-top:6px"><summary style="cursor:pointer;font-size:11px;color:#888">Попытки пагинации</summary>`;
+      paginationAttempts.forEach(a => {
+        html += `<div style="font-size:11px;font-family:monospace">${escapeHtml(a.param)}+${escapeHtml(a.date_key||"")}: `;
+        html += `стр.${a.pages_loaded} · найдено: ${a.items_found}`;
+        if (a.repeated_page) html += ` · ⚠️ повтор страниц`;
+        if (a.timed_out) html += ` · ⏱ timeout`;
+        html += `</div>`;
+      });
+      html += `</details>`;
+    }
+    html += `</div></div>`;
+    return html;
+  }
+
+  // Success block
   const syncColor = synced > 0 ? "var(--green)" : "var(--orange,#f90)";
   let html = `<div class="teacher-diag-refresh-info" style="margin-top:8px">`;
-  html += `<b>Результат обновления:</b><br>`;
+  html += `<b>${synced > 0 ? "✅ Расписание обновлено" : "Обновление завершено"}:</b><br>`;
   html += `загружено: <b>${loaded}</b> (страниц: ${pages})`;
   if (dr.from) html += `, период: ${escapeHtml(dr.from)} — ${escapeHtml(dr.to || "")}`;
   html += `<br>в периоде (все): <b>${inRange}</b>`;
-  html += `<br>совпадений по teacherId: <b style="color:${syncColor}">${synced}</b>`;
+  html += `<br>сохранено для преподавателя: <b style="color:${syncColor}">${synced}</b>`;
   if (strategy) html += `<br><span style="font-size:11px;color:#888">Стратегия: ${escapeHtml(strategy)}</span>`;
-  if (reasonZ) html += `<br><span style="color:var(--orange,#f90)">Причина 0: ${escapeHtml(reasonZ)}</span>`;
+  if (elapsedMs) html += ` · <span style="font-size:11px;color:#888">${(elapsedMs/1000).toFixed(1)} с</span>`;
+  if (timedOut) html += `<br><span style="color:var(--orange,#f90)">⚠️ Частичный результат — закончилось время</span>`;
+  if (reasonZ && synced === 0) html += `<br><span style="color:var(--orange,#f90)">Причина 0: ${escapeHtml(reasonZ)}</span>`;
   if (mismatch) html += `<br><span style="color:var(--orange,#f90);font-size:12px">⚠️ ${escapeHtml(mismatch)}</span>`;
-  if (nameIds) html += `<br><span style="color:#888;font-size:12px">ID по имени в МК: ${escapeHtml(nameIds)}</span>`;
+  if (nameIds && synced === 0) html += `<br><span style="color:#888;font-size:12px">ID по имени в МК: ${escapeHtml(nameIds)}</span>`;
   html += `</div>`;
   return html;
 }
@@ -7576,7 +7629,7 @@ async function _loadTeacherDiagnostics(uid, containerEl) {
     containerEl.innerHTML = _renderTeacherDiagnosticsHtml(d, uid);
     _attachDiagRefreshBtn(uid, containerEl);
   } catch (e) {
-    containerEl.innerHTML = `<div class="teacher-diag-panel teacher-diag-panel--error">Ошибка: ${escapeHtml(e.message)}</div>`;
+    containerEl.innerHTML = `<div class="teacher-diag-panel teacher-diag-panel--error">Ошибка загрузки диагностики: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -7586,14 +7639,68 @@ function _attachDiagRefreshBtn(uid, containerEl) {
   btn.addEventListener("click", async (e) => {
     const b = e.currentTarget;
     b.disabled = true;
-    b.textContent = "Загружаю все страницы МойКласс...";
+
+    // Animate through progress steps while waiting
+    const steps = [
+      "1/4 · Проверяю прямой фильтр по teacherId...",
+      "2/4 · Загружаю страницы расписания МойКласс...",
+      "3/4 · Проверяю поля преподавателей...",
+      "4/4 · Сохраняю занятия...",
+    ];
+    let stepIdx = 0;
+    b.textContent = steps[0];
+    const stepTimer = setInterval(() => {
+      stepIdx = Math.min(stepIdx + 1, steps.length - 1);
+      if (!b.disabled) { clearInterval(stepTimer); return; }
+      b.textContent = steps[stepIdx];
+    }, 5000);
+
     try {
       const d2 = await apiPost(`/api/admin/teacher-diagnostics/${uid}/refresh`, {});
+      clearInterval(stepTimer);
+      // Backend returned ok:false with error_code (fatal error, no diag)
+      if (!d2.ok && !d2.telegram_user_id) {
+        const errCode = d2.error_code || "unknown_error";
+        const errMsg = d2.error || "Не удалось выполнить обновление.";
+        const hint = _REFRESH_ERROR_HINTS[errCode] || "";
+        const details = d2.refresh || {};
+        let errHtml = `<div class="teacher-diag-panel teacher-diag-panel--error">`;
+        errHtml += `<b>⚠️ Не удалось обновить расписание</b><br>`;
+        errHtml += `<div style="font-size:13px;margin-top:6px">${escapeHtml(errMsg)}</div>`;
+        if (hint) errHtml += `<div style="font-size:12px;color:var(--muted,#657089);margin-top:4px">${escapeHtml(hint)}</div>`;
+        if (errCode) errHtml += `<div style="font-size:11px;color:#888;margin-top:4px;font-family:monospace">Код: ${escapeHtml(errCode)}</div>`;
+        if (details.stage) errHtml += `<div style="font-size:11px;color:#888;font-family:monospace">Этап: ${escapeHtml(details.stage)}</div>`;
+        if (details.exception_type) errHtml += `<div style="font-size:11px;color:#888;font-family:monospace">Тип: ${escapeHtml(details.exception_type)}</div>`;
+        if (details.exception_message) errHtml += `<div style="font-size:11px;color:#888;font-family:monospace;word-break:break-all">Детали: ${escapeHtml(details.exception_message)}</div>`;
+        errHtml += `<button class="secondary btn-sm teacher-diag-refresh-btn" style="margin-top:10px" data-diag-uid="${escapeAttr(String(uid))}">🔄 Попробовать ещё раз</button>`;
+        errHtml += `</div>`;
+        containerEl.innerHTML = errHtml;
+        _attachDiagRefreshBtn(uid, containerEl);
+        return;
+      }
+      // Normal response (ok:true with diag, or ok:true with partial refresh)
       containerEl.innerHTML = _renderTeacherDiagnosticsHtml(d2, uid);
       _attachDiagRefreshBtn(uid, containerEl);
     } catch (e2) {
-      b.textContent = "Ошибка: " + safeUserError(e2);
-      b.disabled = false;
+      clearInterval(stepTimer);
+      // Network-level error (gunicorn timeout, connection refused, etc.)
+      const errMsg = e2.message || String(e2);
+      const isTimeout = /timeout|timed out|network|failed to fetch/i.test(errMsg);
+      let errHtml = `<div class="teacher-diag-panel teacher-diag-panel--error">`;
+      errHtml += `<b>${isTimeout ? "⏱ Время ожидания истекло" : "⚠️ Ошибка соединения"}</b><br>`;
+      errHtml += `<div style="font-size:12px;margin-top:4px">`;
+      if (isTimeout) {
+        errHtml += `Сервер не успел обработать запрос за отведённое время. `;
+        errHtml += `Возможно, МойКласс отвечает очень медленно. Попробуйте повторить через минуту.`;
+      } else {
+        errHtml += `Не удалось связаться с сервером: ${escapeHtml(errMsg)}`;
+      }
+      errHtml += `</div>`;
+      errHtml += `<div style="font-size:11px;color:#888;margin-top:4px">Код: ${isTimeout ? "network_timeout" : "network_error"}</div>`;
+      errHtml += `<button class="secondary btn-sm teacher-diag-refresh-btn" style="margin-top:10px" data-diag-uid="${escapeAttr(String(uid))}">🔄 Попробовать ещё раз</button>`;
+      errHtml += `</div>`;
+      containerEl.innerHTML = errHtml;
+      _attachDiagRefreshBtn(uid, containerEl);
     }
   });
 }
