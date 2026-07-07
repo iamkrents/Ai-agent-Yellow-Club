@@ -1067,6 +1067,38 @@ class Storage:
             row = conn.execute("SELECT * FROM food_items WHERE id=?", (int(item_id),)).fetchone()
         return dict(row) if row else None
 
+    def get_food_item_menu(self, item_id: int) -> Optional[dict[str, Any]]:
+        """Return the food_menus row that owns this item."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT fm.* FROM food_items fi JOIN food_menus fm ON fm.id=fi.menu_id WHERE fi.id=?",
+                (int(item_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_food_items_order_counts(self, menu_id: int) -> dict[int, int]:
+        """Return {item_id: submitted_order_count} for all items in a menu."""
+        mid = int(menu_id)
+        counts: dict[int, int] = {}
+        with self._connect() as conn:
+            for row in conn.execute(
+                "SELECT oi.item_id, COUNT(*) FROM food_order_items oi "
+                "JOIN food_orders o ON o.id=oi.order_id "
+                "JOIN food_items fi ON fi.id=oi.item_id "
+                "WHERE fi.menu_id=? AND o.status='submitted' GROUP BY oi.item_id",
+                (mid,),
+            ).fetchall():
+                counts[int(row[0])] = counts.get(int(row[0]), 0) + int(row[1])
+            for row in conn.execute(
+                "SELECT oi.item_id, COUNT(*) FROM food_staff_order_items oi "
+                "JOIN food_staff_orders o ON o.id=oi.order_id "
+                "JOIN food_items fi ON fi.id=oi.item_id "
+                "WHERE fi.menu_id=? AND o.status='submitted' GROUP BY oi.item_id",
+                (mid,),
+            ).fetchall():
+                counts[int(row[0])] = counts.get(int(row[0]), 0) + int(row[1])
+        return counts
+
     def list_published_food_menus_with_items(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
             menus = conn.execute(

@@ -66,7 +66,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.36");
+console.log("MiniApp version: v7.0.37");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -6463,17 +6463,22 @@ function _renderFoodMenuDetail(root, menu) {
   const catHtml = allCats.length
     ? allCats.map(cat => {
         const catItems = cats[cat] || [];
-        const itemsHtml = catItems.map(item => `
+        const itemsHtml = catItems.map(item => {
+          const hasOrders = item.order_count > 0;
+          const hideBtn = item.is_available
+            ? `<button class="secondary btn-sm" data-hide-item="${item.id}">${hasOrders ? "Скрыть (в заказах)" : "Скрыть"}</button>`
+            : `<button class="secondary btn-sm" data-restore-item="${item.id}">Показать</button>`;
+          return `
           <div class="food-item-row${item.is_available ? "" : " food-item-hidden"}" data-item-id="${item.id}">
             <span class="food-item-name">${escapeHtml(item.name || "")}</span>
             ${item.weight ? `<span class="food-item-weight">${escapeHtml(item.weight)}</span>` : ""}
             ${item.price ? `<span class="food-item-price">${Number(item.price).toFixed(2)}&nbsp;BYN</span>` : ""}
             <div class="food-item-actions">
-              ${item.is_available
-                ? `<button class="secondary btn-sm" data-hide-item="${item.id}">Скрыть</button>`
-                : `<button class="secondary btn-sm" data-restore-item="${item.id}">Вернуть</button>`}
+              <button class="secondary btn-sm food-item-edit-inline-btn" data-edit-item="${item.id}" data-edit-name="${escapeAttr(item.name || "")}" data-edit-cat="${escapeAttr(item.category || "Другое")}" data-edit-weight="${escapeAttr(item.weight || "")}" data-edit-price="${escapeAttr(String(item.price || ""))}">Изменить</button>
+              ${hideBtn}
             </div>
-          </div>`).join("");
+          </div>`;
+        }).join("");
         return `<div class="food-category-block">
           <div class="food-category-label">${escapeHtml(cat)}</div>
           ${itemsHtml}
@@ -6494,6 +6499,7 @@ function _renderFoodMenuDetail(root, menu) {
       ${menu.status === "published" ? `<button class="secondary btn-sm" data-close-menu="${menu.id}">Закрыть меню</button>` : ""}
       ${(menu.status === "published" || menu.status === "closed") ? `<button class="secondary btn-sm" data-summary-menu="${menu.id}">Сводка заказов</button>` : ""}
     </div>
+    ${menu.status === "published" ? `<div class="food-published-warning">⚠️ Меню уже опубликовано. Изменения блюд повлияют на новые сводки и отчёты. Существующие заказы не ломаются.</div>` : ""}
     <div class="food-menu-deadline-block">
       ${menu.deadline_at
         ? (_isMenuDeadlinePassed(menu.deadline_at)
@@ -6567,6 +6573,53 @@ function _renderFoodMenuDetail(root, menu) {
   });
   root.querySelectorAll("[data-restore-item]").forEach(btn => {
     btn.addEventListener("click", () => restoreFoodItem(root, parseInt(btn.dataset.restoreItem), menu.id));
+  });
+  root.querySelectorAll(".food-item-edit-inline-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const itemId = btn.dataset.editItem;
+      const existing = root.querySelector(`#fmItemEditForm_${itemId}`);
+      if (existing) { existing.remove(); return; }
+      const catOptions = FOOD_CATEGORIES.map(c => `<option value="${escapeHtml(c)}"${c === btn.dataset.editCat ? " selected" : ""}>${escapeHtml(c)}</option>`).join("");
+      const div = document.createElement("div");
+      div.id = `fmItemEditForm_${itemId}`;
+      div.className = "food-item-edit-form-inline";
+      div.innerHTML = `
+        <div class="food-item-edit-form-row">
+          <label>Категория</label><select class="edit-item-cat">${catOptions}</select>
+        </div>
+        <div class="food-item-edit-form-row">
+          <label>Название</label><input class="edit-item-name" type="text" value="${escapeAttr(btn.dataset.editName)}" placeholder="Название блюда" maxlength="200">
+        </div>
+        <div class="food-item-edit-form-row">
+          <label>Вес</label><input class="edit-item-weight" type="text" value="${escapeAttr(btn.dataset.editWeight)}" placeholder="250 г">
+        </div>
+        <div class="food-item-edit-form-row">
+          <label>Цена (BYN)</label><input class="edit-item-price" type="text" value="${escapeAttr(btn.dataset.editPrice || "")}" placeholder="0.00">
+        </div>
+        <div class="food-item-edit-form-actions">
+          <button class="primary btn-sm edit-item-save">Сохранить</button>
+          <button class="secondary btn-sm edit-item-cancel">Отмена</button>
+        </div>
+        <div class="food-item-edit-error" style="display:none"></div>`;
+      btn.closest(".food-item-row").after(div);
+      div.querySelector(".edit-item-cancel")?.addEventListener("click", () => div.remove());
+      div.querySelector(".edit-item-save")?.addEventListener("click", async () => {
+        const name = (div.querySelector(".edit-item-name")?.value || "").trim();
+        const category = div.querySelector(".edit-item-cat")?.value || "Другое";
+        const weight = (div.querySelector(".edit-item-weight")?.value || "").trim() || null;
+        const priceRaw = (div.querySelector(".edit-item-price")?.value || "").replace(",", ".").replace(/руб\.?/gi, "").trim();
+        const price = parseFloat(priceRaw) || 0;
+        const errEl = div.querySelector(".food-item-edit-error");
+        if (!name) { errEl.textContent = "Укажите название блюда"; errEl.style.display = ""; return; }
+        const saveBtn = div.querySelector(".edit-item-save");
+        if (saveBtn) saveBtn.disabled = true;
+        try {
+          const data = await apiPost(`/api/food/items/${itemId}/update`, { name, category, weight, price });
+          if (!data.ok) { errEl.textContent = data.error || "Ошибка"; errEl.style.display = ""; if (saveBtn) saveBtn.disabled = false; return; }
+          await openFoodMenu(root, menu.id);
+        } catch (e) { errEl.textContent = e.message; errEl.style.display = ""; if (saveBtn) saveBtn.disabled = false; }
+      });
+    });
   });
   root.querySelector("#fiAddBtn")?.addEventListener("click", () => addFoodItem(root, menu.id));
   root.querySelector("#fiBulkParseBtn")?.addEventListener("click", () => _parseFoodBulkPreview(root, menu.id));
@@ -6729,15 +6782,19 @@ function _renderFoodMenuSummary(root, menuId, data) {
     return [...arr].sort((a, b) => (a.childName || "").localeCompare(b.childName || "", "ru"));
   }
 
-  function _itemsBlock(byItems) {
-    if (!Array.isArray(byItems) || !byItems.length) return `<div class="food-summary-empty">Нет выбранных блюд</div>`;
+  function _itemsBlock(byItems, utensils) {
+    if ((!Array.isArray(byItems) || !byItems.length) && !utensils) return `<div class="food-summary-empty">Нет выбранных блюд</div>`;
     const byCat = {};
-    byItems.forEach(it => { const _c = _normalizeFoodCategory(it.name, it.category); byCat[_c] = byCat[_c] || []; byCat[_c].push(it); });
+    (byItems || []).forEach(it => { const _c = _normalizeFoodCategory(it.name, it.category); byCat[_c] = byCat[_c] || []; byCat[_c].push(it); });
     const cats = [...new Set([...catOrder, ...Object.keys(byCat)])].filter(c => byCat[c]);
-    return cats.map(cat =>
+    const itemsHtml = cats.map(cat =>
       `<div class="parent-food-category">${escapeHtml(cat)}</div>` +
       byCat[cat].map(it => `<div class="food-summary-item-row"><span class="food-summary-item-name">${escapeHtml(it.name)}${it.weight ? ` · ${escapeHtml(it.weight)}` : ""}</span><span class="food-summary-item-count">${it.count} порц.</span></div>`).join("")
     ).join("");
+    const utensilsHtml = utensils > 0
+      ? `<div class="food-summary-item-row food-summary-utensils-row"><span class="food-summary-item-name">🍴 Столовые приборы</span><span class="food-summary-item-count">${utensils} компл.</span></div>`
+      : "";
+    return itemsHtml + utensilsHtml;
   }
 
   const canDeleteOrders = ["owner", "admin", "operations"].includes(state.me?.role || "");
@@ -6821,7 +6878,7 @@ function _renderFoodMenuSummary(root, menuId, data) {
         ${childCards}
         ${_staffSummaryBlock(loc.byStaff || [])}
         <div class="food-summary-section" style="margin-top:10px">Итог по блюдам</div>
-        ${_itemsBlock(loc.byItems)}
+        ${_itemsBlock(loc.byItems, loc.utensils)}
       </div>`;
     }).join("");
   } else {
@@ -6831,7 +6888,7 @@ function _renderFoodMenuSummary(root, menuId, data) {
       ${sorted.length ? sorted.map(_childOrderCard).join("") : `<div class="food-summary-empty">Детей нет</div>`}
       ${_staffSummaryBlock(data.byStaff)}
       <div class="food-summary-section" style="margin-top:10px">Итог по блюдам</div>
-      ${_itemsBlock(data.byItems)}`;
+      ${_itemsBlock(data.byItems, data.totalUtensils)}`;
   }
 
   function _staffSummaryBlock(byStaff) {
@@ -6877,6 +6934,7 @@ function _renderFoodMenuSummary(root, menuId, data) {
       <button class="secondary btn-sm" id="fmSummaryBack">← Назад к меню</button>
       <span class="food-menu-detail-title">${escapeHtml(title)} — Сводка</span>
     </div>
+    <div class="food-summary-warm-warning">⚠️ ВАЖНО: еда должна быть тёплой при доставке</div>
     ${overallStats}
     ${remindBlockHtml}
     ${bodyHtml}
@@ -7301,8 +7359,9 @@ function _copyFoodSummary(title, dateStr, data) {
     const orderLines = cats.map(cat =>
       cat.toUpperCase() + "\n" + byCat[cat].map(it => `${it.name}${it.weight ? ` · ${it.weight}` : ""} — ${it.count} шт.`).join("\n")
     ).join("\n\n") || "нет выбранных блюд";
+    const utensilsLine = loc.utensils > 0 ? `\nСтоловые приборы × ${loc.utensils}` : "";
     const skipped = sorted.filter(c => c.status === "skipped").map(c => `• ${c.childName}`).join("\n") || "нет";
-    return `ЗАКАЗ ${idx + 1} — ${loc.groupCode}, ${loc.location}\n\nЗАКАЗЫ ПО ДЕТЯМ:\n\n${childLines || "нет детей"}${staffBlock}\n\nИТОГ ПО БЛЮДАМ:\n${orderLines}\n\nБез питания:\n${skipped}`;
+    return `ЗАКАЗ ${idx + 1} — ${loc.groupCode}, ${loc.location}\n\nЗАКАЗЫ ПО ДЕТЯМ:\n\n${childLines || "нет детей"}${staffBlock}\n\nИТОГ ПО БЛЮДАМ:\n${orderLines}${utensilsLine}\n\nБез питания:\n${skipped}`;
   }
 
   const byLocations = Array.isArray(data.byLocations) && data.byLocations.length ? data.byLocations : null;
@@ -7327,12 +7386,77 @@ function _copyFoodSummary(title, dateStr, data) {
     const orderLines = cats.map(cat =>
       cat.toUpperCase() + "\n" + byCat[cat].map(it => `${it.name}${it.weight ? ` · ${it.weight}` : ""} — ${it.count} шт.`).join("\n")
     ).join("\n\n") || "(нет заказов)";
+    const totalUtensils = data.totalUtensils || 0;
+    const utensilsLine = totalUtensils > 0 ? `\nСтоловые приборы × ${totalUtensils}` : "";
     const skipped = sorted.filter(c => c.status === "skipped").map(c => `• ${c.childName}`).join("\n") || "нет";
-    bodyText = `ЗАКАЗЫ ПО ДЕТЯМ:\n\n${childLines || "нет детей"}${staffBlock}\n\nИТОГ ПО БЛЮДАМ:\n${orderLines}\n\nБез питания:\n${skipped}`;
+    bodyText = `ЗАКАЗЫ ПО ДЕТЯМ:\n\n${childLines || "нет детей"}${staffBlock}\n\nИТОГ ПО БЛЮДАМ:\n${orderLines}${utensilsLine}\n\nБез питания:\n${skipped}`;
   }
 
-  const text = [`Питание Yellow Club`, `${title}, ${dateStr}`, ``, bodyText].join("\n");
+  const text = [`Питание Yellow Club`, `${title}, ${dateStr}`, `⚠️ ВАЖНО: еда должна быть тёплой при доставке`, ``, bodyText].join("\n");
   navigator.clipboard?.writeText(text).then(() => setNotice("Сводка скопирована", "ok")).catch(() => setNotice("Не удалось скопировать", "error"));
+}
+
+// ---- Teacher class orders ----
+async function _loadAndRenderTeacherClassOrders(root) {
+  const wrap = document.createElement("div");
+  wrap.className = "food-debug-card food-teacher-class-section";
+  wrap.innerHTML = `<div class="food-menu-panel-head"><h3>Заказы детей</h3></div><div class="empty">Загрузка...</div>`;
+  root.appendChild(wrap);
+  try {
+    const data = await apiGet("/api/food/teacher/class-orders");
+    if (!data.ok) {
+      if (data.error === "no_lesson" || data.error === "forbidden") {
+        wrap.remove();
+        return;
+      }
+      wrap.innerHTML = `<div class="food-debug-card food-teacher-class-section"><div class="food-menu-panel-head"><h3>Заказы детей</h3></div><div class="food-debug-error">${escapeHtml(data.message || data.error || "Ошибка")}</div></div>`;
+      return;
+    }
+    const locations = data.locations || [];
+    if (!locations.length) {
+      wrap.innerHTML = `<div class="food-debug-card food-teacher-class-section"><div class="food-menu-panel-head"><h3>Заказы детей</h3></div><div class="empty">Заказы детей на завтра не найдены для вашего учебного класса.</div></div>`;
+      return;
+    }
+    let html = `<div class="food-debug-card food-teacher-class-section">`;
+    for (const loc of locations) {
+      const locTitle = locations.length > 1 ? `Заказы детей · ${escapeHtml(loc.location_name)}` : "Заказы детей";
+      const dateStr = _formatMenuDate(loc.menu_date);
+      html += `<div class="food-menu-panel-head"><h3>${locTitle}</h3><span style="font-size:13px;color:var(--color-text-secondary)">${escapeHtml(dateStr)}</span></div>`;
+      const children = loc.children || [];
+      const ordered = children.filter(c => c.status === "ordered");
+      const noFood = children.filter(c => c.status === "no_food");
+      const missing = children.filter(c => c.status === "missing");
+      if (!children.length) {
+        html += `<div class="empty">Нет детей в вашем учебном классе для этого меню.</div>`;
+      } else {
+        if (ordered.length) {
+          html += `<div class="food-summary-section">Заказали (${ordered.length})</div>`;
+          for (const ch of ordered) {
+            html += `<div class="food-teacher-child-card">
+              <div class="food-teacher-child-name">${escapeHtml(ch.child_name)}</div>
+              <ul class="food-child-order-items">${(ch.items || []).map(it => { const q = parseInt(it.quantity||1,10); return `<li>${escapeHtml(it.name)}${it.weight ? ` · ${escapeHtml(it.weight)}` : ""}${q > 1 ? ` × ${q}` : ""}</li>`; }).join("")}</ul>
+            </div>`;
+          }
+        }
+        if (noFood.length) {
+          html += `<div class="food-summary-section">Без питания (${noFood.length})</div>`;
+          for (const ch of noFood) {
+            html += `<div class="food-teacher-child-card food-teacher-child-card--nofood"><div class="food-teacher-child-name">${escapeHtml(ch.child_name)}</div><div class="food-child-order-note">Без питания</div></div>`;
+          }
+        }
+        if (missing.length) {
+          html += `<div class="food-summary-section">Не сделали заказ (${missing.length})</div>`;
+          for (const ch of missing) {
+            html += `<div class="food-teacher-child-card food-teacher-child-card--missing"><div class="food-teacher-child-name">${escapeHtml(ch.child_name)}</div><div class="food-child-order-note food-child-order-note--missing">Заказ не сделан</div></div>`;
+          }
+        }
+      }
+    }
+    html += `</div>`;
+    wrap.outerHTML = html;
+  } catch (e) {
+    wrap.innerHTML = `<div class="food-debug-card food-teacher-class-section"><div class="food-debug-error">Не удалось загрузить заказы детей: ${escapeHtml(e.message)}</div></div>`;
+  }
 }
 
 // ---- Staff food lunch (food-lunch tab) ----
@@ -7569,6 +7693,11 @@ async function renderStaffFoodLunch(root) {
         row.classList.toggle("food-order-qty-row--active", v > 0);
       });
     });
+    // For teachers/methodists: show children's orders after own lunch section
+    const myRole = state.me?.role;
+    if (myRole === "teacher" || myRole === "methodist" || myRole === "intern") {
+      _loadAndRenderTeacherClassOrders(root).catch(e => console.warn("[teacher-class-orders]", e.message));
+    }
   } catch (e) {
     console.error("[staff-lunch] render error:", e.message);
     root.innerHTML = `<div class="food-debug-card"><div class="food-debug-error">Не удалось загрузить меню. Проверьте соединение и обновите страницу.</div><button class="secondary" id="staffLunchRetry" style="margin-top:8px">Обновить</button></div>`;
@@ -7767,13 +7896,16 @@ function renderKitchenPanel() {
 function _renderKitchenSummaryHtml(data, showPrices) {
   const menu = data.menu || {};
   const byLocations = data.byLocations || [];
-  const dateStr = _fmtDateWeekday(menu.menu_date);
-  let html = `<div class="kitchen-deadline-info">Дедлайн: ${menu.deadline_at ? new Date(menu.deadline_at).toLocaleString("ru-RU") : "не задан"}</div>`;
+  let html = `<div class="kitchen-warm-warning">⚠️ ВАЖНО<br>Еда должна быть тёплой при доставке</div>`;
+  html += `<div class="kitchen-deadline-info">Дедлайн: ${menu.deadline_at ? new Date(menu.deadline_at).toLocaleString("ru-RU") : "не задан"}</div>`;
   for (const loc of byLocations) {
     html += _renderKitchenLocationHtml(loc, showPrices);
   }
   if (showPrices && data.overallTotal !== undefined) {
     html += `<div class="kitchen-overall-total"><span>Общая сумма</span><span>${_fmtBYN(data.overallTotal)}</span></div>`;
+  }
+  if (data.totalUtensils > 0) {
+    html += `<div class="kitchen-overall-total"><span>Столовые приборы (всего)</span><span>${data.totalUtensils} комплект</span></div>`;
   }
   return html;
 }
@@ -7794,7 +7926,7 @@ function _renderKitchenLocationHtml(loc, showPrices) {
       ${loc.missingOrders ? `<span>Ожидаем: <b>${loc.missingOrders}</b></span>` : ""}
     </div>`;
 
-  if (byItems.length > 0) {
+  if (byItems.length > 0 || loc.utensils > 0) {
     html += `<div class="kitchen-section-title">Итог по блюдам</div><div class="kitchen-items-list">`;
     for (const it of byItems) {
       html += `<div class="kitchen-item-row">
@@ -7804,6 +7936,12 @@ function _renderKitchenLocationHtml(loc, showPrices) {
         html += `<span class="kitchen-item-price">${_fmtBYN(it.price)}</span><span class="kitchen-item-total">= ${_fmtBYN(it.total)}</span>`;
       }
       html += `</div>`;
+    }
+    if (loc.utensils > 0) {
+      html += `<div class="kitchen-item-row kitchen-item-row--utensils">
+        <span class="kitchen-item-name">🍴 Столовые приборы</span>
+        <span class="kitchen-item-count">${loc.utensils} компл.</span>
+      </div>`;
     }
     html += `</div>`;
     if (showPrices && loc.locationTotal !== undefined) {
@@ -7875,19 +8013,20 @@ function _buildKitchenCopyText(withPrices) {
   const menu = data.menu || {};
   const dateStr = _fmtDateWeekday(menu.menu_date);
   let lines = withPrices
-    ? [`Питание Yellow Club — отчёт по стоимости`, dateStr, ""]
-    : [`Питание Yellow Club`, dateStr, ""];
+    ? [`Питание Yellow Club — отчёт по стоимости`, dateStr, "", `⚠️ ВАЖНО: еда должна быть тёплой при доставке`, ""]
+    : [`Питание Yellow Club`, dateStr, "", `⚠️ ВАЖНО: еда должна быть тёплой при доставке`, ""];
   for (const loc of (data.byLocations || [])) {
     lines.push(loc.location || loc.groupCode);
     lines.push("");
     const byItems = loc.byItems || [];
-    if (byItems.length > 0) {
+    if (byItems.length > 0 || loc.utensils > 0) {
       lines.push("ИТОГ ПО БЛЮДАМ:");
       for (const it of byItems) {
         let line = `${it.name} - ${it.count} шт.`;
         if (withPrices && it.price !== undefined) line += ` × ${_fmtBYN(it.price)} = ${_fmtBYN(it.total)}`;
         lines.push(line);
       }
+      if (loc.utensils > 0) lines.push(`Столовые приборы × ${loc.utensils}`);
       if (withPrices && loc.locationTotal !== undefined) {
         lines.push("");
         lines.push(`ИТОГО ПО ФИЛИАЛУ:`);

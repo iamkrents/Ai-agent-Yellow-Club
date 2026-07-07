@@ -6511,6 +6511,103 @@ body { -webkit-overflow-scrolling: touch; }
 .food-audit-check--warn { color: #b8860b; }
 
 /* =====================================================
+   v7.0.37 — Published-menu edits / Utensils / Teacher view
+   ===================================================== */
+
+/* Published menu warning */
+.food-published-warning {
+  background: #fff8e1;
+  border: 1.5px solid #f9a825;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #7c5a00;
+  margin: 10px 0;
+}
+@media (prefers-color-scheme: dark) {
+  .food-published-warning { background: #3a2e00; border-color: #e6ac00; color: #ffd54f; }
+}
+:root[data-theme="dark"] .food-published-warning { background: #3a2e00; border-color: #e6ac00; color: #ffd54f; }
+:root[data-theme="light"] .food-published-warning { background: #fff8e1; border-color: #f9a825; color: #7c5a00; }
+
+/* Inline item edit form */
+.food-item-edit-form-inline {
+  background: var(--color-surface, #f8f9fb);
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin: 4px 0 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.food-item-edit-form-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.food-item-edit-form-row label {
+  font-size: 12px;
+  color: var(--color-text-secondary, #657089);
+  min-width: 72px;
+}
+.food-item-edit-form-inline select,
+.food-item-edit-form-inline input[type="text"] {
+  flex: 1;
+  font-size: 13px;
+  padding: 5px 8px;
+  border: 1px solid var(--border, #d8d8d8);
+  border-radius: 7px;
+  background: var(--color-bg, #fff);
+  color: var(--color-text, #172033);
+}
+.food-item-edit-form-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+.food-item-edit-error { color: #c0392b; font-size: 12px; margin-top: 2px; }
+
+/* Kitchen warm food warning */
+.kitchen-warm-warning,
+.food-summary-warm-warning {
+  background: linear-gradient(90deg, #fff3cd, #fff8e1);
+  border: 2px solid #f9a825;
+  border-radius: 12px;
+  padding: 13px 16px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #7c5a00;
+  text-align: center;
+  line-height: 1.4;
+  margin-bottom: 14px;
+}
+@media (prefers-color-scheme: dark) {
+  .kitchen-warm-warning, .food-summary-warm-warning { background: linear-gradient(90deg, #3a2e00, #3a2800); border-color: #e6ac00; color: #ffd54f; }
+}
+:root[data-theme="dark"] .kitchen-warm-warning,
+:root[data-theme="dark"] .food-summary-warm-warning { background: linear-gradient(90deg, #3a2e00, #3a2800); border-color: #e6ac00; color: #ffd54f; }
+:root[data-theme="light"] .kitchen-warm-warning,
+:root[data-theme="light"] .food-summary-warm-warning { background: linear-gradient(90deg, #fff3cd, #fff8e1); border-color: #f9a825; color: #7c5a00; }
+
+/* Utensils row in summary */
+.kitchen-item-row--utensils { font-weight: 600; border-top: 1px dashed var(--border, #e0e0e0); margin-top: 4px; padding-top: 4px; }
+.food-summary-utensils-row { font-weight: 600; border-top: 1px dashed var(--border, #e0e0e0); margin-top: 4px; padding-top: 4px; }
+
+/* Teacher class orders */
+.food-teacher-class-section { margin-top: 16px; }
+.food-teacher-child-card {
+  background: var(--color-surface, #f8f9fb);
+  border: 1px solid var(--border, #e8ecf4);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+}
+.food-teacher-child-card--nofood { opacity: 0.75; }
+.food-teacher-child-card--missing { border-color: #ffccbc; }
+.food-teacher-child-name { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+.food-child-order-items { margin: 0; padding-left: 16px; font-size: 13px; }
+.food-child-order-items li { margin-bottom: 2px; }
+.food-child-order-note { font-size: 12px; color: var(--color-text-secondary, #657089); }
+.food-child-order-note--missing { color: #c0392b; }
+
+/* =====================================================
    v7.0.36 — Animation Layer
    ===================================================== */
 

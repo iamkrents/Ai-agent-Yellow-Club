@@ -2015,6 +2015,10 @@ class MiniAppContext:
         menu = self.storage.get_food_menu(mid)
         if not menu:
             return {"ok": False, "error": "Меню не найдено"}
+        # Add order_count per item so UI knows which items have existing orders
+        order_counts = self.storage.get_food_items_order_counts(mid)
+        for item in menu.get("items") or []:
+            item["order_count"] = order_counts.get(int(item["id"]), 0)
         return {"ok": True, "menu": menu}
 
     def food_create_menu(self, auth: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -2171,6 +2175,32 @@ class MiniAppContext:
         log.info("food_deadline_updated menu_id=%s old=%r new=%r by=%s", mid, old_deadline, deadline_at, changed_by)
         return {"ok": True, "menu": menu}
 
+    def _log_menu_item_audit_if_published(
+        self, actor_user_id: int, role: str, item: dict, action: str,
+        old_data: Any = None, new_data: Any = None
+    ) -> None:
+        """Write audit log when a menu item is changed on a published menu."""
+        try:
+            menu_id = int(item.get("menu_id") or 0)
+            if not menu_id:
+                return
+            menu = self.storage.get_food_menu(menu_id)
+            if not menu or menu.get("status") not in ("published", "closed"):
+                return
+            self.storage.log_food_order_audit(
+                menu_id=menu_id,
+                order_id=int(item.get("id") or 0),
+                order_type="menu_item",
+                action=action,
+                actor_user_id=actor_user_id,
+                actor_role=role,
+                old_data=old_data,
+                new_data=new_data,
+                comment=f"item_name={item.get('name', '')}",
+            )
+        except Exception:
+            log.exception("menu_item_audit failed (non-fatal)")
+
     def food_add_item(self, auth: dict[str, Any], menu_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
@@ -2195,6 +2225,10 @@ class MiniAppContext:
         except (ValueError, TypeError):
             sort_order = 0
         item = self.storage.add_food_item(mid, category, name, weight, price, sort_order)
+        user_id = int(auth["user_id"])
+        role = self._role_for_user(user_id)
+        self._log_menu_item_audit_if_published(user_id, role, item, "menu_item_create_after_publish",
+                                               old_data=None, new_data=item)
         return {"ok": True, "item": item}
 
     def food_update_item(self, auth: dict[str, Any], item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2207,10 +2241,15 @@ class MiniAppContext:
             iid = int(item_id)
         except (ValueError, TypeError):
             return {"ok": False, "error": "Неверный item_id"}
+        old_item = self.storage.update_food_item(iid, {})  # fetch current state
         data = {k: payload[k] for k in ("category", "name", "weight", "price", "sort_order", "is_available", "description") if k in payload}
         item = self.storage.update_food_item(iid, data)
         if not item:
             return {"ok": False, "error": "Блюдо не найдено"}
+        user_id = int(auth["user_id"])
+        role = self._role_for_user(user_id)
+        self._log_menu_item_audit_if_published(user_id, role, item, "menu_item_update_after_publish",
+                                               old_data=old_item, new_data=item)
         return {"ok": True, "item": item}
 
     def food_hide_item(self, auth: dict[str, Any], item_id: str) -> dict[str, Any]:
@@ -2226,6 +2265,10 @@ class MiniAppContext:
         item = self.storage.set_food_item_available(iid, False)
         if not item:
             return {"ok": False, "error": "Блюдо не найдено"}
+        user_id = int(auth["user_id"])
+        role = self._role_for_user(user_id)
+        self._log_menu_item_audit_if_published(user_id, role, item, "menu_item_hide_after_publish",
+                                               old_data={"is_available": True}, new_data={"is_available": False})
         return {"ok": True, "item": item}
 
     def food_restore_item(self, auth: dict[str, Any], item_id: str) -> dict[str, Any]:
@@ -2241,6 +2284,10 @@ class MiniAppContext:
         item = self.storage.set_food_item_available(iid, True)
         if not item:
             return {"ok": False, "error": "Блюдо не найдено"}
+        user_id = int(auth["user_id"])
+        role = self._role_for_user(user_id)
+        self._log_menu_item_audit_if_published(user_id, role, item, "menu_item_show_after_publish",
+                                               old_data={"is_available": False}, new_data={"is_available": True})
         return {"ok": True, "item": item}
 
     # --- Food module: parent orders ---
@@ -2413,6 +2460,8 @@ class MiniAppContext:
                 {"item_id": iid, "category": meta.get("category"), "name": meta.get("name"), "weight": meta.get("weight"), "count": loc_item_counts[iid], "children": loc_item_children.get(iid, [])}
                 for iid, meta in loc_item_meta.items()
             ]
+            # Utensils: 1 set per person with a submitted food order
+            loc_utensils = loc_submitted + sum(1 for s in loc_staff if s.get("status") == "submitted")
             by_locations.append({
                 "groupCode": code,
                 "location": loc,
@@ -2424,8 +2473,10 @@ class MiniAppContext:
                 "byChildren": ch_list,
                 "byStaff": loc_staff,
                 "missingChildren": [c["childName"] for c in ch_list if c["status"] == "missing"],
+                "utensils": loc_utensils,
             })
-        return {"ok": True, **summary, "byLocations": by_locations}
+        total_utensils = sum(loc.get("utensils", 0) for loc in by_locations)
+        return {"ok": True, **summary, "byLocations": by_locations, "totalUtensils": total_utensils}
 
     # --- Food module: OCR preview ---
 
@@ -2609,6 +2660,109 @@ class MiniAppContext:
                 "status": "access_ok" if has_user else "no_telegram_link",
             })
         return {"ok": True, "tomorrowDate": tomorrow_str, "teachers": teachers}
+
+    def food_teacher_class_orders(self, auth: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        """Teacher endpoint: show children's orders for the teacher's class/location."""
+        if not getattr(self.settings, "food_module_enabled", False):
+            return {"ok": False, "error": "food_module_disabled"}
+        user_id = int(auth["user_id"])
+        role = self._role_for_user(user_id)
+        allowed_roles = {"teacher", "methodist", "intern", "owner", "admin", "operations"}
+        if role not in allowed_roles:
+            return {"ok": False, "error": "forbidden"}
+        mk_teacher_id, _ = self._resolve_teacher_mk_id(user_id)
+        try:
+            import zoneinfo
+            minsk_now = datetime.now(zoneinfo.ZoneInfo("Europe/Minsk"))
+        except Exception:
+            minsk_now = datetime.utcnow()
+        tomorrow_str = (minsk_now.date() + timedelta(days=1)).isoformat()
+        target_date = str(params.get("date") or "").strip() or tomorrow_str
+        teacher_location_codes: list[str] = []
+        if mk_teacher_id:
+            teacher_location_codes = self.storage.get_teacher_lesson_locations(mk_teacher_id, target_date)
+        location_filter = str(params.get("location_code") or "").strip().upper() or None
+        if location_filter:
+            if teacher_location_codes and location_filter not in teacher_location_codes:
+                if role not in {"owner", "admin", "operations"}:
+                    return {"ok": False, "error": "Этот филиал не в вашем расписании на эту дату."}
+            teacher_location_codes = [location_filter]
+        elif not teacher_location_codes and role not in {"owner", "admin", "operations"}:
+            return {
+                "ok": False,
+                "error": "no_lesson",
+                "message": "Нет занятий в этот день. Заказы детей недоступны.",
+            }
+        location_map: dict[str, str] = {
+            "YC1": getattr(self.settings, "food_location_yc1", "") or "Кульман 1/1",
+            "YC2": getattr(self.settings, "food_location_yc2", "") or "Мстиславца 6",
+            "YC3": getattr(self.settings, "food_location_yc3", "") or "Адрес не указан",
+            "unknown": "Адрес не определён",
+        }
+        menu_id_param = params.get("menu_id")
+        if menu_id_param:
+            try:
+                menu_obj = self.storage.get_food_menu(int(menu_id_param))
+                menus: list[dict] = [menu_obj] if menu_obj else []
+            except (ValueError, TypeError):
+                return {"ok": False, "error": "Неверный menu_id"}
+        else:
+            all_menus = self.storage.list_food_menus()
+            menus = [
+                m for m in all_menus
+                if m.get("menu_date") == target_date
+                and m.get("status") in ("published", "closed")
+                and not m.get("deleted_at")
+            ]
+        locations_out: list[dict] = []
+        seen_keys: set[str] = set()
+        for menu in menus:
+            summary = self.storage.get_food_menu_summary(menu["id"])
+            if not summary:
+                continue
+            by_children = summary.get("byChildren", [])
+            groups: dict[str, list] = {}
+            for ch in by_children:
+                code = ch.get("groupCode", "unknown")
+                groups.setdefault(code, []).append(ch)
+            target_codes = teacher_location_codes if teacher_location_codes else sorted(groups.keys())
+            for code in target_codes:
+                key = f"{code}_{menu['id']}"
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                children_list = groups.get(code, [])
+                loc_name = location_map.get(code, f"Адрес ({code})")
+                children_out = []
+                for ch in sorted(children_list, key=lambda c: c.get("childName") or ""):
+                    status = ch.get("status", "missing")
+                    teacher_status = "ordered" if status == "submitted" else ("no_food" if status == "skipped" else "missing")
+                    items_out: list[dict] = []
+                    if status == "submitted":
+                        for it in (ch.get("itemDetails") or []):
+                            items_out.append({
+                                "name": it.get("name", ""),
+                                "quantity": int(it.get("quantity") or 1),
+                                "weight": it.get("weight") or "",
+                            })
+                    children_out.append({
+                        "child_name": ch.get("childName", ""),
+                        "status": teacher_status,
+                        "items": items_out,
+                    })
+                locations_out.append({
+                    "location_code": code,
+                    "location_name": loc_name,
+                    "menu_id": menu["id"],
+                    "menu_date": menu.get("menu_date"),
+                    "children": children_out,
+                })
+        return {
+            "ok": True,
+            "date": target_date,
+            "teacher_location_codes": teacher_location_codes,
+            "locations": locations_out,
+        }
 
     def food_notify_published(self, auth: dict[str, Any], menu_id_str: str) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
@@ -3216,10 +3370,13 @@ class MiniAppContext:
                 loc_by_items.append(ie)
             if show_prices:
                 overall_total += loc_total
+            loc_submitted_count = sum(1 for c in ch_list if c["status"] == "submitted")
+            loc_staff_submitted = sum(1 for s in loc_staff if s.get("status") == "submitted")
+            loc_utensils = loc_submitted_count + loc_staff_submitted
             loc_entry: dict[str, Any] = {
                 "groupCode": code,
                 "location": loc,
-                "submittedOrders": sum(1 for c in ch_list if c["status"] == "submitted"),
+                "submittedOrders": loc_submitted_count,
                 "skippedOrders": sum(1 for c in ch_list if c["status"] == "skipped"),
                 "missingOrders": sum(1 for c in ch_list if c["status"] == "missing"),
                 "byItems": loc_by_items,
@@ -3227,10 +3384,12 @@ class MiniAppContext:
                 "byStaff": staff_orders,
                 "missingChildren": [c["childName"] for c in ch_list if c["status"] == "missing"],
                 "noFoodChildren": [c["childName"] for c in ch_list if c["status"] == "skipped"],
+                "utensils": loc_utensils,
             }
             if show_prices:
                 loc_entry["locationTotal"] = round(loc_total, 2)
             by_locations.append(loc_entry)
+        total_utensils_kitchen = sum(loc.get("utensils", 0) for loc in by_locations)
         result: dict[str, Any] = {
             "ok": True,
             "menu": {
@@ -3243,6 +3402,7 @@ class MiniAppContext:
             },
             "byLocations": by_locations,
             "showPrices": show_prices,
+            "totalUtensils": total_utensils_kitchen,
         }
         if show_prices:
             result["overallTotal"] = round(overall_total, 2)
@@ -3489,6 +3649,20 @@ class MiniAppContext:
         # --- CHECK: money totals ---
         _add_check("MONEY_TOTALS_MATCH", "passed",
                    f"Пересчитанная сумма: {total_amount:.2f} BYN ({total_items_qty} порций).")
+
+        # --- CHECK: utensils count ---
+        utensils_by_loc: dict[str, int] = {}
+        for code, entry in loc_data.items():
+            utensils_by_loc[code] = entry["childOrders"] + entry["staffOrders"]
+        total_utensils_audit = sum(utensils_by_loc.values())
+        loc_utensils_str = ", ".join(
+            f"{code}: {cnt}" for code, cnt in sorted(utensils_by_loc.items()) if cnt > 0
+        )
+        _add_check(
+            "UTENSILS_COUNT", "passed",
+            f"Столовые приборы: {total_utensils_audit} комплект(ов)"
+            + (f" ({loc_utensils_str})" if loc_utensils_str else "") + ".",
+        )
 
         # --- Build global items summary ---
         items_summary = []
@@ -6587,6 +6761,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.food_auto_reminder_status(auth))
                 if path == "/api/food/reports/shift":
                     return self._send_json(CTX.food_shift_report(auth, params))
+                if path == "/api/food/teacher/class-orders":
+                    return self._send_json(CTX.food_teacher_class_orders(auth, params))
                 if path == "/api/food/kitchen/menus":
                     return self._send_json(CTX.food_kitchen_menus(auth))
                 if path.startswith("/api/food/kitchen/menus/"):
