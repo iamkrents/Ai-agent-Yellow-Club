@@ -2574,45 +2574,58 @@ class MiniAppContext:
         has_tomorrow_lesson = True
         teacher_not_linked = False
         teacher_location_codes: list[str] = []
+        lesson_contexts: list[dict[str, Any]] = []
         mk_teacher_id_resolved = ""
         mk_resolve_method = ""
         teacher_display_name = ""
-        # Resolve teacher ID for ANY role — teacher link takes priority over role.
-        # An admin/owner may also be a MoyKlass teacher; their lunch must go to the right branch.
+        location_map: dict[str, str] = {
+            "YC1": getattr(self.settings, "food_location_yc1", "") or "Кульман 1/1",
+            "YC2": getattr(self.settings, "food_location_yc2", "") or "Мстиславца 6",
+            "YC3": getattr(self.settings, "food_location_yc3", "") or "Адрес не указан",
+        }
         staff = self.storage.get_staff_user(user_id)
         staff_full_name = str(staff.get("full_name") or "") if staff else ""
         mk_teacher_id_resolved, mk_resolve_method = self._resolve_teacher_mk_id(user_id)
         if mk_teacher_id_resolved:
-            has_tomorrow_lesson = self.storage.teacher_has_lesson_on_date(mk_teacher_id_resolved, tomorrow_str)
-            if has_tomorrow_lesson:
-                teacher_location_codes = self.storage.get_teacher_lesson_locations(mk_teacher_id_resolved, tomorrow_str)
-            # Prefer MoyKlass teacher name, fall back to staff full name
+            # Get per-lesson contexts for the menu date — ground truth for location
+            lesson_contexts = self.storage.get_teacher_lesson_contexts(mk_teacher_id_resolved, tomorrow_str)
+            if lesson_contexts:
+                has_tomorrow_lesson = True
+                # Unique location codes in lesson order
+                seen_locs: list[str] = []
+                for ctx in lesson_contexts:
+                    lc = ctx.get("location_code") or ""
+                    if lc and lc not in seen_locs:
+                        seen_locs.append(lc)
+                teacher_location_codes = seen_locs
+                # Add location_name to each context
+                for ctx in lesson_contexts:
+                    ctx["location_name"] = location_map.get(ctx.get("location_code") or "", ctx.get("location_code") or "")
+            else:
+                has_tomorrow_lesson = self.storage.teacher_has_lesson_on_date(mk_teacher_id_resolved, tomorrow_str)
             teacher_display_name = (
                 str(staff.get("mk_teacher_name") or "") if staff else ""
             ) or staff_full_name
             log.info(
-                "food_staff_menus: user=%s role=%s name=%r mk=%s method=%s "
-                "has_lesson=%s locs=%s",
-                user_id, role, staff_full_name, mk_teacher_id_resolved,
-                mk_resolve_method, has_tomorrow_lesson, teacher_location_codes,
+                "[teacher-lunch-location] user=%s role=%s mk=%s method=%s date=%s "
+                "lesson_contexts=%s locs=%s",
+                user_id, role, mk_teacher_id_resolved, mk_resolve_method,
+                tomorrow_str, len(lesson_contexts), teacher_location_codes,
             )
         elif role in {"teacher", "intern"}:
-            # Teacher role but no mk_teacher_id linked — block and notify
             has_tomorrow_lesson = False
             teacher_not_linked = True
             log.warning(
-                "food_staff_menus: user=%s role=%s name=%r — teacher role but no mk_teacher_id; "
-                "use /mk_link_teacher to bind",
+                "[teacher-lunch-location] user=%s role=%s name=%r — no mk_teacher_id; use /mk_link_teacher",
                 user_id, role, staff_full_name,
             )
         else:
             log.info(
-                "food_staff_menus: user=%s role=%s name=%r — no teacherId; staff fallback",
+                "[teacher-lunch-location] user=%s role=%s name=%r — no teacherId; staff fallback",
                 user_id, role, staff_full_name,
             )
         menus = self.storage.list_published_food_menus_with_items()
         tomorrow_menus = [m for m in menus if (m.get("menu_date") or "") == tomorrow_str]
-        # Filter by teacher location: only if teacher has known locations AND menus have location_code
         if teacher_location_codes:
             located = [m for m in tomorrow_menus if (m.get("location_code") or "").upper() in teacher_location_codes]
             if located:
@@ -2621,12 +2634,17 @@ class MiniAppContext:
             for cat_items in (menu.get("itemsByCategory") or {}).values():
                 for item in cat_items:
                     item.pop("price", None)
+        requires_location_choice = len(teacher_location_codes) > 1
+        resolved_location_code = teacher_location_codes[0] if len(teacher_location_codes) == 1 else ""
         return {
             "ok": True,
             "hasTomorrowLesson": has_tomorrow_lesson,
             "teacherNotLinked": teacher_not_linked,
             "tomorrowDate": tomorrow_str,
             "teacherLocationCodes": teacher_location_codes,
+            "lessonContexts": lesson_contexts,
+            "requiresLocationChoice": requires_location_choice,
+            "resolvedLocationCode": resolved_location_code,
             "mkResolveMethod": mk_resolve_method,
             "teacherDisplayName": teacher_display_name,
             "isTeacherBranch": bool(mk_teacher_id_resolved),
@@ -3055,38 +3073,56 @@ class MiniAppContext:
         if mk_teacher_id and menu_date:
             loc_codes = self.storage.get_teacher_lesson_locations(mk_teacher_id, menu_date)
             log.info(
-                "food_order_loc_teacher: user=%s mk=%s lesson_locations=%s",
-                user_id, mk_teacher_id, loc_codes,
+                "[teacher-lunch-location] save: user=%s mk=%s date=%s lesson_locs=%s menu_loc=%s payload_loc=%s",
+                user_id, mk_teacher_id, menu_date, loc_codes, menu_loc,
+                str(payload.get("location_code") or ""),
             )
             if len(loc_codes) == 1:
-                log.info("food_order_loc_result: user=%s → teacher branch loc=%s", user_id, loc_codes[0])
+                log.info(
+                    "[teacher-lunch-location] result: user=%s → single_lesson_loc=%s",
+                    user_id, loc_codes[0],
+                )
                 return loc_codes[0]
             if len(loc_codes) > 1:
+                # Priority 1: explicit choice from frontend
                 preferred = str(payload.get("location_code") or "").strip().upper()
-                if preferred in loc_codes:
-                    log.info("food_order_loc_result: user=%s → teacher multi-loc, chosen=%s", user_id, preferred)
+                if preferred and preferred in loc_codes:
+                    log.info(
+                        "[teacher-lunch-location] result: user=%s → multi_loc payload_chosen=%s",
+                        user_id, preferred,
+                    )
                     return preferred
-                log.info("food_order_loc_result: user=%s → multiple_locations, awaiting user choice", user_id)
+                # Priority 2: menu itself is location-specific and matches a teacher lesson
+                if menu_loc and menu_loc in loc_codes:
+                    log.info(
+                        "[teacher-lunch-location] result: user=%s → multi_loc menu_loc=%s",
+                        user_id, menu_loc,
+                    )
+                    return menu_loc
+                # Need explicit choice from user
+                log.info(
+                    "[teacher-lunch-location] result: user=%s → multiple_locations=%s (no choice made)",
+                    user_id, loc_codes,
+                )
                 return {
                     "ok": False,
                     "error": "multiple_locations",
                     "availableLocations": loc_codes,
-                    "message": "У вас занятия в нескольких филиалах на эту дату. Выберите филиал для обеда.",
+                    "message": "У вас занятия в нескольких учебных классах на эту дату. Выберите занятие для обеда.",
                 }
-            # teacherId found but no lesson on this date → warn and fall through
+            # teacherId found but no lesson on this date in DB
             log.warning(
-                "food_order_loc_no_lesson: user=%s mk=%s date=%s — no lesson in tlc or snapshots; "
-                "falling back to menu_loc=%s. Check MoyKlass sync.",
+                "[teacher-lunch-location] no_lesson: user=%s mk=%s date=%s "
+                "— not in tlc or snapshots; fallback to menu_loc=%s",
                 user_id, mk_teacher_id, menu_date, menu_loc,
             )
         elif not mk_teacher_id:
             log.info(
-                "food_order_loc_no_teacher: user=%s role=%s name=%r — no teacherId found; "
-                "using menu_loc=%s",
+                "[teacher-lunch-location] no_teacher: user=%s role=%s name=%r → menu_loc=%s",
                 user_id, role, full_name, menu_loc,
             )
 
-        log.info("food_order_loc_result: user=%s → staff fallback loc=%s", user_id, menu_loc)
+        log.info("[teacher-lunch-location] result: user=%s → staff_fallback loc=%s", user_id, menu_loc)
         return menu_loc
 
     def food_staff_submit_order(self, auth: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:

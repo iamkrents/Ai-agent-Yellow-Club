@@ -2745,6 +2745,67 @@ class Storage:
                             codes.append(c)
         return codes
 
+    def get_teacher_lesson_contexts(self, mk_teacher_id: str, date_str: str) -> list[dict[str, Any]]:
+        """Return per-lesson detail for a teacher on a specific date.
+
+        Each entry: {lesson_id, lesson_date, lesson_time, group_name, location_code, location_name, source}
+        Checks teacher_lesson_control first; falls back to lesson_snapshots.
+        """
+        if not mk_teacher_id or not date_str:
+            return []
+        tid = str(mk_teacher_id).strip()
+        results: list[dict[str, Any]] = []
+        with self._connect() as conn:
+            ctrl_rows = conn.execute(
+                "SELECT lesson_id, lesson_date, lesson_time, group_name FROM teacher_lesson_control "
+                "WHERE mk_teacher_id=? AND lesson_date=? ORDER BY lesson_time",
+                (tid, str(date_str)),
+            ).fetchall()
+            if ctrl_rows:
+                for row in ctrl_rows:
+                    loc = normalize_food_location(row["group_name"] or "")
+                    if not loc:
+                        continue
+                    results.append({
+                        "lesson_id": row["lesson_id"],
+                        "lesson_date": row["lesson_date"],
+                        "lesson_time": row["lesson_time"] or "",
+                        "group_name": row["group_name"] or "",
+                        "location_code": loc,
+                        "source": "teacher_lesson_control",
+                    })
+            if not results:
+                snap_rows = conn.execute(
+                    "SELECT lesson_id, lesson_date, lesson_time, group_name, teacher_ids FROM lesson_snapshots "
+                    "WHERE lesson_date=? AND teacher_ids IS NOT NULL AND teacher_ids != '' "
+                    "ORDER BY lesson_time",
+                    (str(date_str),),
+                ).fetchall()
+                for row in snap_rows:
+                    ids = [x.strip() for x in str(row["teacher_ids"] or "").split(",") if x.strip()]
+                    if tid not in ids:
+                        continue
+                    loc = normalize_food_location(row["group_name"] or "")
+                    if not loc:
+                        continue
+                    results.append({
+                        "lesson_id": row["lesson_id"],
+                        "lesson_date": row["lesson_date"],
+                        "lesson_time": row["lesson_time"] or "",
+                        "group_name": row["group_name"] or "",
+                        "location_code": loc,
+                        "source": "lesson_snapshots",
+                    })
+        # Deduplicate by (location_code, lesson_time) keeping unique lessons
+        seen: set[str] = set()
+        unique: list[dict[str, Any]] = []
+        for r in results:
+            key = f"{r['location_code']}|{r['lesson_time']}|{r['group_name']}"
+            if key not in seen:
+                seen.add(key)
+                unique.append(r)
+        return unique
+
     def list_teachers_with_lesson_on_date(self, date_str: str) -> list[dict[str, Any]]:
         """Distinct mk_teacher_ids with lessons on date_str, joined to staff_users."""
         if not date_str:

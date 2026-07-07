@@ -546,6 +546,17 @@ async function apiPost(path, payload) {
   return data;
 }
 
+// Like apiPost but does NOT throw when data.ok === false — caller checks data.ok itself.
+// Use for cases where error details in the response body must be inspected (e.g. multiple_locations).
+async function _apiPostRaw(path, payload) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...payload, initData, dev_user_id: devUserId, unsafe_user_id: unsafeUserId, yc_user_id: launchUserId, yc_ts: launchTs, yc_sig: launchSig }),
+  });
+  return res.json();
+}
+
 function labelStatus(value, type = "Статус") {
   const map = {
     ready: ["Подготовка: готов", "ok"],
@@ -7883,13 +7894,17 @@ function _attachDiagRefreshBtn(uid, containerEl) {
 }
 
 // ---- Teacher class orders ----
-async function _loadAndRenderTeacherClassOrders(root) {
+async function _loadAndRenderTeacherClassOrders(root, menuDate, locationCodes) {
   const wrap = document.createElement("div");
   wrap.className = "food-debug-card food-teacher-class-section";
   wrap.innerHTML = `<div class="food-menu-panel-head"><h3>Заказы детей</h3></div><div class="empty">Загрузка...</div>`;
   root.appendChild(wrap);
   try {
-    const data = await apiGet("/api/food/teacher/class-orders");
+    const params = new URLSearchParams();
+    if (menuDate) params.set("date", menuDate);
+    if (locationCodes) params.set("location_code", locationCodes);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    const data = await apiGet(`/api/food/teacher/class-orders${qs}`);
     if (!data.ok) {
       if (data.error === "no_lesson" || data.error === "forbidden") {
         wrap.remove();
@@ -7951,17 +7966,54 @@ function _ycLocationLabel(code) {
   return map[String(code).toUpperCase()] || code;
 }
 
-function _showStaffLocationPicker(root, menuId, availableLocations, onPick) {
+function _renderUpfrontLocPicker(lessonContexts, menuId) {
+  if (!lessonContexts || !lessonContexts.length) return "";
+  const uniqueLocs = [];
+  const seen = new Set();
+  for (const ctx of lessonContexts) {
+    const lc = ctx.location_code || "";
+    if (!lc || seen.has(lc)) continue;
+    seen.add(lc);
+    uniqueLocs.push(ctx);
+  }
+  if (uniqueLocs.length <= 1) return "";
+  const btns = uniqueLocs.map(ctx => {
+    const timeStr = ctx.lesson_time ? `${escapeHtml(ctx.lesson_time)} · ` : "";
+    const groupStr = ctx.group_name ? `${escapeHtml(ctx.group_name)} · ` : "";
+    const locName = escapeHtml(ctx.location_name || _ycLocationLabel(ctx.location_code || ""));
+    return `<button class="teacher-loc-btn secondary btn-sm"
+      data-loc="${escapeAttr(ctx.location_code)}"
+      data-sl-menu="${escapeAttr(String(menuId))}">${timeStr}${groupStr}${locName}</button>`;
+  }).join("");
+  return `<div class="teacher-loc-choice" data-menu-id="${escapeAttr(String(menuId))}">
+    <div class="teacher-loc-choice-label">Выберите занятие для обеда:</div>
+    <div class="teacher-loc-choice-btns">${btns}</div>
+  </div>`;
+}
+
+function _showStaffLocationPicker(root, menuId, availableLocations, lessonContexts, onPick) {
   const existing = root.querySelector(".staff-location-picker");
   if (existing) existing.remove();
   const card = root.querySelector(`[data-sl-menu-card="${menuId}"]`);
   if (!card) return;
   const div = document.createElement("div");
   div.className = "staff-location-picker";
-  div.innerHTML = `<div class="staff-location-picker-label">Выберите филиал для обеда:</div>
-    <div class="staff-location-picker-btns">
-      ${availableLocations.map(lc => `<button class="secondary" data-loc="${escapeAttr(lc)}">${escapeHtml(_ycLocationLabel(lc))}</button>`).join("")}
-    </div>`;
+  // If we have lesson contexts, show them with time+group detail
+  const ctxMap = {};
+  if (Array.isArray(lessonContexts)) {
+    for (const ctx of lessonContexts) {
+      if (ctx.location_code) ctxMap[ctx.location_code] = ctx;
+    }
+  }
+  const btns = availableLocations.map(lc => {
+    const ctx = ctxMap[lc];
+    const timeStr = ctx?.lesson_time ? `${escapeHtml(ctx.lesson_time)} · ` : "";
+    const groupStr = ctx?.group_name ? `${escapeHtml(ctx.group_name)} · ` : "";
+    const locName = ctx?.location_name ? escapeHtml(ctx.location_name) : escapeHtml(_ycLocationLabel(lc));
+    return `<button class="secondary" data-loc="${escapeAttr(lc)}">${timeStr}${groupStr}${locName}</button>`;
+  }).join("");
+  div.innerHTML = `<div class="staff-location-picker-label">Выберите занятие для обеда:</div>
+    <div class="staff-location-picker-btns">${btns}</div>`;
   div.querySelectorAll("[data-loc]").forEach(b => {
     b.addEventListener("click", () => { div.remove(); onPick(b.dataset.loc); });
   });
@@ -8001,7 +8053,10 @@ async function renderStaffFoodLunch(root) {
       return;
     }
     if (menusData.hasTomorrowLesson === false) {
-      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>На завтра у вас нет занятий в городской программе — заказ питания недоступен.</p></div></div>`;
+      const noLessonMsg = menusData.isTeacherBranch === false
+        ? "На завтра у вас нет занятий в городской программе — заказ питания недоступен."
+        : "На дату меню не найдено занятие в МойКласс. Обед преподавателя недоступен.";
+      root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>${escapeHtml(noLessonMsg)}</p></div></div>`;
       return;
     }
     const menus = Array.isArray(menusData.menus) ? menusData.menus : [];
@@ -8010,15 +8065,27 @@ async function renderStaffFoodLunch(root) {
       root.querySelector("#staffLunchRefresh")?.addEventListener("click", () => renderStaffFoodLunch(root));
       return;
     }
-    // Teacher branch context banner
+    // Teacher branch context banner with lesson detail
     let teacherBannerHtml = "";
     if (menusData.isTeacherBranch) {
-      const locs = Array.isArray(menusData.teacherLocationCodes) && menusData.teacherLocationCodes.length
-        ? menusData.teacherLocationCodes.map(_ycLocationLabel).join(", ")
-        : null;
       const nameHtml = menusData.teacherDisplayName ? ` · ${escapeHtml(menusData.teacherDisplayName)}` : "";
-      const locHtml = locs ? `<br><span class="staff-teacher-branch-loc">Филиал: ${escapeHtml(locs)}</span>` : "";
-      teacherBannerHtml = `<div class="staff-teacher-branch-banner">Обед преподавателя${nameHtml}${locHtml}</div>`;
+      const lessonContexts = Array.isArray(menusData.lessonContexts) ? menusData.lessonContexts : [];
+      const requiresChoice = menusData.requiresLocationChoice;
+      let locDetailHtml = "";
+      if (lessonContexts.length === 1) {
+        const ctx = lessonContexts[0];
+        const timeStr = ctx.lesson_time ? ` · ${escapeHtml(ctx.lesson_time)}` : "";
+        const groupStr = ctx.group_name ? ` · ${escapeHtml(ctx.group_name)}` : "";
+        locDetailHtml = `<br><span class="staff-teacher-branch-loc">Занятие: ${escapeHtml(menusData.tomorrowDate || "")}${timeStr}${groupStr}</span>`
+          + `<br><span class="staff-teacher-branch-loc">Учебный класс: ${escapeHtml(ctx.location_name || _ycLocationLabel(ctx.location_code || ""))}</span>`;
+      } else if (lessonContexts.length > 1 && !requiresChoice) {
+        // Multiple lessons but all same location
+        const loc0 = lessonContexts[0];
+        locDetailHtml = `<br><span class="staff-teacher-branch-loc">Учебный класс: ${escapeHtml(loc0.location_name || _ycLocationLabel(loc0.location_code || ""))}</span>`;
+      } else if (requiresChoice) {
+        locDetailHtml = `<br><span class="staff-teacher-branch-loc" style="color:var(--amber,#e67e22)">Несколько занятий на эту дату — выберите учебный класс ниже</span>`;
+      }
+      teacherBannerHtml = `<div class="staff-teacher-branch-banner">Обед преподавателя${nameHtml}${locDetailHtml}</div>`;
     }
     // Load existing staff orders for all menus
     const staffOrders = {};
@@ -8030,12 +8097,21 @@ async function renderStaffFoodLunch(root) {
     }));
 
     const catOrder = ["Супы", "Салаты", "Второе", "Гарниры", "Сладкое", "Напитки", "Другое"];
+    const lessonContextsAll = Array.isArray(menusData.lessonContexts) ? menusData.lessonContexts : [];
     const menusHtml = menus.map(menu => {
       const dateStr = _formatMenuDate(menu.menu_date);
       const deadlinePassed = _isDeadlinePassed(menu.deadline_at);
       const order = staffOrders[menu.id] || null;
       const locBadge = menu.location_code ? `<span class="food-loc-badge">${escapeHtml(menu.location_code)}</span> ` : "";
       const titleHtml = `<div class="parent-food-card-title">${locBadge}${escapeHtml(menu.title || dateStr)}</div><div class="parent-food-card-meta">${escapeHtml(dateStr)}</div>`;
+      // Determine if this menu card needs an upfront location choice
+      const menuLoc = (menu.location_code || "").toUpperCase();
+      const teacherLocs = menusData.teacherLocationCodes || [];
+      // If menu has a location and teacher has lesson there → auto, no choice needed
+      const menuAutoResolved = menuLoc && teacherLocs.includes(menuLoc);
+      // Show upfront picker when: multiple teacher locations AND menu has no specific location OR menu location not in teacher locations
+      const showLocPicker = menusData.requiresLocationChoice && !menuAutoResolved && !deadlinePassed;
+      const upfrontLocPickerHtml = showLocPicker ? _renderUpfrontLocPicker(lessonContextsAll, menu.id) : "";
       const deadlineNote = menu.deadline_at
         ? (deadlinePassed
             ? `<div class="food-order-deadline-passed" style="margin-top:4px">Дедлайн прошёл</div>`
@@ -8081,10 +8157,11 @@ async function renderStaffFoodLunch(root) {
           <button class="secondary" data-sl-skip="${menu.id}">Без питания</button>
         </div>`;
 
-      return `<div class="food-staff-section" data-sl-menu-card="${menu.id}">
+      return `<div class="food-staff-section" data-sl-menu-card="${menu.id}" data-sl-menu-auto-loc="${escapeAttr(menuAutoResolved ? menuLoc : (menusData.resolvedLocationCode || ""))}">
         <div class="food-order-card-head" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:10px">
           <div>${titleHtml}${deadlineNote}</div>${statusBadge}
         </div>
+        ${upfrontLocPickerHtml}
         ${itemsHtml || `<div class="empty">Блюда не добавлены</div>`}
         ${actionsHtml}
       </div>`;
@@ -8098,6 +8175,66 @@ async function renderStaffFoodLunch(root) {
 
     root.querySelector("#staffLunchRefresh")?.addEventListener("click", () => renderStaffFoodLunch(root));
 
+    // Wire upfront location choice buttons
+    root.querySelectorAll(".teacher-loc-btn").forEach(lb => {
+      lb.addEventListener("click", () => {
+        const menuId = lb.dataset.slMenu;
+        const loc = lb.dataset.loc;
+        const picker = lb.closest(".teacher-loc-choice");
+        if (picker) {
+          picker.querySelectorAll(".teacher-loc-btn").forEach(b => b.classList.remove("teacher-loc-btn--selected"));
+          lb.classList.add("teacher-loc-btn--selected");
+          picker.dataset.chosenLoc = loc;
+        }
+        const card = root.querySelector(`[data-sl-menu-card="${menuId}"]`);
+        if (card) card.dataset.slMenuAutoLoc = loc;
+      });
+    });
+
+    function _getMenuLocCode(menuId) {
+      const card = root.querySelector(`[data-sl-menu-card="${menuId}"]`);
+      return (card?.dataset.slMenuAutoLoc || "").trim().toUpperCase();
+    }
+
+    const _staffSaveErrorMsg = {
+      deadline_passed: "Дедлайн прошёл. Заказ закрыт.",
+      menu_not_available: "Меню недоступно.",
+      no_lesson_on_menu_date: "На дату меню не найдено занятие в МойКласс.",
+      forbidden: "Нет доступа.",
+    };
+
+    async function _doStaffSave(endpoint, menuId, payload, btn) {
+      const locCode = _getMenuLocCode(menuId);
+      const fullPayload = locCode ? { ...payload, location_code: locCode } : payload;
+      const data = await _apiPostRaw(endpoint, fullPayload);
+      if (!data.ok) {
+        if (data.error === "multiple_locations" && Array.isArray(data.availableLocations)) {
+          _showStaffLocationPicker(root, menuId, data.availableLocations, lessonContextsAll, async (chosenLoc) => {
+            const card = root.querySelector(`[data-sl-menu-card="${menuId}"]`);
+            if (card) card.dataset.slMenuAutoLoc = chosenLoc;
+            btn.disabled = true;
+            try {
+              const d2 = await _apiPostRaw(endpoint, { ...payload, location_code: chosenLoc });
+              if (!d2.ok) {
+                setNotice(_staffSaveErrorMsg[d2.error] || d2.error || "Ошибка при сохранении выбора", "error");
+              } else {
+                setNotice(endpoint.includes("skip") ? "Отмечено: без питания." : "Выбор сохранён.", "ok");
+                renderStaffFoodLunch(root).catch(e => console.warn("[staff-lunch] reload:", e.message));
+              }
+            } catch (e2) { setNotice("Не удалось сохранить выбор. Попробуйте ещё раз.", "error"); }
+            finally { btn.disabled = false; }
+          });
+        } else if (data.error === "need_location_choice") {
+          setNotice("Выберите занятие для обеда.", "error");
+        } else {
+          setNotice(_staffSaveErrorMsg[data.error] || data.error || "Ошибка при сохранении выбора", "error");
+        }
+      } else {
+        setNotice(endpoint.includes("skip") ? "Отмечено: без питания." : "Выбор сохранён.", "ok");
+        renderStaffFoodLunch(root).catch(e => console.warn("[staff-lunch] reload:", e.message));
+      }
+    }
+
     root.querySelectorAll("[data-sl-submit]").forEach(btn => {
       btn.addEventListener("click", async () => {
         const menuId = parseInt(btn.dataset.slSubmit);
@@ -8110,22 +8247,7 @@ async function renderStaffFoodLunch(root) {
         });
         btn.disabled = true;
         try {
-          const data = await apiPost("/api/food/staff/orders", { menu_id: menuId, items });
-          if (!data.ok) {
-            if (data.error === "multiple_locations" && Array.isArray(data.availableLocations)) {
-              _showStaffLocationPicker(root, menuId, data.availableLocations, async (locCode) => {
-                btn.disabled = true;
-                try {
-                  const d2 = await apiPost("/api/food/staff/orders", { menu_id: menuId, items, location_code: locCode });
-                  if (!d2.ok) setNotice(d2.error || "Ошибка при сохранении выбора", "error");
-                  else { setNotice("Выбор сохранён.", "ok"); renderStaffFoodLunch(root).catch(err => console.warn("[staff-lunch] reload:", err.message)); }
-                } catch (e2) { setNotice("Не удалось сохранить выбор. Попробуйте ещё раз.", "error"); }
-                finally { btn.disabled = false; }
-              });
-            } else {
-              setNotice(data.error || "Ошибка при сохранении выбора", "error");
-            }
-          } else { setNotice("Выбор сохранён.", "ok"); renderStaffFoodLunch(root).catch(err => console.warn("[staff-lunch] reload:", err.message)); }
+          await _doStaffSave("/api/food/staff/orders", menuId, { menu_id: menuId, items }, btn);
         } catch (e) { setNotice("Не удалось сохранить выбор. Попробуйте ещё раз.", "error"); }
         finally { btn.disabled = false; }
       });
@@ -8135,22 +8257,7 @@ async function renderStaffFoodLunch(root) {
         const menuId = parseInt(btn.dataset.slSkip);
         btn.disabled = true;
         try {
-          const data = await apiPost("/api/food/staff/orders/skip", { menu_id: menuId });
-          if (!data.ok) {
-            if (data.error === "multiple_locations" && Array.isArray(data.availableLocations)) {
-              _showStaffLocationPicker(root, menuId, data.availableLocations, async (locCode) => {
-                btn.disabled = true;
-                try {
-                  const d2 = await apiPost("/api/food/staff/orders/skip", { menu_id: menuId, location_code: locCode });
-                  if (!d2.ok) setNotice(d2.error || "Ошибка", "error");
-                  else { setNotice("Отмечено: без питания.", "ok"); renderStaffFoodLunch(root).catch(err => console.warn("[staff-lunch] reload:", err.message)); }
-                } catch (e2) { setNotice("Не удалось сохранить выбор. Попробуйте ещё раз.", "error"); }
-                finally { btn.disabled = false; }
-              });
-            } else {
-              setNotice(data.error || "Ошибка", "error");
-            }
-          } else { setNotice("Отмечено: без питания.", "ok"); renderStaffFoodLunch(root).catch(err => console.warn("[staff-lunch] reload:", err.message)); }
+          await _doStaffSave("/api/food/staff/orders/skip", menuId, { menu_id: menuId }, btn);
         } catch (e) { setNotice("Не удалось сохранить выбор. Попробуйте ещё раз.", "error"); }
         finally { btn.disabled = false; }
       });
@@ -8179,10 +8286,12 @@ async function renderStaffFoodLunch(root) {
         row.classList.toggle("food-order-qty-row--active", v > 0);
       });
     });
-    // For teachers/methodists: show children's orders after own lunch section
+    // For teachers/methodists: show children's orders filtered by menu date
     const myRole = state.me?.role;
     if (myRole === "teacher" || myRole === "methodist" || myRole === "intern") {
-      _loadAndRenderTeacherClassOrders(root).catch(e => console.warn("[teacher-class-orders]", e.message));
+      const classOrderDate = menusData.tomorrowDate || "";
+      const classOrderLocs = (menusData.teacherLocationCodes || []).join(",");
+      _loadAndRenderTeacherClassOrders(root, classOrderDate, classOrderLocs).catch(e => console.warn("[teacher-class-orders]", e.message));
     }
   } catch (e) {
     console.error("[staff-lunch] render error:", e.message);
