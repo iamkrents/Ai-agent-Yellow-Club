@@ -8053,9 +8053,14 @@ async function renderStaffFoodLunch(root) {
       return;
     }
     if (menusData.hasTomorrowLesson === false) {
-      const noLessonMsg = menusData.isTeacherBranch === false
-        ? "На завтра у вас нет занятий в городской программе — заказ питания недоступен."
-        : "На дату меню не найдено занятие в МойКласс. Обед преподавателя недоступен.";
+      let noLessonMsg;
+      if (menusData.hasOnlineLessons) {
+        noLessonMsg = "На дату меню есть только онлайн-занятия. Обед преподавателя доступен только для офлайн-занятий в учебном классе.";
+      } else if (menusData.isTeacherBranch === false) {
+        noLessonMsg = "На завтра у вас нет занятий в городской программе — заказ питания недоступен.";
+      } else {
+        noLessonMsg = "На дату меню не найдено занятие в МойКласс. Обед преподавателя недоступен.";
+      }
       root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>${escapeHtml(noLessonMsg)}</p></div></div>`;
       return;
     }
@@ -8065,27 +8070,33 @@ async function renderStaffFoodLunch(root) {
       root.querySelector("#staffLunchRefresh")?.addEventListener("click", () => renderStaffFoodLunch(root));
       return;
     }
+    // Split contexts: food-eligible (offline) vs online
+    const allLessonContexts = Array.isArray(menusData.lessonContexts) ? menusData.lessonContexts : [];
+    const foodLessonContexts = allLessonContexts.filter(c => c.is_food_eligible !== false && !c.is_online);
+    const onlineLessonContexts = allLessonContexts.filter(c => c.is_online);
     // Teacher branch context banner with lesson detail
     let teacherBannerHtml = "";
     if (menusData.isTeacherBranch) {
       const nameHtml = menusData.teacherDisplayName ? ` · ${escapeHtml(menusData.teacherDisplayName)}` : "";
-      const lessonContexts = Array.isArray(menusData.lessonContexts) ? menusData.lessonContexts : [];
       const requiresChoice = menusData.requiresLocationChoice;
       let locDetailHtml = "";
-      if (lessonContexts.length === 1) {
-        const ctx = lessonContexts[0];
+      if (foodLessonContexts.length === 1) {
+        const ctx = foodLessonContexts[0];
         const timeStr = ctx.lesson_time ? ` · ${escapeHtml(ctx.lesson_time)}` : "";
         const groupStr = ctx.group_name ? ` · ${escapeHtml(ctx.group_name)}` : "";
         locDetailHtml = `<br><span class="staff-teacher-branch-loc">Занятие: ${escapeHtml(menusData.tomorrowDate || "")}${timeStr}${groupStr}</span>`
           + `<br><span class="staff-teacher-branch-loc">Учебный класс: ${escapeHtml(ctx.location_name || _ycLocationLabel(ctx.location_code || ""))}</span>`;
-      } else if (lessonContexts.length > 1 && !requiresChoice) {
+      } else if (foodLessonContexts.length > 1 && !requiresChoice) {
         // Multiple lessons but all same location
-        const loc0 = lessonContexts[0];
+        const loc0 = foodLessonContexts[0];
         locDetailHtml = `<br><span class="staff-teacher-branch-loc">Учебный класс: ${escapeHtml(loc0.location_name || _ycLocationLabel(loc0.location_code || ""))}</span>`;
       } else if (requiresChoice) {
         locDetailHtml = `<br><span class="staff-teacher-branch-loc" style="color:var(--amber,#e67e22)">Несколько занятий на эту дату — выберите учебный класс ниже</span>`;
       }
-      teacherBannerHtml = `<div class="staff-teacher-branch-banner">Обед преподавателя${nameHtml}${locDetailHtml}</div>`;
+      const onlineNote = onlineLessonContexts.length
+        ? `<br><span class="staff-teacher-branch-loc" style="opacity:0.6;font-size:12px">Онлайн-занятия не учитываются для питания</span>`
+        : "";
+      teacherBannerHtml = `<div class="staff-teacher-branch-banner">Обед преподавателя${nameHtml}${locDetailHtml}${onlineNote}</div>`;
     }
     // Load existing staff orders for all menus
     const staffOrders = {};
@@ -8097,7 +8108,7 @@ async function renderStaffFoodLunch(root) {
     }));
 
     const catOrder = ["Супы", "Салаты", "Второе", "Гарниры", "Сладкое", "Напитки", "Другое"];
-    const lessonContextsAll = Array.isArray(menusData.lessonContexts) ? menusData.lessonContexts : [];
+    const lessonContextsAll = foodLessonContexts; // only food-eligible contexts for picker
     const menusHtml = menus.map(menu => {
       const dateStr = _formatMenuDate(menu.menu_date);
       const deadlinePassed = _isDeadlinePassed(menu.deadline_at);

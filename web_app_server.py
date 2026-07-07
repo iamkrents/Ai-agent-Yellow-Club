@@ -2586,32 +2586,51 @@ class MiniAppContext:
         staff = self.storage.get_staff_user(user_id)
         staff_full_name = str(staff.get("full_name") or "") if staff else ""
         mk_teacher_id_resolved, mk_resolve_method = self._resolve_teacher_mk_id(user_id)
+        has_online_lessons = False
         if mk_teacher_id_resolved:
             # Get per-lesson contexts for the menu date — ground truth for location
             lesson_contexts = self.storage.get_teacher_lesson_contexts(mk_teacher_id_resolved, tomorrow_str)
-            if lesson_contexts:
+            # Split into food-eligible (offline) and online-only contexts
+            food_eligible = [c for c in lesson_contexts if c.get("is_food_eligible")]
+            online_contexts = [c for c in lesson_contexts if c.get("is_online")]
+            has_online_lessons = bool(online_contexts)
+            if food_eligible:
                 has_tomorrow_lesson = True
-                # Unique location codes in lesson order
+                # Unique food-eligible location codes in lesson order
                 seen_locs: list[str] = []
-                for ctx in lesson_contexts:
+                for ctx in food_eligible:
                     lc = ctx.get("location_code") or ""
                     if lc and lc not in seen_locs:
                         seen_locs.append(lc)
                 teacher_location_codes = seen_locs
-                # Add location_name to each context
-                for ctx in lesson_contexts:
-                    ctx["location_name"] = location_map.get(ctx.get("location_code") or "", ctx.get("location_code") or "")
+            elif lesson_contexts:
+                # Lessons exist but all online — no food access
+                has_tomorrow_lesson = False
             else:
                 has_tomorrow_lesson = self.storage.teacher_has_lesson_on_date(mk_teacher_id_resolved, tomorrow_str)
+            # Add location_name to each context
+            for ctx in lesson_contexts:
+                lc = ctx.get("location_code") or ""
+                if ctx.get("is_online"):
+                    ctx["location_name"] = "Онлайн"
+                else:
+                    ctx["location_name"] = location_map.get(lc, lc)
             teacher_display_name = (
                 str(staff.get("mk_teacher_name") or "") if staff else ""
             ) or staff_full_name
             log.info(
                 "[teacher-lunch-location] user=%s role=%s mk=%s method=%s date=%s "
-                "lesson_contexts=%s locs=%s",
+                "lesson_contexts=%s food_eligible=%s online=%s locs=%s",
                 user_id, role, mk_teacher_id_resolved, mk_resolve_method,
-                tomorrow_str, len(lesson_contexts), teacher_location_codes,
+                tomorrow_str, len(lesson_contexts), len(food_eligible), len(online_contexts), teacher_location_codes,
             )
+            for ctx in lesson_contexts:
+                log.info(
+                    "[teacher-lunch-location] lesson_id=%s group=%r filial=%r loc=%s is_online=%s is_food_eligible=%s src=%s",
+                    ctx.get("lesson_id"), ctx.get("group_name"), ctx.get("raw_filial_name"),
+                    ctx.get("location_code"), ctx.get("is_online"), ctx.get("is_food_eligible"),
+                    ctx.get("location_source"),
+                )
         elif role in {"teacher", "intern"}:
             has_tomorrow_lesson = False
             teacher_not_linked = True
@@ -2639,6 +2658,7 @@ class MiniAppContext:
         return {
             "ok": True,
             "hasTomorrowLesson": has_tomorrow_lesson,
+            "hasOnlineLessons": has_online_lessons,
             "teacherNotLinked": teacher_not_linked,
             "tomorrowDate": tomorrow_str,
             "teacherLocationCodes": teacher_location_codes,
@@ -4649,6 +4669,8 @@ class MiniAppContext:
                     teacher_name=snap.get("teacher_names") or "",
                     mk_teacher_id=mk_teacher_id,
                     teacher_user_id=uid,
+                    filial_name=snap.get("filial_name") or "",
+                    lesson_room_id=snap.get("lesson_room_id") or "",
                 )
         except Exception:
             log.exception("[moyklass-teacher-sync] lesson_control_write_error uid=%s", uid)
@@ -5332,6 +5354,13 @@ class MiniAppContext:
         fingerprint_source = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         payload["fingerprint"] = hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest()
         payload["raw_preview"] = json.dumps(item, ensure_ascii=False)[:3000]
+        # Filial info for correct online/offline detection (priority over group_name parsing)
+        filial_name = str(
+            _pick(item, ("_prettyFilialName", "filialName", "branchName")) or ""
+        ).strip()
+        room_id_raw = _pick(item, ("roomId", "classroomId"))
+        payload["filial_name"] = filial_name
+        payload["lesson_room_id"] = str(room_id_raw if room_id_raw is not None else "")
         return payload
 
     def _ops_lesson_summary(self, snapshot: dict[str, Any]) -> str:
@@ -5381,6 +5410,8 @@ class MiniAppContext:
                 teacher_name=current.get("teacher_names") or "",
                 mk_teacher_id=first_teacher_id,
                 teacher_user_id=int(first_staff.get("user_id")) if first_staff and first_staff.get("user_id") else None,
+                filial_name=current.get("filial_name") or "",
+                lesson_room_id=current.get("lesson_room_id") or "",
             )
             if event == "unchanged":
                 unchanged += 1

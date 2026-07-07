@@ -1356,7 +1356,7 @@ class MoyKlassClient:
         if self._lookup_maps is not None:
             return self._lookup_maps
 
-        maps: dict[str, dict[str, str]] = {"classes": {}, "rooms": {}, "teachers": {}}
+        maps: dict[str, dict[str, str]] = {"classes": {}, "rooms": {}, "teachers": {}, "filials": {}}
 
         classes_result = self._first_ok_lookup([
             "/v1/company/classes",
@@ -1387,6 +1387,13 @@ class MoyKlassClient:
             ("fullName", "fio", "title", "name", "displayName"),
         ))
 
+        filials_result = self._first_ok_lookup(["/v1/company/filials", "/v1/company/branches", "/v1/company/offices"])
+        maps["filials"].update(self._id_name_map_from_result(
+            filials_result,
+            ("id", "filialId", "branchId"),
+            ("name", "title", "filialName", "branchName", "displayName"),
+        ))
+
         manual = load_moyklass_manual_names()
         for key in ("classes", "rooms", "teachers"):
             maps[key].update({str(k): str(v) for k, v in manual.get(key, {}).items() if str(v).strip()})
@@ -1412,6 +1419,10 @@ class MoyKlassClient:
 
         if room_id and maps["rooms"].get(room_id):
             item["_prettyRoomName"] = _normalize_room_name(maps["rooms"][room_id])
+
+        filial_id = _pick(item, ("filialId", "branchId"))
+        if filial_id and maps["filials"].get(str(filial_id)):
+            item["_prettyFilialName"] = maps["filials"][str(filial_id)]
 
         resolved_teachers: list[str] = []
         if isinstance(teacher_ids, list):

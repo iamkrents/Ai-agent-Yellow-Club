@@ -1,10 +1,70 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any, Optional
 
 from utils import now_iso
+
+
+_ONLINE_INDICATORS = frozenset(("онлайн", "online", "yc0", "remote", "дистанционно", "дистанц"))
+
+
+def _is_online_indicator(value: str) -> bool:
+    lower = str(value or "").strip().lower()
+    return bool(lower and any(ind in lower for ind in _ONLINE_INDICATORS))
+
+
+def _resolve_lesson_location(
+    group_name: str,
+    filial_name: str = "",
+    lesson_room_id: str = "",
+) -> tuple[str, bool, str]:
+    """Return (location_code, is_online, location_source).
+
+    Priority:
+    1. filial_name explicitly marks lesson as online → ("ONLINE", True, "moyklass_filial")
+    2. filial_name contains a YC code → (yc, False, "moyklass_filial")
+    3. lesson_room_id == "0" → ("ONLINE", True, "moyklass_room_id")
+    4. group_name fallback → (yc, False, "group_name_fallback")
+    """
+    if _is_online_indicator(filial_name):
+        return "ONLINE", True, "moyklass_filial"
+    yc_from_filial = normalize_food_location(filial_name or "")
+    if yc_from_filial:
+        return yc_from_filial, False, "moyklass_filial"
+    room_str = str(lesson_room_id or "").strip()
+    if room_str in ("0", "0.0"):
+        return "ONLINE", True, "moyklass_room_id"
+    yc_from_group = normalize_food_location(group_name or "")
+    if yc_from_group:
+        return yc_from_group, False, "group_name_fallback"
+    return "", False, "unknown"
+
+
+def _filial_from_raw_preview(raw_preview_text: str) -> tuple[str, str]:
+    """Extract (filial_name, room_id) from stored raw_preview JSON string."""
+    if not raw_preview_text:
+        return "", ""
+    try:
+        item = json.loads(raw_preview_text)
+    except Exception:
+        return "", ""
+    if not isinstance(item, dict):
+        return "", ""
+    filial_name = str(
+        item.get("_prettyFilialName") or
+        item.get("filialName") or
+        item.get("branchName") or ""
+    ).strip()
+    room_id = str(item.get("roomId") or "").strip()
+    # If no filial name, check _prettyRoomName as fallback indicator
+    if not filial_name:
+        pretty_room = str(item.get("_prettyRoomName") or "").strip()
+        if _is_online_indicator(pretty_room):
+            filial_name = pretty_room
+    return filial_name, room_id
 
 
 def _extract_raw_json_text(obj: Any, depth: int = 0) -> str:
@@ -240,6 +300,8 @@ class Storage:
             self._ensure_column(conn, "teacher_lesson_control", "prep_result_status", "prep_result_status TEXT NOT NULL DEFAULT 'not_checked'")
             self._ensure_column(conn, "teacher_lesson_control", "lesson_comment", "lesson_comment TEXT")
             self._ensure_column(conn, "teacher_lesson_control", "prep_result_file_id", "prep_result_file_id TEXT")
+            self._ensure_column(conn, "teacher_lesson_control", "filial_name", "filial_name TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "teacher_lesson_control", "lesson_room_id", "lesson_room_id TEXT NOT NULL DEFAULT ''")
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS teacher_prep_results (
@@ -355,6 +417,8 @@ class Storage:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_lesson_snapshots_date ON lesson_snapshots(lesson_date, lesson_time)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_lesson_snapshots_teacher ON lesson_snapshots(teacher_ids)")
+            self._ensure_column(conn, "lesson_snapshots", "filial_name", "filial_name TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "lesson_snapshots", "lesson_room_id", "lesson_room_id TEXT NOT NULL DEFAULT ''")
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS teacher_tasks (
@@ -2637,6 +2701,7 @@ class Storage:
             "problem_status", "problem_comment", "closed_at", "closed_by",
             "prep_material_status", "prep_video_status", "prep_practice_status",
             "prep_result_status", "lesson_comment", "prep_result_file_id",
+            "filial_name", "lesson_room_id",
         }
         now = now_iso()
         clean: dict[str, Any] = {k: v for k, v in fields.items() if k in allowed and v is not None}
@@ -2714,42 +2779,58 @@ class Storage:
         return False
 
     def get_teacher_lesson_locations(self, mk_teacher_id: str, date_str: str) -> list[str]:
-        """Return distinct YC location codes for a teacher's lessons on date_str.
-        Checks teacher_lesson_control first; falls back to lesson_snapshots for future/unconfirmed lessons."""
+        """Return distinct offline YC location codes for a teacher's food-eligible lessons on date_str.
+
+        Uses filial_name/lesson_room_id priority over group_name to correctly exclude online lessons.
+        Checks teacher_lesson_control first; falls back to lesson_snapshots.
+        """
         if not mk_teacher_id or not date_str:
             return []
         tid = str(mk_teacher_id).strip()
         codes: list[str] = []
         with self._connect() as conn:
-            # Primary: confirmed lesson records (populated when teacher views lessons in app)
             ctrl_rows = conn.execute(
-                "SELECT DISTINCT group_name FROM teacher_lesson_control WHERE mk_teacher_id=? AND lesson_date=?",
+                "SELECT tlc.group_name, tlc.filial_name, tlc.lesson_room_id, ls.raw_preview "
+                "FROM teacher_lesson_control tlc "
+                "LEFT JOIN lesson_snapshots ls ON ls.lesson_id = tlc.lesson_id "
+                "WHERE tlc.mk_teacher_id=? AND tlc.lesson_date=?",
                 (tid, str(date_str)),
             ).fetchall()
             for row in ctrl_rows:
-                c = normalize_food_location(row["group_name"] or "")
-                if c and c not in codes:
-                    codes.append(c)
+                fn = str(row["filial_name"] or "")
+                ri = str(row["lesson_room_id"] or "")
+                if not fn and not ri:
+                    fn, ri = _filial_from_raw_preview(row["raw_preview"] or "")
+                loc, is_online, _ = _resolve_lesson_location(row["group_name"] or "", fn, ri)
+                if loc and not is_online and loc not in codes:
+                    codes.append(loc)
             if not codes:
-                # Fallback: lesson_snapshots (background MoyKlass sync, includes future lessons)
                 snap_rows = conn.execute(
-                    "SELECT group_name, teacher_ids FROM lesson_snapshots "
+                    "SELECT group_name, teacher_ids, filial_name, lesson_room_id, raw_preview "
+                    "FROM lesson_snapshots "
                     "WHERE lesson_date=? AND teacher_ids IS NOT NULL AND teacher_ids != ''",
                     (str(date_str),),
                 ).fetchall()
                 for row in snap_rows:
                     ids = [x.strip() for x in str(row["teacher_ids"] or "").split(",") if x.strip()]
-                    if tid in ids:
-                        c = normalize_food_location(row["group_name"] or "")
-                        if c and c not in codes:
-                            codes.append(c)
+                    if tid not in ids:
+                        continue
+                    fn = str(row["filial_name"] or "")
+                    ri = str(row["lesson_room_id"] or "")
+                    if not fn and not ri:
+                        fn, ri = _filial_from_raw_preview(row["raw_preview"] or "")
+                    loc, is_online, _ = _resolve_lesson_location(row["group_name"] or "", fn, ri)
+                    if loc and not is_online and loc not in codes:
+                        codes.append(loc)
         return codes
 
     def get_teacher_lesson_contexts(self, mk_teacher_id: str, date_str: str) -> list[dict[str, Any]]:
         """Return per-lesson detail for a teacher on a specific date.
 
-        Each entry: {lesson_id, lesson_date, lesson_time, group_name, location_code, location_name, source}
+        Each entry: {lesson_id, lesson_date, lesson_time, group_name, raw_filial_name, location_code,
+                     is_online, is_food_eligible, location_source, source}
         Checks teacher_lesson_control first; falls back to lesson_snapshots.
+        Online (is_food_eligible=False) lessons are included for informational display.
         """
         if not mk_teacher_id or not date_str:
             return []
@@ -2757,26 +2838,37 @@ class Storage:
         results: list[dict[str, Any]] = []
         with self._connect() as conn:
             ctrl_rows = conn.execute(
-                "SELECT lesson_id, lesson_date, lesson_time, group_name FROM teacher_lesson_control "
-                "WHERE mk_teacher_id=? AND lesson_date=? ORDER BY lesson_time",
+                "SELECT tlc.lesson_id, tlc.lesson_date, tlc.lesson_time, tlc.group_name, "
+                "       tlc.filial_name, tlc.lesson_room_id, ls.raw_preview "
+                "FROM teacher_lesson_control tlc "
+                "LEFT JOIN lesson_snapshots ls ON ls.lesson_id = tlc.lesson_id "
+                "WHERE tlc.mk_teacher_id=? AND tlc.lesson_date=? ORDER BY tlc.lesson_time",
                 (tid, str(date_str)),
             ).fetchall()
             if ctrl_rows:
                 for row in ctrl_rows:
-                    loc = normalize_food_location(row["group_name"] or "")
-                    if not loc:
-                        continue
+                    fn = str(row["filial_name"] or "")
+                    ri = str(row["lesson_room_id"] or "")
+                    if not fn and not ri:
+                        fn, ri = _filial_from_raw_preview(row["raw_preview"] or "")
+                    loc, is_online, loc_src = _resolve_lesson_location(row["group_name"] or "", fn, ri)
                     results.append({
                         "lesson_id": row["lesson_id"],
                         "lesson_date": row["lesson_date"],
                         "lesson_time": row["lesson_time"] or "",
                         "group_name": row["group_name"] or "",
+                        "raw_filial_name": fn,
                         "location_code": loc,
+                        "is_online": is_online,
+                        "is_food_eligible": not is_online and bool(loc),
+                        "location_source": loc_src,
                         "source": "teacher_lesson_control",
                     })
             if not results:
                 snap_rows = conn.execute(
-                    "SELECT lesson_id, lesson_date, lesson_time, group_name, teacher_ids FROM lesson_snapshots "
+                    "SELECT lesson_id, lesson_date, lesson_time, group_name, teacher_ids, "
+                    "       filial_name, lesson_room_id, raw_preview "
+                    "FROM lesson_snapshots "
                     "WHERE lesson_date=? AND teacher_ids IS NOT NULL AND teacher_ids != '' "
                     "ORDER BY lesson_time",
                     (str(date_str),),
@@ -2785,18 +2877,24 @@ class Storage:
                     ids = [x.strip() for x in str(row["teacher_ids"] or "").split(",") if x.strip()]
                     if tid not in ids:
                         continue
-                    loc = normalize_food_location(row["group_name"] or "")
-                    if not loc:
-                        continue
+                    fn = str(row["filial_name"] or "")
+                    ri = str(row["lesson_room_id"] or "")
+                    if not fn and not ri:
+                        fn, ri = _filial_from_raw_preview(row["raw_preview"] or "")
+                    loc, is_online, loc_src = _resolve_lesson_location(row["group_name"] or "", fn, ri)
                     results.append({
                         "lesson_id": row["lesson_id"],
                         "lesson_date": row["lesson_date"],
                         "lesson_time": row["lesson_time"] or "",
                         "group_name": row["group_name"] or "",
+                        "raw_filial_name": fn,
                         "location_code": loc,
+                        "is_online": is_online,
+                        "is_food_eligible": not is_online and bool(loc),
+                        "location_source": loc_src,
                         "source": "lesson_snapshots",
                     })
-        # Deduplicate by (location_code, lesson_time) keeping unique lessons
+        # Deduplicate by (location_code, lesson_time, group_name)
         seen: set[str] = set()
         unique: list[dict[str, Any]] = []
         for r in results:
@@ -3714,16 +3812,18 @@ class Storage:
             "teacher_names": str(snapshot.get("teacher_names") or ""),
             "fingerprint": str(snapshot.get("fingerprint") or ""),
             "raw_preview": str(snapshot.get("raw_preview") or "")[:4000],
+            "filial_name": str(snapshot.get("filial_name") or ""),
+            "lesson_room_id": str(snapshot.get("lesson_room_id") or ""),
         }
         with self._connect() as conn:
             old_row = conn.execute("SELECT * FROM lesson_snapshots WHERE lesson_id=?", (lesson_id,)).fetchone()
             if not old_row:
                 conn.execute(
                     """
-                    INSERT INTO lesson_snapshots(lesson_id, created_at, updated_at, last_seen_at, lesson_date, lesson_time, group_name, lesson_topic, teacher_ids, teacher_names, fingerprint, raw_preview)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO lesson_snapshots(lesson_id, created_at, updated_at, last_seen_at, lesson_date, lesson_time, group_name, lesson_topic, teacher_ids, teacher_names, fingerprint, raw_preview, filial_name, lesson_room_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (lesson_id, now, now, now, current["lesson_date"], current["lesson_time"], current["group_name"], current["lesson_topic"], current["teacher_ids"], current["teacher_names"], current["fingerprint"], current["raw_preview"]),
+                    (lesson_id, now, now, now, current["lesson_date"], current["lesson_time"], current["group_name"], current["lesson_topic"], current["teacher_ids"], current["teacher_names"], current["fingerprint"], current["raw_preview"], current["filial_name"], current["lesson_room_id"]),
                 )
                 return "new", None, current
             previous = dict(old_row)
@@ -3731,10 +3831,10 @@ class Storage:
             conn.execute(
                 """
                 UPDATE lesson_snapshots
-                SET updated_at=?, last_seen_at=?, lesson_date=?, lesson_time=?, group_name=?, lesson_topic=?, teacher_ids=?, teacher_names=?, fingerprint=?, raw_preview=?
+                SET updated_at=?, last_seen_at=?, lesson_date=?, lesson_time=?, group_name=?, lesson_topic=?, teacher_ids=?, teacher_names=?, fingerprint=?, raw_preview=?, filial_name=?, lesson_room_id=?
                 WHERE lesson_id=?
                 """,
-                (now if event == "changed" else previous.get("updated_at") or now, now, current["lesson_date"], current["lesson_time"], current["group_name"], current["lesson_topic"], current["teacher_ids"], current["teacher_names"], current["fingerprint"], current["raw_preview"], lesson_id),
+                (now if event == "changed" else previous.get("updated_at") or now, now, current["lesson_date"], current["lesson_time"], current["group_name"], current["lesson_topic"], current["teacher_ids"], current["teacher_names"], current["fingerprint"], current["raw_preview"], current["filial_name"], current["lesson_room_id"], lesson_id),
             )
         return event, previous, current
 
