@@ -4952,18 +4952,24 @@ async function renderAdminContent() {
           </div>${unknownNote}`;
         }
 
-        // MK sync / unlink buttons
+        // MK sync / unlink / picker buttons
         let mkActionsHtml = "";
-        if (canManage && mkTeacherId) {
-          mkActionsHtml = `
+        if (canManage) {
+          const syncUnlinkBtns = mkTeacherId ? `
             <button type="button" class="admin-sync-mk-btn secondary btn-sm" style="margin-top:6px;margin-right:4px"
               data-uid="${escapeAttr(String(uid))}"
               data-name="${escapeAttr(displayName)}">Обновить имя из МК</button>
-            <button type="button" class="admin-unlink-teacher-btn btn-sm" style="margin-top:6px;background:#e67e22;color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer"
+            <button type="button" class="admin-unlink-teacher-btn btn-sm" style="margin-top:6px;margin-right:4px;background:#e67e22;color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer"
               data-uid="${escapeAttr(String(uid))}"
               data-mk-id="${escapeAttr(mkTeacherId)}"
               data-name="${escapeAttr(displayName)}"
-              data-role="${escapeAttr(u.role || "")}">Отвязать MK teacherId</button>`;
+              data-role="${escapeAttr(u.role || "")}">Отвязать MK teacherId</button>` : "";
+          const pickerBtn = `<button type="button" class="admin-mk-picker-btn secondary btn-sm" style="margin-top:6px"
+              data-uid="${escapeAttr(String(uid))}"
+              data-current-mk-id="${escapeAttr(mkTeacherId || "")}"
+              data-name="${escapeAttr(displayName)}">🔗 Выбрать преподавателя из МойКласс</button>
+            <div class="mk-picker-container" data-picker-for="${escapeAttr(String(uid))}" style="display:none"></div>`;
+          mkActionsHtml = syncUnlinkBtns + pickerBtn;
         }
 
         // Teacher diagnostics button (only for teacher-like roles)
@@ -5089,6 +5095,22 @@ async function renderAdminContent() {
             if (container.style.display === "none") {
               container.style.display = "";
               _loadTeacherDiagnostics(uid, container);
+            } else {
+              container.style.display = "none";
+            }
+          });
+        });
+
+        root.querySelectorAll(".admin-mk-picker-btn").forEach(btn => {
+          btn.addEventListener("click", () => {
+            const uid = btn.dataset.uid;
+            const displayName = btn.dataset.name || "";
+            const currentMkId = btn.dataset.currentMkId || "";
+            const container = root.querySelector(`.mk-picker-container[data-picker-for="${CSS.escape(uid)}"]`);
+            if (!container) return;
+            if (container.style.display === "none") {
+              container.style.display = "";
+              _loadMkTeacherPicker(uid, displayName, currentMkId, container);
             } else {
               container.style.display = "none";
             }
@@ -7597,6 +7619,23 @@ function _renderTeacherDiagnosticsHtml(d, uid) {
         `<div class="teacher-diag-row">${escapeHtml(s.date)} ${escapeHtml(s.time)} · ${escapeHtml(s.title || "(нет темы)")} · ${escapeHtml(s.location_code || "?")} · <span style="font-size:11px;color:#888">${escapeHtml(s.source)}</span></div>`
       ).join("")
     : `<div class="teacher-diag-empty" style="margin-top:6px">Занятий в локальной базе не найдено.</div>`;
+
+  // ID mismatch warning: stored ID not in lessons but name found under a different ID
+  const nameMatchedIds = d.refresh?.name_matched_ids || [];
+  const storedId = String(d.resolved_mk_teacher_id || "");
+  const mismatchIds = nameMatchedIds.filter(mid => String(mid) !== storedId);
+  let mismatchHtml = "";
+  if (mismatchIds.length > 0 && storedId) {
+    const suggestId = String(mismatchIds[0]);
+    mismatchHtml = `<div class="teacher-diag-mismatch">
+      ⚠️ Хранится teacherId <b>${escapeHtml(storedId)}</b>, но имя преподавателя в занятиях МойКласс соответствует ID: <b>${escapeHtml(mismatchIds.join(", "))}</b>.
+      <br><button class="secondary btn-sm diag-quick-link-btn" style="margin-top:6px"
+        data-uid="${escapeAttr(String(uid))}"
+        data-mk-id="${escapeAttr(suggestId)}"
+        data-mk-name="${escapeAttr(d.teacher_name || "")}">🔗 Привязать найденный ID (${escapeHtml(suggestId)})</button>
+    </div>`;
+  }
+
   return `<div class="teacher-diag-panel">
     <div class="teacher-diag-status">${statusIcon} ${escapeHtml(reasonText)}</div>
     <div class="teacher-diag-grid">
@@ -7615,11 +7654,121 @@ function _renderTeacherDiagnosticsHtml(d, uid) {
       <span>Доступ к обеду</span><span>${d.food_access ? "да" : "нет"}</span>
     </div>
     ${snapshotStatsHtml}
+    ${mismatchHtml}
     ${refreshBlock}
     ${rawFieldStats}
     ${sampleHtml}
     <button class="secondary btn-sm teacher-diag-refresh-btn" style="margin-top:12px" data-diag-uid="${escapeAttr(String(uid))}">🔄 Обновить расписание (все страницы)</button>
   </div>`;
+}
+
+// ── MoyKlass teacher picker ──
+
+async function _loadMkTeacherPicker(uid, displayName, currentMkId, containerEl) {
+  containerEl.innerHTML = `<div class="mk-picker-panel"><div class="empty">Загружаю список преподавателей МойКласс...</div></div>`;
+  let allTeachers = [];
+  try {
+    const data = await apiGet("/api/admin/moyklass/teachers?include_with_no_lessons=true");
+    if (!data.ok) throw new Error(data.error || "Ошибка загрузки");
+    allTeachers = data.teachers || [];
+    containerEl.innerHTML = _renderMkPickerHtml(uid, displayName, currentMkId, allTeachers, data);
+    _attachMkPickerHandlers(uid, displayName, currentMkId, allTeachers, containerEl);
+  } catch (e) {
+    containerEl.innerHTML = `<div class="mk-picker-panel mk-picker-panel--error">Ошибка: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function _renderMkPickerHtml(uid, displayName, currentMkId, teachers, meta) {
+  const dateRange = meta?.date_range ? `${meta.date_range.from} — ${meta.date_range.to}` : "";
+  const timedOut = meta?.timed_out ? `<span style="color:#e67e22;font-size:11px"> (данные неполные, МойКласс отвечал медленно)</span>` : "";
+  const headerNote = `<div style="font-size:12px;color:var(--muted,#657089);margin-bottom:8px">
+    Занятия МойКласс за ${escapeHtml(dateRange)}${timedOut}. Найдено: ${teachers.length} преподавателей.
+  </div>`;
+  const searchBar = `<input type="search" class="mk-picker-search" placeholder="Поиск по имени или ID..." style="width:100%;box-sizing:border-box;padding:7px 10px;margin-bottom:8px;border:1px solid var(--border,#dce3ed);border-radius:8px;font-size:14px">`;
+  const listHtml = teachers.length
+    ? `<div class="mk-teacher-list">${teachers.map(t => _renderMkTeacherCard(t, currentMkId)).join("")}</div>`
+    : `<div class="empty">Преподаватели не найдены.</div>`;
+  return `<div class="mk-picker-panel">
+    <div style="font-size:13px;font-weight:600;margin-bottom:6px">Выбор преподавателя МойКласс для ${escapeHtml(displayName)}</div>
+    ${headerNote}
+    ${searchBar}
+    ${listHtml}
+  </div>`;
+}
+
+function _renderMkTeacherCard(t, currentMkId) {
+  const tid = String(t.id || "");
+  const isCurrent = tid === String(currentMkId || "");
+  const isLinked = t.already_linked_to != null && !isCurrent;
+  const locs = (t.locations || []).join(", ") || "—";
+  const nearest = t.nearest_lesson_date ? ` · ближайшее ${escapeHtml(t.nearest_lesson_date)}` : "";
+  const srcBadge = t.source === "direct_api"
+    ? `<span style="font-size:10px;background:#eef2ff;color:#5c6bc0;border-radius:4px;padding:1px 5px;margin-left:4px">API</span>`
+    : "";
+  const linkedNote = isLinked
+    ? `<div style="font-size:11px;color:#e67e22;margin-top:2px">⚠️ Уже привязан к Telegram ${escapeHtml(String(t.already_linked_to))}</div>`
+    : "";
+  const currentNote = isCurrent
+    ? `<div style="font-size:11px;color:#27ae60;margin-top:2px">✅ Текущий привязанный ID</div>`
+    : "";
+  const btn = !isCurrent
+    ? `<button class="secondary btn-sm mk-teacher-select-btn" style="margin-top:6px"
+        data-mk-id="${escapeAttr(tid)}"
+        data-mk-name="${escapeAttr(String(t.name || ""))}"
+        data-already-linked="${escapeAttr(t.already_linked_to != null ? String(t.already_linked_to) : "")}">Привязать</button>`
+    : `<button class="btn-sm" disabled style="margin-top:6px;opacity:0.5">Привязан</button>`;
+  return `<div class="mk-teacher-card${isCurrent ? " mk-teacher-card--current" : ""}">
+    <div style="font-weight:600;font-size:14px">${escapeHtml(t.name || `ID ${tid}`)}${srcBadge}</div>
+    <div style="font-size:12px;color:var(--muted,#657089)">ID: ${escapeHtml(tid)} · ${t.lesson_count} занятий${nearest} · ${escapeHtml(locs)}</div>
+    ${linkedNote}${currentNote}
+    ${btn}
+  </div>`;
+}
+
+function _attachMkPickerHandlers(uid, displayName, currentMkId, allTeachers, containerEl) {
+  const search = containerEl.querySelector(".mk-picker-search");
+  if (search) {
+    search.addEventListener("input", () => {
+      const q = search.value.trim().toLowerCase();
+      const filtered = q
+        ? allTeachers.filter(t => String(t.name || "").toLowerCase().includes(q) || String(t.id || "").includes(q))
+        : allTeachers;
+      const list = containerEl.querySelector(".mk-teacher-list");
+      if (list) list.innerHTML = filtered.map(t => _renderMkTeacherCard(t, currentMkId)).join("");
+      containerEl.querySelectorAll(".mk-teacher-select-btn").forEach(sb => _attachMkSelectBtn(sb, uid, displayName, containerEl));
+    });
+  }
+  containerEl.querySelectorAll(".mk-teacher-select-btn").forEach(sb => _attachMkSelectBtn(sb, uid, displayName, containerEl));
+}
+
+function _attachMkSelectBtn(sb, uid, displayName, containerEl) {
+  sb.addEventListener("click", () => {
+    const mkId = sb.dataset.mkId || "";
+    const mkName = sb.dataset.mkName || "";
+    const alreadyLinked = sb.dataset.alreadyLinked || "";
+    if (!mkId) return;
+    _confirmLinkTeacher(mkId, mkName, uid, async () => {
+      sb.disabled = true;
+      sb.textContent = "Привязываю...";
+      try {
+        const res = await apiPost(`/api/admin/staff/${uid}/link-moyklass-teacher`, {
+          mk_teacher_id: mkId,
+          mk_teacher_name: mkName,
+          source: "admin_picker",
+        });
+        if (!res.ok) throw new Error(res.error || "Ошибка");
+        containerEl.innerHTML = `<div class="mk-picker-panel" style="color:var(--green,#27ae60)">
+          ✅ Привязан MK teacherId <b>${escapeHtml(mkId)}</b> (${escapeHtml(mkName)}).
+          <div style="font-size:12px;margin-top:4px;color:var(--muted,#657089)">Перезагрузите страницу или откройте диагностику для проверки.</div>
+        </div>`;
+        setTimeout(() => renderAdminContent(), 1500);
+      } catch (e) {
+        sb.disabled = false;
+        sb.textContent = "Привязать";
+        setNotice(safeUserError(e), "error");
+      }
+    }, alreadyLinked);
+  });
 }
 
 async function _loadTeacherDiagnostics(uid, containerEl) {
@@ -7634,6 +7783,34 @@ async function _loadTeacherDiagnostics(uid, containerEl) {
 }
 
 function _attachDiagRefreshBtn(uid, containerEl) {
+  // Wire "Привязать найденный ID" quick-link buttons inside diagnostics panel
+  containerEl.querySelectorAll(".diag-quick-link-btn").forEach(qb => {
+    qb.addEventListener("click", () => {
+      const mkId = qb.dataset.mkId || "";
+      const mkName = qb.dataset.mkName || "";
+      const targetUid = qb.dataset.uid || uid;
+      if (!mkId) return;
+      _confirmLinkTeacher(mkId, mkName, targetUid, async () => {
+        qb.disabled = true;
+        try {
+          const res = await apiPost(`/api/admin/staff/${targetUid}/link-moyklass-teacher`, {
+            mk_teacher_id: mkId,
+            mk_teacher_name: mkName,
+            source: "diag_mismatch_fix",
+          });
+          if (!res.ok) throw new Error(res.error || "Ошибка привязки");
+          containerEl.innerHTML = `<div class="teacher-diag-panel"><div class="empty">ID ${escapeHtml(mkId)} привязан. Загружаю диагностику...</div></div>`;
+          const d = await apiGet(`/api/admin/teacher-diagnostics/${targetUid}`);
+          containerEl.innerHTML = _renderTeacherDiagnosticsHtml(d, targetUid);
+          _attachDiagRefreshBtn(targetUid, containerEl);
+        } catch (e) {
+          qb.disabled = false;
+          setNotice(safeUserError(e), "error");
+        }
+      });
+    });
+  });
+
   const btn = containerEl.querySelector(".teacher-diag-refresh-btn");
   if (!btn) return;
   btn.addEventListener("click", async (e) => {
@@ -8916,6 +9093,30 @@ function _confirmFoodMenuDelete(menuTitle, menuDate, isPublished, onConfirm) {
       <div class="food-delete-dialog-btns">
         <button class="secondary food-delete-cancel-btn">Отмена</button>
         <button class="food-delete-confirm-btn" style="background:#c0392b">Удалить меню</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector(".food-delete-cancel-btn").addEventListener("click", () => overlay.remove());
+  overlay.querySelector(".food-delete-confirm-btn").addEventListener("click", () => { overlay.remove(); onConfirm(); });
+  overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
+}
+
+function _confirmLinkTeacher(mkId, mkName, targetUid, onConfirm, alreadyLinkedTo = "") {
+  const overlay = document.createElement("div");
+  overlay.className = "food-delete-overlay";
+  const warnHtml = alreadyLinkedTo
+    ? `<div class="food-delete-dialog-warn">⚠️ Этот ID уже привязан к Telegram ${escapeHtml(alreadyLinkedTo)}. Тот сотрудник потеряет привязку.</div>`
+    : "";
+  overlay.innerHTML = `
+    <div class="food-delete-dialog">
+      <div class="food-delete-dialog-title">Привязать MK teacherId?</div>
+      <div class="food-delete-dialog-name">${escapeHtml(mkName || `ID ${mkId}`)}</div>
+      <div class="food-delete-dialog-date">MK teacherId: ${escapeHtml(mkId)}</div>
+      <div class="food-delete-dialog-date">Telegram ID: ${escapeHtml(String(targetUid))}</div>
+      ${warnHtml}
+      <div class="food-delete-dialog-btns">
+        <button class="secondary food-delete-cancel-btn">Отмена</button>
+        <button class="food-delete-confirm-btn" style="background:#2980b9">Привязать</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);

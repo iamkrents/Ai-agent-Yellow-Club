@@ -6580,6 +6580,74 @@ body { -webkit-overflow-scrolling: touch; }
   line-height: 1.55;
 }
 
+/* v7.0.41 — MK teacher picker + mismatch warning */
+.teacher-diag-mismatch {
+  background: #fff8e1;
+  border: 1.5px solid #f9a825;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #7c5a00;
+  margin-top: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  .teacher-diag-mismatch { background: #2c2410; border-color: #c69026; color: #e8c76a; }
+}
+:root[data-theme="dark"] .teacher-diag-mismatch { background: #2c2410; border-color: #c69026; color: #e8c76a; }
+:root[data-theme="light"] .teacher-diag-mismatch { background: #fff8e1; border-color: #f9a825; color: #7c5a00; }
+
+.mk-picker-panel {
+  background: var(--card-bg, #f8fafc);
+  border: 1.5px solid var(--border, #dce3ed);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-top: 10px;
+  font-size: 13px;
+}
+.mk-picker-panel--error {
+  border-color: #e74c3c;
+  color: #c0392b;
+}
+@media (prefers-color-scheme: dark) {
+  .mk-picker-panel { background: #1a1e28; border-color: #2e3447; }
+  .mk-picker-panel--error { border-color: #e74c3c; color: #ff6b6b; }
+}
+:root[data-theme="dark"] .mk-picker-panel { background: #1a1e28; border-color: #2e3447; }
+:root[data-theme="dark"] .mk-picker-panel--error { border-color: #e74c3c; color: #ff6b6b; }
+:root[data-theme="light"] .mk-picker-panel { background: #f8fafc; border-color: #dce3ed; }
+
+.mk-teacher-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.mk-teacher-card {
+  background: var(--card-bg, #fff);
+  border: 1px solid var(--border, #dce3ed);
+  border-radius: 10px;
+  padding: 10px 12px;
+  transition: border-color 0.15s;
+}
+.mk-teacher-card--current {
+  border-color: #27ae60;
+  background: #f0fff5;
+}
+@media (prefers-color-scheme: dark) {
+  .mk-teacher-card { background: #20253a; border-color: #2e3447; }
+  .mk-teacher-card--current { border-color: #27ae60; background: #0d2416; }
+}
+:root[data-theme="dark"] .mk-teacher-card { background: #20253a; border-color: #2e3447; }
+:root[data-theme="dark"] .mk-teacher-card--current { border-color: #27ae60; background: #0d2416; }
+:root[data-theme="light"] .mk-teacher-card { background: #fff; border-color: #dce3ed; }
+:root[data-theme="light"] .mk-teacher-card--current { border-color: #27ae60; background: #f0fff5; }
+
+.mk-picker-container {
+  margin-top: 6px;
+}
+
 /* =====================================================
    v7.0.37 — Published-menu edits / Utensils / Teacher view
    ===================================================== */

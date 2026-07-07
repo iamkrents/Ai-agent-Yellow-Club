@@ -5065,6 +5065,94 @@ class MiniAppContext:
         return {"ok": True, "telegram_user_id": target_uid, "mk_teacher_id": mk_teacher_id,
                 "old_name": old_name, "new_name": new_name}
 
+    def admin_moyklass_teachers(self, auth: dict[str, Any], q: str = "", include_with_no_lessons: bool = False) -> dict[str, Any]:
+        """Return list of teachers found in MoyKlass (from lessons + direct endpoints).
+        Admin-only. Marks which IDs are already linked to staff users."""
+        denied = self._require_admin(auth)
+        if denied:
+            return denied
+        try:
+            today = date.today()
+            fetch = self.moyklass.get_moyklass_teachers(
+                date_from=today - timedelta(days=1),
+                date_to=today + timedelta(days=45),
+                per_req_timeout=8,
+                total_timeout=20,
+            )
+            if not fetch.get("ok"):
+                return {"ok": False, "error": "Не удалось получить данные из МойКласс.", "detail": str(fetch)}
+            teachers = fetch.get("teachers") or []
+            # Build lookup: mk_teacher_id → linked telegram_user_id
+            linked: dict[str, int] = {}
+            for su in self.storage.list_staff_users(limit=500):
+                mid = str(su.get("mk_teacher_id") or "").strip()
+                if mid:
+                    linked[mid] = int(su.get("user_id") or 0)
+            # Filter by name search
+            q_low = (q or "").strip().lower()
+            result_list = []
+            for t in teachers:
+                if q_low and q_low not in str(t.get("name") or "").lower():
+                    continue
+                if not include_with_no_lessons and t.get("lesson_count", 0) == 0 and t.get("source") != "direct_api":
+                    continue
+                tid = str(t.get("id") or "").strip()
+                result_list.append({
+                    **t,
+                    "already_linked_to": linked.get(tid),
+                })
+            log.info(
+                "[moyklass-teacher-picker] uid=%s q=%r total=%s returned=%s timed_out=%s",
+                auth.get("user_id"), q, fetch.get("total"), len(result_list), fetch.get("timed_out"),
+            )
+            return {
+                "ok": True,
+                "teachers": result_list,
+                "total": len(result_list),
+                "date_range": fetch.get("date_range", {}),
+                "source_used": fetch.get("source_used", ""),
+                "timed_out": fetch.get("timed_out", False),
+                "elapsed_ms": fetch.get("elapsed_ms", 0),
+            }
+        except Exception:
+            log.exception("admin_moyklass_teachers error")
+            return {"ok": False, "error": "Ошибка при получении списка преподавателей МойКласс."}
+
+    def admin_link_moyklass_teacher(self, auth: dict[str, Any], target_uid_str: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Link a staff user to a MoyKlass teacher ID chosen from the picker.
+        Only owner/admin/operations."""
+        caller_uid = int(auth["user_id"])
+        caller_real = self._base_role_for_user(caller_uid)
+        if caller_real not in FULL_ADMIN_ROLES:
+            return {"ok": False, "error": "Управление привязкой преподавателей доступно только владельцу и операционному менеджеру."}
+        target_uid = _safe_int(target_uid_str)
+        if not target_uid:
+            return {"ok": False, "error": "Неверный telegram_user_id."}
+        target = self.storage.get_staff_user(target_uid)
+        if not target:
+            return {"ok": False, "error": "Сотрудник не найден."}
+        new_mk_id = str(body.get("mk_teacher_id") or "").strip()
+        new_mk_name = str(body.get("mk_teacher_name") or "").strip()
+        if not new_mk_id:
+            return {"ok": False, "error": "mk_teacher_id не указан."}
+        old_mk_id = str(target.get("mk_teacher_id") or "").strip()
+        old_mk_name = str(target.get("mk_teacher_name") or "").strip()
+        source = str(body.get("source") or "picker")
+        self.storage.set_staff_mk_teacher(target_uid, new_mk_id, new_mk_name)
+        log.info(
+            "[moyklass-teacher-picker] linked caller=%s target=%s old_id=%s new_id=%s new_name=%s source=%s",
+            caller_uid, target_uid, old_mk_id, new_mk_id, new_mk_name, source,
+        )
+        return {
+            "ok": True,
+            "telegram_user_id": target_uid,
+            "old_mk_teacher_id": old_mk_id,
+            "old_mk_teacher_name": old_mk_name,
+            "new_mk_teacher_id": new_mk_id,
+            "new_mk_teacher_name": new_mk_name,
+            "source": source,
+        }
+
     def admin_unlink_teacher(self, auth: dict[str, Any], target_uid_str: str) -> dict[str, Any]:
         """Remove mk_teacher_id / mk_teacher_name link from a staff user."""
         caller_uid = int(auth["user_id"])
@@ -7099,6 +7187,10 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.admin_overview(auth))
                 if path == "/api/admin/teachers":
                     return self._send_json(CTX.admin_teachers(auth))
+                if path == "/api/admin/moyklass/teachers":
+                    _q = params.get("q", "")
+                    _inc = str(params.get("include_with_no_lessons", "")).lower() in ("1", "true")
+                    return self._send_json(CTX.admin_moyklass_teachers(auth, q=_q, include_with_no_lessons=_inc))
                 if path == "/api/admin/users":
                     return self._send_json(CTX.admin_users(auth))
                 if path.startswith("/api/admin/teacher-diagnostics/"):
@@ -7280,6 +7372,9 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/admin/staff/") and path.endswith("/unlink-teacher"):
                 _staff_uid = path[len("/api/admin/staff/"):-len("/unlink-teacher")]
                 return self._send_json(CTX.admin_unlink_teacher(auth, _staff_uid))
+            if path.startswith("/api/admin/staff/") and path.endswith("/link-moyklass-teacher"):
+                _staff_uid = path[len("/api/admin/staff/"):-len("/link-moyklass-teacher")]
+                return self._send_json(CTX.admin_link_moyklass_teacher(auth, _staff_uid, body))
             if path == "/api/food/link-child":
                 return self._send_json(CTX.food_link_child(auth, body))
             if path == "/api/food/debug/sync-camp-children":

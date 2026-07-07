@@ -161,6 +161,246 @@ class MoyKlassClient:
         result.data = {"tried": ["/v1/company/teachers", "/v1/company/managers"]}
         return result
 
+    def get_moyklass_teachers(
+        self,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        per_req_timeout: int = 8,
+        total_timeout: int = 20,
+    ) -> dict[str, Any]:
+        """Build an accurate teacher list from MoyKlass for the admin picker.
+
+        Strategy:
+        1. Try direct teacher endpoints (cheap, 1-3 requests).
+        2. Regardless of step 1, also load upcoming lessons to get IDs actually used
+           in lesson records (the ground truth for filtering lessons by teacher).
+        3. Merge: direct-API names + lesson-derived IDs/counts/locations.
+
+        Returns:
+        {
+            "ok": True,
+            "teachers": [{"id", "name", "lesson_count", "nearest_lesson_date",
+                           "locations", "source", "raw_ids"}],
+            "source_used": "lessons" | "direct+lessons",
+            "date_range": {"from": ..., "to": ...},
+            "total": N,
+            "timed_out": bool,
+            "elapsed_ms": N
+        }
+        All IDs are strings. IDs come from lesson data → guaranteed to match lesson filtering.
+        """
+        d1 = date_from or date.today() - timedelta(days=1)
+        d2 = date_to or date.today() + timedelta(days=45)
+        t_start = time.monotonic()
+        timed_out = False
+        per_teacher: dict[str, dict[str, Any]] = {}  # id → data
+        direct_names: dict[str, str] = {}  # id → name from direct endpoint
+        source_used = "lessons"
+
+        def _budget_left() -> float:
+            return max(0.0, total_timeout - (time.monotonic() - t_start))
+
+        def _req(endpoint: str, params: dict | None = None) -> MoyKlassResult:
+            nonlocal timed_out
+            rem = _budget_left()
+            if rem < 1.5:
+                timed_out = True
+                return MoyKlassResult(False, status=0, error="budget_exceeded", endpoint=endpoint)
+            orig = self.timeout
+            self.timeout = max(2, min(per_req_timeout, int(rem) - 1))
+            try:
+                return self.request("GET", endpoint, params=params or {})
+            finally:
+                self.timeout = orig
+
+        def _name_from_obj(obj: dict) -> str:
+            return str(
+                obj.get("name") or obj.get("fullName") or obj.get("fio") or
+                f"{obj.get('lastName','') or ''} {obj.get('firstName','') or ''}".strip() or ""
+            ).strip()
+
+        def _loc(group_name: str) -> str:
+            if not group_name:
+                return ""
+            upper = group_name.upper()
+            for code in ("YC1", "YC2", "YC3"):
+                if code in upper:
+                    return code
+            return ""
+
+        # ── Step 1: Try direct teacher endpoints (1-3 requests) ──
+        for ep in ("/v1/company/teachers", "/v1/company/managers", "/v1/company/employees"):
+            if timed_out:
+                break
+            r = _req(ep, {"limit": "200"})
+            if not r.ok:
+                continue
+            items = extract_items(r.data)
+            if not items:
+                continue
+            for obj in items:
+                if not isinstance(obj, dict):
+                    continue
+                tid = str(obj.get("id") or obj.get("teacherId") or obj.get("userId") or "").strip()
+                if not tid:
+                    continue
+                name = _name_from_obj(obj)
+                if tid not in direct_names and name:
+                    direct_names[tid] = name
+            if direct_names:
+                source_used = "direct+lessons"
+                break
+
+        # ── Step 2: Load upcoming lessons → extract actual IDs used ──
+        if not timed_out:
+            page_size = 100
+            date_variants = [
+                {"dateFrom": d1.isoformat(), "dateTo": d2.isoformat()},
+                {"beginDate": d1.isoformat(), "endDate": d2.isoformat()},
+            ]
+            lessons_loaded: list[dict] = []
+            for dv in date_variants:
+                if timed_out:
+                    break
+                seen: set[str] = set()
+                loaded_ok = False
+                for pg in range(8):  # max 8 pages
+                    if timed_out or _budget_left() < 1.5:
+                        timed_out = True
+                        break
+                    params = {**dv, "limit": str(page_size), "offset": str(pg * page_size)}
+                    r = _req("/v1/company/lessons", params)
+                    if not r.ok:
+                        break
+                    items = [x for x in extract_items(r.data) if isinstance(x, dict)]
+                    if not items:
+                        break
+                    sig = f"{_pick(items[0], ('id','lessonId'))}|{len(items)}"
+                    if sig in seen:
+                        break
+                    seen.add(sig)
+                    in_range = [x for x in items if d1 <= (parse_date(_lesson_date_value(x)) or d1) <= d2]
+                    lessons_loaded.extend(in_range)
+                    loaded_ok = True
+                    if len(items) < page_size:
+                        break
+                if loaded_ok:
+                    break
+
+            # ── Extract teacher data from lessons ──
+            _ID_KEYS = ("id", "teacherId", "userId", "employeeId", "staffId", "managerId", "tutorId", "responsibleId")
+            for lesson in lessons_loaded:
+                ldate = _lesson_date_value(lesson) or ""
+                group = str(lesson.get("groupName") or lesson.get("className") or lesson.get("group") or "").strip()
+                loc = _loc(group)
+
+                def _register(tid: str, name_hint: str = "") -> None:
+                    tid = str(tid).strip()
+                    if not tid:
+                        return
+                    if tid not in per_teacher:
+                        per_teacher[tid] = {
+                            "id": tid,
+                            "name": direct_names.get(tid) or name_hint or "",
+                            "lesson_count": 0,
+                            "nearest_lesson_date": "",
+                            "all_dates": [],
+                            "locations": [],
+                            "source": "",
+                        }
+                    t = per_teacher[tid]
+                    t["lesson_count"] += 1
+                    if ldate:
+                        t["all_dates"].append(ldate)
+                        if not t["nearest_lesson_date"] or ldate < t["nearest_lesson_date"]:
+                            t["nearest_lesson_date"] = ldate
+                    if loc and loc not in t["locations"]:
+                        t["locations"].append(loc)
+                    if not t["name"] and direct_names.get(tid):
+                        t["name"] = direct_names[tid]
+
+                for field in ("teacherIds", "teacher_ids", "teachersIds", "teacherId", "teacher_id"):
+                    val = lesson.get(field)
+                    if isinstance(val, list):
+                        for v in val:
+                            if isinstance(v, dict):
+                                vtid = str(v.get("id") or v.get("teacherId") or "").strip()
+                                vname = _name_from_obj(v)
+                                if vtid:
+                                    _register(vtid, vname)
+                                    if vname and vtid not in direct_names:
+                                        direct_names[vtid] = vname
+                            elif v:
+                                _register(str(v))
+                    elif val not in (None, ""):
+                        _register(str(val))
+
+                for field in ("teachers", "teacher", "staff", "staffs", "employees"):
+                    val = lesson.get(field)
+                    objs = val if isinstance(val, list) else ([val] if isinstance(val, dict) else [])
+                    for obj in objs:
+                        if isinstance(obj, dict):
+                            tid = str(obj.get("id") or obj.get("teacherId") or obj.get("userId") or
+                                      obj.get("employeeId") or obj.get("staffId") or "").strip()
+                            name_h = _name_from_obj(obj)
+                            if tid:
+                                _register(tid, name_h)
+                                if name_h and tid not in direct_names:
+                                    direct_names[tid] = name_h
+                        elif obj not in (None, ""):
+                            _register(str(obj))
+
+                for field in ("employeeId", "employeeIds", "staffId", "managerId", "tutorId", "responsibleId"):
+                    val = lesson.get(field)
+                    if isinstance(val, list):
+                        for v in val:
+                            if v not in (None, ""):
+                                _register(str(v))
+                    elif val not in (None, ""):
+                        _register(str(val))
+
+            # Update names from direct lookup for any IDs found in lessons
+            for tid, t in per_teacher.items():
+                if not t["name"] and tid in direct_names:
+                    t["name"] = direct_names[tid]
+
+        # ── Build result ──
+        teachers = sorted(
+            [
+                {
+                    "id": t["id"],
+                    "name": t["name"] or f"ID {t['id']}",
+                    "lesson_count": t["lesson_count"],
+                    "nearest_lesson_date": t.get("nearest_lesson_date") or "",
+                    "locations": t.get("locations") or [],
+                    "source": "lessons",
+                }
+                for t in per_teacher.values()
+            ],
+            key=lambda x: (-x["lesson_count"], x["name"].lower()),
+        )
+        # Also add teachers from direct endpoint that had NO lessons in range
+        for tid, name in direct_names.items():
+            if tid not in per_teacher:
+                teachers.append({
+                    "id": tid,
+                    "name": name or f"ID {tid}",
+                    "lesson_count": 0,
+                    "nearest_lesson_date": "",
+                    "locations": [],
+                    "source": "direct_api",
+                })
+        elapsed_ms = int((time.monotonic() - t_start) * 1000)
+        return {
+            "ok": True,
+            "teachers": teachers,
+            "source_used": source_used,
+            "date_range": {"from": d1.isoformat(), "to": d2.isoformat()},
+            "total": len(teachers),
+            "timed_out": timed_out,
+            "elapsed_ms": elapsed_ms,
+        }
+
     def get_lessons_on_date(self, day: str | date) -> MoyKlassResult:
         d = parse_date(day) if isinstance(day, str) else day
         if not d:
