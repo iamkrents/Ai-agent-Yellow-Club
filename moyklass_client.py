@@ -1782,14 +1782,45 @@ def _format_probe_section(items: list[dict[str, Any]]) -> list[str]:
 
 
 def lesson_teacher_ids(item: dict[str, Any]) -> list[str]:
-    ids = item.get("teacherIds") if isinstance(item, dict) else None
-    if ids is None:
-        ids = item.get("teacherId") if isinstance(item, dict) else None
-    if isinstance(ids, list):
-        return [str(x).strip() for x in ids if str(x).strip()]
-    if ids in (None, ""):
+    """Extract all teacher IDs from a MoyKlass lesson object.
+
+    MoyKlass installations use different field names:
+    - teacherIds: [123, 456]       — flat list of integer IDs
+    - teacherId: 123               — single scalar ID
+    - teachers: [{"id": 123, ...}] — list of teacher objects (some installations)
+    - teacher:  {"id": 123, ...}   — single teacher object
+
+    All IDs are normalised to strings so they can be compared with stored mk_teacher_id.
+    """
+    if not isinstance(item, dict):
         return []
-    return [str(ids).strip()]
+    # 1. teacherIds (flat list) or teacherId (scalar)
+    ids = item.get("teacherIds")
+    if ids is None:
+        ids = item.get("teacherId")
+    if isinstance(ids, list):
+        flat = [str(x).strip() for x in ids if str(x).strip()]
+        if flat:
+            return flat
+    elif ids not in (None, ""):
+        return [str(ids).strip()]
+    # 2. Fallback: teachers / teacher (list of objects or single object)
+    teachers = item.get("teachers") or item.get("teacher")
+    if isinstance(teachers, list):
+        result: list[str] = []
+        for t in teachers:
+            if isinstance(t, dict):
+                tid = t.get("id") or t.get("teacherId") or t.get("userId")
+                if tid:
+                    result.append(str(tid).strip())
+            elif t:
+                result.append(str(t).strip())
+        return [x for x in result if x]
+    if isinstance(teachers, dict):
+        tid = teachers.get("id") or teachers.get("teacherId") or teachers.get("userId")
+        if tid:
+            return [str(tid).strip()]
+    return []
 
 
 def lesson_has_teacher(item: dict[str, Any], teacher_id: str | int) -> bool:

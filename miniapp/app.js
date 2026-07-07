@@ -66,7 +66,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.37");
+console.log("MiniApp version: v7.0.38");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -1264,7 +1264,16 @@ function _teacherLessonStatus(lesson) {
 function renderLessons() {
   const root = $("lessonsList");
   if (!state.lessons.length) {
-    root.innerHTML = `<div class="empty">На ближайшую неделю занятий не найдено.</div>`;
+    const role = state.me?.role || "";
+    const hasMkId = !!(state.me?.mkTeacherId);
+    let emptyMsg = "На ближайшую неделю занятий не найдено.";
+    if (role === "teacher" && hasMkId) {
+      emptyMsg = "Профиль преподавателя связан с МойКласс, но занятия на ближайшие дни не найдены. " +
+                 "Если занятия должны быть, попросите администратора обновить расписание.";
+    } else if (role === "teacher" && !hasMkId) {
+      emptyMsg = "Профиль преподавателя не связан с МойКласс. Обратитесь к администратору для привязки teacherId.";
+    }
+    root.innerHTML = `<div class="empty">${escapeHtml(emptyMsg)}</div>`;
     return;
   }
   root.innerHTML = state.lessons.map(item => {
@@ -4957,6 +4966,14 @@ async function renderAdminContent() {
               data-role="${escapeAttr(u.role || "")}">Отвязать MK teacherId</button>`;
         }
 
+        // Teacher diagnostics button (only for teacher-like roles)
+        const isTeacherLike = ["teacher", "methodist", "intern"].includes(u.role || "");
+        const teacherDiagHtml = canManage && isTeacherLike
+          ? `<button type="button" class="admin-teacher-diag-btn secondary btn-sm" style="margin-top:6px"
+              data-uid="${escapeAttr(String(uid))}">🔍 Проверить доступ преподавателя</button>
+             <div class="teacher-diag-container" data-diag-for="${escapeAttr(String(uid))}" style="display:none"></div>`
+          : "";
+
         let deactivateHtml = "";
         if (canManage && !isSelf && !isOwner) {
           if (isInactive) {
@@ -4981,6 +4998,7 @@ async function renderAdminContent() {
           roleChangeHtml,
           mkActionsHtml,
           deactivateHtml,
+          teacherDiagHtml,
         ]);
       }).join("") || `<div class="empty">Нет сотрудников.</div>`;
 
@@ -5060,6 +5078,20 @@ async function renderAdminContent() {
               setNotice(`Доступ восстановлен: ${name}`, "ok");
               await renderAdminContent();
             } catch (e) { setNotice(safeUserError(e), "error"); btn.disabled = false; }
+          });
+        });
+
+        root.querySelectorAll(".admin-teacher-diag-btn").forEach(btn => {
+          btn.addEventListener("click", () => {
+            const uid = btn.dataset.uid;
+            const container = root.querySelector(`.teacher-diag-container[data-diag-for="${CSS.escape(uid)}"]`);
+            if (!container) return;
+            if (container.style.display === "none") {
+              container.style.display = "";
+              _loadTeacherDiagnostics(uid, container);
+            } else {
+              container.style.display = "none";
+            }
           });
         });
       }
@@ -7394,6 +7426,84 @@ function _copyFoodSummary(title, dateStr, data) {
 
   const text = [`Питание Yellow Club`, `${title}, ${dateStr}`, `⚠️ ВАЖНО: еда должна быть тёплой при доставке`, ``, bodyText].join("\n");
   navigator.clipboard?.writeText(text).then(() => setNotice("Сводка скопирована", "ok")).catch(() => setNotice("Не удалось скопировать", "error"));
+}
+
+// ---- Teacher diagnostics (admin) ----
+const TEACHER_DIAG_REASONS = {
+  ok: "Всё в порядке. Привязка корректна, занятия найдены.",
+  no_user_record: "Пользователь не найден в базе. Нужно зарегистрироваться через бот.",
+  inactive_user: "Пользователь деактивирован. Восстановите доступ в этой панели.",
+  no_mk_teacher_id: "Роль Преподаватель, но MK teacherId не привязан. Привяжите teacherId через кнопку ниже.",
+  no_lessons_in_snapshots: "Привязка есть, но занятия в локальной базе не найдены. Возможно, новая неделя ещё не синхронизирована — нажмите «Обновить расписание».",
+  lessons_exist_without_location: "Занятия найдены, но учебный класс/филиал (YC1/YC2) не определён по названию группы.",
+  duplicate_staff_records: "Найдены дубли записей сотрудника. Проверьте активную роль.",
+  server_error: "Ошибка сервера при диагностике. Проверьте логи.",
+};
+
+function _renderTeacherDiagnosticsHtml(d, uid) {
+  if (!d || !d.ok) {
+    return `<div class="teacher-diag-panel teacher-diag-panel--error">
+      <b>Ошибка диагностики:</b> ${escapeHtml(d?.error || "неизвестная ошибка")}
+    </div>`;
+  }
+  const reasonText = TEACHER_DIAG_REASONS[d.reason] || escapeHtml(d.reason || "неизвестно");
+  const statusOk = d.reason === "ok";
+  const statusIcon = statusOk ? "✅" : "⚠️";
+  const locs = (d.locations || []).join(", ") || "не определены";
+  const les = d.lessons || {};
+  const refreshInfo = d.refresh ? `<div class="teacher-diag-refresh-info">Обновление: загружено ${escapeHtml(String(d.refresh.total_fetched))} занятий, синхронизировано для этого преподавателя: ${escapeHtml(String(d.refresh.synced))}.</div>` : "";
+  const sampleHtml = (d.sample_lessons || []).length
+    ? `<div class="teacher-diag-section">Примеры занятий:</div>` +
+      (d.sample_lessons || []).slice(0, 5).map(s =>
+        `<div class="teacher-diag-row">${escapeHtml(s.date)} ${escapeHtml(s.time)} · ${escapeHtml(s.title || "(нет темы)")} · ${escapeHtml(s.location_code || "?")} · <span style="font-size:11px;color:#888">${escapeHtml(s.source)}</span></div>`
+      ).join("")
+    : `<div class="teacher-diag-empty">Занятий в локальной базе не найдено.</div>`;
+  return `<div class="teacher-diag-panel">
+    <div class="teacher-diag-status">${statusIcon} ${escapeHtml(reasonText)}</div>
+    <div class="teacher-diag-grid">
+      <span>Telegram ID</span><span>${escapeHtml(String(d.telegram_user_id || uid))}</span>
+      <span>Роль</span><span>${escapeHtml(d.resolved_role || "—")}</span>
+      <span>Статус</span><span>${escapeHtml(d.status === "active" ? "активен" : d.status || "—")}</span>
+      <span>MK teacherId</span><span>${escapeHtml(d.resolved_mk_teacher_id || "не привязан")}${d.mk_teacher_id_has_spaces ? " ⚠️ есть пробелы" : ""}</span>
+      <span>Имя</span><span>${escapeHtml(d.teacher_name || "—")}</span>
+      <span>Занятий сегодня</span><span>${escapeHtml(String(les.today ?? 0))}</span>
+      <span>Занятий завтра</span><span>${escapeHtml(String(les.tomorrow ?? 0))}</span>
+      <span>Занятий 7 дн.</span><span>${escapeHtml(String(les.next_7_days ?? 0))}</span>
+      <span>Занятий 14 дн.</span><span>${escapeHtml(String(les.next_14_days ?? 0))}</span>
+      <span>В контроле</span><span>${escapeHtml(String(les.from_teacher_lesson_control ?? 0))}</span>
+      <span>Снэпшоты</span><span>${escapeHtml(String(les.from_lesson_snapshots ?? 0))}</span>
+      <span>Филиалы</span><span>${escapeHtml(locs)}</span>
+      <span>Доступ к обеду</span><span>${d.food_access ? "да" : "нет"}</span>
+    </div>
+    ${refreshInfo}
+    ${sampleHtml}
+    <button class="secondary btn-sm teacher-diag-refresh-btn" style="margin-top:10px" data-diag-uid="${escapeAttr(String(uid))}">🔄 Обновить расписание преподавателя</button>
+  </div>`;
+}
+
+async function _loadTeacherDiagnostics(uid, containerEl) {
+  containerEl.innerHTML = `<div class="teacher-diag-panel"><div class="empty">Загружаю диагностику...</div></div>`;
+  try {
+    const d = await apiGet(`/api/admin/teacher-diagnostics/${uid}`);
+    containerEl.innerHTML = _renderTeacherDiagnosticsHtml(d, uid);
+    containerEl.querySelector(".teacher-diag-refresh-btn")?.addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.textContent = "Обновляю...";
+      try {
+        const d2 = await apiPost(`/api/admin/teacher-diagnostics/${uid}/refresh`, {});
+        containerEl.innerHTML = _renderTeacherDiagnosticsHtml(d2, uid);
+        containerEl.querySelector(".teacher-diag-refresh-btn")?.addEventListener("click", (ev) => {
+          _loadTeacherDiagnostics(uid, containerEl);
+        });
+      } catch (e2) {
+        btn.textContent = "Ошибка: " + safeUserError(e2);
+        btn.disabled = false;
+      }
+    });
+  } catch (e) {
+    containerEl.innerHTML = `<div class="teacher-diag-panel teacher-diag-panel--error">Ошибка: ${escapeHtml(e.message)}</div>`;
+  }
 }
 
 // ---- Teacher class orders ----

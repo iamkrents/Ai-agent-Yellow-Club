@@ -1231,6 +1231,11 @@ class MiniAppContext:
         result = self.moyklass.get_lessons_between(today, end, limit=400)
         if not is_admin and role in TEACHER_LIKE_ROLES and mk_teacher_id:
             result = filter_lessons_by_teacher(result, mk_teacher_id)
+            _total_before = len(extract_items(result.data)) if result.ok else 0
+            log.info(
+                "[teacher-access] uid=%s role=%s mk_teacher_id=%s lessons_found=%s ok=%s",
+                user_id, role, mk_teacher_id, _total_before, result.ok,
+            )
         if not result.ok:
             return {"ok": False, "error": f"МойКласс: status={result.status} {result.error}".strip()}
         items = [x for x in extract_items(result.data) if isinstance(x, dict)]
@@ -4267,6 +4272,212 @@ class MiniAppContext:
             items.append(u)
         return {"ok": True, "items": items}
 
+    def teacher_diagnostics(self, auth: dict[str, Any], telegram_user_id: str) -> dict[str, Any]:
+        """Diagnostic: check teacher access chain for a given Telegram user ID.
+        Returns user record, lesson counts from both sources, locations, and root-cause reason.
+        Only accessible to owner/admin/operations."""
+        denied = self._require_admin(auth)
+        if denied:
+            return denied
+        try:
+            uid = int(telegram_user_id or 0)
+        except (ValueError, TypeError):
+            return {"ok": False, "error": "Неверный telegram_user_id"}
+        if not uid:
+            return {"ok": False, "error": "Неверный telegram_user_id"}
+        try:
+            from storage import normalize_food_location as _nfl
+            try:
+                import zoneinfo
+                tz = zoneinfo.ZoneInfo("Europe/Minsk")
+                today = datetime.now(tz).date()
+            except Exception:
+                today = date.today()
+            user = self.storage.get_staff_user(uid)
+            if not user:
+                return {
+                    "ok": True, "telegram_user_id": uid, "user_records": [],
+                    "resolved_role": "", "resolved_mk_teacher_id": "",
+                    "teacher_name": "", "status": "not_found",
+                    "reason": "no_user_record",
+                    "lessons": {"today": 0, "tomorrow": 0, "next_7_days": 0, "next_14_days": 0,
+                                "from_teacher_lesson_control": 0, "from_lesson_snapshots": 0},
+                    "locations": [], "food_access": False, "class_orders_access": False,
+                    "sample_lessons": [],
+                }
+            role = str(user.get("role") or "")
+            status = str(user.get("status") or "")
+            mk_teacher_id_raw = str(user.get("mk_teacher_id") or "")
+            mk_teacher_id = mk_teacher_id_raw.strip()
+            user_record = {
+                "source": "staff_users",
+                "role": role,
+                "is_active": status == "active",
+                "mk_teacher_id": mk_teacher_id,
+                "full_name": str(user.get("full_name") or ""),
+                "mk_teacher_name": str(user.get("mk_teacher_name") or ""),
+                "username": str(user.get("username") or ""),
+                "created_at": str(user.get("created_at") or ""),
+                "updated_at": str(user.get("updated_at") or ""),
+            }
+            if status != "active":
+                reason = "inactive_user"
+            elif not mk_teacher_id:
+                reason = "no_mk_teacher_id"
+            else:
+                reason = "ok"
+            date_from = today.isoformat()
+            date_to_7 = (today + timedelta(days=7)).isoformat()
+            date_to_14 = (today + timedelta(days=14)).isoformat()
+            date_tomorrow = (today + timedelta(days=1)).isoformat()
+            snap_today = snap_tomorrow = snap_7 = snap_14 = ctrl_count = 0
+            locations: list[str] = []
+            sample_lessons: list[dict] = []
+            if mk_teacher_id:
+                with self.storage._connect() as conn:
+                    for row in conn.execute(
+                        "SELECT lesson_id, lesson_date, lesson_time, group_name, lesson_topic, teacher_ids "
+                        "FROM lesson_snapshots WHERE lesson_date>=? AND lesson_date<=? "
+                        "ORDER BY lesson_date, lesson_time",
+                        (date_from, date_to_14),
+                    ).fetchall():
+                        ids_in_snap = [x.strip() for x in str(row["teacher_ids"] or "").split(",") if x.strip()]
+                        if mk_teacher_id not in ids_in_snap:
+                            continue
+                        d = str(row["lesson_date"] or "")
+                        snap_14 += 1
+                        if d <= date_to_7:
+                            snap_7 += 1
+                        if d == date_tomorrow:
+                            snap_tomorrow += 1
+                        if d == date_from:
+                            snap_today += 1
+                        loc = _nfl(str(row["group_name"] or ""))
+                        if loc and loc not in locations:
+                            locations.append(loc)
+                        if len(sample_lessons) < 5:
+                            sample_lessons.append({
+                                "lesson_id": str(row["lesson_id"] or ""),
+                                "date": d, "time": str(row["lesson_time"] or ""),
+                                "title": str(row["lesson_topic"] or ""),
+                                "teacher_id": mk_teacher_id,
+                                "location_code": loc or "?",
+                                "location_name": str(row["group_name"] or ""),
+                                "source": "lesson_snapshots",
+                            })
+                    ctrl_row = conn.execute(
+                        "SELECT COUNT(*) as cnt FROM teacher_lesson_control WHERE mk_teacher_id=?",
+                        (mk_teacher_id,),
+                    ).fetchone()
+                    ctrl_count = (ctrl_row["cnt"] if ctrl_row else 0) or 0
+                    for row in conn.execute(
+                        "SELECT lesson_id, lesson_date, lesson_time, group_name, lesson_topic "
+                        "FROM teacher_lesson_control WHERE mk_teacher_id=? AND lesson_date>=? AND lesson_date<=? "
+                        "ORDER BY lesson_date LIMIT 3",
+                        (mk_teacher_id, date_from, date_to_14),
+                    ).fetchall():
+                        loc = _nfl(str(row["group_name"] or ""))
+                        if loc and loc not in locations:
+                            locations.append(loc)
+                        sample_lessons.append({
+                            "lesson_id": str(row["lesson_id"] or ""),
+                            "date": str(row["lesson_date"] or ""), "time": str(row["lesson_time"] or ""),
+                            "title": str(row["lesson_topic"] or ""),
+                            "teacher_id": mk_teacher_id,
+                            "location_code": loc or "?",
+                            "location_name": str(row["group_name"] or ""),
+                            "source": "teacher_lesson_control",
+                        })
+            if reason == "ok" and mk_teacher_id:
+                if snap_14 == 0 and ctrl_count == 0:
+                    reason = "no_lessons_in_snapshots"
+                elif snap_14 > 0 and not locations:
+                    reason = "lessons_exist_without_location"
+            food_enabled = bool(getattr(self.settings, "food_module_enabled", False))
+            food_access = food_enabled and bool(mk_teacher_id) and snap_14 > 0 and bool(locations)
+            class_orders_access = food_access and role in {"teacher", "methodist", "intern"}
+            log.info(
+                "[teacher-diagnostics] uid=%s role=%s mk_teacher_id=%s status=%s "
+                "snap_14=%s ctrl=%s locations=%s reason=%s",
+                uid, role, mk_teacher_id, status, snap_14, ctrl_count, locations, reason,
+            )
+            return {
+                "ok": True, "telegram_user_id": uid, "user_records": [user_record],
+                "resolved_role": role, "resolved_mk_teacher_id": mk_teacher_id,
+                "mk_teacher_id_raw": mk_teacher_id_raw,
+                "mk_teacher_id_has_spaces": mk_teacher_id_raw != mk_teacher_id,
+                "teacher_name": user_record["mk_teacher_name"] or user_record["full_name"],
+                "status": status,
+                "lessons": {
+                    "today": snap_today, "tomorrow": snap_tomorrow,
+                    "next_7_days": snap_7, "next_14_days": snap_14,
+                    "from_teacher_lesson_control": ctrl_count,
+                    "from_lesson_snapshots": snap_14,
+                },
+                "locations": locations, "food_access": food_access,
+                "class_orders_access": class_orders_access,
+                "reason": reason, "sample_lessons": sample_lessons,
+            }
+        except Exception:
+            log.exception("teacher_diagnostics error uid=%s", telegram_user_id)
+            return {"ok": False, "error": "Ошибка диагностики (см. лог сервера)", "reason": "server_error"}
+
+    def teacher_diagnostics_refresh(self, auth: dict[str, Any], telegram_user_id: str) -> dict[str, Any]:
+        """Trigger safe, non-destructive MoyKlass schedule sync for a specific teacher.
+        Only accessible to owner/admin/operations."""
+        denied = self._require_admin(auth)
+        if denied:
+            return denied
+        try:
+            uid = int(telegram_user_id or 0)
+        except (ValueError, TypeError):
+            return {"ok": False, "error": "Неверный telegram_user_id"}
+        user = self.storage.get_staff_user(uid)
+        if not user:
+            return {"ok": False, "error": "Пользователь не найден"}
+        mk_teacher_id = str(user.get("mk_teacher_id") or "").strip()
+        if not mk_teacher_id:
+            return {"ok": False, "error": "MK teacherId не привязан — обновление невозможно. Сначала привяжите teacherId."}
+        try:
+            result = self.moyklass.get_upcoming_lessons(days=30, limit=500)
+            if not result.ok:
+                return {
+                    "ok": False,
+                    "error": f"МойКласс не вернул расписание: {result.error or f'status={result.status}'}",
+                    "hint": "Проверьте подключение к МойКласс и запустите общий sync расписания.",
+                }
+            items = [x for x in extract_items(result.data) if isinstance(x, dict)]
+            synced = 0
+            for item in items:
+                lesson_id = str(_pick(item, ("id", "lessonId")) or "").strip()
+                if not lesson_id:
+                    continue
+                snap = self._schedule_snapshot_from_item(item)
+                self.storage.upsert_lesson_snapshot(lesson_id, snap)
+                ids_in_snap = [x.strip() for x in str(snap.get("teacher_ids") or "").split(",") if x.strip()]
+                if mk_teacher_id in ids_in_snap:
+                    synced += 1
+                    self.storage.upsert_teacher_lesson_control(
+                        lesson_id,
+                        lesson_date=snap.get("lesson_date") or "",
+                        lesson_time=snap.get("lesson_time") or "",
+                        group_name=snap.get("group_name") or "",
+                        lesson_topic=snap.get("lesson_topic") or "",
+                        teacher_name=snap.get("teacher_names") or "",
+                        mk_teacher_id=mk_teacher_id,
+                        teacher_user_id=uid,
+                    )
+            log.info(
+                "[teacher-diagnostics] refresh uid=%s mk_teacher_id=%s synced=%s total=%s",
+                uid, mk_teacher_id, synced, len(items),
+            )
+            diag = self.teacher_diagnostics(auth, str(uid))
+            diag["refresh"] = {"synced": synced, "total_fetched": len(items)}
+            return diag
+        except Exception:
+            log.exception("teacher_diagnostics_refresh error uid=%s", uid)
+            return {"ok": False, "error": "Ошибка обновления (см. лог сервера)"}
+
     def admin_all_tasks(self, auth: dict[str, Any]) -> dict[str, Any]:
         denied = self._require_admin_tab(auth, "tasks")
         if denied:
@@ -6707,6 +6918,9 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.admin_teachers(auth))
                 if path == "/api/admin/users":
                     return self._send_json(CTX.admin_users(auth))
+                if path.startswith("/api/admin/teacher-diagnostics/"):
+                    _diag_uid = path[len("/api/admin/teacher-diagnostics/"):]
+                    return self._send_json(CTX.teacher_diagnostics(auth, _diag_uid))
                 if path == "/api/admin/tasks":
                     return self._send_json(CTX.admin_all_tasks(auth))
                 if path == "/api/admin/notifications":
@@ -6844,6 +7058,9 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 return self._send_json(CTX.delete_work_schedule_slot(auth, body))
             if path == "/api/admin/schedule-check":
                 return self._send_json(CTX.schedule_check(auth, days=_safe_int(body.get("days"), 30), notify=bool(body.get("notify"))))
+            if path.startswith("/api/admin/teacher-diagnostics/") and path.endswith("/refresh"):
+                _td_uid = path[len("/api/admin/teacher-diagnostics/"):-len("/refresh")]
+                return self._send_json(CTX.teacher_diagnostics_refresh(auth, _td_uid))
             if path == "/api/admin/prep-result-review":
                 return self._send_json(CTX.review_prep_result(auth, body))
             if path == "/api/intern/observation-signup":
