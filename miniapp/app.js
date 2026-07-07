@@ -8093,10 +8093,7 @@ async function renderStaffFoodLunch(root) {
       } else if (requiresChoice) {
         locDetailHtml = `<br><span class="staff-teacher-branch-loc" style="color:var(--amber,#e67e22)">Несколько занятий на эту дату — выберите учебный класс ниже</span>`;
       }
-      const onlineNote = onlineLessonContexts.length
-        ? `<br><span class="staff-teacher-branch-loc" style="opacity:0.6;font-size:12px">Онлайн-занятия не учитываются для питания</span>`
-        : "";
-      teacherBannerHtml = `<div class="staff-teacher-branch-banner">Обед преподавателя${nameHtml}${locDetailHtml}${onlineNote}</div>`;
+      teacherBannerHtml = `<div class="staff-teacher-branch-banner">Обед преподавателя${nameHtml}${locDetailHtml}</div>`;
     }
     // Load existing staff orders for all menus
     const staffOrders = {};
