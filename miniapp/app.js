@@ -7914,15 +7914,21 @@ async function _loadAndRenderTeacherClassOrders(root, menuDate, locationCodes) {
       return;
     }
     const locations = data.locations || [];
+    const _tco = new Date().toISOString().slice(0, 10);
+    const _tct = new Date(); _tct.setDate(_tct.getDate() + 1); const _tcts = _tct.toISOString().slice(0, 10);
     if (!locations.length) {
-      wrap.innerHTML = `<div class="food-debug-card food-teacher-class-section"><div class="food-menu-panel-head"><h3>Заказы детей</h3></div><div class="empty">Заказы детей на завтра не найдены для вашего учебного класса.</div></div>`;
+      const _when0 = menuDate === _tco ? " на сегодня" : (menuDate === _tcts ? " на завтра" : "");
+      wrap.innerHTML = `<div class="food-debug-card food-teacher-class-section"><div class="food-menu-panel-head"><h3>Заказы детей${_when0}</h3></div><div class="empty">Заказов на эту дату в вашем учебном классе не найдено.</div></div>`;
       return;
     }
     let html = `<div class="food-debug-card food-teacher-class-section">`;
     for (const loc of locations) {
-      const locTitle = locations.length > 1 ? `Заказы детей · ${escapeHtml(loc.location_name)}` : "Заказы детей";
+      const _when = loc.menu_date === _tco ? " на сегодня" : (loc.menu_date === _tcts ? " на завтра" : "");
+      const locTitle = locations.length > 1 ? `Заказы детей${_when} · ${escapeHtml(loc.location_name)}` : `Заказы детей${_when}`;
       const dateStr = _formatMenuDate(loc.menu_date);
-      html += `<div class="food-menu-panel-head"><h3>${locTitle}</h3><span style="font-size:13px;color:var(--color-text-secondary)">${escapeHtml(dateStr)}</span></div>`;
+      const _dlPassed = loc.deadline_at ? _isDeadlinePassed(loc.deadline_at) : false;
+      const _dlNote = _dlPassed ? `<div class="food-order-deadline-passed" style="margin-top:4px;margin-bottom:8px">Заказы закрыты для изменений · список для выдачи питания</div>` : "";
+      html += `<div class="food-menu-panel-head"><h3>${locTitle}</h3><span style="font-size:13px;color:var(--color-text-secondary)">${escapeHtml(dateStr)}</span></div>${_dlNote}`;
       const children = loc.children || [];
       const ordered = children.filter(c => c.status === "ordered");
       const noFood = children.filter(c => c.status === "no_food");
@@ -8062,12 +8068,26 @@ async function renderStaffFoodLunch(root) {
         noLessonMsg = "На дату меню не найдено занятие в МойКласс. Обед преподавателя недоступен.";
       }
       root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>${escapeHtml(noLessonMsg)}</p></div></div>`;
+      // Distribution day: teacher may have a lesson TODAY and need class orders for food distribution
+      const _rl0 = state.me?.role;
+      if ((_rl0 === "teacher" || _rl0 === "methodist" || _rl0 === "intern") && menusData.todayDate) {
+        const _cr0 = document.createElement("div");
+        root.appendChild(_cr0);
+        _loadAndRenderTeacherClassOrders(_cr0, menusData.todayDate, "").catch(e => console.warn("[teacher-class-orders]", e.message));
+      }
       return;
     }
     const menus = Array.isArray(menusData.menus) ? menusData.menus : [];
     if (!menus.length) {
       root.innerHTML = `<div class="food-debug-card"><h3>Мой обед</h3><div class="parent-food-soon"><p>Меню на завтра ещё не опубликовано.</p></div><button class="secondary" id="staffLunchRefresh">Обновить</button></div>`;
       root.querySelector("#staffLunchRefresh")?.addEventListener("click", () => renderStaffFoodLunch(root));
+      // Distribution day: also try to show today's class orders (menu for today may already be closed)
+      const _rl1 = state.me?.role;
+      if ((_rl1 === "teacher" || _rl1 === "methodist" || _rl1 === "intern") && menusData.todayDate) {
+        const _cr1 = document.createElement("div");
+        root.appendChild(_cr1);
+        _loadAndRenderTeacherClassOrders(_cr1, menusData.todayDate, "").catch(e => console.warn("[teacher-class-orders]", e.message));
+      }
       return;
     }
     // Split contexts: food-eligible (offline) vs online
@@ -8122,7 +8142,7 @@ async function renderStaffFoodLunch(root) {
       const upfrontLocPickerHtml = showLocPicker ? _renderUpfrontLocPicker(lessonContextsAll, menu.id) : "";
       const deadlineNote = menu.deadline_at
         ? (deadlinePassed
-            ? `<div class="food-order-deadline-passed" style="margin-top:4px">Дедлайн прошёл</div>`
+            ? `<div class="food-order-deadline-passed" style="margin-top:4px">Заказы закрыты для изменений</div>`
             : `<div class="parent-food-deadline">Дедлайн: до ${escapeHtml(_formatDeadline(menu.deadline_at))}</div>`)
         : "";
       const statusBadge = !order ? `<span class="food-staff-status-badge food-staff-status-badge--none">Не выбрано</span>`

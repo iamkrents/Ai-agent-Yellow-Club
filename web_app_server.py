@@ -2571,6 +2571,7 @@ class MiniAppContext:
         except Exception:
             minsk_now = datetime.utcnow()
         tomorrow_str = (minsk_now.date() + timedelta(days=1)).isoformat()
+        today_str = minsk_now.date().isoformat()
         has_tomorrow_lesson = True
         teacher_not_linked = False
         teacher_location_codes: list[str] = []
@@ -2661,6 +2662,7 @@ class MiniAppContext:
             "hasOnlineLessons": has_online_lessons,
             "teacherNotLinked": teacher_not_linked,
             "tomorrowDate": tomorrow_str,
+            "todayDate": today_str,
             "teacherLocationCodes": teacher_location_codes,
             "lessonContexts": lesson_contexts,
             "requiresLocationChoice": requires_location_choice,
@@ -2754,7 +2756,7 @@ class MiniAppContext:
             menus = [
                 m for m in all_menus
                 if m.get("menu_date") == target_date
-                and m.get("status") in ("published", "closed")
+                and m.get("status") not in ("draft", "deleted", "archived")
                 and not m.get("deleted_at")
             ]
         locations_out: list[dict] = []
@@ -2798,8 +2800,23 @@ class MiniAppContext:
                     "location_name": loc_name,
                     "menu_id": menu["id"],
                     "menu_date": menu.get("menu_date"),
+                    "deadline_at": str(menu.get("deadline_at") or ""),
                     "children": children_out,
                 })
+        for loc_out in locations_out:
+            ordered_n = sum(1 for c in loc_out.get("children", []) if c.get("status") == "ordered")
+            missing_n = sum(1 for c in loc_out.get("children", []) if c.get("status") == "missing")
+            log.info(
+                "[teacher-class-orders] user_id=%s mk=%s loc=%s menu_id=%s menu_date=%s dl=%s children=%s ordered=%s missing=%s",
+                user_id, mk_teacher_id or "", loc_out.get("location_code"), loc_out.get("menu_id"),
+                loc_out.get("menu_date"), (loc_out.get("deadline_at") or "")[:16],
+                len(loc_out.get("children", [])), ordered_n, missing_n,
+            )
+        if not locations_out:
+            log.info(
+                "[teacher-class-orders] user_id=%s mk=%s date=%s locs=%s menus_found=%s — no locations in output",
+                user_id, mk_teacher_id or "", target_date, teacher_location_codes, len(menus),
+            )
         return {
             "ok": True,
             "date": target_date,
