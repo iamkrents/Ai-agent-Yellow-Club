@@ -9973,6 +9973,7 @@ async function reloadCabinetAfterRoleChange() {
     canUseSchedule() ? loadWorkSchedule() : Promise.resolve(renderWorkScheduleUnavailable()),
     canUseOpenSlots() ? loadOpenSlots() : Promise.resolve(renderOpenSlotsUnavailable()),
     canUseReports() ? loadReports() : Promise.resolve(renderReportsUnavailable()),
+    Promise.resolve(renderChildrenReport()),
     loadTasks(),
     _canUseKpi() ? loadKpi() : Promise.resolve(),
   ]);
@@ -10046,6 +10047,7 @@ async function boot() {
   $("copyReportsText")?.addEventListener("click", copyReportsText);
   $("loadChildrenReport")?.addEventListener("click", loadChildrenReport);
   $("childrenReportMonth")?.addEventListener("change", () => { state.childrenReportMonth = $("childrenReportMonth")?.value || ""; });
+  $("goToReportsFromAdmin")?.addEventListener("click", () => activateTab("reports"));
   $("syncTasksFromReports")?.addEventListener("click", () => syncTasksFromReports("all"));
   $("syncPaymentTasksFromReports")?.addEventListener("click", () => syncTasksFromReports("payment"));
   $("syncMakeupTasksFromReports")?.addEventListener("click", () => syncTasksFromReports("makeup"));
@@ -10088,6 +10090,7 @@ async function boot() {
       canUseSchedule() ? loadWorkSchedule() : Promise.resolve(renderWorkScheduleUnavailable()),
       canUseOpenSlots() ? loadOpenSlots() : Promise.resolve(renderOpenSlotsUnavailable()),
       canUseReports() ? loadReports() : Promise.resolve(renderReportsUnavailable()),
+      Promise.resolve(renderChildrenReport()),
       loadTasks(),
     ]);
     if (canUseAdmin()) await loadAdmin();
