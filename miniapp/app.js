@@ -165,6 +165,7 @@ const ROLE_LABELS = {
   methodist: "Старший преподаватель",
   intern: "Стажер",
   client_manager: "Клиент-менеджер",
+  director: "Директор",
   operations: "Операционный менеджер",
   other: "Сотрудник",
   parent: "Родитель",
@@ -178,7 +179,7 @@ function canUseLessons() { return !!roleCaps().canUseLessons; }
 function canUseSchedule() { return !!roleCaps().canUseSchedule; }
 function canUseOpenSlots() { return !!roleCaps().canUseOpenSlots; }
 function canUseReports() { return !!roleCaps().canUseReports; }
-function canUseChildrenReport() { const r = state.me?.role || ""; return ["owner","admin","client_manager","operations"].includes(r); }
+function canUseChildrenReport() { const r = state.me?.role || ""; return ["owner","admin","director","client_manager","operations"].includes(r); }
 function canUseInternship() { return !!roleCaps().canUseInternship; }
 function canAskAgent() { return roleCaps().canAskAgent !== false; }
 function canUseFoodKitchenSummary() { return !!roleCaps().canUseFoodKitchenSummary; }
@@ -206,6 +207,7 @@ const MVP_TABS_BY_ROLE = {
   admin:          ["lessons", "tasks", "reports", "help", "ask", "admin", "my-lunch"],
   operations:     ["lessons", "tasks", "reports", "help", "ask", "admin", "my-lunch"],
   client_manager: ["reports", "my-lunch"],
+  director:       ["reports", "my-lunch"],
   parent:         ["my-children", "food", "help"],
 };
 const MVP_ADMIN_TABS = ["interns", "prep-results", "lesson-control", "teachers", "users", "notifications", "food-debug", "food-children", "food-menu", "food-report"];
@@ -3599,7 +3601,7 @@ function renderChildrenReport() {
   const excl  = d.excluded  || {};
   const diag  = d.diagnostics || {};
   const role  = state.me?.role || "";
-  const isOwnerAdmin = ["owner", "admin"].includes(role);
+  const isOwnerAdmin = ["owner", "admin", "director", "operations"].includes(role);
 
   // ── Exclusions note ──
   const exclParts = [];
@@ -5222,6 +5224,7 @@ async function renderAdminContent() {
         methodist: "Методист",
         intern: "Стажёр",
         client_manager: "Клиентский менеджер",
+        director: "Директор",
         operations: "Операционный менеджер",
         kitchen: "Кухня",
         restaurant: "Кухня (alias)",
@@ -5232,6 +5235,7 @@ async function renderAdminContent() {
         {v:"methodist",      l:"Методист"},
         {v:"intern",         l:"Стажёр"},
         {v:"client_manager", l:"Клиентский менеджер"},
+        {v:"director",       l:"Директор"},
         {v:"operations",     l:"Операционный менеджер"},
         {v:"kitchen",        l:"Кухня"},
         {v:"admin",          l:"Администратор"},

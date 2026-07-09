@@ -53,6 +53,7 @@ ROLE_LABELS = {
     "methodist": "Старший преподаватель",
     "intern": "Стажер",
     "client_manager": "Клиент-менеджер",
+    "director": "Директор",
     "operations": "Операционный менеджер",
     "other": "Сотрудник",
     "parent": "Родитель",
@@ -65,14 +66,15 @@ TEST_ROLE_OPTIONS = [
     {"value": "methodist", "label": "Старший преподаватель (методист)", "needsTeacher": False},
     {"value": "intern", "label": "Стажер", "needsTeacher": True},
     {"value": "client_manager", "label": "Клиент-менеджер", "needsTeacher": False},
+    {"value": "director", "label": "Директор", "needsTeacher": False},
     {"value": "kitchen", "label": "Кухня", "needsTeacher": False},
 ]
 LESSON_ROLES = {"owner", "teacher", "methodist", "operations", "intern"}
 SCHEDULE_ROLES = {"owner", "teacher", "methodist", "operations"}
 INTERN_ROLES = {"intern"}
 OPEN_SLOTS_ROLES = {"client_manager"}
-REPORT_ROLES = {"client_manager", "owner", "operations", "methodist", "admin"}
-CHILDREN_REPORT_ROLES = {"client_manager", "owner", "operations", "admin"}
+REPORT_ROLES = {"client_manager", "director", "owner", "operations", "methodist", "admin"}
+CHILDREN_REPORT_ROLES = {"client_manager", "director", "owner", "operations", "admin"}
 CLIENT_TASK_ROLES = {"client_manager", "owner", "operations"}
 KPI_ROLES = {"client_manager", "owner", "operations", "methodist"}
 TEACHER_LIKE_ROLES = {"teacher", "methodist", "intern"}
@@ -5664,7 +5666,7 @@ class MiniAppContext:
         user_id = int(auth["user_id"])
         role = self._role_for_user(user_id)
         if role not in REPORT_ROLES:
-            return "Общие показатели МойКласс доступны клиент-менеджеру, owner, операционному менеджеру или старшему преподавателю. Для преподавателя могу ответить по видимым занятиям и задачам в приложении."
+            return "Общие показатели МойКласс доступны клиент-менеджеру, директору, owner, операционному менеджеру или старшему преподавателю. Для преподавателя могу ответить по видимым занятиям и задачам в приложении."
         month_label = _month_from_staff_question(question)
         if not month_label:
             return "Уточните месяц в формате YYYY-MM или словами, например: май 2026."
@@ -6442,7 +6444,7 @@ class MiniAppContext:
     def _require_reports_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
         role = self._role_for_user(int(auth["user_id"]))
         if role not in REPORT_ROLES:
-            return {"ok": False, "error": "Отчёты МойКласс доступны клиент-менеджеру, owner, операционному менеджеру и старшему преподавателю."}
+            return {"ok": False, "error": "Отчёты МойКласс доступны клиент-менеджеру, директору, owner, операционному менеджеру и старшему преподавателю."}
         return None
 
     def _report_money(self, value: Any) -> str:
@@ -6691,7 +6693,7 @@ class MiniAppContext:
     def reports_monthly_children(self, auth: dict[str, Any], month: str = "") -> dict[str, Any]:
         role = self._role_for_user(int(auth["user_id"]))
         if role not in CHILDREN_REPORT_ROLES:
-            return {"ok": False, "error": "Отчёт по детям доступен owner, admin, client_manager и operations."}
+            return {"ok": False, "error": "Отчёт по детям доступен owner, admin, director, client_manager и operations."}
         month_value = str(month or "").strip()
         if not re.fullmatch(r"20\d{2}-\d{2}", month_value):
             month_value = date.today().strftime("%Y-%m")
