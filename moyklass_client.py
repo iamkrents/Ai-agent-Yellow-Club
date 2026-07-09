@@ -1573,12 +1573,19 @@ class MoyKlassClient:
         """Count unique children who attended at least one regular lesson in the month.
 
         Excludes trial, makeup, city-program, and cancelled lessons.
+        Counts online-regular lessons as YC0.
         Uses /v1/company/lessonRecords with includeLessons=true.
         """
         t_start = time.monotonic()
         start, end, month_label = _month_bounds(month)
         if not start or not end:
             return MoyKlassResult(False, error="Неверный месяц. Формат: YYYY-MM", endpoint="monthly-children")
+
+        # Filial map: {filial_id_str: filial_name} — used to resolve filialId → name
+        try:
+            filial_map: dict[str, str] = self._lookup_maps_cached().get("filials") or {}
+        except Exception:
+            filial_map = {}
 
         records_result = self._scan_lesson_records_for_month(start, end, limit=8000)
         if not records_result.ok:
@@ -1595,6 +1602,8 @@ class MoyKlassClient:
         excluded_makeup = 0
         excluded_city_program = 0
         excluded_cancelled = 0
+
+        loc_source_counts: dict[str, int] = {}
 
         unique_student_ids: set[str] = set()
         location_students: dict[str, set[str]] = {}
@@ -1636,11 +1645,31 @@ class MoyKlassClient:
             if not student_id:
                 continue
 
+            # ── Resolve filial name with priority: lesson field > filialId map ──
+            filial_name = ""
+            room_id = ""
+            if lesson:
+                filial_name = str(
+                    lesson.get("_prettyFilialName") or
+                    lesson.get("filialName") or
+                    lesson.get("branchName") or ""
+                ).strip()
+                if not filial_name:
+                    fid = str(_pick(lesson, ("filialId", "branchId")) or "").strip()
+                    if fid:
+                        filial_name = filial_map.get(fid, "")
+                room_id = str(_pick(lesson, ("roomId", "classroomId")) or "").strip()
+
+            location_code, loc_source = _children_location_code(group_name, filial_name, room_id)
+            loc_source_counts[loc_source] = loc_source_counts.get(loc_source, 0) + 1
+
             student_name = _student_name_from_record(rec)
             class_id = _pick(lesson, ("classId", "groupId")) if lesson else _pick(rec, ("classId", "groupId"))
             if not class_id:
                 class_id = f"grp_{group_name[:24]}" if group_name else "unknown"
-            location_code = _group_to_location_code(group_name)
+
+            rec_date = _record_lesson_date(rec)
+            rec_date_str = rec_date.isoformat() if rec_date else ""
 
             unique_student_ids.add(student_id)
 
@@ -1653,6 +1682,7 @@ class MoyKlassClient:
                     "group_id": class_id,
                     "group_name": group_name,
                     "location_code": location_code,
+                    "location_name": _CHILDREN_LOC_NAMES.get(location_code, location_code),
                     "students": set(),
                 }
             group_data[class_id]["students"].add(student_id)
@@ -1664,25 +1694,21 @@ class MoyKlassClient:
                     "visits_count": 0,
                     "locations": set(),
                     "groups": set(),
+                    "visit_dates": [],
                 }
             elif student_name and student_info[student_id]["name"].startswith("Ученик "):
                 student_info[student_id]["name"] = student_name
             student_info[student_id]["visits_count"] += 1
             student_info[student_id]["locations"].add(location_code)
             student_info[student_id]["groups"].add(group_name)
-
-        location_names: dict[str, str] = {
-            "YC1": "Кульман 1/1",
-            "YC2": "Мстиславца 6",
-            "YC3": "Адрес 3",
-            "unknown": "Без филиала",
-        }
+            if rec_date_str and rec_date_str not in student_info[student_id]["visit_dates"]:
+                student_info[student_id]["visit_dates"].append(rec_date_str)
 
         by_location = sorted(
             [
                 {
                     "location_code": code,
-                    "location_name": location_names.get(code, code),
+                    "location_name": _CHILDREN_LOC_NAMES.get(code, code),
                     "unique_children": len(students),
                 }
                 for code, students in location_students.items()
@@ -1696,6 +1722,7 @@ class MoyKlassClient:
                     "group_id": gid,
                     "group_name": gd["group_name"],
                     "location_code": gd["location_code"],
+                    "location_name": gd["location_name"],
                     "unique_children": len(gd["students"]),
                 }
                 for gid, gd in group_data.items()
@@ -1709,14 +1736,20 @@ class MoyKlassClient:
                     "student_id": sid,
                     "name": sdata["name"],
                     "locations": sorted(sdata["locations"], key=lambda c: _LOC_CODE_ORDER.get(c, 50)),
+                    "location_names": [
+                        _CHILDREN_LOC_NAMES.get(c, c)
+                        for c in sorted(sdata["locations"], key=lambda c: _LOC_CODE_ORDER.get(c, 50))
+                    ],
                     "groups": sorted(sdata["groups"]),
                     "visits_count": sdata["visits_count"],
+                    "visit_dates": sorted(sdata["visit_dates"]),
                 }
                 for sid, sdata in student_info.items()
             ],
             key=lambda x: x["name"],
         )
 
+        unknown_records = loc_source_counts.get("unknown", 0)
         elapsed_ms = int((time.monotonic() - t_start) * 1000)
 
         return MoyKlassResult(
@@ -1731,10 +1764,23 @@ class MoyKlassClient:
                 "by_group": by_group,
                 "children": children,
                 "excluded": {
-                    "trial_lessons": excluded_trial,
-                    "makeup_lessons": excluded_makeup,
-                    "cancelled_lessons": excluded_cancelled,
-                    "city_program_lessons": excluded_city_program,
+                    "trial": excluded_trial,
+                    "makeup": excluded_makeup,
+                    "cancelled": excluded_cancelled,
+                    "city_program": excluded_city_program,
+                },
+                "diagnostics": {
+                    "lesson_records_loaded": len(all_records),
+                    "present_records": len(attended),
+                    "excluded": {
+                        "trial": excluded_trial,
+                        "makeup": excluded_makeup,
+                        "city_program": excluded_city_program,
+                        "cancelled": excluded_cancelled,
+                    },
+                    "location_sources": loc_source_counts,
+                    "unknown_location_records": unknown_records,
+                    "filial_map_size": len(filial_map),
                 },
                 "source": "moyklass/lessonRecords",
                 "records_total": len(all_records),
@@ -2159,7 +2205,57 @@ _EXCLUDE_LESSON_KEYWORDS = (
     "пробное", "пробн", " trial", "отработка", "makeup",
 )
 
-_LOC_CODE_ORDER = {"YC1": 0, "YC2": 1, "YC3": 2, "unknown": 99}
+_LOC_CODE_ORDER = {"YC0": 0, "YC1": 1, "YC2": 2, "YC3": 3, "unknown": 99}
+
+_CHILDREN_LOC_NAMES: dict[str, str] = {
+    "YC0": "Онлайн",
+    "YC1": "Кульман 1/1",
+    "YC2": "Мстиславца 6",
+    "YC3": "Адрес 3",
+    "unknown": "Без филиала",
+}
+
+# Ordered from most-specific to least-specific; first match wins
+_CHILDREN_LOCATION_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
+    ("YC0", ("онлайн", "online", "yc0", "remote", "дистанц")),
+    ("YC1", ("yc1", "кульман")),
+    ("YC2", ("yc2", "мстислав")),
+    ("YC3", ("yc3",)),
+]
+
+
+def _children_location_code(
+    group_name: str, filial_name: str = "", room_id: str = ""
+) -> tuple[str, str]:
+    """Return (location_code, source) for the monthly children report.
+
+    Priority: filial_name > room_id==0 (online) > group_name fallback.
+    Returns ("YC0"/"YC1"/"YC2"/"YC3"/"unknown", source_tag).
+    """
+    def _match(text: str) -> str:
+        lower = str(text or "").lower().strip()
+        if not lower:
+            return ""
+        for code, patterns in _CHILDREN_LOCATION_PATTERNS:
+            for pat in patterns:
+                if pat in lower:
+                    return code
+        return ""
+
+    if filial_name:
+        c = _match(filial_name)
+        if c:
+            return c, "moyklass_filial"
+
+    if str(room_id or "").strip() in ("0", "0.0"):
+        return "YC0", "moyklass_room_id"
+
+    if group_name:
+        c = _match(group_name)
+        if c:
+            return c, "group_name_fallback"
+
+    return "unknown", "unknown"
 
 
 def _student_name_from_record(rec: dict[str, Any]) -> str:

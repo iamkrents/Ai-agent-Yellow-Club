@@ -3548,6 +3548,13 @@ function _childrenReportMonthLabel(month) {
   } catch (_) { return month; }
 }
 
+function _fmtVisitDate(iso) {
+  // "2026-06-03" → "03.06"
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso || "";
+  const [, m, d] = iso.split("-");
+  return `${d}.${m}`;
+}
+
 function renderChildrenReport() {
   const el = $("childrenReportResult");
   if (!el) return;
@@ -3565,58 +3572,103 @@ function renderChildrenReport() {
     el.innerHTML = `<div class="notice notice-error">${escapeHtml(d.error || "Ошибка получения данных")}</div>`;
     return;
   }
+
   const month = d.month || state.childrenReportMonth || "";
   const total = d.total_unique_children ?? 0;
   const byLoc = Array.isArray(d.by_location) ? d.by_location : [];
   const byGroup = Array.isArray(d.by_group) ? d.by_group : [];
   const children = Array.isArray(d.children) ? d.children : [];
   const excl = d.excluded || {};
+  const diag = d.diagnostics || {};
+  const role = state.me?.role || "";
+  const isOwnerAdmin = ["owner", "admin"].includes(role);
 
-  const locRows = byLoc.map(l =>
-    `<div class="report-row"><span>${escapeHtml(l.location_name || l.location_code)}</span><b>${l.unique_children}</b></div>`
-  ).join("");
-
-  const groupRows = byGroup.map(g =>
-    `<div class="report-row"><span>${escapeHtml(g.group_name)}</span><b>${g.unique_children}</b></div>`
-  ).join("");
-
-  const childRows = children.map(c => {
-    const locs = (c.locations || []).join(", ");
-    const grps = (c.groups || []).join(", ");
-    return `<div class="report-row report-row--child">
-      <span>${escapeHtml(c.name)}</span>
-      <b>${c.visits_count} поc.</b>
-      <small>${escapeHtml(locs)} · ${escapeHtml(grps)}</small>
-    </div>`;
+  // ── Location breakdown ──
+  const locRows = byLoc.map(l => {
+    const name = escapeHtml(l.location_name || l.location_code);
+    const code = escapeHtml(l.location_code);
+    return `<div class="report-row"><span>${name} <small style="color:var(--color-text-secondary)">${code}</small></span><b>${l.unique_children}</b></div>`;
   }).join("");
 
+  // ── Exclusions note ──
   const exclParts = [];
-  if (excl.trial_lessons) exclParts.push(`пробных: ${excl.trial_lessons}`);
-  if (excl.makeup_lessons) exclParts.push(`отработок: ${excl.makeup_lessons}`);
-  if (excl.cancelled_lessons) exclParts.push(`отменённых: ${excl.cancelled_lessons}`);
-  if (excl.city_program_lessons) exclParts.push(`городской программы: ${excl.city_program_lessons}`);
-  const exclNote = exclParts.length ? `<div class="food-order-deadline-passed" style="margin-top:8px">Исключено: ${escapeHtml(exclParts.join(", "))}</div>` : "";
+  if (excl.trial) exclParts.push(`пробных: ${excl.trial}`);
+  if (excl.makeup) exclParts.push(`отработок: ${excl.makeup}`);
+  if (excl.cancelled) exclParts.push(`отменённых: ${excl.cancelled}`);
+  if (excl.city_program) exclParts.push(`городской программы: ${excl.city_program}`);
+  const exclNote = exclParts.length
+    ? `<p style="font-size:12px;color:var(--color-text-secondary);margin:6px 0 0">Не учтено: ${escapeHtml(exclParts.join(", "))}.</p>`
+    : "";
+
+  // ── Verification list ──
+  const SHOW_FIRST = 100;
+  const childRows = children.slice(0, SHOW_FIRST).map(c => {
+    const locNames = (c.location_names || c.locations || []).join(", ");
+    const grps = (c.groups || []).join("; ");
+    const dates = (c.visit_dates || []).map(_fmtVisitDate).join(", ");
+    return `<div class="report-row report-row--child" style="flex-direction:column;align-items:flex-start;gap:2px;padding:6px 0">
+      <div style="display:flex;justify-content:space-between;width:100%">
+        <b>${escapeHtml(c.name)}</b>
+        <span style="color:var(--color-text-secondary);font-size:12px">${c.visits_count} пос.</span>
+      </div>
+      <div style="font-size:12px;color:var(--color-text-secondary)">${escapeHtml(locNames)}${grps ? " · " + escapeHtml(grps) : ""}</div>
+      ${dates ? `<div style="font-size:11px;color:var(--color-text-secondary)">${escapeHtml(dates)}</div>` : ""}
+    </div>`;
+  }).join("");
+  const moreNote = children.length > SHOW_FIRST
+    ? `<p style="font-size:12px;color:var(--color-text-secondary);margin:6px 0 0">Показаны первые ${SHOW_FIRST} из ${children.length} детей.</p>`
+    : "";
+
+  // ── Diagnostics (owner/admin only) ──
+  let diagHtml = "";
+  if (isOwnerAdmin && diag.lesson_records_loaded != null) {
+    const srcMap = diag.location_sources || {};
+    const srcRows = Object.entries(srcMap).map(([k, v]) =>
+      `<div class="report-row" style="font-size:12px"><span>${escapeHtml(k)}</span><b>${v}</b></div>`
+    ).join("");
+    const diagExcl = diag.excluded || {};
+    diagHtml = `
+      <details style="margin-top:16px;font-size:12px;color:var(--color-text-secondary)">
+        <summary style="cursor:pointer;font-weight:600;color:var(--color-text)">Диагностика отчёта</summary>
+        <div style="margin-top:8px">
+          <div class="report-row" style="font-size:12px"><span>Записей загружено</span><b>${diag.lesson_records_loaded}</b></div>
+          <div class="report-row" style="font-size:12px"><span>С отметкой visit=true</span><b>${diag.present_records}</b></div>
+          <div class="report-row" style="font-size:12px"><span>Без филиала (unknown)</span><b>${diag.unknown_location_records ?? 0}</b></div>
+          <div class="report-row" style="font-size:12px"><span>Размер карты филиалов</span><b>${diag.filial_map_size ?? "?"}</b></div>
+          ${diagExcl.trial != null ? `<div class="report-row" style="font-size:12px"><span>Исключено пробных</span><b>${diagExcl.trial}</b></div>` : ""}
+          ${diagExcl.makeup != null ? `<div class="report-row" style="font-size:12px"><span>Исключено отработок</span><b>${diagExcl.makeup}</b></div>` : ""}
+          ${diagExcl.city_program != null ? `<div class="report-row" style="font-size:12px"><span>Исключено городской программы</span><b>${diagExcl.city_program}</b></div>` : ""}
+          ${diagExcl.cancelled != null ? `<div class="report-row" style="font-size:12px"><span>Исключено отменённых</span><b>${diagExcl.cancelled}</b></div>` : ""}
+          ${srcRows ? `<div style="margin-top:6px;font-weight:600">Источник филиала:</div>${srcRows}` : ""}
+        </div>
+      </details>`;
+  }
 
   el.innerHTML = `
     <div class="food-debug-card" style="margin-top:12px">
       <div class="food-menu-panel-head">
         <h3>Дети за ${escapeHtml(_childrenReportMonthLabel(month))}</h3>
       </div>
-      <p style="font-size:13px;color:var(--color-text-secondary);margin:4px 0 12px">
-        Считаются уникальные дети, которые посетили хотя бы одно регулярное занятие в месяце. Один ребёнок считается один раз.
-      </p>
-      <div class="report-row" style="font-size:18px;font-weight:700;margin-bottom:8px">
+
+      <div class="report-row" style="font-size:20px;font-weight:700;margin-bottom:4px">
         <span>Уникальных детей</span><b style="color:var(--color-accent)">${total}</b>
       </div>
       ${exclNote}
-      ${byLoc.length ? `<h4 style="margin:16px 0 6px;font-size:14px">По филиалам</h4><div class="report-rows">${locRows}</div>` : ""}
-      ${byGroup.length ? `
-        <h4 style="margin:16px 0 6px;font-size:14px">По группам</h4>
-        <p style="font-size:12px;color:var(--color-text-secondary);margin:0 0 6px">Ребёнок может учитываться в нескольких группах, если посещал несколько.</p>
-        <div class="report-rows">${groupRows}</div>` : ""}
+
+      ${byLoc.length ? `
+        <h4 style="margin:16px 0 6px;font-size:14px">По филиалам</h4>
+        <div class="report-rows">${locRows}</div>
+        <p style="font-size:12px;color:var(--color-text-secondary);margin:6px 0 0">
+          Общий итог считает ребёнка один раз за месяц. В разбивке по филиалам ребёнок может учитываться в нескольких филиалах, если посещал занятия в разных местах.
+        </p>` : ""}
+
       ${children.length ? `
-        <h4 style="margin:16px 0 6px;font-size:14px">Список детей</h4>
-        <div class="report-rows">${childRows}</div>` : ""}
+        <h4 style="margin:16px 0 6px;font-size:14px">Проверочный список детей</h4>
+        <div class="report-rows">${childRows}</div>
+        ${moreNote}` : ""}
+
+      ${diagHtml}
+
       <div style="margin-top:16px">
         <button class="secondary" id="copyChildrenReport" type="button">Скопировать отчёт</button>
       </div>
@@ -3654,7 +3706,13 @@ async function copyChildrenReport() {
   const label = _childrenReportMonthLabel(month);
   const total = d.total_unique_children ?? 0;
   const byLoc = Array.isArray(d.by_location) ? d.by_location : [];
-  const byGroup = Array.isArray(d.by_group) ? d.by_group : [];
+  const excl = d.excluded || {};
+  const exclParts = [];
+  if (excl.trial) exclParts.push("пробные");
+  if (excl.makeup) exclParts.push("отработки");
+  if (excl.cancelled) exclParts.push("отменённые занятия");
+  if (excl.city_program) exclParts.push("городская программа");
+
   const lines = [
     `Отчёт по детям за ${label}`,
     "",
@@ -3662,13 +3720,21 @@ async function copyChildrenReport() {
   ];
   if (byLoc.length) {
     lines.push("", "По филиалам:");
-    byLoc.forEach(l => lines.push(`• ${l.location_name} — ${l.unique_children}`));
+    byLoc.forEach(l => {
+      const name = l.location_name || l.location_code;
+      const code = l.location_name ? ` / ${l.location_code}` : "";
+      lines.push(`• ${name}${code} — ${l.unique_children}`);
+    });
   }
-  if (byGroup.length) {
-    lines.push("", "По группам:");
-    byGroup.forEach(g => lines.push(`• ${g.group_name} · ${g.location_code} — ${g.unique_children}`));
+  lines.push(
+    "",
+    "Правило подсчёта:",
+    "Один ребёнок считается один раз за месяц. В разбивке по филиалам ребёнок может учитываться в нескольких филиалах, если посещал занятия в разных филиалах.",
+  );
+  if (exclParts.length) {
+    lines.push("", `Не учитываются: ${exclParts.join(", ")}.`);
   }
-  lines.push("", "Правило подсчёта:", "Один ребёнок считается один раз за месяц, если он посетил хотя бы одно регулярное занятие.");
+
   const text = lines.join("\n");
   try {
     await navigator.clipboard.writeText(text);
