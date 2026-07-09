@@ -1191,7 +1191,7 @@ class MiniAppContext:
         }
         if can_test:
             mvp_mode = bool(getattr(self.settings, "mvp_release_mode", False))
-            _mvp_role_values = {"owner", "teacher", "methodist", "intern"}
+            _mvp_role_values = {"owner", "admin", "teacher", "methodist", "intern", "director", "client_manager", "kitchen", "operations"}
             role_opts = [o for o in TEST_ROLE_OPTIONS if o["value"] in _mvp_role_values] if mvp_mode else TEST_ROLE_OPTIONS
             data["roleOptions"] = role_opts
             data["testTeachers"] = self._test_teacher_options()
@@ -1209,7 +1209,7 @@ class MiniAppContext:
         valid_roles = {str(x.get("value")) for x in TEST_ROLE_OPTIONS}
         mvp_mode = bool(getattr(self.settings, "mvp_release_mode", False))
         if mvp_mode:
-            valid_roles = valid_roles & {"owner", "teacher", "methodist", "intern"}
+            valid_roles = valid_roles & {"owner", "admin", "teacher", "methodist", "intern", "director", "client_manager", "kitchen", "operations"}
         if role not in valid_roles:
             return {"ok": False, "error": "Неизвестная тестовая роль."}
         mk_teacher_id = str(payload.get("mkTeacherId") or payload.get("mk_teacher_id") or "").strip()
@@ -5042,7 +5042,7 @@ class MiniAppContext:
         # Normalize restaurant alias to kitchen
         if role == "restaurant":
             role = "kitchen"
-        ALLOWED = {"teacher", "methodist", "intern", "client_manager", "operations", "kitchen", "admin", "other"}
+        ALLOWED = {"teacher", "methodist", "intern", "client_manager", "director", "operations", "kitchen", "admin", "other"}
         # owner can only be granted by another owner
         if role == "owner":
             if caller_real != "owner":
