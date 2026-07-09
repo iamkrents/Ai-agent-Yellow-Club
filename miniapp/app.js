@@ -3593,6 +3593,9 @@ function renderChildrenReport() {
   const reg   = d.regular                           || { total_unique_children: d.total_unique_children ?? 0, by_location: d.by_location || [], children: d.children || [] };
   const sum   = d.city_program || d.summer           || { total_unique_children: 0, by_location: [], children: [], groups: [] };
   const comb  = d.combined                           || { total_unique_children: (d.total_unique_children ?? 0), by_location: d.by_location || [] };
+  const mkp   = d.makeups  || { unique_children: 0, visit_records: 0, unique_lessons: 0, children: [] };
+  const trl   = d.trials   || { unique_children: 0, visit_records: 0, unique_lessons: 0, children: [] };
+  const ovl   = d.overlaps || { regular_and_city_program_children: 0, multi_location_children: 0 };
   const excl  = d.excluded  || {};
   const diag  = d.diagnostics || {};
   const role  = state.me?.role || "";
@@ -3600,8 +3603,8 @@ function renderChildrenReport() {
 
   // ── Exclusions note ──
   const exclParts = [];
-  if (excl.trial)    exclParts.push(`пробных: ${excl.trial}`);
-  if (excl.makeup)   exclParts.push(`отработок: ${excl.makeup}`);
+  if (excl.trial)     exclParts.push(`пробных: ${excl.trial}`);
+  if (excl.makeup)    exclParts.push(`отработок: ${excl.makeup}`);
   if (excl.cancelled) exclParts.push(`отменённых: ${excl.cancelled}`);
   const exclNote = exclParts.length
     ? `<p class="cr-excl">Не учтено: ${escapeHtml(exclParts.join("; "))}.</p>` : "";
@@ -3693,9 +3696,33 @@ function renderChildrenReport() {
       </details>`;
   }
 
+  // ── Overlaps HTML ──
+  const ovlHtml = (ovl.regular_and_city_program_children > 0 || ovl.multi_location_children > 0) ? `
+    <div class="cr-overlap">
+      <p class="cr-overlap-head">Пересечения</p>
+      ${ovl.regular_and_city_program_children > 0
+        ? `<div class="cr-overlap-row"><span>Рег. + городская программа</span><span class="cr-overlap-n">${ovl.regular_and_city_program_children} дет.</span></div>`
+        : ""}
+      ${ovl.multi_location_children > 0
+        ? `<div class="cr-overlap-row"><span>Несколько филиалов</span><span class="cr-overlap-n">${ovl.multi_location_children} дет.</span></div>`
+        : ""}
+      <p class="cr-note">Поэтому сумма по блокам может отличаться от общего итога.</p>
+    </div>` : "";
+
   el.innerHTML = `
     <div class="cr-card" style="margin-top:10px">
       <div class="cr-title">Дети за ${escapeHtml(_childrenReportMonthLabel(month))}</div>
+
+      <div class="cr-tiles">
+        <div class="cr-tile"><span class="cr-tile-n">${reg.total_unique_children}</span><span class="cr-tile-label">Регулярные</span></div>
+        <div class="cr-tile"><span class="cr-tile-n">${sum.total_unique_children}</span><span class="cr-tile-label">Гор. программа</span></div>
+        <div class="cr-tile"><span class="cr-tile-n">${comb.total_unique_children}</span><span class="cr-tile-label">Итого</span></div>
+        <div class="cr-tile"><span class="cr-tile-n">${mkp.unique_children}</span><span class="cr-tile-label">Дети на отработках</span></div>
+        <div class="cr-tile"><span class="cr-tile-n">${mkp.visit_records}</span><span class="cr-tile-label">Отработок посещ.</span></div>
+        <div class="cr-tile"><span class="cr-tile-n">${trl.unique_lessons || trl.visit_records}</span><span class="cr-tile-label">Пробных занятий</span></div>
+        <div class="cr-tile"><span class="cr-tile-n">${trl.unique_children}</span><span class="cr-tile-label">Детей на пробных</span></div>
+        ${excl.cancelled ? `<div class="cr-tile"><span class="cr-tile-n">${excl.cancelled}</span><span class="cr-tile-label">Отменённых</span></div>` : ""}
+      </div>
 
       ${_crSection("Регулярные занятия", reg.total_unique_children, reg.by_location, exclNote + dedupeNote)}
 
@@ -3709,6 +3736,8 @@ function renderChildrenReport() {
         comb.by_location,
         `<p class="cr-note">Один ребёнок считается один раз в общем итоге.</p>`
       )}
+
+      ${ovlHtml}
 
       ${regVerifyHtml}
       ${sumVerifyHtml}
@@ -3753,6 +3782,9 @@ async function copyChildrenReport() {
   const reg   = d.regular                          || { total_unique_children: d.total_unique_children ?? 0, by_location: d.by_location || [] };
   const sum   = d.city_program || d.summer          || { total_unique_children: 0, by_location: [], groups: [] };
   const comb  = d.combined                          || { total_unique_children: d.total_unique_children ?? 0 };
+  const mkp   = d.makeups  || { unique_children: 0, visit_records: 0, unique_lessons: 0 };
+  const trl   = d.trials   || { unique_children: 0, visit_records: 0, unique_lessons: 0 };
+  const ovl   = d.overlaps || {};
   const excl  = d.excluded || {};
 
   const fmtLoc = (byLoc) => (byLoc || []).map(l => {
@@ -3761,13 +3793,17 @@ async function copyChildrenReport() {
     return `  • ${name}${code} — ${l.unique_children}`;
   }).join("\n");
 
-  const exclParts = [];
-  if (excl.trial)    exclParts.push("пробные");
-  if (excl.makeup)   exclParts.push("отработки");
-  if (excl.cancelled) exclParts.push("отменённые занятия");
-
   const lines = [
     `Отчёт по детям за ${label}`,
+    "",
+    "Сводка:",
+    `• Регулярные дети — ${reg.total_unique_children}`,
+    `• Городская программа / Summer Week — ${sum.total_unique_children}`,
+    `• Общий итог — ${comb.total_unique_children}`,
+    `• Дети на отработках — ${mkp.unique_children}`,
+    `• Отработок посещений — ${mkp.visit_records}`,
+    `• Пробных занятий — ${trl.unique_lessons || trl.visit_records}`,
+    `• Детей на пробных — ${trl.unique_children}`,
     "",
     "Регулярные занятия:",
     `Уникальных детей: ${reg.total_unique_children}`,
@@ -3787,10 +3823,17 @@ async function copyChildrenReport() {
     "Итого:",
     `Уникальных детей: ${comb.total_unique_children}`,
   );
+  if (ovl.regular_and_city_program_children > 0 || ovl.multi_location_children > 0) {
+    lines.push("", "Пересечения:");
+    if (ovl.regular_and_city_program_children > 0)
+      lines.push(`• Рег. + городская программа — ${ovl.regular_and_city_program_children} дет.`);
+    if (ovl.multi_location_children > 0)
+      lines.push(`• Несколько филиалов — ${ovl.multi_location_children} дет.`);
+  }
   lines.push(
     "",
-    "Не учитываются в регулярных занятиях:",
-    "пробные, отработки, отменённые занятия и городская программа.",
+    "Правило подсчёта:",
+    "Один ребёнок считается один раз в общем итоге. Пробные и отработки не входят в регулярные занятия.",
   );
 
   const text = lines.join("\n");

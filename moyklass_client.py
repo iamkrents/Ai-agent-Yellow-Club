@@ -1634,6 +1634,67 @@ class MoyKlassClient:
         reg_records_count = 0
         city_records_count = 0
 
+        # ── Makeup / trial detail accumulators ──────────────────────────────
+        mkp_ids: set[str] = set()
+        mkp_students: dict[str, dict[str, Any]] = {}
+        mkp_loc: dict[str, set[str]] = {}
+        mkp_records = 0
+        mkp_lesson_ids: set[str] = set()
+        trl_ids: set[str] = set()
+        trl_students: dict[str, dict[str, Any]] = {}
+        trl_loc: dict[str, set[str]] = {}
+        trl_records = 0
+        trl_lesson_ids: set[str] = set()
+
+        # Pre-pass: classify makeup/trial for their own stat sections.
+        # The main classification loop below is left unchanged.
+        for rec in attended:
+            _les = rec.get("lesson") if isinstance(rec.get("lesson"), dict) else {}
+            _ls = str(_les.get("status") if _les else (rec.get("lessonStatus") or "")).lower()
+            if _ls in ("3", "cancelled", "отменено", "canceled"):
+                continue
+            _cik = _pick(rec, ("classId", "groupId")) or _pick(_les, ("classId", "groupId"))
+            _cn = classes_map.get(str(_cik).strip(), "") if _cik else ""
+            _at = _collect_lesson_text(rec, _les)
+            if _cn:
+                _at = _at + " " + _cn.lower().replace("ё", "е")
+            _gn = _lesson_group_value(_les) if _les else _lesson_group_value(rec)
+            if _cn and (not _gn or _gn.startswith("Группа ")):
+                _gn = _cn
+            _sid = _pick(rec, ("userId", "studentId", "clientId", "customerId", "idUser"))
+            if not _sid:
+                continue
+            _sn = _v3991_user_name_from_item(rec)
+            _fn, _rid = "", ""
+            if _les:
+                _fn = str(_les.get("_prettyFilialName") or _les.get("filialName") or _les.get("branchName") or "").strip()
+                if not _fn:
+                    _fid = str(_pick(_les, ("filialId", "branchId")) or "").strip()
+                    if _fid:
+                        _fn = filial_map.get(_fid, "")
+                _rid = str(_pick(_les, ("roomId", "classroomId")) or "").strip()
+            _lc, _ = _children_location_code(_gn, _fn, _rid)
+            _lid = str(_pick(_les or {}, ("id", "lessonId")) or _pick(rec, ("lessonId",)) or "")
+            _rd = _record_lesson_date(rec)
+            _rds = _rd.isoformat() if _rd else ""
+            _istr = _truthy(rec.get("test")) or any(p in _at for p in _MONTHLY_REPORT_TRIAL_KW)
+            _ismk = not _istr and (
+                any(p in _at for p in _MONTHLY_REPORT_MAKEUP_KW)
+                or _truthy(rec.get("makeup"))
+                or _truthy(rec.get("isAdditional"))
+                or str(rec.get("type") or "").lower() in ("makeup", "отработка", "additional")
+            )
+            if _istr:
+                trl_ids.add(_sid); trl_records += 1
+                if _lid: trl_lesson_ids.add(_lid)
+                _loc_add_to(trl_loc, _lc, _sid)
+                _si_track(trl_students, _sid, _sn, _lc, _gn, _rds)
+            elif _ismk:
+                mkp_ids.add(_sid); mkp_records += 1
+                if _lid: mkp_lesson_ids.add(_lid)
+                _loc_add_to(mkp_loc, _lc, _sid)
+                _si_track(mkp_students, _sid, _sn, _lc, _gn, _rds)
+
         for rec in attended:
             # ── Trial flag (API) ──
             if _truthy(rec.get("test")):
@@ -1807,6 +1868,23 @@ class MoyKlassClient:
                     }
                 reg_groups[class_id]["students"].add(student_id)
 
+        # ── Post-loop: overlap computation ──────────────────────────────────
+        overlap_sids = reg_ids & sum_ids
+        overlap_names = sorted(
+            reg_students[s]["name"] if s in reg_students else sum_students.get(s, {}).get("name", f"ID {s}")
+            for s in overlap_sids
+        )[:20]
+        _all_locs: dict[str, set[str]] = {}
+        _all_names: dict[str, str] = {}
+        for _sect in (reg_students, sum_students):
+            for _sid2, _sd in _sect.items():
+                if _sid2 not in _all_locs:
+                    _all_locs[_sid2] = set()
+                    _all_names[_sid2] = _sd["name"]
+                _all_locs[_sid2] |= _sd["locations"]
+        multi_loc_sids = {_s for _s, _lcs in _all_locs.items() if len(_lcs) > 1}
+        multi_loc_names = sorted(_all_names.get(_s, f"ID {_s}") for _s in multi_loc_sids)[:20]
+
         def _build_by_loc(loc_dict: dict[str, set[str]]) -> list[dict[str, Any]]:
             return sorted(
                 [
@@ -1890,6 +1968,26 @@ class MoyKlassClient:
                 "combined": {
                     "total_unique_children": len(comb_ids),
                     "by_location": _build_by_loc(comb_loc),
+                },
+                "makeups": {
+                    "unique_children": len(mkp_ids),
+                    "visit_records": mkp_records,
+                    "unique_lessons": len(mkp_lesson_ids),
+                    "by_location": _build_by_loc(mkp_loc),
+                    "children": _build_children(mkp_students),
+                },
+                "trials": {
+                    "unique_children": len(trl_ids),
+                    "visit_records": trl_records,
+                    "unique_lessons": len(trl_lesson_ids),
+                    "by_location": _build_by_loc(trl_loc),
+                    "children": _build_children(trl_students),
+                },
+                "overlaps": {
+                    "regular_and_city_program_children": len(overlap_sids),
+                    "regular_and_city_program_names": overlap_names,
+                    "multi_location_children": len(multi_loc_sids),
+                    "multi_location_names": multi_loc_names,
                 },
                 # ── Top-level backward-compat aliases (regular section) ──
                 "total_unique_children": len(reg_ids),
@@ -2436,6 +2534,39 @@ def _collect_lesson_text(rec: dict[str, Any], lesson: dict[str, Any] | None) -> 
             if v:
                 parts.append(v)
     return " ".join(parts).lower().replace("ё", "е")
+
+
+def _loc_add_to(loc_dict: dict[str, set[str]], loc_code: str, student_id: str) -> None:
+    if loc_code not in loc_dict:
+        loc_dict[loc_code] = set()
+    loc_dict[loc_code].add(student_id)
+
+
+def _si_track(
+    si_dict: dict[str, dict[str, Any]],
+    student_id: str,
+    student_name: str,
+    loc_code: str,
+    group_name: str,
+    rec_date_str: str,
+) -> None:
+    if student_id not in si_dict:
+        si_dict[student_id] = {
+            "student_id": student_id,
+            "name": student_name or f"ID {student_id}",
+            "visits_count": 0,
+            "locations": set(),
+            "groups": set(),
+            "visit_dates": [],
+        }
+    si = si_dict[student_id]
+    if student_name and si["name"].startswith("ID "):
+        si["name"] = student_name
+    si["visits_count"] += 1
+    si["locations"].add(loc_code)
+    si["groups"].add(group_name)
+    if rec_date_str and rec_date_str not in si["visit_dates"]:
+        si["visit_dates"].append(rec_date_str)
 
 
 def _student_name_from_record(rec: dict[str, Any]) -> str:

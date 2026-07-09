@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.0.52" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.0.53" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -269,7 +269,7 @@
           <div class="reports-hero-mark">👥</div>
           <div>
             <h3>Дети за месяц</h3>
-            <p>Уникальные дети, которые посетили хотя бы одно регулярное занятие в выбранном месяце. Один ребёнок считается один раз.</p>
+            <p>Регулярные · городская программа · отработки · пробные.</p>
           </div>
         </article>
 
@@ -283,47 +283,46 @@
 
         <div id="childrenReportResult"></div>
 
-        <div style="border-top:1px solid var(--color-border,#e0e0e0);margin:24px 0 16px"></div>
-
-        <article class="card reports-hero-card">
-          <div class="reports-hero-mark">📊</div>
-          <div>
-            <h3>Отчёт клиент-менеджера</h3>
-            <p>Выберите месяц и обновите данные. Агент и менеджеры используют эти показатели для задач по оплатам, отработкам и отчётности.</p>
-          </div>
-        </article>
-
-        <div class="reports-controls">
-          <label>
-            <span>Месяц отчёта</span>
-            <input id="reportsMonth" type="month" />
-          </label>
-          <button class="primary" id="loadReports" type="button">Сформировать отчёт</button>
-        </div>
-
-        <div id="reportsSummary" class="reports-summary"></div>
-        <div id="reportsDetailCards" class="reports-detail-grid"></div>
-        <div id="reportsSections" class="reports-sections"></div>
-
-        <article class="card reports-text-card hidden" id="reportsTextCard">
-          <div class="reports-text-head">
-            <div>
-              <h3>Текст отчёта</h3>
-              <p>Можно скопировать и использовать в рабочем отчёте.</p>
+        <details class="report-section-accordion" style="margin-top:20px">
+          <summary>
+            <span class="reports-hero-mark" style="width:28px;height:28px;font-size:14px;border-radius:8px">📊</span>
+            Отчёт клиент-менеджера
+            <span class="rsm-desc">задачи, оплаты, KPI</span>
+          </summary>
+          <div class="rsm-content">
+            <div class="reports-controls" style="margin-top:10px">
+              <label>
+                <span>Месяц отчёта</span>
+                <input id="reportsMonth" type="month" />
+              </label>
+              <button class="primary" id="loadReports" type="button">Сформировать отчёт</button>
             </div>
-            <button class="secondary" id="copyReportsText" type="button">Скопировать</button>
+
+            <div id="reportsSummary" class="reports-summary"></div>
+            <div id="reportsDetailCards" class="reports-detail-grid"></div>
+            <div id="reportsSections" class="reports-sections"></div>
+
+            <article class="card reports-text-card hidden" id="reportsTextCard">
+              <div class="reports-text-head">
+                <div>
+                  <h3>Текст отчёта</h3>
+                  <p>Можно скопировать и использовать в рабочем отчёте.</p>
+                </div>
+                <button class="secondary" id="copyReportsText" type="button">Скопировать</button>
+              </div>
+              <pre id="reportsText" class="reports-text"></pre>
+            </article>
+
+            <div id="kpiBlock" class="kpi-block hidden"></div>
+
+            <div class="reports-actions reports-actions-wide">
+              <button class="primary" id="syncPaymentTasksFromReports" type="button">Создать задачи по оплатам</button>
+              <button class="primary" id="syncMakeupTasksFromReports" type="button">Создать задачи по отработкам</button>
+              <button class="secondary" id="syncTasksFromReports" type="button">Обновить все задачи</button>
+              <button class="secondary" id="askReportsAgent" type="button">Спросить агента по отчёту</button>
+            </div>
           </div>
-          <pre id="reportsText" class="reports-text"></pre>
-        </article>
-
-        <div id="kpiBlock" class="kpi-block hidden"></div>
-
-        <div class="reports-actions reports-actions-wide">
-          <button class="primary" id="syncPaymentTasksFromReports" type="button">Создать задачи по оплатам</button>
-          <button class="primary" id="syncMakeupTasksFromReports" type="button">Создать задачи по отработкам</button>
-          <button class="secondary" id="syncTasksFromReports" type="button">Обновить все задачи</button>
-          <button class="secondary" id="askReportsAgent" type="button">Спросить агента по отчёту</button>
-        </div>
+        </details>
       </section>
 
       <section id="tab-admin" class="tab-panel">
@@ -647,6 +646,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=7.0.52"></script>
+  <script src="/static/app.js?v=7.0.53"></script>
 </body>
 </html>
