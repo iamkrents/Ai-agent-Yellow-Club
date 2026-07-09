@@ -1581,11 +1581,14 @@ class MoyKlassClient:
         if not start or not end:
             return MoyKlassResult(False, error="Неверный месяц. Формат: YYYY-MM", endpoint="monthly-children")
 
-        # Filial map: {filial_id_str: filial_name}
+        # Filial map and classes map from cached lookup (no extra API calls)
         try:
-            filial_map: dict[str, str] = self._lookup_maps_cached().get("filials") or {}
+            _lm = self._lookup_maps_cached()
+            filial_map: dict[str, str] = _lm.get("filials") or {}
+            classes_map: dict[str, str] = _lm.get("classes") or {}
         except Exception:
             filial_map = {}
+            classes_map = {}
 
         records_result = self._scan_lesson_records_for_month(start, end, limit=8000)
         if not records_result.ok:
@@ -1627,6 +1630,7 @@ class MoyKlassClient:
         comb_loc: dict[str, set[str]] = {}
 
         city_program_matched_examples: list[str] = []
+        raw_lesson_examples: list[dict[str, Any]] = []
         reg_records_count = 0
         city_records_count = 0
 
@@ -1646,11 +1650,28 @@ class MoyKlassClient:
                 excl_cancelled += 1
                 continue
 
-            # Collect ALL text from both the record and its nested lesson object.
-            # This catches keywords that MoyKlass places in lesson.name / lesson.title
-            # rather than lesson.className / lesson.groupName.
+            # ── Class name lookup ──────────────────────────────────────────────────
+            # lessonRecords carries only classId; the human-readable class name
+            # (e.g. "Summer Camp - Yellow Summer Week 1(29.06-03.07),YC1") lives in
+            # /v1/company/classes, which is already loaded into classes_map via
+            # _lookup_maps_cached() — no extra API call needed.
+            class_id_key = (
+                _pick(rec, ("classId", "groupId"))
+                or _pick(lesson, ("classId", "groupId"))
+            )
+            class_name_from_map: str = (
+                classes_map.get(str(class_id_key).strip(), "")
+                if class_id_key else ""
+            )
+
             all_text = _collect_lesson_text(rec, lesson)
+            if class_name_from_map:
+                all_text = all_text + " " + class_name_from_map.lower().replace("ё", "е")
+
             group_name = _lesson_group_value(lesson) if lesson else _lesson_group_value(rec)
+            # If _lesson_group_value fell back to "Группа пн 10:00", use the real class name
+            if class_name_from_map and (not group_name or group_name.startswith("Группа ")):
+                group_name = class_name_from_map
 
             # ── Makeup (all text + API flags) ──
             if (
@@ -1704,6 +1725,32 @@ class MoyKlassClient:
                 example = group_name.strip() or all_text[:80].strip()
                 if example and example not in city_program_matched_examples:
                     city_program_matched_examples.append(example)
+
+            # ── Raw diagnostic examples (no tokens/API keys) ──
+            if len(raw_lesson_examples) < 10:
+                raw_lesson_examples.append({
+                    "date": rec_date_str,
+                    "student_name": student_name or f"ID {student_id}",
+                    "lesson_id": str(_pick(lesson or {}, ("id", "lessonId")) or ""),
+                    "class_id": str(class_id_key or ""),
+                    "class_name_from_map": class_name_from_map,
+                    "group_name_resolved": group_name,
+                    "is_summer": is_summer,
+                    "record_keys": sorted(k for k in rec.keys() if k not in ("initData", "token", "apiKey")),
+                    "lesson_keys": sorted(k for k in (lesson or {}).keys() if k not in ("initData", "token", "apiKey")),
+                    "text_fields": {
+                        "rec.name":         str(rec.get("name") or "")[:120],
+                        "rec.className":    str(rec.get("className") or "")[:120],
+                        "rec.groupName":    str(rec.get("groupName") or "")[:120],
+                        "lesson.name":      str((lesson or {}).get("name") or "")[:120],
+                        "lesson.title":     str((lesson or {}).get("title") or "")[:120],
+                        "lesson.className": str((lesson or {}).get("className") or "")[:120],
+                        "lesson.groupName": str((lesson or {}).get("groupName") or "")[:120],
+                        "lesson.topic":     str((lesson or {}).get("topic") or "")[:120],
+                        "lesson.theme":     str((lesson or {}).get("theme") or "")[:120],
+                    },
+                    "all_text": all_text[:300],
+                })
 
             def _si_update(si_dict: dict[str, Any]) -> None:
                 if student_id not in si_dict:
@@ -1868,6 +1915,8 @@ class MoyKlassClient:
                     "unknown_location_records": unknown_count,
                     "filial_map_size": len(filial_map),
                     "city_program_matched_examples": city_program_matched_examples,
+                    "classes_map_size": len(classes_map),
+                    "raw_lesson_examples": raw_lesson_examples,
                 },
                 "source": "moyklass/lessonRecords",
                 "records_total": len(all_records),
@@ -2373,6 +2422,9 @@ def _collect_lesson_text(rec: dict[str, Any], lesson: dict[str, Any] | None) -> 
         "className", "groupName", "groupTitle", "classTitle",
         "courseName", "subjectName",
         "_prettyClassName", "_prettyName", "_prettyGroupName",
+        "lessonName", "lessonTitle", "topic", "theme", "subject",
+        "scheduleName", "eventName", "programName", "streamName",
+        "typeName", "appointmentName", "displayName",
     )
     parts: list[str] = []
     for field in TEXT_FIELDS:

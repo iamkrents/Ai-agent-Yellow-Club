@@ -3615,27 +3615,36 @@ function renderChildrenReport() {
        <p class="cr-note">Если неделя городской программы началась в конце предыдущего месяца (напр. 29.06–03.07), она учитывается в том месяце, на который выпадают фактические посещения.</p>`
     : "";
 
-  // ── Verification list (reg + summer, sorted by name) ──
-  const allChildren = [
-    ...(Array.isArray(reg.children) ? reg.children.map(c => ({...c, _section: "reg"})) : []),
-    ...(Array.isArray(sum.children) ? sum.children.map(c => ({...c, _section: "sum"})) : []),
-  ].sort((a, b) => a.name.localeCompare(b.name, "ru"));
-
-  const SHOW_FIRST = 100;
-  const shownChildren = allChildren.slice(0, SHOW_FIRST);
-  const childRows = shownChildren.map(c => {
+  // ── Child row renderer ──
+  const _mkChildRow = (c, tag) => {
     const locNames = (c.location_names || c.locations || []).join(", ");
     const grps = (c.groups || []).join("; ");
     const dates = (c.visit_dates || []).map(_fmtVisitDate).join(", ");
-    const tag = c._section === "sum" ? `<span style="font-size:9px;color:var(--muted);margin-left:3px">ГП</span>` : "";
     return `<div class="cr-child">
       <div class="cr-child-name">${escapeHtml(c.name)}${tag} <span style="font-weight:400;font-size:10px;color:var(--muted)">${c.visits_count} пос.</span></div>
       <div class="cr-child-meta">${escapeHtml(locNames)}${grps ? " · " + escapeHtml(grps) : ""}</div>
       ${dates ? `<div class="cr-child-dates">${escapeHtml(dates)}</div>` : ""}
     </div>`;
-  }).join("");
-  const moreNote = allChildren.length > SHOW_FIRST
-    ? `<p class="cr-note">+ ещё ${allChildren.length - SHOW_FIRST} детей не показаны.</p>` : "";
+  };
+
+  // ── Separate verification lists: regular and city_program ──
+  const SHOW_FIRST = 100;
+  const regChildren = Array.isArray(reg.children) ? [...reg.children].sort((a, b) => a.name.localeCompare(b.name, "ru")) : [];
+  const sumChildren = Array.isArray(sum.children) ? [...sum.children].sort((a, b) => a.name.localeCompare(b.name, "ru")) : [];
+
+  const regVerifyHtml = regChildren.length ? `
+    <details class="cr-verify">
+      <summary>Проверочный список: регулярные занятия (${regChildren.length})</summary>
+      <div style="margin-top:6px">${regChildren.slice(0, SHOW_FIRST).map(c => _mkChildRow(c, "")).join("")}</div>
+      ${regChildren.length > SHOW_FIRST ? `<p class="cr-note">+ ещё ${regChildren.length - SHOW_FIRST} детей.</p>` : ""}
+    </details>` : "";
+
+  const sumVerifyHtml = sumChildren.length ? `
+    <details class="cr-verify">
+      <summary>Проверочный список: городская программа (${sumChildren.length})</summary>
+      <div style="margin-top:6px">${sumChildren.slice(0, SHOW_FIRST).map(c => _mkChildRow(c, `<span style="font-size:9px;color:var(--muted);margin-left:3px">ГП</span>`)).join("")}</div>
+      ${sumChildren.length > SHOW_FIRST ? `<p class="cr-note">+ ещё ${sumChildren.length - SHOW_FIRST} детей.</p>` : ""}
+    </details>` : "";
 
   // ── Diagnostics (owner/admin only) ──
   let diagHtml = "";
@@ -3648,6 +3657,21 @@ function renderChildrenReport() {
     const cpExamples = Array.isArray(diag.city_program_matched_examples) ? diag.city_program_matched_examples : [];
     const cpExHtml = cpExamples.length
       ? `<div style="margin-top:3px;font-size:10px;color:var(--muted)">${cpExamples.map(e => escapeHtml(e)).join("<br>")}</div>` : "";
+
+    // Raw lesson examples: show first 5 for quick structure inspection
+    const rawEx = Array.isArray(diag.raw_lesson_examples) ? diag.raw_lesson_examples.slice(0, 5) : [];
+    const rawExHtml = rawEx.map(ex => {
+      const tf = ex.text_fields || {};
+      const nonEmpty = Object.entries(tf).filter(([, v]) => v).map(([k, v]) => `${k}: ${escapeHtml(String(v).slice(0, 80))}`).join("<br>");
+      return `<div style="margin:4px 0;padding:4px;background:rgba(0,0,0,.04);border-radius:4px;font-size:10px">
+        <b>${escapeHtml(ex.date || "?")} · ${escapeHtml(ex.student_name || "?")} · classId=${escapeHtml(ex.class_id || "—")}</b><br>
+        class_name_from_map: <b>${escapeHtml(ex.class_name_from_map || "—")}</b> · is_summer: <b>${ex.is_summer}</b><br>
+        group_name: ${escapeHtml(ex.group_name_resolved || "—")}<br>
+        ${nonEmpty ? `<details><summary style="cursor:pointer;color:var(--accent)">text_fields</summary>${nonEmpty}</details>` : ""}
+        <details><summary style="cursor:pointer;color:var(--accent)">rec_keys</summary>${escapeHtml((ex.record_keys || []).join(", "))}</details>
+      </div>`;
+    }).join("");
+
     diagHtml = `
       <details class="cr-diag">
         <summary>Диагностика</summary>
@@ -3656,12 +3680,14 @@ function renderChildrenReport() {
           <div class="cr-diag-row"><span>С visit=true</span><b>${diag.present_records}</b></div>
           <div class="cr-diag-row"><span>Regular records</span><b>${diag.regular_records ?? "—"}</b></div>
           <div class="cr-diag-row"><span>City program records</span><b>${diag.city_program_records ?? "—"}</b></div>
-          <div class="cr-diag-row"><span>Без филиала</span><b>${diag.unknown_location_records ?? 0}</b></div>
+          <div class="cr-diag-row"><span>Карта классов</span><b>${diag.classes_map_size ?? "?"} зап.</b></div>
           <div class="cr-diag-row"><span>Карта филиалов</span><b>${diag.filial_map_size ?? "?"} зап.</b></div>
+          <div class="cr-diag-row"><span>Без филиала</span><b>${diag.unknown_location_records ?? 0}</b></div>
           ${de.trial != null ? `<div class="cr-diag-row"><span>Исключено пробных</span><b>${de.trial}</b></div>` : ""}
           ${de.makeup != null ? `<div class="cr-diag-row"><span>Исключено отработок</span><b>${de.makeup}</b></div>` : ""}
           ${de.cancelled != null ? `<div class="cr-diag-row"><span>Исключено отменённых</span><b>${de.cancelled}</b></div>` : ""}
           ${cpExamples.length ? `<div class="cr-diag-row" style="margin-top:4px;font-weight:700"><span>Городская программа примеры</span></div>${cpExHtml}` : ""}
+          ${rawEx.length ? `<div class="cr-diag-row" style="margin-top:6px;font-weight:700"><span>Raw lesson examples</span></div>${rawExHtml}` : ""}
           ${srcRows ? `<div class="cr-diag-row" style="margin-top:4px;font-weight:700"><span>Источник филиала</span></div>${srcRows}` : ""}
         </div>
       </details>`;
@@ -3684,12 +3710,8 @@ function renderChildrenReport() {
         `<p class="cr-note">Один ребёнок считается один раз в общем итоге.</p>`
       )}
 
-      ${allChildren.length ? `
-        <details class="cr-verify">
-          <summary>Проверочный список детей (${allChildren.length})</summary>
-          <div style="margin-top:6px">${childRows}</div>
-          ${moreNote}
-        </details>` : ""}
+      ${regVerifyHtml}
+      ${sumVerifyHtml}
 
       ${diagHtml}
 
