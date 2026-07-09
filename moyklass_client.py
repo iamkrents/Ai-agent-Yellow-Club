@@ -1569,6 +1569,182 @@ class MoyKlassClient:
         }
         return MoyKlassResult(True, data=data, status=200, endpoint="analytics")
 
+    def get_monthly_children_report(self, month: str | None = None) -> MoyKlassResult:
+        """Count unique children who attended at least one regular lesson in the month.
+
+        Excludes trial, makeup, city-program, and cancelled lessons.
+        Uses /v1/company/lessonRecords with includeLessons=true.
+        """
+        t_start = time.monotonic()
+        start, end, month_label = _month_bounds(month)
+        if not start or not end:
+            return MoyKlassResult(False, error="Неверный месяц. Формат: YYYY-MM", endpoint="monthly-children")
+
+        records_result = self._scan_lesson_records_for_month(start, end, limit=8000)
+        if not records_result.ok:
+            return MoyKlassResult(
+                False,
+                error=f"Не удалось получить данные из МойКласс: {records_result.error}",
+                endpoint="monthly-children",
+            )
+
+        all_records = [x for x in extract_items(records_result.data) if isinstance(x, dict)]
+        attended = [r for r in all_records if _truthy(r.get("visit")) and not _truthy(r.get("skip"))]
+
+        excluded_trial = 0
+        excluded_makeup = 0
+        excluded_city_program = 0
+        excluded_cancelled = 0
+
+        unique_student_ids: set[str] = set()
+        location_students: dict[str, set[str]] = {}
+        group_data: dict[str, dict[str, Any]] = {}
+        student_info: dict[str, dict[str, Any]] = {}
+
+        for rec in attended:
+            if _truthy(rec.get("test")):
+                excluded_trial += 1
+                continue
+
+            lesson = rec.get("lesson") if isinstance(rec.get("lesson"), dict) else {}
+            lesson_status = str(
+                lesson.get("status") if lesson else (rec.get("lessonStatus") or "")
+            ).lower()
+            if lesson_status in ("3", "cancelled", "отменено", "canceled"):
+                excluded_cancelled += 1
+                continue
+
+            group_name = _lesson_group_value(lesson) if lesson else _lesson_group_value(rec)
+            group_lower = group_name.lower().replace("ё", "е")
+
+            city_kw = ("лагерь", "yellow summer", "summer week", "summer camp", "city program", "городская программа")
+            if any(pat in group_lower for pat in city_kw):
+                excluded_city_program += 1
+                continue
+
+            makeup_kw = ("отработка", "makeup")
+            if any(pat in group_lower for pat in makeup_kw):
+                excluded_makeup += 1
+                continue
+
+            trial_kw = ("пробн", " trial", "пробное")
+            if any(pat in group_lower for pat in trial_kw):
+                excluded_trial += 1
+                continue
+
+            student_id = _pick(rec, ("userId", "studentId", "clientId", "customerId", "idUser"))
+            if not student_id:
+                continue
+
+            student_name = _student_name_from_record(rec)
+            class_id = _pick(lesson, ("classId", "groupId")) if lesson else _pick(rec, ("classId", "groupId"))
+            if not class_id:
+                class_id = f"grp_{group_name[:24]}" if group_name else "unknown"
+            location_code = _group_to_location_code(group_name)
+
+            unique_student_ids.add(student_id)
+
+            if location_code not in location_students:
+                location_students[location_code] = set()
+            location_students[location_code].add(student_id)
+
+            if class_id not in group_data:
+                group_data[class_id] = {
+                    "group_id": class_id,
+                    "group_name": group_name,
+                    "location_code": location_code,
+                    "students": set(),
+                }
+            group_data[class_id]["students"].add(student_id)
+
+            if student_id not in student_info:
+                student_info[student_id] = {
+                    "student_id": student_id,
+                    "name": student_name or f"Ученик {student_id}",
+                    "visits_count": 0,
+                    "locations": set(),
+                    "groups": set(),
+                }
+            elif student_name and student_info[student_id]["name"].startswith("Ученик "):
+                student_info[student_id]["name"] = student_name
+            student_info[student_id]["visits_count"] += 1
+            student_info[student_id]["locations"].add(location_code)
+            student_info[student_id]["groups"].add(group_name)
+
+        location_names: dict[str, str] = {
+            "YC1": "Кульман 1/1",
+            "YC2": "Мстиславца 6",
+            "YC3": "Адрес 3",
+            "unknown": "Без филиала",
+        }
+
+        by_location = sorted(
+            [
+                {
+                    "location_code": code,
+                    "location_name": location_names.get(code, code),
+                    "unique_children": len(students),
+                }
+                for code, students in location_students.items()
+            ],
+            key=lambda x: _LOC_CODE_ORDER.get(x["location_code"], 50),
+        )
+
+        by_group = sorted(
+            [
+                {
+                    "group_id": gid,
+                    "group_name": gd["group_name"],
+                    "location_code": gd["location_code"],
+                    "unique_children": len(gd["students"]),
+                }
+                for gid, gd in group_data.items()
+            ],
+            key=lambda x: (_LOC_CODE_ORDER.get(x["location_code"], 50), x["group_name"]),
+        )
+
+        children = sorted(
+            [
+                {
+                    "student_id": sid,
+                    "name": sdata["name"],
+                    "locations": sorted(sdata["locations"], key=lambda c: _LOC_CODE_ORDER.get(c, 50)),
+                    "groups": sorted(sdata["groups"]),
+                    "visits_count": sdata["visits_count"],
+                }
+                for sid, sdata in student_info.items()
+            ],
+            key=lambda x: x["name"],
+        )
+
+        elapsed_ms = int((time.monotonic() - t_start) * 1000)
+
+        return MoyKlassResult(
+            True,
+            data={
+                "ok": True,
+                "month": month_label,
+                "date_from": start.isoformat(),
+                "date_to": end.isoformat(),
+                "total_unique_children": len(unique_student_ids),
+                "by_location": by_location,
+                "by_group": by_group,
+                "children": children,
+                "excluded": {
+                    "trial_lessons": excluded_trial,
+                    "makeup_lessons": excluded_makeup,
+                    "cancelled_lessons": excluded_cancelled,
+                    "city_program_lessons": excluded_city_program,
+                },
+                "source": "moyklass/lessonRecords",
+                "records_total": len(all_records),
+                "records_attended": len(attended),
+                "elapsed_ms": elapsed_ms,
+            },
+            status=200,
+            endpoint="monthly-children",
+        )
+
     def probe_analytics_sources(self, month: str | None = None) -> MoyKlassResult:
         """Diagnostic read-only probe for attendance/payment endpoints.
 
@@ -1975,6 +2151,40 @@ def _unique_ids_from_records(items: list[dict[str, Any]], keys: tuple[str, ...])
                 if value not in (None, ""):
                     result.add(str(value))
     return result
+
+
+_EXCLUDE_LESSON_KEYWORDS = (
+    "лагерь", "yellow summer", "summer week", "summer camp",
+    "city program", "городская программа",
+    "пробное", "пробн", " trial", "отработка", "makeup",
+)
+
+_LOC_CODE_ORDER = {"YC1": 0, "YC2": 1, "YC3": 2, "unknown": 99}
+
+
+def _student_name_from_record(rec: dict[str, Any]) -> str:
+    name = _pick(rec, ("userName", "clientName", "studentName", "fullName", "fio", "name"))
+    if name:
+        return name
+    for key in ("user", "client", "student"):
+        nested = rec.get(key)
+        if isinstance(nested, dict):
+            full = _pick(nested, ("name", "fullName", "fio", "title"))
+            if full:
+                return full
+            first = _pick(nested, ("firstName", "firstname"))
+            last = _pick(nested, ("lastName", "lastname", "surname"))
+            if first or last:
+                return f"{last} {first}".strip()
+    return ""
+
+
+def _group_to_location_code(group_name: str) -> str:
+    upper = (group_name or "").upper()
+    for code in ("YC1", "YC2", "YC3"):
+        if code in upper:
+            return code
+    return "unknown"
 
 
 def _analytics_source_available(result: MoyKlassResult) -> bool:

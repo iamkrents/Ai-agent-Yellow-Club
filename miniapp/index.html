@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.0.45" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.0.46" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -260,10 +260,30 @@
         <div class="section-head reports-head">
           <div>
             <h2>Отчёты</h2>
-            <p>Статистика из МойКласс для оплат, посещений, пробных и управленческих отчётов.</p>
+            <p>Статистика из МойКласс для управленческих отчётов.</p>
           </div>
           <button class="secondary" id="refreshReports">Обновить</button>
         </div>
+
+        <article class="card reports-hero-card">
+          <div class="reports-hero-mark">👥</div>
+          <div>
+            <h3>Дети за месяц</h3>
+            <p>Уникальные дети, которые посетили хотя бы одно регулярное занятие в выбранном месяце. Один ребёнок считается один раз.</p>
+          </div>
+        </article>
+
+        <div class="reports-controls">
+          <label>
+            <span>Месяц</span>
+            <input id="childrenReportMonth" type="month" />
+          </label>
+          <button class="primary" id="loadChildrenReport" type="button">Показать отчёт</button>
+        </div>
+
+        <div id="childrenReportResult"></div>
+
+        <div style="border-top:1px solid var(--color-border,#e0e0e0);margin:24px 0 16px"></div>
 
         <article class="card reports-hero-card">
           <div class="reports-hero-mark">📊</div>
@@ -626,6 +646,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=7.0.45"></script>
+  <script src="/static/app.js?v=7.0.46"></script>
 </body>
 </html>

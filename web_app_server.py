@@ -72,6 +72,7 @@ SCHEDULE_ROLES = {"owner", "teacher", "methodist", "operations"}
 INTERN_ROLES = {"intern"}
 OPEN_SLOTS_ROLES = {"client_manager"}
 REPORT_ROLES = {"client_manager", "owner", "operations", "methodist"}
+CHILDREN_REPORT_ROLES = {"client_manager", "owner", "operations", "admin"}
 CLIENT_TASK_ROLES = {"client_manager", "owner", "operations"}
 KPI_ROLES = {"client_manager", "owner", "operations", "methodist"}
 TEACHER_LIKE_ROLES = {"teacher", "methodist", "intern"}
@@ -6687,6 +6688,35 @@ class MiniAppContext:
         report = self._build_month_report_payload(result, month_value)
         return {"ok": True, "month": report.get("month") or month_value, "report": report}
 
+    def reports_monthly_children(self, auth: dict[str, Any], month: str = "") -> dict[str, Any]:
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in CHILDREN_REPORT_ROLES:
+            return {"ok": False, "error": "Отчёт по детям доступен owner, admin, client_manager и operations."}
+        month_value = str(month or "").strip()
+        if not re.fullmatch(r"20\d{2}-\d{2}", month_value):
+            month_value = date.today().strftime("%Y-%m")
+        if not self.settings.moyklass_enabled:
+            return {"ok": False, "error": "МойКласс отключён в настройках агента."}
+        import time as _t
+        t0 = _t.monotonic()
+        try:
+            result = self.moyklass.get_monthly_children_report(month_value)
+        except Exception as exc:
+            log.exception("[monthly-children-report] failed user_id=%s month=%s", auth["user_id"], month_value)
+            return {"ok": False, "error": f"Не удалось получить данные из МойКласс: {exc}"}
+        elapsed_ms = int((_t.monotonic() - t0) * 1000)
+        if not result.ok:
+            return {"ok": False, "error": result.error or "Ошибка МойКласс"}
+        data = result.data or {}
+        log.info(
+            "[monthly-children-report] role=%s user_id=%s month=%s "
+            "records_total=%s records_attended=%s unique_children=%s elapsed_ms=%s",
+            role, auth["user_id"], month_value,
+            data.get("records_total", 0), data.get("records_attended", 0),
+            data.get("total_unique_children", 0), elapsed_ms,
+        )
+        return data
+
     def _require_client_tasks_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
         role = self._role_for_user(int(auth["user_id"]))
         if role not in CLIENT_TASK_ROLES:
@@ -7263,6 +7293,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.open_slots(auth, week=params.get("week", "current"), location=params.get("location", "all")))
                 if path == "/api/reports/monthly":
                     return self._send_json(CTX.reports_monthly(auth, month=params.get("month", "")))
+                if path == "/api/reports/monthly-children":
+                    return self._send_json(CTX.reports_monthly_children(auth, month=params.get("month", "")))
                 if path == "/api/lesson":
                     return self._send_json(CTX.lesson_detail(auth, params.get("id", "")))
                 if path == "/api/report":

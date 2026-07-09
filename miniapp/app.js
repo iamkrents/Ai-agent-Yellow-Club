@@ -103,6 +103,9 @@ const state = {
   reportsMonth: "",
   reportsData: null,
   reportsBusy: false,
+  childrenReportMonth: "",
+  childrenReportData: null,
+  childrenReportBusy: false,
   kpiData: null,
   kpiBusy: false,
   adminWorkScheduleWeek: "current",
@@ -175,6 +178,7 @@ function canUseLessons() { return !!roleCaps().canUseLessons; }
 function canUseSchedule() { return !!roleCaps().canUseSchedule; }
 function canUseOpenSlots() { return !!roleCaps().canUseOpenSlots; }
 function canUseReports() { return !!roleCaps().canUseReports; }
+function canUseChildrenReport() { const r = state.me?.role || ""; return ["owner","admin","client_manager","operations"].includes(r); }
 function canUseInternship() { return !!roleCaps().canUseInternship; }
 function canAskAgent() { return roleCaps().canAskAgent !== false; }
 function canUseFoodKitchenSummary() { return !!roleCaps().canUseFoodKitchenSummary; }
@@ -1196,7 +1200,7 @@ function activateTab(name) {
   if (name === "admin") loadAdmin();
   if (name === "schedule") loadWorkSchedule();
   if (name === "windows") loadOpenSlots();
-  if (name === "reports") { loadReports(); loadKpi(); }
+  if (name === "reports") { loadReports(); loadKpi(); renderChildrenReport(); }
   if (name === "ask") renderAskMessages();
   if (name === "my-children") { if (state.myChildren === null) loadMyChildren(); else renderMyChildren(); }
   if (name === "food") { if (state.activeMenus === null) loadActiveMenus(); else renderParentFoodMenu(); }
@@ -3529,6 +3533,144 @@ async function copyReportsText() {
     setNotice("Отчёт скопирован", "ok");
   } catch (_) {
     setNotice("Не удалось скопировать автоматически. Выделите текст вручную.", "error");
+  }
+}
+
+function _childrenReportMonthLabel(month) {
+  if (!month || !/^\d{4}-\d{2}$/.test(month)) return month || "";
+  try {
+    const [y, m] = month.split("-");
+    return new Date(Number(y), Number(m) - 1, 1).toLocaleString("ru", { month: "long", year: "numeric" });
+  } catch (_) { return month; }
+}
+
+function renderChildrenReport() {
+  const el = $("childrenReportResult");
+  if (!el) return;
+  if (!canUseChildrenReport()) { el.innerHTML = `<div class="empty">Отчёт по детям недоступен для вашей роли.</div>`; return; }
+  if (state.childrenReportBusy) {
+    el.innerHTML = `<div class="reports-loading">Загружаю данные из МойКласс&hellip;</div>`;
+    return;
+  }
+  const d = state.childrenReportData;
+  if (!d) {
+    el.innerHTML = `<div class="empty">Выберите месяц и нажмите «Показать отчёт».</div>`;
+    return;
+  }
+  if (!d.ok) {
+    el.innerHTML = `<div class="notice notice-error">${escapeHtml(d.error || "Ошибка получения данных")}</div>`;
+    return;
+  }
+  const month = d.month || state.childrenReportMonth || "";
+  const total = d.total_unique_children ?? 0;
+  const byLoc = Array.isArray(d.by_location) ? d.by_location : [];
+  const byGroup = Array.isArray(d.by_group) ? d.by_group : [];
+  const children = Array.isArray(d.children) ? d.children : [];
+  const excl = d.excluded || {};
+
+  const locRows = byLoc.map(l =>
+    `<div class="report-row"><span>${escapeHtml(l.location_name || l.location_code)}</span><b>${l.unique_children}</b></div>`
+  ).join("");
+
+  const groupRows = byGroup.map(g =>
+    `<div class="report-row"><span>${escapeHtml(g.group_name)}</span><b>${g.unique_children}</b></div>`
+  ).join("");
+
+  const childRows = children.map(c => {
+    const locs = (c.locations || []).join(", ");
+    const grps = (c.groups || []).join(", ");
+    return `<div class="report-row report-row--child">
+      <span>${escapeHtml(c.name)}</span>
+      <b>${c.visits_count} поc.</b>
+      <small>${escapeHtml(locs)} · ${escapeHtml(grps)}</small>
+    </div>`;
+  }).join("");
+
+  const exclParts = [];
+  if (excl.trial_lessons) exclParts.push(`пробных: ${excl.trial_lessons}`);
+  if (excl.makeup_lessons) exclParts.push(`отработок: ${excl.makeup_lessons}`);
+  if (excl.cancelled_lessons) exclParts.push(`отменённых: ${excl.cancelled_lessons}`);
+  if (excl.city_program_lessons) exclParts.push(`городской программы: ${excl.city_program_lessons}`);
+  const exclNote = exclParts.length ? `<div class="food-order-deadline-passed" style="margin-top:8px">Исключено: ${escapeHtml(exclParts.join(", "))}</div>` : "";
+
+  el.innerHTML = `
+    <div class="food-debug-card" style="margin-top:12px">
+      <div class="food-menu-panel-head">
+        <h3>Дети за ${escapeHtml(_childrenReportMonthLabel(month))}</h3>
+      </div>
+      <p style="font-size:13px;color:var(--color-text-secondary);margin:4px 0 12px">
+        Считаются уникальные дети, которые посетили хотя бы одно регулярное занятие в месяце. Один ребёнок считается один раз.
+      </p>
+      <div class="report-row" style="font-size:18px;font-weight:700;margin-bottom:8px">
+        <span>Уникальных детей</span><b style="color:var(--color-accent)">${total}</b>
+      </div>
+      ${exclNote}
+      ${byLoc.length ? `<h4 style="margin:16px 0 6px;font-size:14px">По филиалам</h4><div class="report-rows">${locRows}</div>` : ""}
+      ${byGroup.length ? `
+        <h4 style="margin:16px 0 6px;font-size:14px">По группам</h4>
+        <p style="font-size:12px;color:var(--color-text-secondary);margin:0 0 6px">Ребёнок может учитываться в нескольких группах, если посещал несколько.</p>
+        <div class="report-rows">${groupRows}</div>` : ""}
+      ${children.length ? `
+        <h4 style="margin:16px 0 6px;font-size:14px">Список детей</h4>
+        <div class="report-rows">${childRows}</div>` : ""}
+      <div style="margin-top:16px">
+        <button class="secondary" id="copyChildrenReport" type="button">Скопировать отчёт</button>
+      </div>
+    </div>`;
+
+  $("copyChildrenReport")?.addEventListener("click", copyChildrenReport);
+}
+
+async function loadChildrenReport() {
+  if (!canUseChildrenReport()) return;
+  const monthInput = $("childrenReportMonth");
+  const month = monthInput?.value || state.childrenReportMonth || currentMonthValue();
+  state.childrenReportMonth = month;
+  if (monthInput) monthInput.value = month;
+  state.childrenReportBusy = true;
+  state.childrenReportData = null;
+  renderChildrenReport();
+  try {
+    const data = await apiGet(`/api/reports/monthly-children?month=${encodeURIComponent(month)}`);
+    state.childrenReportData = data;
+    setNotice(`Отчёт по детям за ${month} готов`, "ok");
+  } catch (e) {
+    console.error("[loadChildrenReport]", e);
+    state.childrenReportData = { ok: false, error: safeUserError(e) };
+  } finally {
+    state.childrenReportBusy = false;
+    renderChildrenReport();
+  }
+}
+
+async function copyChildrenReport() {
+  const d = state.childrenReportData;
+  if (!d || !d.ok) return setNotice("Нет данных для копирования", "error");
+  const month = d.month || state.childrenReportMonth || "";
+  const label = _childrenReportMonthLabel(month);
+  const total = d.total_unique_children ?? 0;
+  const byLoc = Array.isArray(d.by_location) ? d.by_location : [];
+  const byGroup = Array.isArray(d.by_group) ? d.by_group : [];
+  const lines = [
+    `Отчёт по детям за ${label}`,
+    "",
+    `Уникальных детей на регулярных занятиях: ${total}`,
+  ];
+  if (byLoc.length) {
+    lines.push("", "По филиалам:");
+    byLoc.forEach(l => lines.push(`• ${l.location_name} — ${l.unique_children}`));
+  }
+  if (byGroup.length) {
+    lines.push("", "По группам:");
+    byGroup.forEach(g => lines.push(`• ${g.group_name} · ${g.location_code} — ${g.unique_children}`));
+  }
+  lines.push("", "Правило подсчёта:", "Один ребёнок считается один раз за месяц, если он посетил хотя бы одно регулярное занятие.");
+  const text = lines.join("\n");
+  try {
+    await navigator.clipboard.writeText(text);
+    setNotice("Отчёт скопирован", "ok");
+  } catch (_) {
+    setNotice("Не удалось скопировать автоматически", "error");
   }
 }
 
@@ -9902,6 +10044,8 @@ async function boot() {
   $("loadReports")?.addEventListener("click", loadReports);
   $("reportsMonth")?.addEventListener("change", () => { state.reportsMonth = $("reportsMonth")?.value || ""; });
   $("copyReportsText")?.addEventListener("click", copyReportsText);
+  $("loadChildrenReport")?.addEventListener("click", loadChildrenReport);
+  $("childrenReportMonth")?.addEventListener("change", () => { state.childrenReportMonth = $("childrenReportMonth")?.value || ""; });
   $("syncTasksFromReports")?.addEventListener("click", () => syncTasksFromReports("all"));
   $("syncPaymentTasksFromReports")?.addEventListener("click", () => syncTasksFromReports("payment"));
   $("syncMakeupTasksFromReports")?.addEventListener("click", () => syncTasksFromReports("makeup"));
