@@ -1570,18 +1570,18 @@ class MoyKlassClient:
         return MoyKlassResult(True, data=data, status=200, endpoint="analytics")
 
     def get_monthly_children_report(self, month: str | None = None) -> MoyKlassResult:
-        """Count unique children who attended at least one regular lesson in the month.
+        """Count unique children who attended regular / summer lessons in the month.
 
-        Excludes trial, makeup, city-program, and cancelled lessons.
-        Counts online-regular lessons as YC0.
-        Uses /v1/company/lessonRecords with includeLessons=true.
+        Returns three sections: regular (excl. city-program), summer (city-program only),
+        combined (union). Excludes trial, makeup, and cancelled lessons from all sections.
+        Counts online-regular lessons as YC0. Uses /v1/company/lessonRecords?includeLessons=true.
         """
         t_start = time.monotonic()
         start, end, month_label = _month_bounds(month)
         if not start or not end:
             return MoyKlassResult(False, error="Неверный месяц. Формат: YYYY-MM", endpoint="monthly-children")
 
-        # Filial map: {filial_id_str: filial_name} — used to resolve filialId → name
+        # Filial map: {filial_id_str: filial_name}
         try:
             filial_map: dict[str, str] = self._lookup_maps_cached().get("filials") or {}
         except Exception:
@@ -1596,56 +1596,83 @@ class MoyKlassClient:
             )
 
         all_records = [x for x in extract_items(records_result.data) if isinstance(x, dict)]
+
+        # Batch-resolve student names via /v1/company/users when not in the record itself
+        try:
+            _v3991_enrich_records(self, all_records)
+        except Exception:
+            pass
+
         attended = [r for r in all_records if _truthy(r.get("visit")) and not _truthy(r.get("skip"))]
 
-        excluded_trial = 0
-        excluded_makeup = 0
-        excluded_city_program = 0
-        excluded_cancelled = 0
+        excl_trial = 0
+        excl_makeup = 0
+        excl_cancelled = 0
+        loc_src_counts: dict[str, int] = {}
 
-        loc_source_counts: dict[str, int] = {}
+        # ── Regular section accumulators ──
+        reg_ids: set[str] = set()
+        reg_loc: dict[str, set[str]] = {}
+        reg_groups: dict[str, dict[str, Any]] = {}
+        reg_students: dict[str, dict[str, Any]] = {}
 
-        unique_student_ids: set[str] = set()
-        location_students: dict[str, set[str]] = {}
-        group_data: dict[str, dict[str, Any]] = {}
-        student_info: dict[str, dict[str, Any]] = {}
+        # ── Summer / city-program section accumulators ──
+        sum_ids: set[str] = set()
+        sum_loc: dict[str, set[str]] = {}
+        sum_students: dict[str, dict[str, Any]] = {}
+        sum_group_names: set[str] = set()
+
+        # ── Combined (union) accumulators ──
+        comb_ids: set[str] = set()
+        comb_loc: dict[str, set[str]] = {}
+
+        MAKEUP_KW = ("отработка", "отработки", "отраб", "makeup", "make-up", "make up")
+        TRIAL_KW  = ("пробн", " trial", "пробное")
+        SUMMER_KW = ("лагерь", "yellow summer", "summer week", "summer camp",
+                     "city program", "городская программа")
 
         for rec in attended:
+            # ── Trial flag ──
             if _truthy(rec.get("test")):
-                excluded_trial += 1
+                excl_trial += 1
                 continue
 
             lesson = rec.get("lesson") if isinstance(rec.get("lesson"), dict) else {}
+
+            # ── Cancelled ──
             lesson_status = str(
                 lesson.get("status") if lesson else (rec.get("lessonStatus") or "")
             ).lower()
             if lesson_status in ("3", "cancelled", "отменено", "canceled"):
-                excluded_cancelled += 1
+                excl_cancelled += 1
                 continue
 
             group_name = _lesson_group_value(lesson) if lesson else _lesson_group_value(rec)
-            group_lower = group_name.lower().replace("ё", "е")
+            glow = group_name.lower().replace("ё", "е")
 
-            city_kw = ("лагерь", "yellow summer", "summer week", "summer camp", "city program", "городская программа")
-            if any(pat in group_lower for pat in city_kw):
-                excluded_city_program += 1
+            # ── Makeup (group name + API flags) ──
+            if (
+                any(p in glow for p in MAKEUP_KW)
+                or _truthy(rec.get("makeup"))
+                or _truthy(rec.get("isAdditional"))
+                or str(rec.get("type") or "").lower() in ("makeup", "отработка", "additional")
+            ):
+                excl_makeup += 1
                 continue
 
-            makeup_kw = ("отработка", "makeup")
-            if any(pat in group_lower for pat in makeup_kw):
-                excluded_makeup += 1
-                continue
-
-            trial_kw = ("пробн", " trial", "пробное")
-            if any(pat in group_lower for pat in trial_kw):
-                excluded_trial += 1
+            # ── Trial by name ──
+            if any(p in glow for p in TRIAL_KW):
+                excl_trial += 1
                 continue
 
             student_id = _pick(rec, ("userId", "studentId", "clientId", "customerId", "idUser"))
             if not student_id:
                 continue
 
-            # ── Resolve filial name with priority: lesson field > filialId map ──
+            # Use enriched name (set by _v3991_enrich_records) or fall back to record fields
+            student_name = _v3991_user_name_from_item(rec)
+
+            # ── Resolve filial → location code ──
             filial_name = ""
             room_id = ""
             if lesson:
@@ -1660,63 +1687,105 @@ class MoyKlassClient:
                         filial_name = filial_map.get(fid, "")
                 room_id = str(_pick(lesson, ("roomId", "classroomId")) or "").strip()
 
-            location_code, loc_source = _children_location_code(group_name, filial_name, room_id)
-            loc_source_counts[loc_source] = loc_source_counts.get(loc_source, 0) + 1
-
-            student_name = _student_name_from_record(rec)
-            class_id = _pick(lesson, ("classId", "groupId")) if lesson else _pick(rec, ("classId", "groupId"))
-            if not class_id:
-                class_id = f"grp_{group_name[:24]}" if group_name else "unknown"
+            loc_code, loc_src = _children_location_code(group_name, filial_name, room_id)
+            loc_src_counts[loc_src] = loc_src_counts.get(loc_src, 0) + 1
 
             rec_date = _record_lesson_date(rec)
             rec_date_str = rec_date.isoformat() if rec_date else ""
 
-            unique_student_ids.add(student_id)
+            is_summer = any(p in glow for p in SUMMER_KW)
 
-            if location_code not in location_students:
-                location_students[location_code] = set()
-            location_students[location_code].add(student_id)
+            def _si_update(si_dict: dict[str, Any]) -> None:
+                if student_id not in si_dict:
+                    si_dict[student_id] = {
+                        "student_id": student_id,
+                        "name": student_name or f"ID {student_id}",
+                        "visits_count": 0,
+                        "locations": set(),
+                        "groups": set(),
+                        "visit_dates": [],
+                    }
+                si = si_dict[student_id]
+                if student_name and si["name"].startswith("ID "):
+                    si["name"] = student_name
+                si["visits_count"] += 1
+                si["locations"].add(loc_code)
+                si["groups"].add(group_name)
+                if rec_date_str and rec_date_str not in si["visit_dates"]:
+                    si["visit_dates"].append(rec_date_str)
 
-            if class_id not in group_data:
-                group_data[class_id] = {
-                    "group_id": class_id,
-                    "group_name": group_name,
-                    "location_code": location_code,
-                    "location_name": _CHILDREN_LOC_NAMES.get(location_code, location_code),
-                    "students": set(),
-                }
-            group_data[class_id]["students"].add(student_id)
+            def _loc_add(loc_dict: dict[str, set[str]]) -> None:
+                if loc_code not in loc_dict:
+                    loc_dict[loc_code] = set()
+                loc_dict[loc_code].add(student_id)
 
-            if student_id not in student_info:
-                student_info[student_id] = {
-                    "student_id": student_id,
-                    "name": student_name or f"Ученик {student_id}",
-                    "visits_count": 0,
-                    "locations": set(),
-                    "groups": set(),
-                    "visit_dates": [],
-                }
-            elif student_name and student_info[student_id]["name"].startswith("Ученик "):
-                student_info[student_id]["name"] = student_name
-            student_info[student_id]["visits_count"] += 1
-            student_info[student_id]["locations"].add(location_code)
-            student_info[student_id]["groups"].add(group_name)
-            if rec_date_str and rec_date_str not in student_info[student_id]["visit_dates"]:
-                student_info[student_id]["visit_dates"].append(rec_date_str)
+            # Combined always tracks all non-excluded records
+            comb_ids.add(student_id)
+            _loc_add(comb_loc)
 
-        by_location = sorted(
-            [
-                {
-                    "location_code": code,
-                    "location_name": _CHILDREN_LOC_NAMES.get(code, code),
-                    "unique_children": len(students),
-                }
-                for code, students in location_students.items()
-            ],
-            key=lambda x: _LOC_CODE_ORDER.get(x["location_code"], 50),
-        )
+            if is_summer:
+                sum_ids.add(student_id)
+                _loc_add(sum_loc)
+                _si_update(sum_students)
+                sum_group_names.add(group_name)
+            else:
+                class_id = (
+                    _pick(lesson, ("classId", "groupId")) if lesson
+                    else _pick(rec, ("classId", "groupId"))
+                )
+                if not class_id:
+                    class_id = f"grp_{group_name[:24]}" if group_name else "unknown"
+                reg_ids.add(student_id)
+                _loc_add(reg_loc)
+                _si_update(reg_students)
+                if class_id not in reg_groups:
+                    reg_groups[class_id] = {
+                        "group_id": class_id,
+                        "group_name": group_name,
+                        "location_code": loc_code,
+                        "location_name": _CHILDREN_LOC_NAMES.get(loc_code, loc_code),
+                        "students": set(),
+                    }
+                reg_groups[class_id]["students"].add(student_id)
 
-        by_group = sorted(
+        def _build_by_loc(loc_dict: dict[str, set[str]]) -> list[dict[str, Any]]:
+            return sorted(
+                [
+                    {
+                        "location_code": code,
+                        "location_name": _CHILDREN_LOC_NAMES.get(code, code),
+                        "unique_children": len(s),
+                    }
+                    for code, s in loc_dict.items()
+                ],
+                key=lambda x: _LOC_CODE_ORDER.get(x["location_code"], 50),
+            )
+
+        def _build_children(si_dict: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+            return sorted(
+                [
+                    {
+                        "student_id": sid,
+                        "name": sdata["name"],
+                        "locations": sorted(
+                            sdata["locations"], key=lambda c: _LOC_CODE_ORDER.get(c, 50)
+                        ),
+                        "location_names": [
+                            _CHILDREN_LOC_NAMES.get(c, c)
+                            for c in sorted(
+                                sdata["locations"], key=lambda c: _LOC_CODE_ORDER.get(c, 50)
+                            )
+                        ],
+                        "groups": sorted(sdata["groups"]),
+                        "visits_count": sdata["visits_count"],
+                        "visit_dates": sorted(sdata["visit_dates"]),
+                    }
+                    for sid, sdata in si_dict.items()
+                ],
+                key=lambda x: x["name"],
+            )
+
+        reg_by_group = sorted(
             [
                 {
                     "group_id": gid,
@@ -1725,31 +1794,12 @@ class MoyKlassClient:
                     "location_name": gd["location_name"],
                     "unique_children": len(gd["students"]),
                 }
-                for gid, gd in group_data.items()
+                for gid, gd in reg_groups.items()
             ],
             key=lambda x: (_LOC_CODE_ORDER.get(x["location_code"], 50), x["group_name"]),
         )
 
-        children = sorted(
-            [
-                {
-                    "student_id": sid,
-                    "name": sdata["name"],
-                    "locations": sorted(sdata["locations"], key=lambda c: _LOC_CODE_ORDER.get(c, 50)),
-                    "location_names": [
-                        _CHILDREN_LOC_NAMES.get(c, c)
-                        for c in sorted(sdata["locations"], key=lambda c: _LOC_CODE_ORDER.get(c, 50))
-                    ],
-                    "groups": sorted(sdata["groups"]),
-                    "visits_count": sdata["visits_count"],
-                    "visit_dates": sorted(sdata["visit_dates"]),
-                }
-                for sid, sdata in student_info.items()
-            ],
-            key=lambda x: x["name"],
-        )
-
-        unknown_records = loc_source_counts.get("unknown", 0)
+        unknown_count = loc_src_counts.get("unknown", 0)
         elapsed_ms = int((time.monotonic() - t_start) * 1000)
 
         return MoyKlassResult(
@@ -1759,27 +1809,43 @@ class MoyKlassClient:
                 "month": month_label,
                 "date_from": start.isoformat(),
                 "date_to": end.isoformat(),
-                "total_unique_children": len(unique_student_ids),
-                "by_location": by_location,
-                "by_group": by_group,
-                "children": children,
+                # ── Three report sections ──
+                "regular": {
+                    "total_unique_children": len(reg_ids),
+                    "by_location": _build_by_loc(reg_loc),
+                    "by_group": reg_by_group,
+                    "children": _build_children(reg_students),
+                },
+                "summer": {
+                    "total_unique_children": len(sum_ids),
+                    "by_location": _build_by_loc(sum_loc),
+                    "children": _build_children(sum_students),
+                    "groups": sorted(sum_group_names),
+                },
+                "combined": {
+                    "total_unique_children": len(comb_ids),
+                    "by_location": _build_by_loc(comb_loc),
+                },
+                # ── Top-level backward-compat aliases (regular section) ──
+                "total_unique_children": len(reg_ids),
+                "by_location": _build_by_loc(reg_loc),
+                "by_group": reg_by_group,
+                "children": _build_children(reg_students),
                 "excluded": {
-                    "trial": excluded_trial,
-                    "makeup": excluded_makeup,
-                    "cancelled": excluded_cancelled,
-                    "city_program": excluded_city_program,
+                    "trial": excl_trial,
+                    "makeup": excl_makeup,
+                    "cancelled": excl_cancelled,
                 },
                 "diagnostics": {
                     "lesson_records_loaded": len(all_records),
                     "present_records": len(attended),
                     "excluded": {
-                        "trial": excluded_trial,
-                        "makeup": excluded_makeup,
-                        "city_program": excluded_city_program,
-                        "cancelled": excluded_cancelled,
+                        "trial": excl_trial,
+                        "makeup": excl_makeup,
+                        "cancelled": excl_cancelled,
                     },
-                    "location_sources": loc_source_counts,
-                    "unknown_location_records": unknown_records,
+                    "location_sources": loc_src_counts,
+                    "unknown_location_records": unknown_count,
                     "filial_map_size": len(filial_map),
                 },
                 "source": "moyklass/lessonRecords",

@@ -6804,6 +6804,38 @@ body { -webkit-overflow-scrolling: touch; }
 .notice.ok    { animation: ycNoticeIn var(--yc-fast) var(--yc-ease) both; }
 .notice.error { animation: ycNoticeIn var(--yc-fast) var(--yc-ease) both; }
 
+/* --- Children report compact layout (v7.0.50) --- */
+.cr-card { background: var(--card); border-radius: 18px; padding: 14px 16px; }
+.cr-title { font-size: 16px; font-weight: 800; margin: 0 0 12px; }
+.cr-section { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.cr-section:last-of-type { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+.cr-section-head { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 6px; }
+.cr-total { display: flex; justify-content: space-between; align-items: baseline; }
+.cr-total-label { font-size: 12px; font-weight: 600; color: var(--text); }
+.cr-total-n { font-size: 19px; font-weight: 900; color: var(--accent); }
+.cr-loc-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; font-size: 12px; }
+.cr-loc-name { color: var(--text); }
+.cr-loc-code { font-size: 10px; color: var(--muted); margin-left: 4px; }
+.cr-loc-n { font-weight: 700; min-width: 24px; text-align: right; }
+.cr-note { font-size: 11px; color: var(--muted); margin: 5px 0 0; line-height: 1.4; }
+.cr-excl { font-size: 11px; color: var(--muted); margin: 3px 0 0; }
+.cr-groups { font-size: 11px; color: var(--muted); margin: 4px 0 0; font-style: italic; }
+.cr-verify { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+.cr-verify summary { font-size: 12px; font-weight: 700; cursor: pointer; color: var(--accent); padding: 4px 0; list-style: none; }
+.cr-verify summary::before { content: "▸ "; }
+.cr-verify[open] summary::before { content: "▾ "; }
+.cr-child { padding: 5px 0; border-bottom: 1px solid rgba(16,24,40,.05); }
+.cr-child:last-child { border-bottom: none; }
+.cr-child-name { font-size: 12px; font-weight: 700; }
+.cr-child-meta { font-size: 11px; color: var(--muted); line-height: 1.3; }
+.cr-child-dates { font-size: 10px; color: var(--muted); }
+.cr-diag { margin-top: 8px; }
+.cr-diag summary { font-size: 11px; cursor: pointer; color: var(--muted); }
+.cr-diag-row { display: flex; justify-content: space-between; padding: 2px 0; font-size: 11px; }
+@media (prefers-color-scheme: dark) {
+  .cr-card { border: 1px solid rgba(255,255,255,.08); }
+}
+
 /* --- Lesson cards --- */
 .lc-card { animation: ycCardEnter var(--yc-normal) var(--yc-ease) both; }
 
