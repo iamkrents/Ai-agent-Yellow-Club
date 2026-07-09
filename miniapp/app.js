@@ -3590,9 +3590,9 @@ function renderChildrenReport() {
   }
 
   const month = d.month || state.childrenReportMonth || "";
-  const reg   = d.regular   || { total_unique_children: d.total_unique_children ?? 0, by_location: d.by_location || [], children: d.children || [] };
-  const sum   = d.summer    || { total_unique_children: 0, by_location: [], children: [], groups: [] };
-  const comb  = d.combined  || { total_unique_children: (d.total_unique_children ?? 0), by_location: d.by_location || [] };
+  const reg   = d.regular                           || { total_unique_children: d.total_unique_children ?? 0, by_location: d.by_location || [], children: d.children || [] };
+  const sum   = d.city_program || d.summer           || { total_unique_children: 0, by_location: [], children: [], groups: [] };
+  const comb  = d.combined                           || { total_unique_children: (d.total_unique_children ?? 0), by_location: d.by_location || [] };
   const excl  = d.excluded  || {};
   const diag  = d.diagnostics || {};
   const role  = state.me?.role || "";
@@ -3645,17 +3645,23 @@ function renderChildrenReport() {
       `<div class="cr-diag-row"><span>${escapeHtml(k)}</span><b>${v}</b></div>`
     ).join("");
     const de = diag.excluded || {};
+    const cpExamples = Array.isArray(diag.city_program_matched_examples) ? diag.city_program_matched_examples : [];
+    const cpExHtml = cpExamples.length
+      ? `<div style="margin-top:3px;font-size:10px;color:var(--muted)">${cpExamples.map(e => escapeHtml(e)).join("<br>")}</div>` : "";
     diagHtml = `
       <details class="cr-diag">
         <summary>Диагностика</summary>
         <div style="margin-top:4px">
           <div class="cr-diag-row"><span>Записей загружено</span><b>${diag.lesson_records_loaded}</b></div>
           <div class="cr-diag-row"><span>С visit=true</span><b>${diag.present_records}</b></div>
+          <div class="cr-diag-row"><span>Regular records</span><b>${diag.regular_records ?? "—"}</b></div>
+          <div class="cr-diag-row"><span>City program records</span><b>${diag.city_program_records ?? "—"}</b></div>
           <div class="cr-diag-row"><span>Без филиала</span><b>${diag.unknown_location_records ?? 0}</b></div>
           <div class="cr-diag-row"><span>Карта филиалов</span><b>${diag.filial_map_size ?? "?"} зап.</b></div>
           ${de.trial != null ? `<div class="cr-diag-row"><span>Исключено пробных</span><b>${de.trial}</b></div>` : ""}
           ${de.makeup != null ? `<div class="cr-diag-row"><span>Исключено отработок</span><b>${de.makeup}</b></div>` : ""}
           ${de.cancelled != null ? `<div class="cr-diag-row"><span>Исключено отменённых</span><b>${de.cancelled}</b></div>` : ""}
+          ${cpExamples.length ? `<div class="cr-diag-row" style="margin-top:4px;font-weight:700"><span>Городская программа примеры</span></div>${cpExHtml}` : ""}
           ${srcRows ? `<div class="cr-diag-row" style="margin-top:4px;font-weight:700"><span>Источник филиала</span></div>${srcRows}` : ""}
         </div>
       </details>`;
@@ -3722,9 +3728,9 @@ async function copyChildrenReport() {
   if (!d || !d.ok) return setNotice("Нет данных для копирования", "error");
   const month = d.month || state.childrenReportMonth || "";
   const label = _childrenReportMonthLabel(month);
-  const reg   = d.regular  || { total_unique_children: d.total_unique_children ?? 0, by_location: d.by_location || [] };
-  const sum   = d.summer   || { total_unique_children: 0, by_location: [], groups: [] };
-  const comb  = d.combined || { total_unique_children: d.total_unique_children ?? 0 };
+  const reg   = d.regular                          || { total_unique_children: d.total_unique_children ?? 0, by_location: d.by_location || [] };
+  const sum   = d.city_program || d.summer          || { total_unique_children: 0, by_location: [], groups: [] };
+  const comb  = d.combined                          || { total_unique_children: d.total_unique_children ?? 0 };
   const excl  = d.excluded || {};
 
   const fmtLoc = (byLoc) => (byLoc || []).map(l => {
@@ -3741,22 +3747,29 @@ async function copyChildrenReport() {
   const lines = [
     `Отчёт по детям за ${label}`,
     "",
-    `Регулярные занятия: ${reg.total_unique_children}`,
+    "Регулярные занятия:",
+    `Уникальных детей: ${reg.total_unique_children}`,
   ];
   if (reg.by_location?.length) lines.push(fmtLoc(reg.by_location));
   if (sum.total_unique_children > 0) {
-    lines.push("", `Городская программа / Summer Week: ${sum.total_unique_children}`);
+    lines.push(
+      "",
+      "Городская программа / Summer Week:",
+      `Уникальных детей: ${sum.total_unique_children}`,
+    );
     if (sum.by_location?.length) lines.push(fmtLoc(sum.by_location));
     if (sum.groups?.length) lines.push(`  Группы: ${sum.groups.join(", ")}`);
   }
-  lines.push("", `Общий итог: ${comb.total_unique_children}`);
   lines.push(
     "",
-    "Правило подсчёта:",
-    "Один ребёнок считается один раз в общем итоге. По филиалам может учитываться в нескольких.",
+    "Итого:",
+    `Уникальных детей: ${comb.total_unique_children}`,
   );
-  if (exclParts.length) lines.push("", `Не учитываются: ${exclParts.join(", ")}.`);
-  lines.push("Пробные, отработки и отменённые занятия не учитываются.");
+  lines.push(
+    "",
+    "Не учитываются в регулярных занятиях:",
+    "пробные, отработки, отменённые занятия и городская программа.",
+  );
 
   const text = lines.join("\n");
   try {

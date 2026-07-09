@@ -1626,18 +1626,17 @@ class MoyKlassClient:
         comb_ids: set[str] = set()
         comb_loc: dict[str, set[str]] = {}
 
-        MAKEUP_KW = ("отработка", "отработки", "отраб", "makeup", "make-up", "make up")
-        TRIAL_KW  = ("пробн", " trial", "пробное")
-        SUMMER_KW = ("лагерь", "yellow summer", "summer week", "summer camp",
-                     "city program", "городская программа")
+        city_program_matched_examples: list[str] = []
+        reg_records_count = 0
+        city_records_count = 0
 
         for rec in attended:
-            # ── Trial flag ──
+            # ── Trial flag (API) ──
             if _truthy(rec.get("test")):
                 excl_trial += 1
                 continue
 
-            lesson = rec.get("lesson") if isinstance(rec.get("lesson"), dict) else {}
+            lesson: dict[str, Any] = rec.get("lesson") if isinstance(rec.get("lesson"), dict) else {}  # type: ignore[assignment]
 
             # ── Cancelled ──
             lesson_status = str(
@@ -1647,12 +1646,15 @@ class MoyKlassClient:
                 excl_cancelled += 1
                 continue
 
+            # Collect ALL text from both the record and its nested lesson object.
+            # This catches keywords that MoyKlass places in lesson.name / lesson.title
+            # rather than lesson.className / lesson.groupName.
+            all_text = _collect_lesson_text(rec, lesson)
             group_name = _lesson_group_value(lesson) if lesson else _lesson_group_value(rec)
-            glow = group_name.lower().replace("ё", "е")
 
-            # ── Makeup (group name + API flags) ──
+            # ── Makeup (all text + API flags) ──
             if (
-                any(p in glow for p in MAKEUP_KW)
+                any(p in all_text for p in _MONTHLY_REPORT_MAKEUP_KW)
                 or _truthy(rec.get("makeup"))
                 or _truthy(rec.get("isAdditional"))
                 or str(rec.get("type") or "").lower() in ("makeup", "отработка", "additional")
@@ -1660,8 +1662,8 @@ class MoyKlassClient:
                 excl_makeup += 1
                 continue
 
-            # ── Trial by name ──
-            if any(p in glow for p in TRIAL_KW):
+            # ── Trial by name (all text) ──
+            if any(p in all_text for p in _MONTHLY_REPORT_TRIAL_KW):
                 excl_trial += 1
                 continue
 
@@ -1693,7 +1695,15 @@ class MoyKlassClient:
             rec_date = _record_lesson_date(rec)
             rec_date_str = rec_date.isoformat() if rec_date else ""
 
-            is_summer = any(p in glow for p in SUMMER_KW)
+            # ── City program / Summer Week — check ALL text, not just group_name ──
+            matched_summer_kw = next(
+                (p for p in _MONTHLY_REPORT_SUMMER_KW if p in all_text), None
+            )
+            is_summer = matched_summer_kw is not None
+            if is_summer and len(city_program_matched_examples) < 10:
+                example = group_name.strip() or all_text[:80].strip()
+                if example and example not in city_program_matched_examples:
+                    city_program_matched_examples.append(example)
 
             def _si_update(si_dict: dict[str, Any]) -> None:
                 if student_id not in si_dict:
@@ -1724,11 +1734,13 @@ class MoyKlassClient:
             _loc_add(comb_loc)
 
             if is_summer:
+                city_records_count += 1
                 sum_ids.add(student_id)
                 _loc_add(sum_loc)
                 _si_update(sum_students)
                 sum_group_names.add(group_name)
             else:
+                reg_records_count += 1
                 class_id = (
                     _pick(lesson, ("classId", "groupId")) if lesson
                     else _pick(rec, ("classId", "groupId"))
@@ -1822,6 +1834,12 @@ class MoyKlassClient:
                     "children": _build_children(sum_students),
                     "groups": sorted(sum_group_names),
                 },
+                "city_program": {
+                    "total_unique_children": len(sum_ids),
+                    "by_location": _build_by_loc(sum_loc),
+                    "children": _build_children(sum_students),
+                    "groups": sorted(sum_group_names),
+                },
                 "combined": {
                     "total_unique_children": len(comb_ids),
                     "by_location": _build_by_loc(comb_loc),
@@ -1839,6 +1857,8 @@ class MoyKlassClient:
                 "diagnostics": {
                     "lesson_records_loaded": len(all_records),
                     "present_records": len(attended),
+                    "regular_records": reg_records_count,
+                    "city_program_records": city_records_count,
                     "excluded": {
                         "trial": excl_trial,
                         "makeup": excl_makeup,
@@ -1847,6 +1867,7 @@ class MoyKlassClient:
                     "location_sources": loc_src_counts,
                     "unknown_location_records": unknown_count,
                     "filial_map_size": len(filial_map),
+                    "city_program_matched_examples": city_program_matched_examples,
                 },
                 "source": "moyklass/lessonRecords",
                 "records_total": len(all_records),
@@ -2322,6 +2343,47 @@ def _children_location_code(
             return c, "group_name_fallback"
 
     return "unknown", "unknown"
+
+
+# ── Classification keywords for the monthly children report ──────────────────
+# All keyword checks use _collect_lesson_text() so every relevant API field is
+# scanned (including lesson.name / lesson.title that _lesson_group_value misses).
+_MONTHLY_REPORT_SUMMER_KW: tuple[str, ...] = (
+    "лагерь", "лагер",
+    "yellow summer", "summer week", "summer camp",
+    "yc summer", "city program", "городская программа", "camp",
+)
+_MONTHLY_REPORT_MAKEUP_KW: tuple[str, ...] = (
+    "отработка", "отработки", "отраб", "makeup", "make-up", "make up",
+)
+_MONTHLY_REPORT_TRIAL_KW: tuple[str, ...] = (
+    "пробн", "trial", "пробное", "test lesson",
+)
+
+
+def _collect_lesson_text(rec: dict[str, Any], lesson: dict[str, Any] | None) -> str:
+    """Return lowercased joined text from ALL candidate text fields for classification.
+
+    Checks both the top-level lessonRecord and the nested lesson object so that
+    keywords like "Summer Camp" are found regardless of which field MoyKlass
+    happens to populate (className vs name vs title, etc.).
+    """
+    TEXT_FIELDS = (
+        "name", "title", "description", "comment",
+        "className", "groupName", "groupTitle", "classTitle",
+        "courseName", "subjectName",
+        "_prettyClassName", "_prettyName", "_prettyGroupName",
+    )
+    parts: list[str] = []
+    for field in TEXT_FIELDS:
+        v = str(rec.get(field) or "").strip()
+        if v:
+            parts.append(v)
+        if isinstance(lesson, dict):
+            v = str(lesson.get(field) or "").strip()
+            if v:
+                parts.append(v)
+    return " ".join(parts).lower().replace("ё", "е")
 
 
 def _student_name_from_record(rec: dict[str, Any]) -> str:
