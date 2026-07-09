@@ -202,9 +202,10 @@ const MVP_TABS_BY_ROLE = {
   intern:         ["intern", "help", "ask", "my-lunch"],
   teacher:        ["lessons", "tasks", "help", "ask", "my-lunch"],
   methodist:      ["lessons", "tasks", "help", "ask", "admin", "my-lunch"],
-  owner:          ["lessons", "tasks", "help", "ask", "admin", "my-lunch"],
-  operations:     ["lessons", "tasks", "help", "ask", "admin", "my-lunch"],
-  client_manager: ["my-lunch"],
+  owner:          ["lessons", "tasks", "reports", "help", "ask", "admin", "my-lunch"],
+  admin:          ["lessons", "tasks", "reports", "help", "ask", "admin", "my-lunch"],
+  operations:     ["lessons", "tasks", "reports", "help", "ask", "admin", "my-lunch"],
+  client_manager: ["reports", "my-lunch"],
   parent:         ["my-children", "food", "help"],
 };
 const MVP_ADMIN_TABS = ["interns", "prep-results", "lesson-control", "teachers", "users", "notifications", "food-debug", "food-children", "food-menu", "food-report"];
@@ -1189,7 +1190,10 @@ function activateTab(name) {
   document.querySelectorAll(".tab-panel").forEach(x => x.classList.remove("active"));
   const tab = document.querySelector(`.tab[data-tab="${cssEscapeValue(name)}"]`);
   const panel = $(`tab-${name}`);
-  if (!tab || !panel || tab.classList.contains("hidden")) return;
+  if (!tab || !panel) return;
+  // Allow programmatic navigation (e.g., from admin "📊 Отчёты" button) even if tab button is
+  // still hidden — as long as the panel itself is accessible. Role checks are inside render fns.
+  if (tab.classList.contains("hidden") && panel.classList.contains("hidden")) return;
   tab.classList.add("active");
   panel.classList.add("active");
 
@@ -9972,10 +9976,8 @@ async function reloadCabinetAfterRoleChange() {
     canUseLessons() ? loadLessons() : Promise.resolve(renderLessonsUnavailable()),
     canUseSchedule() ? loadWorkSchedule() : Promise.resolve(renderWorkScheduleUnavailable()),
     canUseOpenSlots() ? loadOpenSlots() : Promise.resolve(renderOpenSlotsUnavailable()),
-    canUseReports() ? loadReports() : Promise.resolve(renderReportsUnavailable()),
     Promise.resolve(renderChildrenReport()),
     loadTasks(),
-    _canUseKpi() ? loadKpi() : Promise.resolve(),
   ]);
   if (canUseAdmin()) await loadAdmin();
 }
@@ -10089,7 +10091,6 @@ async function boot() {
       canUseLessons() ? loadLessons() : Promise.resolve(renderLessonsUnavailable()),
       canUseSchedule() ? loadWorkSchedule() : Promise.resolve(renderWorkScheduleUnavailable()),
       canUseOpenSlots() ? loadOpenSlots() : Promise.resolve(renderOpenSlotsUnavailable()),
-      canUseReports() ? loadReports() : Promise.resolve(renderReportsUnavailable()),
       Promise.resolve(renderChildrenReport()),
       loadTasks(),
     ]);
