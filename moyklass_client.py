@@ -2064,17 +2064,27 @@ class MoyKlassClient:
             _les = len(_gd.get("lesson_ids") or ())
             _uch = len(_gd.get("students") or set())
             _pvis = _uch * _les
+            _loc_code_g = _gd["location_code"]
+            _ppl_g = PRICE_PER_LESSON_BY_LOCATION.get(_loc_code_g, _DEFAULT_PRICE_PER_LESSON)
+            if _loc_code_g == "YC0":
+                _price_src_g = "online_210"
+            elif _loc_code_g in PRICE_PER_LESSON_BY_LOCATION:
+                _price_src_g = "offline_239"
+            else:
+                _price_src_g = "offline_239_fallback"
             rev_by_group.append({
                 "group_id": str(_gid),
                 "group_name": _gd["group_name"],
-                "location_code": _gd["location_code"],
+                "location_code": _loc_code_g,
                 "location_name": _gd["location_name"],
                 "unique_children": _uch,
                 "lessons_count": _les,
                 "actual_visit_records": _vis,
                 "planned_student_visits": _pvis,
-                "forecast_revenue": round(_vis * PRICE_PER_LESSON_BYN, 2),
-                "forecast_revenue_planned": round(_pvis * PRICE_PER_LESSON_BYN, 2),
+                "price_per_lesson": _ppl_g,
+                "price_source": _price_src_g,
+                "forecast_revenue": round(_vis * _ppl_g, 2),
+                "forecast_revenue_planned": round(_pvis * _ppl_g, 2),
                 "actual_paid": None,
             })
         rev_by_group.sort(key=lambda x: (_LOC_CODE_ORDER.get(x["location_code"], 50), x["group_name"]))
@@ -2171,9 +2181,13 @@ class MoyKlassClient:
                     "cancelled": excl_cancelled,
                 },
                 "revenue": {
-                    "price_per_subscription": MONTHLY_SUBSCRIPTION_PRICE_BYN,
+                    "prices": {
+                        "YC0": {"subscription": ONLINE_SUBSCRIPTION_PRICE_BYN, "per_lesson": ONLINE_SUBSCRIPTION_PRICE_BYN / LESSONS_IN_SUBSCRIPTION, "label": "Онлайн"},
+                        "YC1": {"subscription": OFFLINE_SUBSCRIPTION_PRICE_BYN, "per_lesson": OFFLINE_SUBSCRIPTION_PRICE_BYN / LESSONS_IN_SUBSCRIPTION, "label": "Кульман 1/1"},
+                        "YC2": {"subscription": OFFLINE_SUBSCRIPTION_PRICE_BYN, "per_lesson": OFFLINE_SUBSCRIPTION_PRICE_BYN / LESSONS_IN_SUBSCRIPTION, "label": "Мстиславца 6"},
+                        "default": {"subscription": OFFLINE_SUBSCRIPTION_PRICE_BYN, "per_lesson": _DEFAULT_PRICE_PER_LESSON, "label": "Офлайн (по умолчанию)"},
+                    },
                     "lessons_in_subscription": LESSONS_IN_SUBSCRIPTION,
-                    "price_per_lesson": PRICE_PER_LESSON_BYN,
                     "method": "actual_regular_visits",
                     "method_label": "По фактическим регулярным посещениям",
                     "regular": {
@@ -2226,8 +2240,12 @@ class MoyKlassClient:
                     "classes_map_size": len(classes_map),
                     "raw_lesson_examples": raw_lesson_examples,
                     "revenue_method": "actual_regular_visits",
-                    "price_per_lesson": PRICE_PER_LESSON_BYN,
-                    "revenue_groups_count": len(rev_by_group),
+                    "revenue_price_default_per_lesson": _DEFAULT_PRICE_PER_LESSON,
+                    "revenue_regular_groups_count": len(rev_by_group),
+                    "revenue_unknown_location_groups": sum(
+                        1 for g in rev_by_group if g["location_code"] == "unknown"
+                    ),
+                    "revenue_city_program_groups_excluded": len(sum_groups),
                     "planned_student_visits_total": planned_vis_total_reg,
                     "actual_visit_records_total_reg": actual_vis_total_reg,
                     "payments_loaded": payments_loaded,
@@ -2658,9 +2676,15 @@ _EXCLUDE_LESSON_KEYWORDS = (
 )
 
 # ── Revenue constants (Yellow Club subscription pricing) ────────────────────
-MONTHLY_SUBSCRIPTION_PRICE_BYN: float = 239.0
+OFFLINE_SUBSCRIPTION_PRICE_BYN: float = 239.0   # YC1 (Кульман), YC2 (Мстиславца)
+ONLINE_SUBSCRIPTION_PRICE_BYN: float = 210.0    # YC0 (Онлайн)
 LESSONS_IN_SUBSCRIPTION: int = 4
-PRICE_PER_LESSON_BYN: float = MONTHLY_SUBSCRIPTION_PRICE_BYN / LESSONS_IN_SUBSCRIPTION  # 59.75
+PRICE_PER_LESSON_BY_LOCATION: dict[str, float] = {
+    "YC0": ONLINE_SUBSCRIPTION_PRICE_BYN / LESSONS_IN_SUBSCRIPTION,    # 52.5
+    "YC1": OFFLINE_SUBSCRIPTION_PRICE_BYN / LESSONS_IN_SUBSCRIPTION,   # 59.75
+    "YC2": OFFLINE_SUBSCRIPTION_PRICE_BYN / LESSONS_IN_SUBSCRIPTION,   # 59.75
+}
+_DEFAULT_PRICE_PER_LESSON: float = OFFLINE_SUBSCRIPTION_PRICE_BYN / LESSONS_IN_SUBSCRIPTION  # 59.75 fallback
 
 _LOC_CODE_ORDER = {"YC0": 0, "YC1": 1, "YC2": 2, "YC3": 3, "unknown": 99}
 
