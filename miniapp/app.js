@@ -1114,7 +1114,7 @@ function setupRoleUi() {
       if (!allowedMvpTabs.includes(t.dataset.tab)) t.classList.add("hidden");
     });
     const stub = $("mvp-cm-stub");
-    if (stub) stub.classList.toggle("hidden", mvpRole !== "client_manager");
+    if (stub) stub.classList.add("hidden");
   }
 
   const allowedAdminTabs = availableAdminTabs();
@@ -3601,7 +3601,7 @@ function renderChildrenReport() {
   const excl  = d.excluded  || {};
   const diag  = d.diagnostics || {};
   const role  = state.me?.role || "";
-  const isOwnerAdmin = ["owner", "admin", "director", "operations"].includes(role);
+  const isOwnerAdmin = ["owner", "admin", "director", "operations", "client_manager"].includes(role);
 
   const regGroups      = Array.isArray(reg.by_group)           ? reg.by_group           : [];
   const sumGroups2     = Array.isArray(sum.by_group)           ? sum.by_group           : [];
