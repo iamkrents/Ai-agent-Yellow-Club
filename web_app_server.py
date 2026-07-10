@@ -5160,12 +5160,16 @@ class MiniAppContext:
             if not fetch.get("ok"):
                 return {"ok": False, "error": "Не удалось получить данные из МойКласс.", "detail": str(fetch)}
             teachers = fetch.get("teachers") or []
-            # Build lookup: mk_teacher_id → linked telegram_user_id
-            linked: dict[str, int] = {}
+            # Build lookup: mk_teacher_id → {user_id, role, display_name}
+            linked: dict[str, dict] = {}
             for su in self.storage.list_staff_users(limit=500):
                 mid = str(su.get("mk_teacher_id") or "").strip()
                 if mid:
-                    linked[mid] = int(su.get("user_id") or 0)
+                    linked[mid] = {
+                        "user_id": int(su.get("user_id") or 0),
+                        "role": str(su.get("role") or ""),
+                        "name": str(su.get("mk_teacher_name") or su.get("full_name") or su.get("username") or "").strip(),
+                    }
             # Filter by name search
             q_low = (q or "").strip().lower()
             result_list = []
@@ -5175,9 +5179,12 @@ class MiniAppContext:
                 if not include_with_no_lessons and t.get("lesson_count", 0) == 0 and t.get("source") != "direct_api":
                     continue
                 tid = str(t.get("id") or "").strip()
+                lnk = linked.get(tid)
                 result_list.append({
                     **t,
-                    "already_linked_to": linked.get(tid),
+                    "already_linked_to": lnk["user_id"] if lnk else None,
+                    "already_linked_role": lnk["role"] if lnk else None,
+                    "already_linked_name": lnk["name"] if lnk else None,
                 })
             log.info(
                 "[moyklass-teacher-picker] uid=%s q=%r total=%s returned=%s timed_out=%s",
@@ -5229,6 +5236,72 @@ class MiniAppContext:
             "new_mk_teacher_id": new_mk_id,
             "new_mk_teacher_name": new_mk_name,
             "source": source,
+        }
+
+    def admin_moyklass_staff_link(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        """Reverse-direction binding: MoyKlass teacher → Telegram user_id + role.
+        Creates or updates the staff_users record in one call.
+        Endpoint: POST /api/admin/moyklass/staff-link"""
+        caller_uid = int(auth["user_id"])
+        caller_real = self._base_role_for_user(caller_uid)
+        if caller_real not in FULL_ADMIN_ROLES:
+            return {"ok": False, "error": "Управление привязкой доступно только владельцу, администратору и операционному менеджеру."}
+        mk_teacher_id = str(body.get("mk_teacher_id") or "").strip()
+        mk_teacher_name = str(body.get("mk_teacher_name") or "").strip()
+        telegram_user_id = _safe_int(body.get("telegram_user_id") or 0)
+        role = str(body.get("role") or "").strip().lower()
+        force = bool(body.get("force"))
+        if not mk_teacher_id:
+            return {"ok": False, "error": "mk_teacher_id не указан."}
+        if not telegram_user_id:
+            return {"ok": False, "error": "Введите числовой Telegram user_id (не @username)."}
+        ALLOWED: set[str] = {"teacher", "methodist", "intern", "client_manager", "director", "operations", "kitchen", "admin", "other"}
+        if role == "owner":
+            if caller_real != "owner":
+                return {"ok": False, "error": "Назначить роль владельца может только другой владелец."}
+            ALLOWED = ALLOWED | {"owner"}
+        if not role or role not in ALLOWED:
+            return {"ok": False, "error": f"Выберите допустимую роль. Получено: «{role}»"}
+        # Conflict: this Telegram user_id already linked to a DIFFERENT MK teacher
+        existing = self.storage.get_staff_user(telegram_user_id)
+        old_mk_id = str(existing.get("mk_teacher_id") or "").strip() if existing else ""
+        old_role = str(existing.get("role") or "") if existing else ""
+        if old_mk_id and old_mk_id != mk_teacher_id and not force:
+            old_name = str(existing.get("mk_teacher_name") or existing.get("full_name") or "").strip() if existing else ""
+            return {
+                "ok": False,
+                "conflict": True,
+                "conflict_type": "telegram_user_id",
+                "error": f"Telegram user_id {telegram_user_id} уже привязан к МойКласс ID {old_mk_id} ({old_name}). Передайте force=true для перепривязки.",
+                "existing_mk_teacher_id": old_mk_id,
+                "existing_mk_teacher_name": old_name,
+            }
+        # Conflict: this MK teacher already linked to a DIFFERENT Telegram user
+        for su in self.storage.list_staff_users(limit=500):
+            existing_uid = int(su.get("user_id") or 0)
+            if str(su.get("mk_teacher_id") or "").strip() == mk_teacher_id and existing_uid and existing_uid != telegram_user_id:
+                if not force:
+                    return {
+                        "ok": False,
+                        "conflict": True,
+                        "conflict_type": "mk_teacher_id",
+                        "error": f"МойКласс ID {mk_teacher_id} уже привязан к другому Telegram-пользователю (ID: {existing_uid}). Передайте force=true для перепривязки.",
+                        "existing_telegram_user_id": existing_uid,
+                    }
+                break
+        self.storage.set_staff_mk_teacher(telegram_user_id, mk_teacher_id, mk_teacher_name)
+        self.storage.set_staff_role(telegram_user_id, role)
+        log.info(
+            "[moyklass-staff-link] caller=%s tg=%s mk_id=%s mk_name=%r role=%s old_mk_id=%s old_role=%s was_new=%s",
+            caller_uid, telegram_user_id, mk_teacher_id, mk_teacher_name, role, old_mk_id, old_role, not bool(existing),
+        )
+        return {
+            "ok": True,
+            "telegram_user_id": telegram_user_id,
+            "mk_teacher_id": mk_teacher_id,
+            "mk_teacher_name": mk_teacher_name,
+            "role": role,
+            "was_new": not bool(existing),
         }
 
     def admin_unlink_teacher(self, auth: dict[str, Any], target_uid_str: str) -> dict[str, Any]:
@@ -7493,6 +7566,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/admin/staff/") and path.endswith("/link-moyklass-teacher"):
                 _staff_uid = path[len("/api/admin/staff/"):-len("/link-moyklass-teacher")]
                 return self._send_json(CTX.admin_link_moyklass_teacher(auth, _staff_uid, body))
+            if path == "/api/admin/moyklass/staff-link":
+                return self._send_json(CTX.admin_moyklass_staff_link(auth, body))
             if path == "/api/food/link-child":
                 return self._send_json(CTX.food_link_child(auth, body))
             if path == "/api/food/debug/sync-camp-children":

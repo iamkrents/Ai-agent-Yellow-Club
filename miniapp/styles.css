@@ -6688,6 +6688,148 @@ body { -webkit-overflow-scrolling: touch; }
   margin-top: 6px;
 }
 
+/* ── MoyKlass staff binding panel (v7.0.56) ──────────────────────────────── */
+.mk-staff-bind-panel {
+  border: 1.5px solid var(--border, #dce3ed);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--card-bg, #f8fafc);
+}
+.mk-staff-bind-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+  list-style: none;
+  user-select: none;
+}
+.mk-staff-bind-summary::marker, .mk-staff-bind-summary::-webkit-details-marker { display: none; }
+.mk-staff-bind-summary::before { content: "▸ "; font-size: 12px; }
+.mk-staff-bind-panel[open] .mk-staff-bind-summary::before { content: "▾ "; }
+.mk-staff-bind-body { padding: 0 14px 14px; }
+.mk-staff-bind-hint {
+  font-size: 12px;
+  color: var(--muted, #657089);
+  margin: 0 0 10px;
+  line-height: 1.4;
+}
+.mk-staff-bind-controls {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.mk-staff-bind-controls input[type="search"] {
+  flex: 1;
+  min-width: 140px;
+  padding: 7px 10px;
+  border: 1px solid var(--border, #dce3ed);
+  border-radius: 8px;
+  font-size: 13px;
+  background: var(--bg, #fff);
+  color: var(--ink, #172033);
+}
+.mk-staff-bind-controls select {
+  padding: 7px 8px;
+  border: 1px solid var(--border, #dce3ed);
+  border-radius: 8px;
+  font-size: 13px;
+  background: var(--bg, #fff);
+  color: var(--ink, #172033);
+}
+.mk-bind-list-empty { font-size: 13px; color: var(--muted, #657089); padding: 6px 0; }
+.mk-bind-card {
+  background: var(--card-bg2, #fff);
+  border: 1px solid var(--border, #dce3ed);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.mk-bind-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+.mk-bind-card-name { font-weight: 700; font-size: 14px; }
+.mk-bind-card-meta { font-size: 12px; color: var(--muted, #657089); margin-bottom: 4px; }
+.mk-bind-current {
+  font-size: 12px;
+  color: var(--green, #1fa56b);
+  background: rgba(31,165,107,.07);
+  border-radius: 6px;
+  padding: 3px 7px;
+  margin-bottom: 6px;
+}
+.mk-bind-badge {
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 5px;
+  padding: 2px 7px;
+}
+.mk-bind-badge--linked { background: #e6f4ea; color: #1a7a45; }
+.mk-bind-badge--none   { background: #f3f4f6; color: #657089; }
+.mk-bind-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+  margin-top: 6px;
+}
+.mk-bind-tg-input {
+  flex: 1;
+  min-width: 130px;
+  padding: 6px 9px;
+  border: 1px solid var(--border, #dce3ed);
+  border-radius: 8px;
+  font-size: 13px;
+  background: var(--bg, #fff);
+  color: var(--ink, #172033);
+}
+.mk-bind-role-select {
+  flex: 1;
+  min-width: 130px;
+  padding: 6px 8px;
+  border: 1px solid var(--border, #dce3ed);
+  border-radius: 8px;
+  font-size: 13px;
+  background: var(--bg, #fff);
+  color: var(--ink, #172033);
+}
+.mk-src-badge {
+  font-size: 10px;
+  background: #eef2ff;
+  color: #5c6bc0;
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-left: 4px;
+  font-weight: 700;
+}
+@media (prefers-color-scheme: dark) {
+  .mk-staff-bind-panel { background: #1a1e28; border-color: #2e3447; }
+  .mk-bind-card { background: #20253a; border-color: #2e3447; }
+  .mk-bind-badge--linked { background: #0d2416; color: #4caf82; }
+  .mk-bind-badge--none   { background: #252a3a; color: #8899aa; }
+  .mk-bind-current { background: rgba(31,165,107,.12); color: #4caf82; }
+  .mk-staff-bind-controls input[type="search"],
+  .mk-staff-bind-controls select,
+  .mk-bind-tg-input, .mk-bind-role-select { background: #1e2336; border-color: #2e3447; color: #e0e8f0; }
+  .mk-src-badge { background: #1e2445; color: #8eacff; }
+}
+:root[data-theme="dark"] .mk-staff-bind-panel { background: #1a1e28; border-color: #2e3447; }
+:root[data-theme="dark"] .mk-bind-card { background: #20253a; border-color: #2e3447; }
+:root[data-theme="dark"] .mk-bind-badge--linked { background: #0d2416; color: #4caf82; }
+:root[data-theme="dark"] .mk-bind-badge--none   { background: #252a3a; color: #8899aa; }
+:root[data-theme="dark"] .mk-bind-current { background: rgba(31,165,107,.12); color: #4caf82; }
+:root[data-theme="dark"] .mk-staff-bind-controls input[type="search"],
+:root[data-theme="dark"] .mk-staff-bind-controls select,
+:root[data-theme="dark"] .mk-bind-tg-input, :root[data-theme="dark"] .mk-bind-role-select { background: #1e2336; border-color: #2e3447; color: #e0e8f0; }
+:root[data-theme="light"] .mk-bind-card { background: #fff; border-color: #dce3ed; }
+:root[data-theme="light"] .mk-staff-bind-panel { background: #f8fafc; border-color: #dce3ed; }
+
 /* =====================================================
    v7.0.37 — Published-menu edits / Utensils / Teacher view
    ===================================================== */

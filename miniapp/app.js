@@ -5445,6 +5445,13 @@ async function renderAdminContent() {
           });
         });
       }
+      // ── MoyKlass staff binding panel (reverse direction) ──
+      if (canManage) {
+        const mkBindPanel = document.createElement("div");
+        mkBindPanel.style.marginTop = "20px";
+        root.appendChild(mkBindPanel);
+        _initMkStaffBindPanel(mkBindPanel);
+      }
       return;
     }
     if (tab === "notion") {
@@ -8096,6 +8103,179 @@ function _attachMkSelectBtn(sb, uid, displayName, containerEl) {
         setNotice(safeUserError(e), "error");
       }
     }, alreadyLinked);
+  });
+}
+
+// ── MoyKlass staff binding panel ──────────────────────────────────────────────
+// Reverse-direction: show MK teachers, let admin type Telegram user_id + pick role.
+
+const _MK_BIND_ROLE_OPTIONS = [
+  {v:"director",       l:"Директор"},
+  {v:"client_manager", l:"Клиент-менеджер"},
+  {v:"teacher",        l:"Преподаватель"},
+  {v:"methodist",      l:"Методист"},
+  {v:"intern",         l:"Стажёр"},
+  {v:"operations",     l:"Operations"},
+  {v:"kitchen",        l:"Кухня"},
+  {v:"admin",          l:"Администратор"},
+  {v:"owner",          l:"Владелец"},
+  {v:"other",          l:"Другой"},
+];
+
+const _MK_BIND_ROLE_DISPLAY = Object.fromEntries(_MK_BIND_ROLE_OPTIONS.map(o => [o.v, o.l]));
+
+function _initMkStaffBindPanel(container) {
+  container.innerHTML = `
+    <details class="mk-staff-bind-panel">
+      <summary class="mk-staff-bind-summary">👥 Привязка сотрудников из МойКласс</summary>
+      <div class="mk-staff-bind-body">
+        <p class="mk-staff-bind-hint">
+          Введите числовой Telegram user_id сотрудника (не @username).
+          Сотрудник должен открыть бота хотя бы один раз, иначе его данные могут не отображаться корректно.
+        </p>
+        <div class="mk-staff-bind-controls">
+          <input type="search" id="mkBindSearch" placeholder="Поиск по имени или ID..." autocomplete="off">
+          <select id="mkBindFilter">
+            <option value="all">Все сотрудники</option>
+            <option value="unlinked">Только непривязанные</option>
+            <option value="linked">Только привязанные</option>
+          </select>
+          <button type="button" class="secondary" id="mkBindLoad">Загрузить список</button>
+        </div>
+        <div id="mkBindList" class="mk-bind-list-empty">Нажмите «Загрузить список» для получения сотрудников МойКласс.</div>
+      </div>
+    </details>`;
+
+  let _allTeachers = [];
+
+  const bindLoad = container.querySelector("#mkBindLoad");
+  const bindSearch = container.querySelector("#mkBindSearch");
+  const bindFilter = container.querySelector("#mkBindFilter");
+  const bindList = container.querySelector("#mkBindList");
+
+  async function loadList() {
+    bindLoad.disabled = true;
+    bindLoad.textContent = "Загружаю...";
+    bindList.innerHTML = `<div class="empty">Загружаю сотрудников МойКласс...</div>`;
+    try {
+      const data = await apiGet("/api/admin/moyklass/teachers?include_with_no_lessons=true");
+      if (!data.ok) throw new Error(data.error || "Ошибка загрузки");
+      _allTeachers = data.teachers || [];
+      renderList();
+    } catch (e) {
+      bindList.innerHTML = `<div class="empty" style="color:#c0392b">Ошибка: ${escapeHtml(e.message)}</div>`;
+    }
+    bindLoad.disabled = false;
+    bindLoad.textContent = "Обновить список";
+  }
+
+  function renderList() {
+    const q = (bindSearch?.value || "").trim().toLowerCase();
+    const filter = bindFilter?.value || "all";
+    let items = _allTeachers;
+    if (q) items = items.filter(t => String(t.name || "").toLowerCase().includes(q) || String(t.id || "").includes(q));
+    if (filter === "unlinked") items = items.filter(t => !t.already_linked_to);
+    if (filter === "linked")   items = items.filter(t =>  t.already_linked_to);
+    if (!items.length) {
+      bindList.innerHTML = `<div class="empty">Сотрудники не найдены.</div>`;
+      return;
+    }
+    bindList.innerHTML = items.map(t => _renderMkBindCard(t)).join("");
+    bindList.querySelectorAll(".mk-bind-save-btn").forEach(btn => _attachMkBindSaveBtn(btn, bindList));
+  }
+
+  bindLoad?.addEventListener("click", loadList);
+  bindSearch?.addEventListener("input", renderList);
+  bindFilter?.addEventListener("change", renderList);
+}
+
+function _renderMkBindCard(t) {
+  const tid = String(t.id || "");
+  const linked = t.already_linked_to != null;
+  const badge = linked
+    ? `<span class="mk-bind-badge mk-bind-badge--linked">Привязан</span>`
+    : `<span class="mk-bind-badge mk-bind-badge--none">Не привязан</span>`;
+  const locs = (t.locations || []).join(", ") || "";
+  const nearestDate = t.nearest_lesson_date ? ` · ближайшее ${escapeHtml(t.nearest_lesson_date)}` : "";
+  const srcBadge = t.source === "direct_api"
+    ? `<span class="mk-src-badge">API</span>`
+    : "";
+  const linkedInfo = linked
+    ? `<div class="mk-bind-current">Telegram ID: <b>${escapeHtml(String(t.already_linked_to))}</b> · Роль: <b>${escapeHtml(_MK_BIND_ROLE_DISPLAY[t.already_linked_role || ""] || t.already_linked_role || "—")}</b>${t.already_linked_name ? ` · ${escapeHtml(t.already_linked_name)}` : ""}</div>`
+    : "";
+  const roleOpts = _MK_BIND_ROLE_OPTIONS.map(o =>
+    `<option value="${escapeAttr(o.v)}"${t.already_linked_role === o.v ? " selected" : ""}>${escapeHtml(o.l)}</option>`
+  ).join("");
+  return `<div class="mk-bind-card" data-mk-id="${escapeAttr(tid)}">
+    <div class="mk-bind-card-header">
+      <span class="mk-bind-card-name">${escapeHtml(t.name || `ID ${tid}`)}${srcBadge}</span>
+      ${badge}
+    </div>
+    <div class="mk-bind-card-meta">MK ID: ${escapeHtml(tid)} · ${t.lesson_count || 0} занятий${nearestDate}${locs ? ` · ${escapeHtml(locs)}` : ""}</div>
+    ${linkedInfo}
+    <div class="mk-bind-form">
+      <input type="number" class="mk-bind-tg-input" placeholder="Telegram user_id (число)"
+        value="${linked ? escapeAttr(String(t.already_linked_to)) : ""}"
+        data-mk-id="${escapeAttr(tid)}" data-mk-name="${escapeAttr(String(t.name || ""))}">
+      <select class="mk-bind-role-select" data-mk-id="${escapeAttr(tid)}">
+        <option value="">— выберите роль —</option>
+        ${roleOpts}
+      </select>
+      <button type="button" class="secondary mk-bind-save-btn btn-sm"
+        data-mk-id="${escapeAttr(tid)}"
+        data-mk-name="${escapeAttr(String(t.name || ""))}">Сохранить</button>
+    </div>
+  </div>`;
+}
+
+function _attachMkBindSaveBtn(btn, listEl) {
+  btn.addEventListener("click", async () => {
+    const mkId   = btn.dataset.mkId || "";
+    const mkName = btn.dataset.mkName || "";
+    const card   = btn.closest(".mk-bind-card");
+    const tgInput   = card?.querySelector(".mk-bind-tg-input");
+    const roleSelect = card?.querySelector(".mk-bind-role-select");
+    const tgRaw = (tgInput?.value || "").trim();
+    const role  = roleSelect?.value || "";
+    if (!tgRaw || !/^\d{5,15}$/.test(tgRaw)) {
+      setNotice("Введите корректный Telegram user_id (только цифры, 5–15 символов).", "error");
+      tgInput?.focus();
+      return;
+    }
+    if (!role) {
+      setNotice("Выберите роль.", "error");
+      roleSelect?.focus();
+      return;
+    }
+    const tgId = parseInt(tgRaw, 10);
+    btn.disabled = true;
+    btn.textContent = "Сохраняю...";
+    try {
+      const res = await apiPost("/api/admin/moyklass/staff-link", {
+        mk_teacher_id: mkId,
+        mk_teacher_name: mkName,
+        telegram_user_id: tgId,
+        role,
+      });
+      if (!res.ok && res.conflict) {
+        const confirmed = window.confirm(res.error + "\n\nПерепривязать?");
+        if (!confirmed) { btn.disabled = false; btn.textContent = "Сохранить"; return; }
+        const res2 = await apiPost("/api/admin/moyklass/staff-link", {
+          mk_teacher_id: mkId, mk_teacher_name: mkName, telegram_user_id: tgId, role, force: true,
+        });
+        if (!res2.ok) throw new Error(res2.error || "Ошибка");
+        setNotice(`Привязка обновлена: ${mkName} → TG ${tgId} · ${_MK_BIND_ROLE_DISPLAY[role] || role}`, "ok");
+      } else if (!res.ok) {
+        throw new Error(res.error || "Ошибка");
+      } else {
+        setNotice(`${res.was_new ? "Создан" : "Обновлён"}: ${mkName} → TG ${tgId} · ${_MK_BIND_ROLE_DISPLAY[role] || role}`, "ok");
+      }
+      await renderAdminContent();
+    } catch (e) {
+      setNotice(safeUserError(e), "error");
+      btn.disabled = false;
+      btn.textContent = "Сохранить";
+    }
   });
 }
 
