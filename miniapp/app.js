@@ -3733,6 +3733,19 @@ function renderChildrenReport() {
           ${cpExamples.length ? `<div class="cr-diag-row" style="margin-top:4px;font-weight:700"><span>Городская программа примеры</span></div>${cpExHtml}` : ""}
           ${rawEx.length ? `<div class="cr-diag-row" style="margin-top:6px;font-weight:700"><span>Raw lesson examples</span></div>${rawExHtml}` : ""}
           ${srcRows ? `<div class="cr-diag-row" style="margin-top:4px;font-weight:700"><span>Источник филиала</span></div>${srcRows}` : ""}
+          ${(() => {
+            const cf = d.client_flow || {};
+            if (!cf.source) return "";
+            return `
+              <div class="cr-diag-row" style="margin-top:6px;font-weight:700"><span>Статусы клиентов (client_flow)</span></div>
+              <div class="cr-diag-row"><span>История статусов доступна</span><b>${cf.status_history_available ? "да" : "нет"}</b></div>
+              <div class="cr-diag-row"><span>Источник</span><b>${escapeHtml(cf.source || "—")}</b></div>
+              <div class="cr-diag-row"><span>Карта статусов</span><b>${diag.client_flow_status_map_size ?? "—"} зап.</b></div>
+              <div class="cr-diag-row"><span>Пользователей проверено</span><b>${cf.users_scanned ?? "—"}</b></div>
+              <div class="cr-diag-row"><span>Статусы загружены</span><b>${diag.client_flow_statuses_loaded ? "да" : "нет"}</b></div>
+              <div class="cr-diag-row"><span>Пользователи загружены</span><b>${diag.client_flow_users_ok ? "да" : "нет"}</b></div>
+              ${(diag.client_flow_unknown_status_ids || []).length > 0 ? `<div class="cr-diag-row"><span>Неизвестные статус-id</span><b>${(diag.client_flow_unknown_status_ids || []).join(", ")}</b></div>` : ""}`;
+          })()}
         </div>
       </details>`;
   }
@@ -3952,6 +3965,43 @@ function renderChildrenReport() {
           </div>`;
       })()}
 
+      ${(() => {
+        // ── Client flow / status snapshot block ──────────────────────────────
+        const cf = d.client_flow || {};
+        if (!cf.source) return "";
+
+        const histAvail  = cf.status_history_available === true;
+        const curAvail   = cf.current_status_available;
+        const breakdown  = Array.isArray(cf.current_status_breakdown) ? cf.current_status_breakdown : [];
+
+        if (histAvail) {
+          // Future: render proper inflow/outflow tiles
+          // For now this branch won't trigger since backend always returns false.
+          return "";
+        }
+
+        const bdHtml = curAvail && breakdown.length > 0 ? `
+          <div class="cr-cf-breakdown">
+            ${breakdown.map(b => `
+              <div class="cr-cf-row">
+                <span class="cr-cf-status">${escapeHtml(b.status_name || b.slug || "—")}</span>
+                <span class="cr-cf-count">${b.count}</span>
+              </div>`).join("")}
+          </div>` : (curAvail ? "" : `<p class="cr-note">Данные о статусах клиентов не загружены.</p>`);
+
+        const scannedNote = cf.users_scanned > 0
+          ? `<p class="cr-note cr-cf-scanned">Показаны данные по ${cf.users_scanned} клиентам из МойКласс.</p>`
+          : "";
+
+        return `
+          <div class="cr-cf-block">
+            <div class="cr-cf-title">Статусы клиентов</div>
+            <p class="cr-note cr-cf-note">История изменения статусов в API МойКласс недоступна — приток и отток за месяц по дате перехода рассчитать нельзя.</p>
+            ${bdHtml}
+            ${scannedNote}
+          </div>`;
+      })()}
+
       ${diagHtml}
 
       <div style="margin-top:12px">
@@ -4115,6 +4165,24 @@ async function copyChildrenReport() {
         const pplStr = g.price_per_lesson != null ? ` · ${Number(g.price_per_lesson).toFixed(2)} BYN/зан.` : "";
         lines.push(`• ${g.group_name || g.group_id} · ${g.location_name || g.location_code}${pplStr} — ${g.unique_children} дет. · ${g.lessons_count || 0} зан. · прогноз ${_fmtB(g.forecast_revenue)} (факт.) / ${_fmtB(g.forecast_revenue_planned)} (план.)`);
       });
+    }
+  }
+
+  // ── Client flow section ──
+  const _cf = d.client_flow || {};
+  if (_cf.source != null) {
+    lines.push("", "Статусы клиентов (приток / отток):");
+    if (_cf.status_history_available) {
+      // Future: add inflow/outflow numbers here when backend supports history
+    } else {
+      lines.push("• История изменения статусов недоступна (МойКласс API не отдаёт дату перехода).");
+      lines.push("• Приток / отток за месяц рассчитать нельзя.");
+      const _cfb = Array.isArray(_cf.current_status_breakdown) ? _cf.current_status_breakdown : [];
+      if (_cfb.length > 0) {
+        lines.push("Текущие статусы клиентов:");
+        _cfb.forEach(b => lines.push(`  • ${b.status_name || b.slug} — ${b.count}`));
+        if (_cf.users_scanned) lines.push(`  (по ${_cf.users_scanned} клиентам из МойКласс)`);
+      }
     }
   }
 

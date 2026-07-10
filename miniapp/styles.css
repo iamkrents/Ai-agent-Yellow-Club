@@ -7044,6 +7044,23 @@ body { -webkit-overflow-scrolling: touch; }
 .cr-rev-loc-money { font-size: 12px; color: var(--text); margin-top: 3px; }
 .cr-rev-loc-money span { color: var(--muted); }
 
+/* --- Client flow block --- */
+.cr-cf-block { margin-top: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+.cr-cf-title { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin-bottom: 4px; }
+.cr-cf-note { margin-top: 4px; margin-bottom: 6px; }
+.cr-cf-breakdown { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-top: 6px; }
+.cr-cf-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.cr-cf-row:last-child { border-bottom: none; }
+.cr-cf-status { color: var(--text); }
+.cr-cf-count { font-weight: 700; color: var(--text); }
+.cr-cf-scanned { margin-top: 5px; }
+.cr-cf-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 6px; }
+.cr-cf-tile { background: var(--card-bg, rgba(0,0,0,.03)); border-radius: 8px; padding: 8px 6px; text-align: center; }
+.cr-cf-tile-n { display: block; font-size: 18px; font-weight: 800; color: var(--text); line-height: 1.1; }
+.cr-cf-tile-n.positive { color: #27ae60; }
+.cr-cf-tile-n.negative { color: #c0392b; }
+.cr-cf-tile-label { display: block; font-size: 10px; color: var(--muted); margin-top: 2px; line-height: 1.2; }
+
 /* --- Lesson cards --- */
 .lc-card { animation: ycCardEnter var(--yc-normal) var(--yc-ease) both; }
 
