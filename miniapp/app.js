@@ -3733,6 +3733,14 @@ function renderChildrenReport() {
           ${cpExamples.length ? `<div class="cr-diag-row" style="margin-top:4px;font-weight:700"><span>Городская программа примеры</span></div>${cpExHtml}` : ""}
           ${rawEx.length ? `<div class="cr-diag-row" style="margin-top:6px;font-weight:700"><span>Raw lesson examples</span></div>${rawExHtml}` : ""}
           ${srcRows ? `<div class="cr-diag-row" style="margin-top:4px;font-weight:700"><span>Источник филиала</span></div>${srcRows}` : ""}
+          ${diag.payments_loaded != null ? `
+            <div class="cr-diag-row" style="margin-top:6px;font-weight:700"><span>Оплаты (filialId-метод)</span></div>
+            <div class="cr-diag-row"><span>Загружено</span><b>${diag.payments_loaded} (дох. ${diag.payments_income_count ?? "—"} / возвр. ${diag.payments_refund_count ?? "—"})</b></div>
+            <div class="cr-diag-row"><span>Брутто / возвраты / нетто</span><b>${diag.payments_total_gross ?? "—"} / ${diag.payments_total_refunds ?? "—"} / ${diag.payments_total_net ?? "—"} BYN</b></div>
+            <div class="cr-diag-row"><span>filialId: есть / ок / неизв / нет</span><b>${diag.payments_filial_present ?? 0} / ${diag.payments_filial_ok ?? 0} / ${diag.payments_filial_unknown ?? 0} / ${diag.payments_filial_missing ?? 0}</b></div>
+            <div class="cr-diag-row"><span>Fallback по userId</span><b>${diag.payments_fallback_uid ?? 0}</b></div>
+            <div class="cr-diag-row"><span>Не распределено</span><b>${diag.payments_unallocated_amount ?? 0} BYN · ${diag.payments_unallocated_count ?? 0} опл.</b></div>
+          ` : ""}
           ${(() => {
             const cf = d.client_flow || {};
             if (!cf.source) return "";
@@ -3897,26 +3905,43 @@ function renderChildrenReport() {
         if (!payAvail) {
           actualHtml = `<p class="cr-note" style="color:var(--warn)">Фактические оплаты временно недоступны: ${escapeHtml(revPay.error || "нет данных от МойКласс")}.</p>`;
         } else if (mapAvail && actualByLoc.length > 0) {
-          const actualRows = actualByLoc.map(loc => `
-            <div class="cr-rev-loc-row">
-              <div class="cr-rev-loc-name">${escapeHtml(loc.location_name)} <span class="cr-rev-loc-code">${escapeHtml(loc.location_code)}</span></div>
-              <div class="cr-rev-loc-money"><b>${fmtByn(loc.actual_paid)}</b> <span>· ${loc.payments_count} оплат</span></div>
-            </div>`).join("");
+          const hasRefunds = actualByLoc.some(loc => (loc.refunds ?? 0) > 0);
+          const actualRows = actualByLoc.map(loc => {
+            const gross = loc.gross_income ?? loc.actual_paid;
+            const refunds = loc.refunds ?? 0;
+            const net = loc.actual_paid;
+            const cntStr = (loc.payments_count || 0) + " оплат" + ((loc.refunds_count || 0) > 0 ? ` · ${loc.refunds_count} возврат` : "");
+            const refPart = hasRefunds && refunds > 0
+              ? `<span>${fmtByn(gross)}</span> <span style="color:var(--warn)">−${fmtByn(refunds)}</span> → `
+              : "";
+            return `
+              <div class="cr-rev-loc-row">
+                <div class="cr-rev-loc-name">${escapeHtml(loc.location_name)} <span class="cr-rev-loc-code">${escapeHtml(loc.location_code)}</span></div>
+                <div class="cr-rev-loc-meta">${cntStr}</div>
+                <div class="cr-rev-loc-money">${refPart}<b>${fmtByn(net)}</b></div>
+              </div>`;
+          }).join("");
+          const grossTotal = rev.actual_payments_gross_income ?? actTotal;
+          const refundsTotal = rev.actual_payments_refunds ?? 0;
+          const netTotal = rev.actual_payments_net_income ?? actTotal;
           const unallocRow = (actUnalloc != null && actUnalloc > 0) ? `
             <div class="cr-rev-loc-row">
               <div class="cr-rev-loc-name cr-rev-neg">Не распределено</div>
               <div class="cr-rev-loc-money cr-rev-neg"><b>${fmtByn(actUnalloc)}</b></div>
             </div>` : "";
+          const totalRefPart = refundsTotal > 0
+            ? `<span>${fmtByn(grossTotal)}</span> <span style="color:var(--warn)">−${fmtByn(refundsTotal)}</span> → `
+            : "";
           actualHtml = `
             <div class="cr-rev-by-loc">
               ${actualRows}
               ${unallocRow}
               <div class="cr-rev-loc-row cr-rev-loc-total">
                 <div class="cr-rev-loc-name">Общий факт</div>
-                <div class="cr-rev-loc-money"><b>${fmtByn(actTotal)}</b></div>
+                <div class="cr-rev-loc-money">${totalRefPart}<b>${fmtByn(netTotal)}</b></div>
               </div>
             </div>
-            <p class="cr-note">Метод: по ученику из регулярных занятий. Если ученик посещал несколько учебных классов — оплата не распределяется автоматически.</p>`;
+            <p class="cr-note">Метод: filialId из платежей МойКласс → ученик из регулярных занятий (если нет filialId). Разница ориентировочная.</p>`;
         } else {
           actualHtml = `
             <p class="cr-note">Фактические оплаты из МойКласс сейчас доступны только общим итогом. В API платежей нет надёжной связи с учебным классом.</p>
@@ -4179,13 +4204,18 @@ async function copyChildrenReport() {
       lines.push(`• Общий прогноз — по факт. посещ.: ${_fmtB(_fbt.actual_visits_forecast)} · по плану: ${_fmtB(_fbt.planned_visits_forecast)}`);
     lines.push("", "Фактическая:");
     if (_mapAvail && _abl.length > 0) {
+      const _grossTot = _rev.actual_payments_gross_income ?? _actTotal;
+      const _refTot   = _rev.actual_payments_refunds ?? 0;
+      const _netTot   = _rev.actual_payments_net_income ?? _actTotal;
       _abl.forEach(loc => {
-        lines.push(`• ${loc.location_name} (${loc.location_code}) — ${_fmtB(loc.actual_paid)} · ${loc.payments_count} оплат`);
+        const refStr = (loc.refunds ?? 0) > 0 ? ` (брутто ${_fmtB(loc.gross_income ?? loc.actual_paid)} − возвр. ${_fmtB(loc.refunds)})` : "";
+        lines.push(`• ${loc.location_name} (${loc.location_code}) — ${_fmtB(loc.actual_paid)}${refStr} · ${loc.payments_count} оплат`);
       });
       if (_actUnalloc != null && _actUnalloc > 0)
         lines.push(`• Не распределено — ${_fmtB(_actUnalloc)}`);
-      lines.push(`• Общий факт — ${_fmtB(_actTotal)}`);
-      lines.push("(Метод: по ученику из регулярных занятий. Разница ориентировочная.)");
+      const totRefStr = _refTot > 0 ? ` (брутто ${_fmtB(_grossTot)} − возвр. ${_fmtB(_refTot)})` : "";
+      lines.push(`• Общий факт — ${_fmtB(_netTot)}${totRefStr}`);
+      lines.push("(Метод: filialId из платежей МойКласс → ученик из регулярных занятий. Разница ориентировочная.)");
     } else {
       lines.push(`• Факт оплат доступен только общим итогом: ${_fmtB(_actTotal)}.`);
       lines.push("(В API платежей МойКласс нет надёжной связи с учебным классом.)");

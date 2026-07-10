@@ -2042,18 +2042,28 @@ class MoyKlassClient:
         unknown_count = loc_src_counts.get("unknown", 0)
 
         # ── Revenue calculation ──────────────────────────────────────────────
-        # Fetch actual payments for the month (non-blocking: errors yield empty)
+        # Fetch payments for the month (all types; optype split is done locally)
         try:
-            _pay_result = self._scan_payments_for_month(start, end, limit=4000)
+            _pay_result = self._scan_payments_for_month(start, end, limit=6000)
             _pay_items_raw = [x for x in extract_items(_pay_result.data) if isinstance(x, dict)] if _pay_result.ok else []
-            _pay_items = [x for x in _pay_items_raw if str(x.get("optype") or "income").lower() == "income"]
-            actual_paid_total = round(_sum_payment_amounts(_pay_items), 2)
-            payments_loaded = len(_pay_items)
+            _pay_items_income = [x for x in _pay_items_raw if str(x.get("optype") or "income").lower() in ("income",)]
+            _pay_items_refund = [x for x in _pay_items_raw if str(x.get("optype") or "").lower() == "refund"]
+            _pay_items = _pay_items_income  # backward-compat alias
+            _actual_gross_income = round(_sum_payment_amounts(_pay_items_income), 2)
+            _actual_refunds_total = round(abs(_sum_payment_amounts(_pay_items_refund)), 2)
+            actual_paid_total = _actual_gross_income  # gross income (kept for backward compat)
+            actual_net_income = round(_actual_gross_income - _actual_refunds_total, 2)
+            payments_loaded = len(_pay_items_raw)
             payments_available = _pay_result.ok
             payments_error = (_pay_result.error or "")[:300] if not _pay_result.ok else ""
         except Exception as _pe:
             _pay_items = []
+            _pay_items_income = []
+            _pay_items_refund = []
+            _actual_gross_income = 0.0
+            _actual_refunds_total = 0.0
             actual_paid_total = 0.0
+            actual_net_income = 0.0
             payments_loaded = 0
             payments_available = False
             payments_error = str(_pe)[:300]
@@ -2123,67 +2133,126 @@ class MoyKlassClient:
             _fbl_agg.values(), key=lambda x: _LOC_CODE_ORDER.get(x["location_code"], 50)
         )
 
-        # ── Payment distribution by location (student_single_regular_location) ─
-        # If a student visited only ONE regular location this month → assign their payment there.
-        # If multiple locations → unallocated. If not in regular → unallocated.
+        # ── Payment distribution by location (v7.0.65: filialId primary, userId fallback) ─
+        # Map filialId → location code from already-cached filial_map (no extra API call needed)
+        _fid_to_loc: dict[str, str] = {}
+        for _fid_str, _fname in filial_map.items():
+            _floc, _ = _children_location_code("", _fname)
+            _fid_to_loc[str(_fid_str)] = _floc
+
         _student_single_loc: dict[str, str | None] = {
             _sid: (list(_sd["locations"])[0] if len(_sd.get("locations") or set()) == 1 else None)
             for _sid, _sd in reg_students.items()
         }
-        _pay_dist_amt: dict[str, float] = {}
-        _pay_dist_cnt: dict[str, int] = {}
+
+        # Accumulators per location
+        _pay_loc_income: dict[str, float] = {}
+        _pay_loc_refund: dict[str, float] = {}
+        _pay_loc_cnt: dict[str, int] = {}
+        _pay_loc_ref_cnt: dict[str, int] = {}
+
+        # Diagnostic counters
         _pay_with_uid = 0
         _pay_without_uid = 0
+        _pay_filial_present_cnt = 0
+        _pay_filial_ok_cnt = 0       # filialId resolved to known location
+        _pay_filial_unknown_cnt = 0  # filialId present but maps to "unknown"
+        _pay_filial_missing_cnt = 0  # no filialId on payment
+        _pay_fallback_uid_cnt = 0    # reached userId fallback path
         _pay_single_loc_cnt = 0
         _pay_multi_loc_cnt = 0
         _pay_not_regular_cnt = 0
-        _pay_unalloc_amount = 0.0
+        _pay_unalloc_income = 0.0
+        _pay_unalloc_cnt = 0
         _unalloc_examples: list[dict[str, Any]] = []
 
-        for _pi in _pay_items:
-            _uid = str(_pick(_pi, ("userId", "studentId", "clientId", "customerId", "idUser")) or "").strip()
+        for _pi in _pay_items_income:
             _pamt = round(_sum_payment_amounts([_pi]), 2)
-            if not _uid:
+            _raw_fid = str(_pick(_pi, ("filialId", "filial_id", "branchId", "branch_id", "officeId")) or "").strip()
+            _uid = str(_pick(_pi, ("userId", "studentId", "clientId", "customerId", "idUser")) or "").strip()
+            if _uid:
+                _pay_with_uid += 1
+            else:
                 _pay_without_uid += 1
-                _pay_unalloc_amount = round(_pay_unalloc_amount + _pamt, 2)
+            # Priority 1: filialId → location code
+            _loc = ""
+            if _raw_fid:
+                _pay_filial_present_cnt += 1
+                _floc2 = _fid_to_loc.get(_raw_fid, "")
+                if _floc2 and _floc2 != "unknown":
+                    _pay_filial_ok_cnt += 1
+                    _loc = _floc2
+                else:
+                    _pay_filial_unknown_cnt += 1
+            else:
+                _pay_filial_missing_cnt += 1
+            # Priority 2: userId → single regular location
+            if not _loc and _uid:
+                _pay_fallback_uid_cnt += 1
+                if _uid in _student_single_loc:
+                    _sloc = _student_single_loc[_uid]
+                    if _sloc:
+                        _pay_single_loc_cnt += 1
+                        _loc = _sloc
+                    else:
+                        _pay_multi_loc_cnt += 1
+                else:
+                    _pay_not_regular_cnt += 1
+            if _loc:
+                _pay_loc_income[_loc] = round(_pay_loc_income.get(_loc, 0.0) + _pamt, 2)
+                _pay_loc_cnt[_loc] = _pay_loc_cnt.get(_loc, 0) + 1
+            else:
+                _pay_unalloc_income = round(_pay_unalloc_income + _pamt, 2)
+                _pay_unalloc_cnt += 1
                 if len(_unalloc_examples) < 5:
-                    _unalloc_examples.append({"reason": "no_user_id", "amount": _pamt})
-                continue
-            _pay_with_uid += 1
-            if _uid not in _student_single_loc:
-                _pay_not_regular_cnt += 1
-                _pay_unalloc_amount = round(_pay_unalloc_amount + _pamt, 2)
-                if len(_unalloc_examples) < 5:
-                    _unalloc_examples.append({"reason": "not_in_regular", "amount": _pamt})
-                continue
-            _sloc = _student_single_loc[_uid]
-            if _sloc is None:
-                _pay_multi_loc_cnt += 1
-                _pay_unalloc_amount = round(_pay_unalloc_amount + _pamt, 2)
-                if len(_unalloc_examples) < 5:
-                    _unalloc_examples.append({"reason": "multi_location", "amount": _pamt})
-                continue
-            _pay_single_loc_cnt += 1
-            _pay_dist_amt[_sloc] = round(_pay_dist_amt.get(_sloc, 0.0) + _pamt, 2)
-            _pay_dist_cnt[_sloc] = _pay_dist_cnt.get(_sloc, 0) + 1
+                    _unalloc_examples.append({
+                        "user_id": _uid or None, "filial_id": _raw_fid or None,
+                        "amount": _pamt,
+                        "reason": ("no_uid_no_filial" if not _uid and not _raw_fid
+                                   else "unknown_filial" if _raw_fid
+                                   else "uid_no_single_loc"),
+                    })
 
-        _pay_distributed_total = round(sum(_pay_dist_amt.values()), 2)
-        _pay_mapping_available = payments_available and _pay_with_uid > 0
-        _pay_unalloc_total_cnt = _pay_without_uid + _pay_multi_loc_cnt + _pay_not_regular_cnt
+        for _pr in _pay_items_refund:
+            _pramt = round(abs(_sum_payment_amounts([_pr])), 2)
+            _raw_fid = str(_pick(_pr, ("filialId", "filial_id", "branchId", "branch_id", "officeId")) or "").strip()
+            _uid = str(_pick(_pr, ("userId", "studentId", "clientId", "customerId", "idUser")) or "").strip()
+            _loc = ""
+            if _raw_fid:
+                _floc2 = _fid_to_loc.get(_raw_fid, "")
+                if _floc2 and _floc2 != "unknown":
+                    _loc = _floc2
+            if not _loc and _uid:
+                if _uid in _student_single_loc:
+                    _sloc = _student_single_loc[_uid]
+                    if _sloc:
+                        _loc = _sloc
+            _bucket = _loc or "__unalloc__"
+            _pay_loc_refund[_bucket] = round(_pay_loc_refund.get(_bucket, 0.0) + _pramt, 2)
+            if _loc:
+                _pay_loc_ref_cnt[_loc] = _pay_loc_ref_cnt.get(_loc, 0) + 1
 
-        actual_payments_by_location: list[dict[str, Any]] = sorted(
-            [
-                {
-                    "location_code": _lc3,
-                    "location_name": _CHILDREN_LOC_NAMES.get(_lc3, _lc3),
-                    "actual_paid": _pay_dist_amt[_lc3],
-                    "payments_count": _pay_dist_cnt.get(_lc3, 0),
-                    "method": "student_single_regular_location",
-                }
-                for _lc3 in _pay_dist_amt
-            ],
-            key=lambda x: _LOC_CODE_ORDER.get(x["location_code"], 50),
+        _all_pay_locs = sorted(
+            set(_pay_loc_income) | (set(_pay_loc_refund) - {"__unalloc__"}),
+            key=lambda x: _LOC_CODE_ORDER.get(x, 50),
         )
+        _pay_distributed_total = round(sum(_pay_loc_income.values()), 2)
+        _pay_mapping_available = payments_available and (_pay_filial_ok_cnt > 0 or _pay_single_loc_cnt > 0)
+        _pay_unalloc_total_cnt = _pay_unalloc_cnt
+
+        actual_payments_by_location: list[dict[str, Any]] = [
+            {
+                "location_code": _lc3,
+                "location_name": _CHILDREN_LOC_NAMES.get(_lc3, _lc3),
+                "actual_paid": round(_pay_loc_income.get(_lc3, 0.0) - _pay_loc_refund.get(_lc3, 0.0), 2),
+                "gross_income": _pay_loc_income.get(_lc3, 0.0),
+                "refunds": _pay_loc_refund.get(_lc3, 0.0),
+                "payments_count": _pay_loc_cnt.get(_lc3, 0),
+                "refunds_count": _pay_loc_ref_cnt.get(_lc3, 0),
+                "method": "payment_filial_id_with_user_fallback",
+            }
+            for _lc3 in _all_pay_locs
+        ]
 
         # Backward-compat rev_by_loc (same data, old field names)
         _rev_by_loc: dict[str, dict[str, Any]] = {}
@@ -2373,10 +2442,13 @@ class MoyKlassClient:
                     },
                     "actual_payments_by_location": actual_payments_by_location,
                     "actual_payments_total": actual_paid_total if payments_available else None,
+                    "actual_payments_gross_income": _actual_gross_income if payments_available else None,
+                    "actual_payments_refunds": _actual_refunds_total if payments_available else None,
+                    "actual_payments_net_income": actual_net_income if payments_available else None,
                     "actual_payments_distributed": _pay_distributed_total if _pay_mapping_available else None,
                     "actual_payments_unallocated": round(actual_paid_total - _pay_distributed_total, 2) if _pay_mapping_available else (actual_paid_total if payments_available else None),
                     "actual_payments_unallocated_count": _pay_unalloc_total_cnt,
-                    "actual_payments_mapping_method": "student_single_regular_location",
+                    "actual_payments_mapping_method": "payment_filial_id_with_user_fallback",
                     "actual_payments_mapping_available": _pay_mapping_available,
                     "regular": {
                         "forecast_total": forecast_total,
@@ -2392,6 +2464,11 @@ class MoyKlassClient:
                         "source": "moyklass",
                         "available": payments_available,
                         "loaded_count": payments_loaded,
+                        "income_count": len(_pay_items_income) if payments_available else 0,
+                        "refund_count": len(_pay_items_refund) if payments_available else 0,
+                        "gross_income": _actual_gross_income if payments_available else None,
+                        "refunds_total": _actual_refunds_total if payments_available else None,
+                        "net_income": actual_net_income if payments_available else None,
                         "actual_paid_total": actual_paid_total if payments_available else None,
                         "group_mapping_available": False,
                         "error": payments_error,
@@ -2454,17 +2531,27 @@ class MoyKlassClient:
                     ),
                     "revenue_city_program_groups_excluded": len(sum_groups),
                     "revenue_actual_mapping_available": _pay_mapping_available,
-                    "revenue_actual_mapping_method": "student_single_regular_location",
+                    "revenue_actual_mapping_method": "payment_filial_id_with_user_fallback",
                     "planned_student_visits_total": planned_vis_total_reg,
                     "actual_visit_records_total_reg": actual_vis_total_reg,
                     "payments_loaded": payments_loaded,
-                    "payments_total": actual_paid_total if payments_available else None,
+                    "payments_income_count": len(_pay_items_income),
+                    "payments_refund_count": len(_pay_items_refund),
+                    "payments_total_gross": _actual_gross_income if payments_available else None,
+                    "payments_total_refunds": _actual_refunds_total if payments_available else None,
+                    "payments_total_net": actual_net_income if payments_available else None,
+                    "payments_filial_present": _pay_filial_present_cnt,
+                    "payments_filial_ok": _pay_filial_ok_cnt,
+                    "payments_filial_unknown": _pay_filial_unknown_cnt,
+                    "payments_filial_missing": _pay_filial_missing_cnt,
+                    "payments_fallback_uid": _pay_fallback_uid_cnt,
                     "payments_with_student_id": _pay_with_uid,
                     "payments_without_student_id": _pay_without_uid,
                     "payments_single_location_mapped": _pay_single_loc_cnt,
                     "payments_multi_location_unallocated": _pay_multi_loc_cnt,
                     "payments_not_in_regular_unallocated": _pay_not_regular_cnt,
-                    "payments_unallocated_amount": _pay_unalloc_amount,
+                    "payments_unallocated_amount": _pay_unalloc_income,
+                    "payments_unallocated_count": _pay_unalloc_cnt,
                     "examples_unallocated_payments": _unalloc_examples,
                     "payments_group_mapping_available": False,
                     "client_flow_source": "moyklass_users_stateChangedAt",
@@ -2670,10 +2757,10 @@ class MoyKlassClient:
         return MoyKlassResult(True, data={"lessonRecords": collected, "_endpoint": endpoint, "_diagnostics": diagnostics}, status=200, endpoint=endpoint)
 
     def _scan_payments_for_month(self, start: date, end: date, limit: int = 8000) -> MoyKlassResult:
-        """Read official MoyKlass incoming payments for the month.
+        """Read MoyKlass payments for the month (all types: income + refund).
 
         Endpoint from openapi.json: GET /v1/company/payments.
-        Important params: date=YYYY-MM-DD,YYYY-MM-DD and optype=income.
+        optype filter is applied at the call site so both income and refunds are returned.
         """
         page_size = 500
         max_pages = max(1, (int(limit or 8000) // page_size) + 2)
@@ -2682,7 +2769,7 @@ class MoyKlassClient:
         seen: set[str] = set()
         diagnostics: list[dict[str, Any]] = []
         date_value = self._api_date_range_value(start, end)
-        base_params = {"date": date_value, "optype": "income", "appendInvoices": "true"}
+        base_params = {"date": date_value, "appendInvoices": "true"}
 
         for page in range(max_pages):
             params = {**base_params, "limit": str(page_size), "offset": str(page * page_size)}
