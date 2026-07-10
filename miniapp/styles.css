@@ -7019,6 +7019,20 @@ body { -webkit-overflow-scrolling: touch; }
 .cr-group-row { padding: 4px 0; border-bottom: 1px solid var(--line); }
 .cr-group-name { font-size: 12px; font-weight: 600; color: var(--text); }
 .cr-group-meta { font-size: 11px; color: var(--muted); margin-top: 1px; }
+.cr-revenue-block { margin-top: 12px; padding: 10px 0; border-top: 2px solid var(--accent); }
+.cr-revenue-title { font-size: 13px; font-weight: 800; color: var(--accent); margin-bottom: 6px; }
+.cr-rev-tiles { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.cr-rev-tile { background: var(--card-bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; min-width: 110px; flex: 1 1 110px; text-align: center; }
+.cr-rev-n { font-size: 15px; font-weight: 800; color: var(--accent); display: block; line-height: 1.2; }
+.cr-rev-label { font-size: 10px; color: var(--muted); display: block; margin-top: 2px; }
+.cr-rev-pos { color: #27ae60; }
+.cr-rev-neg { color: #e74c3c; }
+.cr-rev-group { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.cr-rev-group-name { font-size: 12px; font-weight: 700; color: var(--text); }
+.cr-rev-group-loc { font-size: 11px; color: var(--muted); }
+.cr-rev-group-stats { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.cr-rev-group-money { font-size: 12px; margin-top: 3px; color: var(--text); }
+.cr-rev-group-label { color: var(--muted); }
 
 /* --- Lesson cards --- */
 .lc-card { animation: ycCardEnter var(--yc-normal) var(--yc-ease) both; }

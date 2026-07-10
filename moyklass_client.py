@@ -1906,6 +1906,7 @@ class MoyKlassClient:
                         "location_name": _CHILDREN_LOC_NAMES.get(loc_code, loc_code),
                         "students": set(),
                         "lesson_ids": set(),
+                        "visits_total": 0,
                         "_filial_id": _raw_filial_id,
                         "_filial_name": filial_name,
                         "_room_id": room_id,
@@ -1917,6 +1918,7 @@ class MoyKlassClient:
                     reg_groups[class_id]["location_code"] = loc_code
                     reg_groups[class_id]["location_name"] = _CHILDREN_LOC_NAMES.get(loc_code, loc_code)
                     reg_groups[class_id]["_loc_src"] = loc_src
+                reg_groups[class_id]["visits_total"] = reg_groups[class_id].get("visits_total", 0) + 1
                 reg_groups[class_id]["students"].add(student_id)
                 _rlid = str(_pick(lesson or {}, ("id", "lessonId")) or _pick(rec, ("lessonId",)) or "")
                 if _rlid:
@@ -2038,6 +2040,65 @@ class MoyKlassClient:
         )
 
         unknown_count = loc_src_counts.get("unknown", 0)
+
+        # ── Revenue calculation ──────────────────────────────────────────────
+        # Fetch actual payments for the month (non-blocking: errors yield empty)
+        try:
+            _pay_result = self._scan_payments_for_month(start, end, limit=4000)
+            _pay_items_raw = [x for x in extract_items(_pay_result.data) if isinstance(x, dict)] if _pay_result.ok else []
+            _pay_items = [x for x in _pay_items_raw if str(x.get("optype") or "income").lower() == "income"]
+            actual_paid_total = round(_sum_payment_amounts(_pay_items), 2)
+            payments_loaded = len(_pay_items)
+            payments_available = _pay_result.ok
+            payments_error = (_pay_result.error or "")[:300] if not _pay_result.ok else ""
+        except Exception as _pe:
+            _pay_items = []
+            actual_paid_total = 0.0
+            payments_loaded = 0
+            payments_available = False
+            payments_error = str(_pe)[:300]
+
+        rev_by_group: list[dict[str, Any]] = []
+        for _gid, _gd in reg_groups.items():
+            _vis = _gd.get("visits_total", 0)
+            _les = len(_gd.get("lesson_ids") or ())
+            _uch = len(_gd.get("students") or set())
+            _pvis = _uch * _les
+            rev_by_group.append({
+                "group_id": str(_gid),
+                "group_name": _gd["group_name"],
+                "location_code": _gd["location_code"],
+                "location_name": _gd["location_name"],
+                "unique_children": _uch,
+                "lessons_count": _les,
+                "actual_visit_records": _vis,
+                "planned_student_visits": _pvis,
+                "forecast_revenue": round(_vis * PRICE_PER_LESSON_BYN, 2),
+                "forecast_revenue_planned": round(_pvis * PRICE_PER_LESSON_BYN, 2),
+                "actual_paid": None,
+            })
+        rev_by_group.sort(key=lambda x: (_LOC_CODE_ORDER.get(x["location_code"], 50), x["group_name"]))
+
+        forecast_total = round(sum(g["forecast_revenue"] for g in rev_by_group), 2)
+        forecast_total_planned = round(sum(g["forecast_revenue_planned"] for g in rev_by_group), 2)
+        actual_vis_total_reg = sum(g["actual_visit_records"] for g in rev_by_group)
+        planned_vis_total_reg = sum(g["planned_student_visits"] for g in rev_by_group)
+        rev_delta = round(actual_paid_total - forecast_total, 2) if payments_available else None
+
+        _rev_by_loc: dict[str, dict[str, Any]] = {}
+        for _g in rev_by_group:
+            _lc = _g["location_code"]
+            if _lc not in _rev_by_loc:
+                _rev_by_loc[_lc] = {
+                    "location_code": _lc,
+                    "location_name": _g["location_name"],
+                    "forecast_revenue": 0.0,
+                    "forecast_revenue_planned": 0.0,
+                }
+            _rev_by_loc[_lc]["forecast_revenue"] = round(_rev_by_loc[_lc]["forecast_revenue"] + _g["forecast_revenue"], 2)
+            _rev_by_loc[_lc]["forecast_revenue_planned"] = round(_rev_by_loc[_lc]["forecast_revenue_planned"] + _g["forecast_revenue_planned"], 2)
+        rev_by_loc = sorted(_rev_by_loc.values(), key=lambda x: _LOC_CODE_ORDER.get(x["location_code"], 50))
+
         elapsed_ms = int((time.monotonic() - t_start) * 1000)
 
         return MoyKlassResult(
@@ -2109,6 +2170,31 @@ class MoyKlassClient:
                     "makeup": excl_makeup,
                     "cancelled": excl_cancelled,
                 },
+                "revenue": {
+                    "price_per_subscription": MONTHLY_SUBSCRIPTION_PRICE_BYN,
+                    "lessons_in_subscription": LESSONS_IN_SUBSCRIPTION,
+                    "price_per_lesson": PRICE_PER_LESSON_BYN,
+                    "method": "actual_regular_visits",
+                    "method_label": "По фактическим регулярным посещениям",
+                    "regular": {
+                        "forecast_total": forecast_total,
+                        "forecast_total_planned": forecast_total_planned,
+                        "actual_paid_total": actual_paid_total if payments_available else None,
+                        "delta": rev_delta,
+                        "actual_visit_records_total": actual_vis_total_reg,
+                        "planned_student_visits_total": planned_vis_total_reg,
+                        "by_location": rev_by_loc,
+                        "by_group": rev_by_group,
+                    },
+                    "payments": {
+                        "source": "moyklass",
+                        "available": payments_available,
+                        "loaded_count": payments_loaded,
+                        "actual_paid_total": actual_paid_total if payments_available else None,
+                        "group_mapping_available": False,
+                        "error": payments_error,
+                    },
+                },
                 "diagnostics": {
                     "lesson_records_loaded": len(all_records),
                     "present_records": len(attended),
@@ -2139,6 +2225,14 @@ class MoyKlassClient:
                     "city_program_matched_examples": city_program_matched_examples,
                     "classes_map_size": len(classes_map),
                     "raw_lesson_examples": raw_lesson_examples,
+                    "revenue_method": "actual_regular_visits",
+                    "price_per_lesson": PRICE_PER_LESSON_BYN,
+                    "revenue_groups_count": len(rev_by_group),
+                    "planned_student_visits_total": planned_vis_total_reg,
+                    "actual_visit_records_total_reg": actual_vis_total_reg,
+                    "payments_loaded": payments_loaded,
+                    "payments_total": actual_paid_total if payments_available else None,
+                    "payments_group_mapping_available": False,
                 },
                 "source": "moyklass/lessonRecords",
                 "records_total": len(all_records),
@@ -2562,6 +2656,11 @@ _EXCLUDE_LESSON_KEYWORDS = (
     "city program", "городская программа",
     "пробное", "пробн", " trial", "отработка", "makeup",
 )
+
+# ── Revenue constants (Yellow Club subscription pricing) ────────────────────
+MONTHLY_SUBSCRIPTION_PRICE_BYN: float = 239.0
+LESSONS_IN_SUBSCRIPTION: int = 4
+PRICE_PER_LESSON_BYN: float = MONTHLY_SUBSCRIPTION_PRICE_BYN / LESSONS_IN_SUBSCRIPTION  # 59.75
 
 _LOC_CODE_ORDER = {"YC0": 0, "YC1": 1, "YC2": 2, "YC3": 3, "unknown": 99}
 
