@@ -7013,6 +7013,12 @@ body { -webkit-overflow-scrolling: touch; }
 .cr-overlap-head { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin: 0 0 4px; }
 .cr-overlap-row { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; color: var(--text); }
 .cr-overlap-n { font-weight: 700; }
+.cr-groups-block { margin-top: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
+.cr-groups-block-title { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin-bottom: 4px; }
+.cr-groups-total { font-size: 12px; font-weight: 700; margin-top: 4px; color: var(--text); }
+.cr-group-row { padding: 4px 0; border-bottom: 1px solid var(--line); }
+.cr-group-name { font-size: 12px; font-weight: 600; color: var(--text); }
+.cr-group-meta { font-size: 11px; color: var(--muted); margin-top: 1px; }
 
 /* --- Lesson cards --- */
 .lc-card { animation: ycCardEnter var(--yc-normal) var(--yc-ease) both; }

@@ -3603,6 +3603,11 @@ function renderChildrenReport() {
   const role  = state.me?.role || "";
   const isOwnerAdmin = ["owner", "admin", "director", "operations"].includes(role);
 
+  const regGroups      = Array.isArray(reg.by_group)           ? reg.by_group           : [];
+  const sumGroups2     = Array.isArray(sum.by_group)           ? sum.by_group           : [];
+  const regGroupsByLoc = Array.isArray(reg.groups_by_location) ? reg.groups_by_location : [];
+  const sumGroupsByLoc = Array.isArray(sum.groups_by_location) ? sum.groups_by_location : [];
+
   // ── Exclusions note ──
   const exclParts = [];
   if (excl.trial)     exclParts.push(`пробных: ${excl.trial}`);
@@ -3685,6 +3690,9 @@ function renderChildrenReport() {
           <div class="cr-diag-row"><span>С visit=true</span><b>${diag.present_records}</b></div>
           <div class="cr-diag-row"><span>Regular records</span><b>${diag.regular_records ?? "—"}</b></div>
           <div class="cr-diag-row"><span>City program records</span><b>${diag.city_program_records ?? "—"}</b></div>
+          <div class="cr-diag-row"><span>Рег. групп (unique)</span><b>${diag.regular_unique_groups ?? "—"}</b></div>
+          <div class="cr-diag-row"><span>Групп ГП (unique)</span><b>${diag.city_program_unique_groups ?? "—"}</b></div>
+          <div class="cr-diag-row"><span>Групп всего (unique)</span><b>${diag.combined_unique_groups ?? "—"}</b></div>
           <div class="cr-diag-row"><span>Карта классов</span><b>${diag.classes_map_size ?? "?"} зап.</b></div>
           <div class="cr-diag-row"><span>Карта филиалов</span><b>${diag.filial_map_size ?? "?"} зап.</b></div>
           <div class="cr-diag-row"><span>Без филиала</span><b>${diag.unknown_location_records ?? 0}</b></div>
@@ -3716,8 +3724,10 @@ function renderChildrenReport() {
       <div class="cr-title">Дети за ${escapeHtml(_childrenReportMonthLabel(month))}</div>
 
       <div class="cr-tiles">
-        <div class="cr-tile"><span class="cr-tile-n">${reg.total_unique_children}</span><span class="cr-tile-label">Регулярные</span></div>
+        <div class="cr-tile"><span class="cr-tile-n">${reg.total_unique_children}</span><span class="cr-tile-label">Регулярные дети</span></div>
+        <div class="cr-tile"><span class="cr-tile-n">${reg.total_unique_groups ?? regGroups.length}</span><span class="cr-tile-label">Рег. групп</span></div>
         <div class="cr-tile"><span class="cr-tile-n">${sum.total_unique_children}</span><span class="cr-tile-label">Гор. программа</span></div>
+        <div class="cr-tile"><span class="cr-tile-n">${sum.total_unique_groups ?? sumGroups2.length}</span><span class="cr-tile-label">Групп ГП</span></div>
         <div class="cr-tile"><span class="cr-tile-n">${comb.total_unique_children}</span><span class="cr-tile-label">Итого</span></div>
         <div class="cr-tile"><span class="cr-tile-n">${mkp.unique_children}</span><span class="cr-tile-label">Дети на отработках</span></div>
         <div class="cr-tile"><span class="cr-tile-n">${mkp.visit_records}</span><span class="cr-tile-label">Отработок посещ.</span></div>
@@ -3728,9 +3738,38 @@ function renderChildrenReport() {
 
       ${_crSection("Регулярные занятия", reg.total_unique_children, reg.by_location, exclNote + dedupeNote)}
 
+      ${(() => {
+        const byLocHtml = regGroupsByLoc.map(l =>
+          `<div class="cr-loc-row"><span>${escapeHtml(l.location_name)} / ${escapeHtml(l.location_code)}</span><b>${l.unique_groups} гр.</b></div>`
+        ).join("");
+        const total = reg.total_unique_groups ?? regGroups.length;
+        return total > 0 ? `
+          <div class="cr-groups-block">
+            <div class="cr-groups-block-title">Регулярные группы по филиалам</div>
+            ${byLocHtml}
+            <div class="cr-groups-total">Итого регулярных групп: <b>${total}</b></div>
+            <p class="cr-note">Группа считается один раз, даже если занималась несколько раз. В разбивке по филиалам группа может учитываться в нескольких, если проходила в разных местах.</p>
+          </div>` : "";
+      })()}
+
       ${sum.total_unique_children > 0
         ? _crSection("Городская программа / Summer Week", sum.total_unique_children, sum.by_location, sumGroupsNote + dedupeNote)
         : ""}
+
+      ${(() => {
+        if (sum.total_unique_children === 0) return "";
+        const byLocHtml = sumGroupsByLoc.map(l =>
+          `<div class="cr-loc-row"><span>${escapeHtml(l.location_name)} / ${escapeHtml(l.location_code)}</span><b>${l.unique_groups} гр.</b></div>`
+        ).join("");
+        const total = sum.total_unique_groups ?? sumGroups2.length;
+        return total > 0 ? `
+          <div class="cr-groups-block">
+            <div class="cr-groups-block-title">Группы городской программы по филиалам</div>
+            ${byLocHtml}
+            <div class="cr-groups-total">Итого групп ГП: <b>${total}</b></div>
+            <p class="cr-note">Группа считается один раз, даже если занималась несколько раз.</p>
+          </div>` : "";
+      })()}
 
       ${_crSection(
         sum.total_unique_children > 0 ? "Общий итог (рег. + городская прогр.)" : "Итого",
@@ -3742,7 +3781,32 @@ function renderChildrenReport() {
       ${ovlHtml}
 
       ${regVerifyHtml}
+
+      ${(() => {
+        const _mkGroupRow = g => `<div class="cr-group-row">
+          <div class="cr-group-name">${escapeHtml(g.group_name || g.group_id || "—")}</div>
+          <div class="cr-group-meta">${escapeHtml(g.location_name || g.location_code || "—")} · ${g.lessons_count || 0} зан. · ${g.unique_children} дет.</div>
+        </div>`;
+        return regGroups.length ? `
+          <details class="cr-verify">
+            <summary>Проверочный список групп: регулярные (${regGroups.length})</summary>
+            <div style="margin-top:6px">${regGroups.map(_mkGroupRow).join("")}</div>
+          </details>` : "";
+      })()}
+
       ${sumVerifyHtml}
+
+      ${(() => {
+        const _mkGroupRow = g => `<div class="cr-group-row">
+          <div class="cr-group-name">${escapeHtml(g.group_name || g.group_id || "—")}</div>
+          <div class="cr-group-meta">${escapeHtml(g.location_name || g.location_code || "—")} · ${g.lessons_count || 0} зан. · ${g.unique_children} дет.</div>
+        </div>`;
+        return sumGroups2.length ? `
+          <details class="cr-verify">
+            <summary>Проверочный список групп: городская программа (${sumGroups2.length})</summary>
+            <div style="margin-top:6px">${sumGroups2.map(_mkGroupRow).join("")}</div>
+          </details>` : "";
+      })()}
 
       ${diagHtml}
 
@@ -3795,12 +3859,23 @@ async function copyChildrenReport() {
     return `  • ${name}${code} — ${l.unique_children}`;
   }).join("\n");
 
+  const fmtGrpLoc = (byLoc) => (byLoc || []).map(l => {
+    const name = l.location_name || l.location_code;
+    const code = l.location_name ? ` / ${l.location_code}` : "";
+    return `  • ${name}${code} — ${l.unique_groups} гр.`;
+  }).join("\n");
+
+  const regGroupsByLocC = Array.isArray(reg.groups_by_location) ? reg.groups_by_location : [];
+  const sumGroupsByLocC = Array.isArray(sum.groups_by_location) ? sum.groups_by_location : [];
+
   const lines = [
     `Отчёт по детям за ${label}`,
     "",
     "Сводка:",
     `• Регулярные дети — ${reg.total_unique_children}`,
+    `• Регулярных групп — ${reg.total_unique_groups ?? 0}`,
     `• Городская программа / Summer Week — ${sum.total_unique_children}`,
+    `• Групп ГП — ${sum.total_unique_groups ?? 0}`,
     `• Общий итог — ${comb.total_unique_children}`,
     `• Дети на отработках — ${mkp.unique_children}`,
     `• Отработок посещений — ${mkp.visit_records}`,
@@ -3811,6 +3886,11 @@ async function copyChildrenReport() {
     `Уникальных детей: ${reg.total_unique_children}`,
   ];
   if (reg.by_location?.length) lines.push(fmtLoc(reg.by_location));
+  if (regGroupsByLocC.length) {
+    lines.push("", "Группы по филиалам:");
+    lines.push(fmtGrpLoc(regGroupsByLocC));
+    lines.push(`Итого регулярных групп: ${reg.total_unique_groups ?? 0}`);
+  }
   if (sum.total_unique_children > 0) {
     lines.push(
       "",
@@ -3819,6 +3899,11 @@ async function copyChildrenReport() {
     );
     if (sum.by_location?.length) lines.push(fmtLoc(sum.by_location));
     if (sum.groups?.length) lines.push(`  Группы: ${sum.groups.join(", ")}`);
+    if (sumGroupsByLocC.length) {
+      lines.push("", "Группы городской программы по филиалам:");
+      lines.push(fmtGrpLoc(sumGroupsByLocC));
+      lines.push(`Итого групп ГП: ${sum.total_unique_groups ?? 0}`);
+    }
   }
   lines.push(
     "",

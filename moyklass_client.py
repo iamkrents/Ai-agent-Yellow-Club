@@ -1617,6 +1617,7 @@ class MoyKlassClient:
         reg_ids: set[str] = set()
         reg_loc: dict[str, set[str]] = {}
         reg_groups: dict[str, dict[str, Any]] = {}
+        reg_groups_per_loc: dict[str, set[str]] = {}  # loc_code → set[group_key]
         reg_students: dict[str, dict[str, Any]] = {}
 
         # ── Summer / city-program section accumulators ──
@@ -1624,6 +1625,8 @@ class MoyKlassClient:
         sum_loc: dict[str, set[str]] = {}
         sum_students: dict[str, dict[str, Any]] = {}
         sum_group_names: set[str] = set()
+        sum_groups: dict[str, dict[str, Any]] = {}
+        sum_groups_per_loc: dict[str, set[str]] = {}  # loc_code → set[group_key]
 
         # ── Combined (union) accumulators ──
         comb_ids: set[str] = set()
@@ -1847,6 +1850,23 @@ class MoyKlassClient:
                 _loc_add(sum_loc)
                 _si_update(sum_students)
                 sum_group_names.add(group_name)
+                _scid = str(class_id_key or "").strip() or (f"grp_{group_name[:24]}" if group_name else "unknown")
+                if _scid not in sum_groups:
+                    sum_groups[_scid] = {
+                        "group_id": _scid,
+                        "group_name": group_name,
+                        "location_code": loc_code,
+                        "location_name": _CHILDREN_LOC_NAMES.get(loc_code, loc_code),
+                        "students": set(),
+                        "lesson_ids": set(),
+                    }
+                sum_groups[_scid]["students"].add(student_id)
+                _slid = str(_pick(lesson or {}, ("id", "lessonId")) or _pick(rec, ("lessonId",)) or "")
+                if _slid:
+                    sum_groups[_scid]["lesson_ids"].add(_slid)
+                if loc_code not in sum_groups_per_loc:
+                    sum_groups_per_loc[loc_code] = set()
+                sum_groups_per_loc[loc_code].add(_scid)
             else:
                 reg_records_count += 1
                 class_id = (
@@ -1865,8 +1885,15 @@ class MoyKlassClient:
                         "location_code": loc_code,
                         "location_name": _CHILDREN_LOC_NAMES.get(loc_code, loc_code),
                         "students": set(),
+                        "lesson_ids": set(),
                     }
                 reg_groups[class_id]["students"].add(student_id)
+                _rlid = str(_pick(lesson or {}, ("id", "lessonId")) or _pick(rec, ("lessonId",)) or "")
+                if _rlid:
+                    reg_groups[class_id]["lesson_ids"].add(_rlid)
+                if loc_code not in reg_groups_per_loc:
+                    reg_groups_per_loc[loc_code] = set()
+                reg_groups_per_loc[loc_code].add(str(class_id))
 
         # ── Post-loop: overlap computation ──────────────────────────────────
         overlap_sids = reg_ids & sum_ids
@@ -1922,6 +1949,19 @@ class MoyKlassClient:
                 key=lambda x: x["name"],
             )
 
+        def _build_groups_by_loc(gpl_dict: dict[str, set[str]]) -> list[dict[str, Any]]:
+            return sorted(
+                [
+                    {
+                        "location_code": code,
+                        "location_name": _CHILDREN_LOC_NAMES.get(code, code),
+                        "unique_groups": len(gids),
+                    }
+                    for code, gids in gpl_dict.items()
+                ],
+                key=lambda x: _LOC_CODE_ORDER.get(x["location_code"], 50),
+            )
+
         reg_by_group = sorted(
             [
                 {
@@ -1930,8 +1970,24 @@ class MoyKlassClient:
                     "location_code": gd["location_code"],
                     "location_name": gd["location_name"],
                     "unique_children": len(gd["students"]),
+                    "lessons_count": len(gd.get("lesson_ids") or ()),
                 }
                 for gid, gd in reg_groups.items()
+            ],
+            key=lambda x: (_LOC_CODE_ORDER.get(x["location_code"], 50), x["group_name"]),
+        )
+
+        sum_by_group = sorted(
+            [
+                {
+                    "group_id": gid,
+                    "group_name": gd["group_name"],
+                    "location_code": gd["location_code"],
+                    "location_name": gd["location_name"],
+                    "unique_children": len(gd["students"]),
+                    "lessons_count": len(gd.get("lesson_ids") or ()),
+                }
+                for gid, gd in sum_groups.items()
             ],
             key=lambda x: (_LOC_CODE_ORDER.get(x["location_code"], 50), x["group_name"]),
         )
@@ -1949,24 +2005,33 @@ class MoyKlassClient:
                 # ── Three report sections ──
                 "regular": {
                     "total_unique_children": len(reg_ids),
+                    "total_unique_groups": len(reg_groups),
                     "by_location": _build_by_loc(reg_loc),
+                    "groups_by_location": _build_groups_by_loc(reg_groups_per_loc),
                     "by_group": reg_by_group,
                     "children": _build_children(reg_students),
                 },
                 "summer": {
                     "total_unique_children": len(sum_ids),
+                    "total_unique_groups": len(sum_groups),
                     "by_location": _build_by_loc(sum_loc),
+                    "groups_by_location": _build_groups_by_loc(sum_groups_per_loc),
+                    "by_group": sum_by_group,
                     "children": _build_children(sum_students),
                     "groups": sorted(sum_group_names),
                 },
                 "city_program": {
                     "total_unique_children": len(sum_ids),
+                    "total_unique_groups": len(sum_groups),
                     "by_location": _build_by_loc(sum_loc),
+                    "groups_by_location": _build_groups_by_loc(sum_groups_per_loc),
+                    "by_group": sum_by_group,
                     "children": _build_children(sum_students),
                     "groups": sorted(sum_group_names),
                 },
                 "combined": {
                     "total_unique_children": len(comb_ids),
+                    "total_unique_groups": len(set(reg_groups.keys()) | set(sum_groups.keys())),
                     "by_location": _build_by_loc(comb_loc),
                 },
                 "makeups": {
@@ -2004,6 +2069,13 @@ class MoyKlassClient:
                     "present_records": len(attended),
                     "regular_records": reg_records_count,
                     "city_program_records": city_records_count,
+                    "regular_unique_groups": len(reg_groups),
+                    "city_program_unique_groups": len(sum_groups),
+                    "combined_unique_groups": len(set(reg_groups.keys()) | set(sum_groups.keys())),
+                    "groups_by_location": {
+                        "regular": _build_groups_by_loc(reg_groups_per_loc),
+                        "city_program": _build_groups_by_loc(sum_groups_per_loc),
+                    },
                     "excluded": {
                         "trial": excl_trial,
                         "makeup": excl_makeup,
