@@ -1647,6 +1647,7 @@ class MoyKlassClient:
         mkp_loc: dict[str, set[str]] = {}
         mkp_records = 0
         mkp_lesson_ids: set[str] = set()
+        mkp_rev_records: list[dict[str, Any]] = []  # per-record data for workoff revenue estimation
         trl_ids: set[str] = set()
         trl_students: dict[str, dict[str, Any]] = {}
         trl_loc: dict[str, set[str]] = {}
@@ -1703,6 +1704,19 @@ class MoyKlassClient:
                 if _lid: mkp_lesson_ids.add(_lid)
                 _loc_add_to(mkp_loc, _lc, _sid)
                 _si_track(mkp_students, _sid, _sn, _lc, _gn, _rds)
+                _wdet = ("api_makeup" if _truthy(rec.get("makeup")) else
+                         "api_type" if str(rec.get("type") or "").lower() in ("makeup", "отработка", "additional") else
+                         "api_isAdditional" if _truthy(rec.get("isAdditional")) else "keyword")
+                mkp_rev_records.append({
+                    "student_id": str(_sid),
+                    "student_name": _sn or f"ID {_sid}",
+                    "location_code": _lc,
+                    "group_name": (_gn or "")[:60],
+                    "date": _rds,
+                    "is_free": _truthy(rec.get("free")),
+                    "paid": rec.get("paid"),
+                    "detection": _wdet,
+                })
 
         for rec in attended:
             # ── Trial flag (API) ──
@@ -2133,6 +2147,95 @@ class MoyKlassClient:
             _fbl_agg.values(), key=lambda x: _LOC_CODE_ORDER.get(x["location_code"], 50)
         )
 
+        # ── Workoff (makeup) revenue estimation ──────────────────────────────
+        # Uses the same price-per-lesson as regular classes (PRICE_PER_LESSON_BY_LOCATION).
+        # Only records already identified as makeups in the pre-pass are used.
+        # Excludes free=true and paid=False; paid=None → include but mark as unknown.
+        _wrev_by_loc: dict[str, dict[str, Any]] = {}
+        _wrev_included: list[dict[str, Any]] = []
+        _wrev_excluded: list[dict[str, Any]] = []
+        _wrev_total_visits = len(mkp_rev_records)
+        _wrev_paid_true_cnt = 0
+        _wrev_paid_false_cnt = 0
+        _wrev_paid_unknown_cnt = 0
+        _wrev_free_cnt = 0
+        _wrev_included_cnt = 0
+        _wrev_excluded_cnt = 0
+        _wrev_unalloc_cnt = 0
+        _wrev_estimated_total = 0.0
+
+        for _wr in mkp_rev_records:
+            _wlc = _wr["location_code"]
+            _wppl = PRICE_PER_LESSON_BY_LOCATION.get(_wlc, _DEFAULT_PRICE_PER_LESSON)
+            _wfree = _wr["is_free"]
+            _wpaid = _wr["paid"]
+            if _wpaid is True:
+                _wrev_paid_true_cnt += 1
+            elif _wpaid is False:
+                _wrev_paid_false_cnt += 1
+            else:
+                _wrev_paid_unknown_cnt += 1
+            if _wfree:
+                _wrev_free_cnt += 1
+            if _wlc == "unknown":
+                _wrev_unalloc_cnt += 1
+            _w_include = not _wfree and _wpaid is not False
+            _w_est = round(_wppl, 2) if _w_include else 0.0
+            if _wlc not in _wrev_by_loc:
+                _wrev_by_loc[_wlc] = {
+                    "workoff_visits": 0, "paid_workoff_visits": 0,
+                    "free_workoff_visits": 0, "unknown_paid_visits": 0,
+                    "estimated_revenue": 0.0, "price_per_lesson": _wppl,
+                }
+            _wblock = _wrev_by_loc[_wlc]
+            _wblock["workoff_visits"] += 1
+            if _wfree:
+                _wblock["free_workoff_visits"] += 1
+            elif _wpaid is True:
+                _wblock["paid_workoff_visits"] += 1
+            else:
+                _wblock["unknown_paid_visits"] += 1
+            _wblock["estimated_revenue"] = round(_wblock["estimated_revenue"] + _w_est, 2)
+            _wrev_estimated_total = round(_wrev_estimated_total + _w_est, 2)
+            if _w_include:
+                _wrev_included_cnt += 1
+                if len(_wrev_included) < 200:
+                    _wrev_included.append({
+                        "student_name": _wr["student_name"],
+                        "date": _wr["date"],
+                        "location": _wlc,
+                        "group": _wr["group_name"],
+                        "paid": _wpaid,
+                        "is_free": _wfree,
+                        "price": _wppl,
+                        "detection": _wr["detection"],
+                    })
+            else:
+                _wrev_excluded_cnt += 1
+                if len(_wrev_excluded) < 50:
+                    _wrev_excluded.append({
+                        "student_name": _wr["student_name"],
+                        "date": _wr["date"],
+                        "location": _wlc,
+                        "group": _wr["group_name"],
+                        "paid": _wpaid,
+                        "is_free": _wfree,
+                        "reason": "free" if _wfree else "paid_false",
+                    })
+
+        # Augment forecast_by_location rows with workoff data
+        for _fbrow in forecast_by_location:
+            _fblc = _fbrow["location_code"]
+            _wb5 = _wrev_by_loc.get(_fblc, {})
+            _fbrow["workoff_visits"] = _wb5.get("workoff_visits", 0)
+            _fbrow["workoff_estimated"] = _wb5.get("estimated_revenue", 0.0)
+            _fbrow["planned_with_workoffs"] = round(
+                _fbrow["planned_visits_forecast"] + _wb5.get("estimated_revenue", 0.0), 2
+            )
+            _fbrow["actual_with_workoffs"] = round(
+                _fbrow["actual_visits_forecast"] + _wb5.get("estimated_revenue", 0.0), 2
+            )
+
         # ── Payment distribution by location (v7.0.65: filialId primary, userId fallback) ─
         # Map filialId → location code from already-cached filial_map (no extra API call needed)
         _fid_to_loc: dict[str, str] = {}
@@ -2450,6 +2553,33 @@ class MoyKlassClient:
                     "actual_payments_unallocated_count": _pay_unalloc_total_cnt,
                     "actual_payments_mapping_method": "payment_filial_id_with_user_fallback",
                     "actual_payments_mapping_available": _pay_mapping_available,
+                    "workoff_revenue": {
+                        "method": "lesson_records_workoffs_estimated",
+                        "price_source": "same_as_regular_price_per_lesson",
+                        "total_workoff_visits": _wrev_total_visits,
+                        "paid_workoff_visits": _wrev_paid_true_cnt,
+                        "free_workoff_visits": _wrev_free_cnt,
+                        "unknown_paid_workoff_visits": _wrev_paid_unknown_cnt,
+                        "estimated_total": _wrev_estimated_total,
+                        "included_count": _wrev_included_cnt,
+                        "excluded_count": _wrev_excluded_cnt,
+                        "unallocated_count": _wrev_unalloc_cnt,
+                        "by_location": _wrev_by_loc,
+                        "included_records": _wrev_included,
+                        "excluded_records": _wrev_excluded,
+                    },
+                    "revenue_with_workoffs": {
+                        "regular_actual_visits_forecast": forecast_total,
+                        "regular_planned_visits_forecast": forecast_total_planned,
+                        "workoffs_estimated": _wrev_estimated_total,
+                        "planned_with_workoffs": round(forecast_total_planned + _wrev_estimated_total, 2),
+                        "actual_with_workoffs": round(forecast_total + _wrev_estimated_total, 2),
+                        "actual_payments_net": actual_net_income if payments_available else None,
+                        "delta_actual_vs_planned_with_workoffs": (
+                            round(actual_net_income - (forecast_total_planned + _wrev_estimated_total), 2)
+                            if payments_available else None
+                        ),
+                    },
                     "regular": {
                         "forecast_total": forecast_total,
                         "forecast_total_planned": forecast_total_planned,
@@ -2554,6 +2684,24 @@ class MoyKlassClient:
                     "payments_unallocated_count": _pay_unalloc_cnt,
                     "examples_unallocated_payments": _unalloc_examples,
                     "payments_group_mapping_available": False,
+                    "workoff_revenue_enabled": True,
+                    "workoff_detection_method": "keywords_and_api_flags",
+                    "workoff_records_scanned": len(mkp_rev_records),
+                    "workoff_visits_total": _wrev_total_visits,
+                    "workoff_paid_true_count": _wrev_paid_true_cnt,
+                    "workoff_paid_false_count": _wrev_paid_false_cnt,
+                    "workoff_paid_unknown_count": _wrev_paid_unknown_cnt,
+                    "workoff_free_true_count": _wrev_free_cnt,
+                    "workoff_included_count": _wrev_included_cnt,
+                    "workoff_excluded_count": _wrev_excluded_cnt,
+                    "workoff_unallocated_count": _wrev_unalloc_cnt,
+                    "workoff_estimated_total": _wrev_estimated_total,
+                    "workoff_by_location_summary": {
+                        lc: {"visits": v["workoff_visits"], "estimated": v["estimated_revenue"]}
+                        for lc, v in _wrev_by_loc.items()
+                    },
+                    "examples_workoff_included": _wrev_included[:5],
+                    "examples_workoff_excluded": _wrev_excluded[:5],
                     "client_flow_source": "moyklass_users_stateChangedAt",
                     "client_flow_uses_state_changed_at": True,
                     "client_flow_status_history_full_available": False,
@@ -2726,6 +2874,7 @@ class MoyKlassClient:
             "includeLessons": "true",
             "includeBills": "true",
             "includeUserSubscriptions": "true",
+            "includeWorkOffs": "true",
         }
         for page in range(max_pages):
             params = {**base_params, "limit": str(page_size), "offset": str(page * page_size)}

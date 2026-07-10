@@ -3741,6 +3741,16 @@ function renderChildrenReport() {
             <div class="cr-diag-row"><span>Fallback по userId</span><b>${diag.payments_fallback_uid ?? 0}</b></div>
             <div class="cr-diag-row"><span>Не распределено</span><b>${diag.payments_unallocated_amount ?? 0} BYN · ${diag.payments_unallocated_count ?? 0} опл.</b></div>
           ` : ""}
+          ${diag.workoff_revenue_enabled ? `
+            <div class="cr-diag-row" style="margin-top:6px;font-weight:700"><span>Отработки (workoff_revenue)</span></div>
+            <div class="cr-diag-row"><span>Метод</span><b>${diag.workoff_detection_method ?? "—"}</b></div>
+            <div class="cr-diag-row"><span>Записей просканировано</span><b>${diag.workoff_records_scanned ?? 0}</b></div>
+            <div class="cr-diag-row"><span>Всего визитов</span><b>${diag.workoff_visits_total ?? 0}</b></div>
+            <div class="cr-diag-row"><span>paid=true / false / ? / free</span><b>${diag.workoff_paid_true_count ?? 0} / ${diag.workoff_paid_false_count ?? 0} / ${diag.workoff_paid_unknown_count ?? 0} / ${diag.workoff_free_true_count ?? 0}</b></div>
+            <div class="cr-diag-row"><span>Включено / исключено</span><b>${diag.workoff_included_count ?? 0} / ${diag.workoff_excluded_count ?? 0}</b></div>
+            <div class="cr-diag-row"><span>Не распределено</span><b>${diag.workoff_unallocated_count ?? 0}</b></div>
+            <div class="cr-diag-row"><span>Расчётная стоимость</span><b>${diag.workoff_estimated_total ?? 0} BYN</b></div>
+          ` : ""}
           ${(() => {
             const cf = d.client_flow || {};
             if (!cf.source) return "";
@@ -3871,6 +3881,8 @@ function renderChildrenReport() {
         const actTotal      = rev.actual_payments_total;
         const actUnalloc    = rev.actual_payments_unallocated;
         const payAvail      = revPay.available;
+        const woffRev       = rev.workoff_revenue || {};
+        const rwo           = rev.revenue_with_workoffs || {};
 
         if (forecastByLoc.length === 0 && revGroups.length === 0) return "";
 
@@ -3978,6 +3990,76 @@ function renderChildrenReport() {
               ${forecastRows}
               ${forecastTotalRow}
             </div>
+
+            ${(() => {
+              // ── Workoff revenue section ──
+              if ((woffRev.total_workoff_visits || 0) === 0 && rwo.workoffs_estimated == null) return "";
+              const woffByLoc = woffRev.by_location || {};
+              const _actByLocMap = {};
+              actualByLoc.forEach(a => { _actByLocMap[a.location_code] = a; });
+              const combinedRows = forecastByLoc.map(loc => {
+                const wEst  = loc.workoff_estimated ?? 0;
+                const wVis  = loc.workoff_visits ?? 0;
+                const reg   = loc.actual_visits_forecast ?? 0;
+                const total = loc.actual_with_workoffs ?? (reg + wEst);
+                const actLoc = _actByLocMap[loc.location_code];
+                const actNet = actLoc ? (actLoc.actual_paid ?? null) : null;
+                const delta  = actNet != null ? Math.round((actNet - total) * 100) / 100 : null;
+                const deltaStr = delta == null ? "—" : (delta > 0 ? `+${fmtByn(delta)}` : fmtByn(delta));
+                const deltaCss = delta == null ? "" : (delta > 0 ? "color:#27ae60" : delta < 0 ? "color:#c0392b" : "");
+                return `
+                  <div class="cr-rev-loc-row">
+                    <div class="cr-rev-loc-name">${escapeHtml(loc.location_name)} <span class="cr-rev-loc-code">${escapeHtml(loc.location_code)}</span></div>
+                    <div class="cr-rev-loc-money">
+                      <span>Рег.:</span> <b>${fmtByn(reg)}</b>
+                      &nbsp;+&nbsp;<span>Отр.:</span> <b>${fmtByn(wEst)}</b><span style="color:var(--muted)"> (${wVis} виз.)</span>
+                      → <b>${fmtByn(total)}</b>
+                      ${actNet != null ? `&nbsp;|&nbsp;<span>Факт:</span> <b>${fmtByn(actNet)}</b> &nbsp;<span style="${deltaCss}">Δ ${deltaStr}</span>` : ""}
+                    </div>
+                  </div>`;
+              }).join("");
+              const rwoPlanned = rwo.planned_with_workoffs;
+              const rwoActNet  = rwo.actual_payments_net;
+              const rwoDelta   = rwo.delta_actual_vs_planned_with_workoffs;
+              const rwoDeltaStr = rwoDelta == null ? "—" : (rwoDelta > 0 ? `+${fmtByn(rwoDelta)}` : fmtByn(rwoDelta));
+              const rwoDeltaCss = rwoDelta == null ? "" : (rwoDelta > 0 ? "color:#27ae60" : rwoDelta < 0 ? "color:#c0392b" : "");
+              const totalRow = `
+                <div class="cr-rev-loc-row cr-rev-loc-total">
+                  <div class="cr-rev-loc-name">Итого с отработками</div>
+                  <div class="cr-rev-loc-money">
+                    <span>Рег.:</span> <b>${fmtByn(rwo.regular_actual_visits_forecast)}</b>
+                    &nbsp;+&nbsp;<span>Отр.:</span> <b>${fmtByn(rwo.workoffs_estimated)}</b><span style="color:var(--muted)"> (${woffRev.total_workoff_visits} виз.)</span>
+                    → <b>${fmtByn(rwoPlanned)}</b>
+                    ${rwoActNet != null ? `&nbsp;|&nbsp;<span>Факт:</span> <b>${fmtByn(rwoActNet)}</b> &nbsp;<span style="${rwoDeltaCss}">Δ ${rwoDeltaStr}</span>` : ""}
+                  </div>
+                </div>`;
+              // Verify list
+              const woffIncl = Array.isArray(woffRev.included_records) ? woffRev.included_records : [];
+              const woffVerify = woffIncl.length ? `
+                <details class="cr-verify" style="margin-top:6px">
+                  <summary>Отработки в расчёте (${woffRev.included_count ?? woffIncl.length})</summary>
+                  <div style="margin-top:4px">
+                    ${woffIncl.slice(0, 100).map(r => `
+                      <div class="cr-verify-row" style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--line)">
+                        <span style="color:var(--muted)">${escapeHtml(r.date || "—")}</span>
+                        <b>${escapeHtml(r.student_name || "—")}</b>
+                        · ${escapeHtml(r.location || "—")}
+                        · ${escapeHtml(r.group || "—")}
+                        · <span style="color:var(--muted)">${r.paid === true ? "paid" : r.paid === false ? "paid=false" : "paid=?"}</span>
+                        · <b>${fmtByn(r.price)}</b>
+                      </div>`).join("")}
+                    ${woffIncl.length > 100 ? `<div class="cr-note" style="margin-top:4px">Показано 100 из ${woffRev.included_count ?? woffIncl.length}. Полный список в диагностике.</div>` : ""}
+                  </div>
+                </details>` : "";
+              return `
+                <div class="cr-rev-section-title">Расчётная выручка с отработками</div>
+                <div class="cr-rev-by-loc">
+                  ${combinedRows}
+                  ${totalRow}
+                </div>
+                <p class="cr-note">Отработки добавлены в расчётную стоимость занятий месяца. Факт оплат — реальные платежи по дате оплаты, поэтому разница остаётся ориентировочной. Бесплатные отработки и paid=false не включены в стоимость.</p>
+                ${woffVerify}`;
+            })()}
 
             <div class="cr-rev-section-title">Фактическая выручка</div>
             ${actualHtml}
@@ -4219,6 +4301,30 @@ async function copyChildrenReport() {
     } else {
       lines.push(`• Факт оплат доступен только общим итогом: ${_fmtB(_actTotal)}.`);
       lines.push("(В API платежей МойКласс нет надёжной связи с учебным классом.)");
+    }
+    // ── Workoff revenue copy section ──
+    const _woffRev = _rev.workoff_revenue || {};
+    const _rwoC    = _rev.revenue_with_workoffs || {};
+    if ((_woffRev.total_workoff_visits || 0) > 0 || _rwoC.workoffs_estimated != null) {
+      lines.push("", "Расчётная выручка с учётом отработок:");
+      lines.push(`• Регулярные занятия — ${_fmtB(_rwoC.regular_actual_visits_forecast)}`);
+      lines.push(`• Отработки — ${_fmtB(_rwoC.workoffs_estimated)} / ${_woffRev.total_workoff_visits ?? 0} визитов`);
+      lines.push(`• Итого расчётно — ${_fmtB(_rwoC.planned_with_workoffs)}`);
+      if (_rwoC.actual_payments_net != null)
+        lines.push(`• Факт оплат нетто — ${_fmtB(_rwoC.actual_payments_net)}`);
+      if (_rwoC.delta_actual_vs_planned_with_workoffs != null) {
+        const _rwoDc = _rwoC.delta_actual_vs_planned_with_workoffs;
+        lines.push(`• Разница — ${_rwoDc >= 0 ? "+" : ""}${_fmtB(_rwoDc)}`);
+      }
+      const _woffFbl = _fbl.filter(loc => (loc.workoff_visits ?? 0) > 0 || (loc.workoff_estimated ?? 0) > 0);
+      if (_woffFbl.length) {
+        lines.push("По филиалам:");
+        _woffFbl.forEach(loc => {
+          lines.push(`  • ${loc.location_name} (${loc.location_code}): рег. ${_fmtB(loc.actual_visits_forecast)}, отр. ${_fmtB(loc.workoff_estimated)} (${loc.workoff_visits} виз.), итого ${_fmtB(loc.actual_with_workoffs)}`);
+        });
+      }
+      if (_woffRev.excluded_count > 0)
+        lines.push(`(Исключено бесплатных/paid=false: ${_woffRev.excluded_count})`);
     }
     const _rg = Array.isArray(_revReg.by_group) ? _revReg.by_group : [];
     if (_rg.length) {
