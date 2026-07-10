@@ -2095,6 +2095,97 @@ class MoyKlassClient:
         planned_vis_total_reg = sum(g["planned_student_visits"] for g in rev_by_group)
         rev_delta = round(actual_paid_total - forecast_total, 2) if payments_available else None
 
+        # ── Forecast by location (aggregate from rev_by_group) ────────────────
+        _fbl_agg: dict[str, dict[str, Any]] = {}
+        for _g in rev_by_group:
+            _lc = _g["location_code"]
+            if _lc not in _fbl_agg:
+                _fbl_agg[_lc] = {
+                    "location_code": _lc,
+                    "location_name": _g["location_name"],
+                    "actual_visits_forecast": 0.0,
+                    "planned_visits_forecast": 0.0,
+                    "regular_groups": 0,
+                    "unique_children": 0,
+                    "actual_visit_records": 0,
+                    "planned_student_visits": 0,
+                    "price_per_lesson": _g["price_per_lesson"],
+                }
+            _frow = _fbl_agg[_lc]
+            _frow["actual_visits_forecast"] = round(_frow["actual_visits_forecast"] + _g["forecast_revenue"], 2)
+            _frow["planned_visits_forecast"] = round(_frow["planned_visits_forecast"] + _g["forecast_revenue_planned"], 2)
+            _frow["regular_groups"] += 1
+            _frow["actual_visit_records"] += _g["actual_visit_records"]
+            _frow["planned_student_visits"] += _g["planned_student_visits"]
+        for _lc2, _frow2 in _fbl_agg.items():
+            _frow2["unique_children"] = len(reg_loc.get(_lc2, set()))
+        forecast_by_location: list[dict[str, Any]] = sorted(
+            _fbl_agg.values(), key=lambda x: _LOC_CODE_ORDER.get(x["location_code"], 50)
+        )
+
+        # ── Payment distribution by location (student_single_regular_location) ─
+        # If a student visited only ONE regular location this month → assign their payment there.
+        # If multiple locations → unallocated. If not in regular → unallocated.
+        _student_single_loc: dict[str, str | None] = {
+            _sid: (list(_sd["locations"])[0] if len(_sd.get("locations") or set()) == 1 else None)
+            for _sid, _sd in reg_students.items()
+        }
+        _pay_dist_amt: dict[str, float] = {}
+        _pay_dist_cnt: dict[str, int] = {}
+        _pay_with_uid = 0
+        _pay_without_uid = 0
+        _pay_single_loc_cnt = 0
+        _pay_multi_loc_cnt = 0
+        _pay_not_regular_cnt = 0
+        _pay_unalloc_amount = 0.0
+        _unalloc_examples: list[dict[str, Any]] = []
+
+        for _pi in _pay_items:
+            _uid = str(_pick(_pi, ("userId", "studentId", "clientId", "customerId", "idUser")) or "").strip()
+            _pamt = round(_sum_payment_amounts([_pi]), 2)
+            if not _uid:
+                _pay_without_uid += 1
+                _pay_unalloc_amount = round(_pay_unalloc_amount + _pamt, 2)
+                if len(_unalloc_examples) < 5:
+                    _unalloc_examples.append({"reason": "no_user_id", "amount": _pamt})
+                continue
+            _pay_with_uid += 1
+            if _uid not in _student_single_loc:
+                _pay_not_regular_cnt += 1
+                _pay_unalloc_amount = round(_pay_unalloc_amount + _pamt, 2)
+                if len(_unalloc_examples) < 5:
+                    _unalloc_examples.append({"reason": "not_in_regular", "amount": _pamt})
+                continue
+            _sloc = _student_single_loc[_uid]
+            if _sloc is None:
+                _pay_multi_loc_cnt += 1
+                _pay_unalloc_amount = round(_pay_unalloc_amount + _pamt, 2)
+                if len(_unalloc_examples) < 5:
+                    _unalloc_examples.append({"reason": "multi_location", "amount": _pamt})
+                continue
+            _pay_single_loc_cnt += 1
+            _pay_dist_amt[_sloc] = round(_pay_dist_amt.get(_sloc, 0.0) + _pamt, 2)
+            _pay_dist_cnt[_sloc] = _pay_dist_cnt.get(_sloc, 0) + 1
+
+        _pay_distributed_total = round(sum(_pay_dist_amt.values()), 2)
+        _pay_mapping_available = payments_available and _pay_with_uid > 0
+        _pay_unalloc_total_cnt = _pay_without_uid + _pay_multi_loc_cnt + _pay_not_regular_cnt
+
+        actual_payments_by_location: list[dict[str, Any]] = sorted(
+            [
+                {
+                    "location_code": _lc3,
+                    "location_name": _CHILDREN_LOC_NAMES.get(_lc3, _lc3),
+                    "actual_paid": _pay_dist_amt[_lc3],
+                    "payments_count": _pay_dist_cnt.get(_lc3, 0),
+                    "method": "student_single_regular_location",
+                }
+                for _lc3 in _pay_dist_amt
+            ],
+            key=lambda x: _LOC_CODE_ORDER.get(x["location_code"], 50),
+        )
+
+        # Backward-compat rev_by_loc (same data, old field names)
         _rev_by_loc: dict[str, dict[str, Any]] = {}
         for _g in rev_by_group:
             _lc = _g["location_code"]
@@ -2190,6 +2281,18 @@ class MoyKlassClient:
                     "lessons_in_subscription": LESSONS_IN_SUBSCRIPTION,
                     "method": "actual_regular_visits",
                     "method_label": "По фактическим регулярным посещениям",
+                    "forecast_by_location": forecast_by_location,
+                    "forecast_total": {
+                        "actual_visits_forecast": forecast_total,
+                        "planned_visits_forecast": forecast_total_planned,
+                    },
+                    "actual_payments_by_location": actual_payments_by_location,
+                    "actual_payments_total": actual_paid_total if payments_available else None,
+                    "actual_payments_distributed": _pay_distributed_total if _pay_mapping_available else None,
+                    "actual_payments_unallocated": round(actual_paid_total - _pay_distributed_total, 2) if _pay_mapping_available else (actual_paid_total if payments_available else None),
+                    "actual_payments_unallocated_count": _pay_unalloc_total_cnt,
+                    "actual_payments_mapping_method": "student_single_regular_location",
+                    "actual_payments_mapping_available": _pay_mapping_available,
                     "regular": {
                         "forecast_total": forecast_total,
                         "forecast_total_planned": forecast_total_planned,
@@ -2242,14 +2345,24 @@ class MoyKlassClient:
                     "revenue_method": "actual_regular_visits",
                     "revenue_price_default_per_lesson": _DEFAULT_PRICE_PER_LESSON,
                     "revenue_regular_groups_count": len(rev_by_group),
+                    "revenue_forecast_location_count": len(forecast_by_location),
                     "revenue_unknown_location_groups": sum(
                         1 for g in rev_by_group if g["location_code"] == "unknown"
                     ),
                     "revenue_city_program_groups_excluded": len(sum_groups),
+                    "revenue_actual_mapping_available": _pay_mapping_available,
+                    "revenue_actual_mapping_method": "student_single_regular_location",
                     "planned_student_visits_total": planned_vis_total_reg,
                     "actual_visit_records_total_reg": actual_vis_total_reg,
                     "payments_loaded": payments_loaded,
                     "payments_total": actual_paid_total if payments_available else None,
+                    "payments_with_student_id": _pay_with_uid,
+                    "payments_without_student_id": _pay_without_uid,
+                    "payments_single_location_mapped": _pay_single_loc_cnt,
+                    "payments_multi_location_unallocated": _pay_multi_loc_cnt,
+                    "payments_not_in_regular_unallocated": _pay_not_regular_cnt,
+                    "payments_unallocated_amount": _pay_unalloc_amount,
+                    "examples_unallocated_payments": _unalloc_examples,
                     "payments_group_mapping_available": False,
                 },
                 "source": "moyklass/lessonRecords",

@@ -3841,29 +3841,79 @@ function renderChildrenReport() {
 
       ${(() => {
         // ── Revenue block ──────────────────────────────────────────────────
-        if (revGroups.length === 0 && revReg.forecast_total == null) return "";
+        const forecastByLoc = Array.isArray(rev.forecast_by_location) ? rev.forecast_by_location : [];
+        const forecastTotal = rev.forecast_total || {};
+        const actualByLoc   = Array.isArray(rev.actual_payments_by_location) ? rev.actual_payments_by_location : [];
+        const mapAvail      = rev.actual_payments_mapping_available;
+        const actTotal      = rev.actual_payments_total;
+        const actUnalloc    = rev.actual_payments_unallocated;
+        const payAvail      = revPay.available;
 
-        const payAvail   = revPay.available;
-        const factTotal  = payAvail ? revPay.actual_paid_total : null;
-        const delta      = (payAvail && revReg.forecast_total != null)
-          ? (factTotal - revReg.forecast_total) : null;
-        const deltaClass = delta == null ? "" : delta >= 0 ? "cr-rev-pos" : "cr-rev-neg";
-        const deltaSign  = delta == null ? "" : delta >= 0 ? "+" : "";
+        if (forecastByLoc.length === 0 && revGroups.length === 0) return "";
 
-        const _onlinePpl  = (revPrices.YC0  || {}).per_lesson ?? 52.50;
-        const _offlinePpl = (revPrices.YC1  || {}).per_lesson ?? 59.75;
-        const _offlineSub = (revPrices.YC1  || {}).subscription ?? 239;
-        const _onlineSub  = (revPrices.YC0  || {}).subscription ?? 210;
-        const revTilesHtml = `
-          <div class="cr-rev-tiles">
-            <div class="cr-rev-tile"><span class="cr-rev-n">${fmtByn(revReg.forecast_total)}</span><span class="cr-rev-label">Прогноз (факт. посещ.)</span></div>
-            <div class="cr-rev-tile"><span class="cr-rev-n">${fmtByn(revReg.forecast_total_planned)}</span><span class="cr-rev-label">Прогноз (план. посещ.)</span></div>
-            <div class="cr-rev-tile"><span class="cr-rev-n">${payAvail ? fmtByn(factTotal) : "Загружается…"}</span><span class="cr-rev-label">Факт оплат (общий)</span></div>
-            ${delta != null ? `<div class="cr-rev-tile"><span class="cr-rev-n ${deltaClass}">${deltaSign}${fmtByn(delta)}</span><span class="cr-rev-label">Разница (ориентировочно)</span></div>` : ""}
-            <div class="cr-rev-tile"><span class="cr-rev-n">${_offlineSub} BYN / ${rev.lessons_in_subscription ?? 4}</span><span class="cr-rev-label">Офлайн-абонемент</span></div>
-            <div class="cr-rev-tile"><span class="cr-rev-n">${_onlineSub} BYN / ${rev.lessons_in_subscription ?? 4}</span><span class="cr-rev-label">Онлайн-абонемент</span></div>
-          </div>`;
+        const _onlinePpl  = (revPrices.YC0 || {}).per_lesson ?? 52.50;
+        const _offlinePpl = (revPrices.YC1 || {}).per_lesson ?? 59.75;
+        const _offlineSub = (revPrices.YC1 || {}).subscription ?? 239;
+        const _onlineSub  = (revPrices.YC0 || {}).subscription ?? 210;
+        const les4 = rev.lessons_in_subscription ?? 4;
 
+        // ── Forecast by location table ──
+        const forecastRows = forecastByLoc.map(loc => `
+          <div class="cr-rev-loc-row">
+            <div class="cr-rev-loc-name">${escapeHtml(loc.location_name)} <span class="cr-rev-loc-code">${escapeHtml(loc.location_code)}</span></div>
+            <div class="cr-rev-loc-meta">${loc.regular_groups} гр. · ${loc.unique_children} дет. · ${fmtByn(loc.price_per_lesson)}/зан.</div>
+            <div class="cr-rev-loc-money">
+              <span>По факт. посещ.:</span> <b>${fmtByn(loc.actual_visits_forecast)}</b>
+              &nbsp;&nbsp;<span>По плану:</span> <b>${fmtByn(loc.planned_visits_forecast)}</b>
+            </div>
+          </div>`).join("");
+
+        const forecastTotalRow = forecastTotal.actual_visits_forecast != null ? `
+          <div class="cr-rev-loc-row cr-rev-loc-total">
+            <div class="cr-rev-loc-name">Общий прогноз</div>
+            <div class="cr-rev-loc-money">
+              <span>По факт. посещ.:</span> <b>${fmtByn(forecastTotal.actual_visits_forecast)}</b>
+              &nbsp;&nbsp;<span>По плану:</span> <b>${fmtByn(forecastTotal.planned_visits_forecast)}</b>
+            </div>
+          </div>` : "";
+
+        // ── Actual payments by location ──
+        let actualHtml = "";
+        if (!payAvail) {
+          actualHtml = `<p class="cr-note" style="color:var(--warn)">Фактические оплаты временно недоступны: ${escapeHtml(revPay.error || "нет данных от МойКласс")}.</p>`;
+        } else if (mapAvail && actualByLoc.length > 0) {
+          const actualRows = actualByLoc.map(loc => `
+            <div class="cr-rev-loc-row">
+              <div class="cr-rev-loc-name">${escapeHtml(loc.location_name)} <span class="cr-rev-loc-code">${escapeHtml(loc.location_code)}</span></div>
+              <div class="cr-rev-loc-money"><b>${fmtByn(loc.actual_paid)}</b> <span>· ${loc.payments_count} оплат</span></div>
+            </div>`).join("");
+          const unallocRow = (actUnalloc != null && actUnalloc > 0) ? `
+            <div class="cr-rev-loc-row">
+              <div class="cr-rev-loc-name cr-rev-neg">Не распределено</div>
+              <div class="cr-rev-loc-money cr-rev-neg"><b>${fmtByn(actUnalloc)}</b></div>
+            </div>` : "";
+          actualHtml = `
+            <div class="cr-rev-by-loc">
+              ${actualRows}
+              ${unallocRow}
+              <div class="cr-rev-loc-row cr-rev-loc-total">
+                <div class="cr-rev-loc-name">Общий факт</div>
+                <div class="cr-rev-loc-money"><b>${fmtByn(actTotal)}</b></div>
+              </div>
+            </div>
+            <p class="cr-note">Метод: по ученику из регулярных занятий. Если ученик посещал несколько учебных классов — оплата не распределяется автоматически.</p>`;
+        } else {
+          actualHtml = `
+            <p class="cr-note">Фактические оплаты из МойКласс сейчас доступны только общим итогом. В API платежей нет надёжной связи с учебным классом.</p>
+            <div class="cr-rev-by-loc">
+              <div class="cr-rev-loc-row cr-rev-loc-total">
+                <div class="cr-rev-loc-name">Общий факт</div>
+                <div class="cr-rev-loc-money"><b>${fmtByn(actTotal)}</b></div>
+              </div>
+            </div>`;
+        }
+
+        // ── Group detail rows (renamed) ──
         const revGroupRows = revGroups.map(g => {
           const plan = g.planned_student_visits ?? (g.unique_children * (g.lessons_count || 0));
           const pplLabel = g.price_per_lesson != null ? fmtByn(g.price_per_lesson) + "/зан." : "";
@@ -3878,21 +3928,25 @@ function renderChildrenReport() {
           </div>`;
         }).join("");
 
-        const payNote = !payAvail
-          ? `<p class="cr-note" style="color:var(--warn)">Фактические оплаты временно недоступны: ${escapeHtml(revPay.error || "нет данных от МойКласс")}.</p>`
-          : !revPay.group_mapping_available
-          ? `<p class="cr-note">Факт оплат (общий) показан без разбивки по классам — МойКласс не привязывает платежи к учебному классу. Разница носит ориентировочный характер.</p>`
-          : "";
-
         return `
           <div class="cr-revenue-block">
-            <div class="cr-revenue-title">Выручка</div>
-            <p class="cr-note">Онлайн (YC0): ${fmtByn(_onlinePpl)}/зан. · Офлайн (YC1/YC2): ${fmtByn(_offlinePpl)}/зан. Метод: ${escapeHtml(rev.method_label || rev.method || "—")}.</p>
-            ${revTilesHtml}
-            ${payNote}
+            <div class="cr-revenue-title">Выручка по учебным классам</div>
+            <p class="cr-note">Только регулярные занятия. Городская программа, пробные и отработки — не включены.<br>Онлайн (YC0): ${_onlineSub} BYN / ${les4} зан. = ${fmtByn(_onlinePpl)}/зан. &nbsp;·&nbsp; Офлайн (YC1/YC2): ${_offlineSub} BYN / ${les4} зан. = ${fmtByn(_offlinePpl)}/зан.</p>
+
+            <div class="cr-rev-section-title">Прогнозируемая выручка</div>
+            <div class="cr-rev-by-loc">
+              ${forecastRows}
+              ${forecastTotalRow}
+            </div>
+
+            <div class="cr-rev-section-title">Фактическая выручка</div>
+            ${actualHtml}
+
+            <p class="cr-note" style="margin-top:8px;opacity:.7">Разница ориентировочная — платежи в МойКласс могут относиться к предоплатам, долгам или другим услугам.</p>
+
             ${revGroups.length ? `
-            <details class="cr-verify" style="margin-top:10px">
-              <summary>Выручка по учебным классам (${revGroups.length})</summary>
+            <details class="cr-verify" style="margin-top:12px">
+              <summary>Детализация прогноза по группам (${revGroups.length})</summary>
               <div style="margin-top:6px">${revGroupRows}</div>
             </details>` : ""}
           </div>`;
@@ -4022,21 +4076,41 @@ async function copyChildrenReport() {
   const _onSub  = (_revPr.YC0 || {}).subscription ?? 210;
   const _les4   = _rev.lessons_in_subscription ?? 4;
   const _fmtB = n => n == null ? "н/д" : Number(n).toFixed(2) + " BYN";
-  if (_revReg.forecast_total != null) {
+  const _fbl = Array.isArray(_rev.forecast_by_location) ? _rev.forecast_by_location : [];
+  const _fbt = _rev.forecast_total || {};
+  const _abl = Array.isArray(_rev.actual_payments_by_location) ? _rev.actual_payments_by_location : [];
+  const _mapAvail = _rev.actual_payments_mapping_available;
+  const _actTotal = _rev.actual_payments_total;
+  const _actUnalloc = _rev.actual_payments_unallocated;
+  if (_fbl.length > 0 || _fbt.actual_visits_forecast != null) {
     lines.push(
       "",
-      "Выручка:",
-      `• Офлайн (YC1/YC2): ${_offSub} BYN / ${_les4} зан. = ${(_offSub / _les4).toFixed(2)} BYN/зан.`,
-      `• Онлайн (YC0): ${_onSub} BYN / ${_les4} зан. = ${(_onSub / _les4).toFixed(2)} BYN/зан.`,
-      `• Прогноз рег. (факт. посещения): ${_fmtB(_revReg.forecast_total)}`,
-      `• Прогноз рег. (план. посещения): ${_fmtB(_revReg.forecast_total_planned)}`,
-      `• Факт оплат МойКласс (общий): ${_revPay.available ? _fmtB(_revPay.actual_paid_total) : "н/д"}`,
+      "Выручка по учебным классам",
+      `(Только регулярные. Онлайн YC0: ${_onSub} BYN / ${_les4} зан. · Офлайн YC1/YC2: ${_offSub} BYN / ${_les4} зан.)`,
+      "",
+      "Прогнозируемая:",
     );
-    if (_revPay.available && _revReg.delta != null)
-      lines.push(`• Разница (ориентировочно): ${_fmtB(_revReg.delta)}`);
+    _fbl.forEach(loc => {
+      lines.push(`• ${loc.location_name} (${loc.location_code}) — по факт. посещ.: ${_fmtB(loc.actual_visits_forecast)} · по плану: ${_fmtB(loc.planned_visits_forecast)} · ${loc.regular_groups} гр. · ${loc.unique_children} дет.`);
+    });
+    if (_fbt.actual_visits_forecast != null)
+      lines.push(`• Общий прогноз — по факт. посещ.: ${_fmtB(_fbt.actual_visits_forecast)} · по плану: ${_fmtB(_fbt.planned_visits_forecast)}`);
+    lines.push("", "Фактическая:");
+    if (_mapAvail && _abl.length > 0) {
+      _abl.forEach(loc => {
+        lines.push(`• ${loc.location_name} (${loc.location_code}) — ${_fmtB(loc.actual_paid)} · ${loc.payments_count} оплат`);
+      });
+      if (_actUnalloc != null && _actUnalloc > 0)
+        lines.push(`• Не распределено — ${_fmtB(_actUnalloc)}`);
+      lines.push(`• Общий факт — ${_fmtB(_actTotal)}`);
+      lines.push("(Метод: по ученику из регулярных занятий. Разница ориентировочная.)");
+    } else {
+      lines.push(`• Факт оплат доступен только общим итогом: ${_fmtB(_actTotal)}.`);
+      lines.push("(В API платежей МойКласс нет надёжной связи с учебным классом.)");
+    }
     const _rg = Array.isArray(_revReg.by_group) ? _revReg.by_group : [];
     if (_rg.length) {
-      lines.push("", "По учебным классам:");
+      lines.push("", "Детализация прогноза по группам:");
       _rg.forEach(g => {
         const pplStr = g.price_per_lesson != null ? ` · ${Number(g.price_per_lesson).toFixed(2)} BYN/зан.` : "";
         lines.push(`• ${g.group_name || g.group_id} · ${g.location_name || g.location_code}${pplStr} — ${g.unique_children} дет. · ${g.lessons_count || 0} зан. · прогноз ${_fmtB(g.forecast_revenue)} (факт.) / ${_fmtB(g.forecast_revenue_planned)} (план.)`);
