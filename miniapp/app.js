@@ -3677,6 +3677,8 @@ function renderChildrenReport() {
         <b>${escapeHtml(ex.date || "?")} · ${escapeHtml(ex.student_name || "?")} · classId=${escapeHtml(ex.class_id || "—")}</b><br>
         class_name_from_map: <b>${escapeHtml(ex.class_name_from_map || "—")}</b> · is_summer: <b>${ex.is_summer}</b><br>
         group_name: ${escapeHtml(ex.group_name_resolved || "—")}<br>
+        filialId: <b>${escapeHtml(String(ex.filial_id || "—"))}</b> → <b>${escapeHtml(String(ex.filial_name_resolved || "—"))}</b> | roomId: <b>${escapeHtml(String(ex.room_id || "—"))}</b> → <b>${escapeHtml(String(ex.room_name_resolved || "—"))}</b><br>
+        loc: <b>${escapeHtml(ex.loc_code || "—")}</b> via <b>${escapeHtml(ex.loc_src || "—")}</b><br>
         ${nonEmpty ? `<details><summary style="cursor:pointer;color:var(--accent)">text_fields</summary>${nonEmpty}</details>` : ""}
         <details><summary style="cursor:pointer;color:var(--accent)">rec_keys</summary>${escapeHtml((ex.record_keys || []).join(", "))}</details>
       </div>`;
@@ -3693,9 +3695,30 @@ function renderChildrenReport() {
           <div class="cr-diag-row"><span>Рег. групп (unique)</span><b>${diag.regular_unique_groups ?? "—"}</b></div>
           <div class="cr-diag-row"><span>Групп ГП (unique)</span><b>${diag.city_program_unique_groups ?? "—"}</b></div>
           <div class="cr-diag-row"><span>Групп всего (unique)</span><b>${diag.combined_unique_groups ?? "—"}</b></div>
+          <div class="cr-diag-row"><span>Рег. без филиала (записи)</span><b>${diag.regular_unknown_location_records ?? 0}</b></div>
+          <div class="cr-diag-row"><span>Рег. без филиала (группы)</span><b>${diag.regular_unknown_location_groups ?? 0}</b></div>
           <div class="cr-diag-row"><span>Карта классов</span><b>${diag.classes_map_size ?? "?"} зап.</b></div>
           <div class="cr-diag-row"><span>Карта филиалов</span><b>${diag.filial_map_size ?? "?"} зап.</b></div>
-          <div class="cr-diag-row"><span>Без филиала</span><b>${diag.unknown_location_records ?? 0}</b></div>
+          <div class="cr-diag-row"><span>Карта кабинетов</span><b>${diag.rooms_map_size ?? "?"} зап.</b></div>
+          <div class="cr-diag-row"><span>Без филиала (всего записей)</span><b>${diag.unknown_location_records ?? 0}</b></div>
+          ${(() => {
+            const rl = diag.regular_location_sources || {};
+            return Object.keys(rl).length
+              ? `<div class="cr-diag-row" style="margin-top:4px;font-weight:700"><span>Источник филиала (рег.)</span></div>` +
+                Object.entries(rl).map(([k, v]) => `<div class="cr-diag-row"><span>${escapeHtml(k)}</span><b>${v}</b></div>`).join("")
+              : "";
+          })()}
+          ${(() => {
+            const ex = Array.isArray(diag.examples_unknown_regular_groups) ? diag.examples_unknown_regular_groups : [];
+            if (!ex.length) return "";
+            return `<div class="cr-diag-row" style="margin-top:4px;font-weight:700"><span>Группы без филиала (примеры)</span></div>` +
+              ex.map(g => `<div style="margin:3px 0;padding:4px;background:rgba(200,0,0,.06);border-radius:4px;font-size:10px">
+                <b>${escapeHtml(g.group_name || g.group_key || "—")}</b> · ${g.unique_children} дет.<br>
+                filialId: <b>${escapeHtml(String(g.filial_id || "—"))}</b> · filialName: <b>${escapeHtml(String(g.filial_name || "—"))}</b><br>
+                roomId: <b>${escapeHtml(String(g.room_id || "—"))}</b> · roomName: <b>${escapeHtml(String(g.room_name || "—"))}</b><br>
+                loc_src: <b>${escapeHtml(g.loc_src || "—")}</b>
+              </div>`).join("");
+          })()}
           ${de.trial != null ? `<div class="cr-diag-row"><span>Исключено пробных</span><b>${de.trial}</b></div>` : ""}
           ${de.makeup != null ? `<div class="cr-diag-row"><span>Исключено отработок</span><b>${de.makeup}</b></div>` : ""}
           ${de.cancelled != null ? `<div class="cr-diag-row"><span>Исключено отменённых</span><b>${de.cancelled}</b></div>` : ""}

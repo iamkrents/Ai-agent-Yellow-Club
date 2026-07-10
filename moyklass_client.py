@@ -1581,13 +1581,15 @@ class MoyKlassClient:
         if not start or not end:
             return MoyKlassResult(False, error="Неверный месяц. Формат: YYYY-MM", endpoint="monthly-children")
 
-        # Filial map and classes map from cached lookup (no extra API calls)
+        # Filial / rooms / classes maps from cached lookup (no extra API calls)
         try:
             _lm = self._lookup_maps_cached()
             filial_map: dict[str, str] = _lm.get("filials") or {}
+            rooms_map: dict[str, str] = _lm.get("rooms") or {}
             classes_map: dict[str, str] = _lm.get("classes") or {}
         except Exception:
             filial_map = {}
+            rooms_map = {}
             classes_map = {}
 
         records_result = self._scan_lesson_records_for_month(start, end, limit=8000)
@@ -1619,6 +1621,8 @@ class MoyKlassClient:
         reg_groups: dict[str, dict[str, Any]] = {}
         reg_groups_per_loc: dict[str, set[str]] = {}  # loc_code → set[group_key]
         reg_students: dict[str, dict[str, Any]] = {}
+        reg_loc_src_counts: dict[str, int] = {}
+        unknown_reg_group_examples: list[dict[str, Any]] = []
 
         # ── Summer / city-program section accumulators ──
         sum_ids: set[str] = set()
@@ -1668,7 +1672,7 @@ class MoyKlassClient:
             if not _sid:
                 continue
             _sn = _v3991_user_name_from_item(rec)
-            _fn, _rid = "", ""
+            _fn, _rid, _rnm = "", "", ""
             if _les:
                 _fn = str(_les.get("_prettyFilialName") or _les.get("filialName") or _les.get("branchName") or "").strip()
                 if not _fn:
@@ -1676,7 +1680,9 @@ class MoyKlassClient:
                     if _fid:
                         _fn = filial_map.get(_fid, "")
                 _rid = str(_pick(_les, ("roomId", "classroomId")) or "").strip()
-            _lc, _ = _children_location_code(_gn, _fn, _rid)
+                if _rid and _rid not in ("0", "0.0"):
+                    _rnm = rooms_map.get(_rid, "")
+            _lc, _ = _children_location_code(_gn, _fn, _rid, _rnm)
             _lid = str(_pick(_les or {}, ("id", "lessonId")) or _pick(rec, ("lessonId",)) or "")
             _rd = _record_lesson_date(rec)
             _rds = _rd.isoformat() if _rd else ""
@@ -1762,6 +1768,8 @@ class MoyKlassClient:
             # ── Resolve filial → location code ──
             filial_name = ""
             room_id = ""
+            room_name = ""
+            _raw_filial_id = ""
             if lesson:
                 filial_name = str(
                     lesson.get("_prettyFilialName") or
@@ -1769,12 +1777,14 @@ class MoyKlassClient:
                     lesson.get("branchName") or ""
                 ).strip()
                 if not filial_name:
-                    fid = str(_pick(lesson, ("filialId", "branchId")) or "").strip()
-                    if fid:
-                        filial_name = filial_map.get(fid, "")
+                    _raw_filial_id = str(_pick(lesson, ("filialId", "branchId")) or "").strip()
+                    if _raw_filial_id:
+                        filial_name = filial_map.get(_raw_filial_id, "")
                 room_id = str(_pick(lesson, ("roomId", "classroomId")) or "").strip()
+                if room_id and room_id not in ("0", "0.0"):
+                    room_name = rooms_map.get(room_id, "")
 
-            loc_code, loc_src = _children_location_code(group_name, filial_name, room_id)
+            loc_code, loc_src = _children_location_code(group_name, filial_name, room_id, room_name)
             loc_src_counts[loc_src] = loc_src_counts.get(loc_src, 0) + 1
 
             rec_date = _record_lesson_date(rec)
@@ -1800,6 +1810,12 @@ class MoyKlassClient:
                     "class_name_from_map": class_name_from_map,
                     "group_name_resolved": group_name,
                     "is_summer": is_summer,
+                    "filial_id": _raw_filial_id or "—",
+                    "filial_name_resolved": filial_name or "—",
+                    "room_id": room_id or "—",
+                    "room_name_resolved": room_name or "—",
+                    "loc_code": loc_code,
+                    "loc_src": loc_src,
                     "record_keys": sorted(k for k in rec.keys() if k not in ("initData", "token", "apiKey")),
                     "lesson_keys": sorted(k for k in (lesson or {}).keys() if k not in ("initData", "token", "apiKey")),
                     "text_fields": {
@@ -1860,6 +1876,9 @@ class MoyKlassClient:
                         "students": set(),
                         "lesson_ids": set(),
                     }
+                elif loc_code != "unknown" and sum_groups[_scid]["location_code"] == "unknown":
+                    sum_groups[_scid]["location_code"] = loc_code
+                    sum_groups[_scid]["location_name"] = _CHILDREN_LOC_NAMES.get(loc_code, loc_code)
                 sum_groups[_scid]["students"].add(student_id)
                 _slid = str(_pick(lesson or {}, ("id", "lessonId")) or _pick(rec, ("lessonId",)) or "")
                 if _slid:
@@ -1869,6 +1888,7 @@ class MoyKlassClient:
                 sum_groups_per_loc[loc_code].add(_scid)
             else:
                 reg_records_count += 1
+                reg_loc_src_counts[loc_src] = reg_loc_src_counts.get(loc_src, 0) + 1
                 class_id = (
                     _pick(lesson, ("classId", "groupId")) if lesson
                     else _pick(rec, ("classId", "groupId"))
@@ -1886,7 +1906,17 @@ class MoyKlassClient:
                         "location_name": _CHILDREN_LOC_NAMES.get(loc_code, loc_code),
                         "students": set(),
                         "lesson_ids": set(),
+                        "_filial_id": _raw_filial_id,
+                        "_filial_name": filial_name,
+                        "_room_id": room_id,
+                        "_room_name": room_name,
+                        "_loc_src": loc_src,
                     }
+                elif loc_code != "unknown" and reg_groups[class_id]["location_code"] == "unknown":
+                    # Upgrade location if we now have a better one
+                    reg_groups[class_id]["location_code"] = loc_code
+                    reg_groups[class_id]["location_name"] = _CHILDREN_LOC_NAMES.get(loc_code, loc_code)
+                    reg_groups[class_id]["_loc_src"] = loc_src
                 reg_groups[class_id]["students"].add(student_id)
                 _rlid = str(_pick(lesson or {}, ("id", "lessonId")) or _pick(rec, ("lessonId",)) or "")
                 if _rlid:
@@ -1948,6 +1978,21 @@ class MoyKlassClient:
                 ],
                 key=lambda x: x["name"],
             )
+
+        # ── Collect examples of groups that ended up with unknown location ──
+        for _gid, _gd in reg_groups.items():
+            if _gd["location_code"] == "unknown" and len(unknown_reg_group_examples) < 15:
+                unknown_reg_group_examples.append({
+                    "group_key": str(_gid),
+                    "group_name": _gd.get("group_name", ""),
+                    "class_id": str(_gid),
+                    "filial_id": _gd.get("_filial_id", "—"),
+                    "filial_name": _gd.get("_filial_name", "—"),
+                    "room_id": _gd.get("_room_id", "—"),
+                    "room_name": _gd.get("_room_name", "—"),
+                    "loc_src": _gd.get("_loc_src", "—"),
+                    "unique_children": len(_gd.get("students") or set()),
+                })
 
         def _build_groups_by_loc(gpl_dict: dict[str, set[str]]) -> list[dict[str, Any]]:
             return sorted(
@@ -2082,8 +2127,15 @@ class MoyKlassClient:
                         "cancelled": excl_cancelled,
                     },
                     "location_sources": loc_src_counts,
+                    "regular_location_sources": reg_loc_src_counts,
+                    "regular_unknown_location_records": reg_loc_src_counts.get("unknown", 0),
+                    "regular_unknown_location_groups": sum(
+                        1 for gd in reg_groups.values() if gd["location_code"] == "unknown"
+                    ),
+                    "examples_unknown_regular_groups": unknown_reg_group_examples,
                     "unknown_location_records": unknown_count,
                     "filial_map_size": len(filial_map),
+                    "rooms_map_size": len(rooms_map),
                     "city_program_matched_examples": city_program_matched_examples,
                     "classes_map_size": len(classes_map),
                     "raw_lesson_examples": raw_lesson_examples,
@@ -2531,11 +2583,11 @@ _CHILDREN_LOCATION_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
 
 
 def _children_location_code(
-    group_name: str, filial_name: str = "", room_id: str = ""
+    group_name: str, filial_name: str = "", room_id: str = "", room_name: str = ""
 ) -> tuple[str, str]:
     """Return (location_code, source) for the monthly children report.
 
-    Priority: filial_name > room_id==0 (online) > group_name fallback.
+    Priority: filial_name > room_id==0 (online) > room_name > group_name fallback.
     Returns ("YC0"/"YC1"/"YC2"/"YC3"/"unknown", source_tag).
     """
     def _match(text: str) -> str:
@@ -2555,6 +2607,11 @@ def _children_location_code(
 
     if str(room_id or "").strip() in ("0", "0.0"):
         return "YC0", "moyklass_room_id"
+
+    if room_name:
+        c = _match(room_name)
+        if c:
+            return c, "moyklass_room_name"
 
     if group_name:
         c = _match(group_name)
