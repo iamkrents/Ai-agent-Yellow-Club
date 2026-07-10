@@ -2200,27 +2200,35 @@ class MoyKlassClient:
             _rev_by_loc[_lc]["forecast_revenue_planned"] = round(_rev_by_loc[_lc]["forecast_revenue_planned"] + _g["forecast_revenue_planned"], 2)
         rev_by_loc = sorted(_rev_by_loc.values(), key=lambda x: _LOC_CODE_ORDER.get(x["location_code"], 50))
 
-        # ── Client status snapshot (MoyKlass API has no status-change history) ─
-        # We load the status reference list and a sample of users to build a
-        # current status breakdown. status_history_available is always False
-        # because /v1/company/clientStatuses only reflects current state, not
-        # when the status last changed.
+        # ── Client flow via stateChangedAt (v7.0.64) ─────────────────────────
+        # GET /v1/company/users?stateChangedAt=start,end returns users whose
+        # CURRENT status last changed in that range.  This is not a full history
+        # of every transition, but gives the last status change date per user.
+        # Sufficient for monthly inflow/outflow by current status.
+        _CF_SLUG_TO_BUCKET: dict[str, str] = {
+            "client":          "new_clients",
+            "inactive_client": "churned_clients",
+            "trial":           "trial",
+            "deciding":        "deciding",
+            "refused":         "refused",
+            "bad_lead":        "bad_leads",
+            "new":             "new_leads",
+        }
         _cf_status_map: dict[str, str] = {}
-        _cf_breakdown: list[dict[str, Any]] = []
-        _cf_users_scanned = 0
         _cf_status_map_size = 0
         _cf_statuses_ok = False
         _cf_users_ok = False
+        _cf_users_loaded = 0
         _cf_diag: list[dict[str, Any]] = []
         _cf_unknown_ids: list[str] = []
+        _cf_items: dict[str, list[dict[str, Any]]] = {
+            k: [] for k in ("new_clients", "churned_clients", "trial", "deciding", "refused", "bad_leads", "new_leads", "other")
+        }
+        _cf_summary: dict[str, int] = {k: 0 for k in _cf_items}
         try:
+            # 1. Load clientStatuses reference map
             _cs_res = self.request("GET", "/v1/company/clientStatuses", params={"limit": "500"})
-            _cf_diag.append({
-                "endpoint": "/v1/company/clientStatuses",
-                "ok": _cs_res.ok,
-                "status": _cs_res.status,
-                "error": (_cs_res.error or "")[:150],
-            })
+            _cf_diag.append({"endpoint": "/v1/company/clientStatuses", "ok": _cs_res.ok, "status": _cs_res.status, "error": (_cs_res.error or "")[:150]})
             if _cs_res.ok:
                 _cf_statuses_ok = True
                 for _csi in extract_items(_cs_res.data):
@@ -2230,55 +2238,52 @@ class MoyKlassClient:
                         if _csid and _csn:
                             _cf_status_map[_csid] = _csn
                 _cf_status_map_size = len(_cf_status_map)
-            # Load up to 2 pages of users (limit 500 each) for a status breakdown.
-            _cf_counts: dict[str, int] = {}
-            _cf_users_total = 0
-            for _cf_pg in range(2):
+
+            # 2. Query users with stateChangedAt filtered to the report month
+            _cf_date_str = self._api_date_range_value(start, end)
+            _cf_page_size = 500
+            _cf_seen: set[str] = set()
+            for _cf_pg in range(10):  # up to 5000 users
                 _cu_res = self.request(
                     "GET", "/v1/company/users",
-                    params={"limit": "500", "offset": str(_cf_pg * 500)},
+                    params={"stateChangedAt": _cf_date_str, "limit": str(_cf_page_size), "offset": str(_cf_pg * _cf_page_size)},
                 )
                 _cu_items = [x for x in extract_items(_cu_res.data) if isinstance(x, dict)] if _cu_res.ok else []
-                _cf_diag.append({
-                    "endpoint": "/v1/company/users",
-                    "page": _cf_pg,
-                    "ok": _cu_res.ok,
-                    "status": _cu_res.status,
-                    "count": len(_cu_items),
-                    "error": (_cu_res.error or "")[:100],
-                })
+                _cf_diag.append({"endpoint": "/v1/company/users", "page": _cf_pg, "params": {"stateChangedAt": _cf_date_str}, "ok": _cu_res.ok, "status": _cu_res.status, "count": len(_cu_items), "error": (_cu_res.error or "")[:100]})
                 if not _cu_res.ok or not _cu_items:
                     break
                 _cf_users_ok = True
                 for _cu in _cu_items:
-                    _cf_users_total += 1
+                    _uid = str(_pick(_cu, ("id", "userId", "studentId")) or "").strip()
+                    if not _uid or _uid in _cf_seen:
+                        continue
+                    _cf_seen.add(_uid)
+                    _cf_users_loaded += 1
                     _state_id = str(_pick(_cu, ("clientStateId", "statusId", "stateId")) or "").strip()
-                    _state_name = _cf_status_map.get(_state_id, "") or str(
-                        _pick(_cu, ("clientStateName", "statusName", "stateName")) or ""
-                    ).strip()
+                    _state_name = _cf_status_map.get(_state_id, "") or str(_pick(_cu, ("clientStateName", "statusName", "stateName")) or "").strip()
                     if not _state_name and _state_id:
-                        _state_name = f"id:{_state_id}"
                         if _state_id not in _cf_unknown_ids and len(_cf_unknown_ids) < 10:
                             _cf_unknown_ids.append(_state_id)
-                    if _state_name:
-                        _cf_counts[_state_name] = _cf_counts.get(_state_name, 0) + 1
-                if len(_cu_items) < 500:
-                    break
-            _cf_users_scanned = _cf_users_total
-            _cf_slug_order = {s: i for i, s in enumerate(_CLIENT_STATUS_DISPLAY_ORDER)}
-            _cf_breakdown = sorted(
-                [
-                    {
-                        "status_name": _sn,
-                        "slug": _CLIENT_STATUS_SLUG.get(_sn.strip().lower(), "other"),
-                        "count": _cc,
+                    _slug = _CLIENT_STATUS_SLUG.get(_state_name.strip().lower(), "other")
+                    _bucket = _CF_SLUG_TO_BUCKET.get(_slug, "other")
+                    _item_rec: dict[str, Any] = {
+                        "user_id": _uid,
+                        "name": _v3991_user_name_from_user_obj(_cu),
+                        "client_state_id": _state_id,
+                        "client_state_name": _state_name,
+                        "slug": _slug,
+                        "state_changed_at": str(_pick(_cu, ("stateChangedAt", "updatedAt")) or ""),
+                        "status_change_reason_id": str(_pick(_cu, ("statusChangeReasonId", "stateChangeReasonId")) or ""),
                     }
-                    for _sn, _cc in _cf_counts.items()
-                ],
-                key=lambda x: (_cf_slug_order.get(x["slug"], 99), x["status_name"]),
-            )
+                    if len(_cf_items[_bucket]) < 200:
+                        _cf_items[_bucket].append(_item_rec)
+                    _cf_summary[_bucket] = _cf_summary.get(_bucket, 0) + 1
+                if len(_cu_items) < _cf_page_size:
+                    break
         except Exception as _cf_exc:
             _cf_diag.append({"error": str(_cf_exc)[:300]})
+
+        _cf_net = _cf_summary.get("new_clients", 0) - _cf_summary.get("churned_clients", 0)
 
         elapsed_ms = int((time.monotonic() - t_start) * 1000)
 
@@ -2393,15 +2398,22 @@ class MoyKlassClient:
                     },
                 },
                 "client_flow": {
-                    "status_history_available": False,
-                    "message": (
-                        "МойКласс не предоставляет историю изменения статусов через API. "
-                        "Приток/отток за месяц (по дате перехода) рассчитать нельзя."
-                    ),
-                    "current_status_available": _cf_users_ok,
-                    "current_status_breakdown": _cf_breakdown,
-                    "users_scanned": _cf_users_scanned,
-                    "source": "moyklass/clientStatuses+users",
+                    "source": "moyklass_users_stateChangedAt",
+                    "method": "current_status_changed_in_month",
+                    "status_history_full_available": False,
+                    "uses_state_changed_at": True,
+                    "data_available": _cf_users_ok,
+                    "summary": {
+                        "new_clients":     _cf_summary.get("new_clients", 0),
+                        "churned_clients": _cf_summary.get("churned_clients", 0),
+                        "net_growth":      _cf_net,
+                        "trial":           _cf_summary.get("trial", 0),
+                        "deciding":        _cf_summary.get("deciding", 0),
+                        "refused":         _cf_summary.get("refused", 0),
+                        "bad_leads":       _cf_summary.get("bad_leads", 0),
+                        "new_leads":       _cf_summary.get("new_leads", 0),
+                    },
+                    "items": _cf_items,
                 },
                 "diagnostics": {
                     "lesson_records_loaded": len(all_records),
@@ -2455,13 +2467,16 @@ class MoyKlassClient:
                     "payments_unallocated_amount": _pay_unalloc_amount,
                     "examples_unallocated_payments": _unalloc_examples,
                     "payments_group_mapping_available": False,
-                    "client_flow_status_history_available": False,
-                    "client_flow_source": "/v1/company/clientStatuses+users",
+                    "client_flow_source": "moyklass_users_stateChangedAt",
+                    "client_flow_uses_state_changed_at": True,
+                    "client_flow_status_history_full_available": False,
                     "client_flow_status_map_size": _cf_status_map_size,
-                    "client_flow_users_scanned": _cf_users_scanned,
+                    "client_flow_users_loaded": _cf_users_loaded,
                     "client_flow_statuses_loaded": _cf_statuses_ok,
                     "client_flow_users_ok": _cf_users_ok,
                     "client_flow_unknown_status_ids": _cf_unknown_ids,
+                    "client_flow_state_changed_at_from": start.isoformat(),
+                    "client_flow_state_changed_at_to": end.isoformat(),
                     "client_flow_api_diagnostics": _cf_diag,
                 },
                 "source": "moyklass/lessonRecords",

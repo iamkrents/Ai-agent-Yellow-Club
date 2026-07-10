@@ -3737,13 +3737,15 @@ function renderChildrenReport() {
             const cf = d.client_flow || {};
             if (!cf.source) return "";
             return `
-              <div class="cr-diag-row" style="margin-top:6px;font-weight:700"><span>Статусы клиентов (client_flow)</span></div>
-              <div class="cr-diag-row"><span>История статусов доступна</span><b>${cf.status_history_available ? "да" : "нет"}</b></div>
+              <div class="cr-diag-row" style="margin-top:6px;font-weight:700"><span>Приток / отток (client_flow)</span></div>
               <div class="cr-diag-row"><span>Источник</span><b>${escapeHtml(cf.source || "—")}</b></div>
+              <div class="cr-diag-row"><span>Метод</span><b>${escapeHtml(cf.method || "—")}</b></div>
+              <div class="cr-diag-row"><span>stateChangedAt</span><b>${diag.client_flow_state_changed_at_from ?? "—"} → ${diag.client_flow_state_changed_at_to ?? "—"}</b></div>
               <div class="cr-diag-row"><span>Карта статусов</span><b>${diag.client_flow_status_map_size ?? "—"} зап.</b></div>
-              <div class="cr-diag-row"><span>Пользователей проверено</span><b>${cf.users_scanned ?? "—"}</b></div>
-              <div class="cr-diag-row"><span>Статусы загружены</span><b>${diag.client_flow_statuses_loaded ? "да" : "нет"}</b></div>
-              <div class="cr-diag-row"><span>Пользователи загружены</span><b>${diag.client_flow_users_ok ? "да" : "нет"}</b></div>
+              <div class="cr-diag-row"><span>Пользователей загружено</span><b>${diag.client_flow_users_loaded ?? "—"}</b></div>
+              <div class="cr-diag-row"><span>Статусы ОК</span><b>${diag.client_flow_statuses_loaded ? "да" : "нет"}</b></div>
+              <div class="cr-diag-row"><span>Пользователи ОК</span><b>${diag.client_flow_users_ok ? "да" : "нет"}</b></div>
+              <div class="cr-diag-row"><span>Полная история</span><b>${cf.status_history_full_available ? "да" : "нет"}</b></div>
               ${(diag.client_flow_unknown_status_ids || []).length > 0 ? `<div class="cr-diag-row"><span>Неизвестные статус-id</span><b>${(diag.client_flow_unknown_status_ids || []).join(", ")}</b></div>` : ""}`;
           })()}
         </div>
@@ -3966,39 +3968,69 @@ function renderChildrenReport() {
       })()}
 
       ${(() => {
-        // ── Client flow / status snapshot block ──────────────────────────────
+        // ── Client flow block (v7.0.64 — stateChangedAt) ─────────────────────
         const cf = d.client_flow || {};
         if (!cf.source) return "";
 
-        const histAvail  = cf.status_history_available === true;
-        const curAvail   = cf.current_status_available;
-        const breakdown  = Array.isArray(cf.current_status_breakdown) ? cf.current_status_breakdown : [];
+        const sm   = cf.summary || {};
+        const items = cf.items  || {};
+        const avail = cf.data_available;
 
-        if (histAvail) {
-          // Future: render proper inflow/outflow tiles
-          // For now this branch won't trigger since backend always returns false.
-          return "";
-        }
+        // Helper: render a verify-list details block for one category
+        const _cfList = (title, arr) => {
+          if (!Array.isArray(arr) || arr.length === 0) return "";
+          const rows = arr.map(u => {
+            const dt  = (u.state_changed_at || "").slice(0, 10);
+            const nm  = escapeHtml(u.name || `id:${u.user_id || "?"}`);
+            const st  = escapeHtml(u.client_state_name || u.slug || "—");
+            return `<div class="cr-group-row">
+              <div class="cr-group-name">${nm}</div>
+              <div class="cr-group-meta">${st}${dt ? " · " + dt : ""}</div>
+            </div>`;
+          }).join("");
+          return `<details class="cr-verify" style="margin-top:6px">
+            <summary>${escapeHtml(title)} (${arr.length})</summary>
+            <div style="margin-top:4px">${rows}</div>
+          </details>`;
+        };
 
-        const bdHtml = curAvail && breakdown.length > 0 ? `
-          <div class="cr-cf-breakdown">
-            ${breakdown.map(b => `
-              <div class="cr-cf-row">
-                <span class="cr-cf-status">${escapeHtml(b.status_name || b.slug || "—")}</span>
-                <span class="cr-cf-count">${b.count}</span>
-              </div>`).join("")}
-          </div>` : (curAvail ? "" : `<p class="cr-note">Данные о статусах клиентов не загружены.</p>`);
+        const net    = sm.net_growth ?? 0;
+        const netCls = net > 0 ? " positive" : net < 0 ? " negative" : "";
+        const netStr = net > 0 ? `+${net}` : String(net);
 
-        const scannedNote = cf.users_scanned > 0
-          ? `<p class="cr-note cr-cf-scanned">Показаны данные по ${cf.users_scanned} клиентам из МойКласс.</p>`
+        const tilesHtml = `
+          <div class="cr-cf-tiles">
+            <div class="cr-cf-tile"><span class="cr-cf-tile-n positive">+${sm.new_clients ?? 0}</span><span class="cr-cf-tile-label">Новых клиентов</span></div>
+            <div class="cr-cf-tile"><span class="cr-cf-tile-n negative">−${sm.churned_clients ?? 0}</span><span class="cr-cf-tile-label">Ушло клиентов</span></div>
+            <div class="cr-cf-tile"><span class="cr-cf-tile-n${netCls}">${netStr}</span><span class="cr-cf-tile-label">Чистый прирост</span></div>
+            <div class="cr-cf-tile"><span class="cr-cf-tile-n">${sm.trial ?? 0}</span><span class="cr-cf-tile-label">Пробных</span></div>
+            <div class="cr-cf-tile"><span class="cr-cf-tile-n">${sm.refused ?? 0}</span><span class="cr-cf-tile-label">Отказов</span></div>
+            <div class="cr-cf-tile"><span class="cr-cf-tile-n">${sm.bad_leads ?? 0}</span><span class="cr-cf-tile-label">Некач. лидов</span></div>
+            <div class="cr-cf-tile"><span class="cr-cf-tile-n">${sm.deciding ?? 0}</span><span class="cr-cf-tile-label">Принимают решение</span></div>
+            <div class="cr-cf-tile"><span class="cr-cf-tile-n">${sm.new_leads ?? 0}</span><span class="cr-cf-tile-label">Новых лидов</span></div>
+          </div>`;
+
+        const verifyHtml = avail ? [
+          _cfList("Новые клиенты", items.new_clients),
+          _cfList("Ушли клиенты", items.churned_clients),
+          _cfList("Пробные", items.trial),
+          _cfList("Отказы", items.refused),
+          _cfList("Некачественные лиды", items.bad_leads),
+          _cfList("Принимают решение", items.deciding),
+          _cfList("Новые лиды", items.new_leads),
+        ].join("") : "";
+
+        const noDataHtml = !avail
+          ? `<p class="cr-note">МойКласс не вернул пользователей с фильтром stateChangedAt. Возможно, этот параметр не поддерживается в данной версии API.</p>`
           : "";
 
         return `
           <div class="cr-cf-block">
-            <div class="cr-cf-title">Статусы клиентов</div>
-            <p class="cr-note cr-cf-note">История изменения статусов в API МойКласс недоступна — приток и отток за месяц по дате перехода рассчитать нельзя.</p>
-            ${bdHtml}
-            ${scannedNote}
+            <div class="cr-cf-title">Приток / отток</div>
+            <p class="cr-note cr-cf-note">По последнему изменению статуса в МойКласс за выбранный месяц (stateChangedAt). Если клиент менял статус несколько раз — учитывается только последний текущий. Полная история переходов недоступна.</p>
+            ${noDataHtml}
+            ${avail ? tilesHtml : ""}
+            ${verifyHtml}
           </div>`;
       })()}
 
@@ -4171,18 +4203,23 @@ async function copyChildrenReport() {
   // ── Client flow section ──
   const _cf = d.client_flow || {};
   if (_cf.source != null) {
-    lines.push("", "Статусы клиентов (приток / отток):");
-    if (_cf.status_history_available) {
-      // Future: add inflow/outflow numbers here when backend supports history
+    const _cfsm = _cf.summary || {};
+    const _cfnet = _cfsm.net_growth ?? 0;
+    lines.push("", "Приток / отток:");
+    if (_cf.data_available) {
+      lines.push(
+        `• Новых клиентов — ${_cfsm.new_clients ?? 0}`,
+        `• Ушло клиентов — ${_cfsm.churned_clients ?? 0}`,
+        `• Чистый прирост — ${_cfnet >= 0 ? "+" : ""}${_cfnet}`,
+        `• Пробных — ${_cfsm.trial ?? 0}`,
+        `• Отказов — ${_cfsm.refused ?? 0}`,
+        `• Некачественных лидов — ${_cfsm.bad_leads ?? 0}`,
+        `• Принимают решение — ${_cfsm.deciding ?? 0}`,
+        `• Новых лидов — ${_cfsm.new_leads ?? 0}`,
+        `Метод: по stateChangedAt текущего статуса за месяц. Полная история переходов недоступна.`,
+      );
     } else {
-      lines.push("• История изменения статусов недоступна (МойКласс API не отдаёт дату перехода).");
-      lines.push("• Приток / отток за месяц рассчитать нельзя.");
-      const _cfb = Array.isArray(_cf.current_status_breakdown) ? _cf.current_status_breakdown : [];
-      if (_cfb.length > 0) {
-        lines.push("Текущие статусы клиентов:");
-        _cfb.forEach(b => lines.push(`  • ${b.status_name || b.slug} — ${b.count}`));
-        if (_cf.users_scanned) lines.push(`  (по ${_cf.users_scanned} клиентам из МойКласс)`);
-      }
+      lines.push("• Данные stateChangedAt недоступны в данной версии API МойКласс.");
     }
   }
 
