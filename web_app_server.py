@@ -7284,14 +7284,26 @@ class MiniAppContext:
         time_zone: str = "Europe/Minsk",
         max_total: int = 5000,
     ) -> tuple[list[dict[str, Any]], str, bool, dict[str, Any]]:
-        """Call bePaid paginated report API for one shop.
+        """Call bePaid /api/reports (X-Api-Version: 2) day-by-day for one shop.
 
-        Returns (transactions, error_str, api_supported, diagnostics).
-        Tries X-Api-Version 3 first, falls back to 2 on 400/404/422.
-        On 401 stops immediately — auth won't change with a different version.
+        Per official bePaid reports docs: endpoint accepts a single date per
+        request, not a date range. Iterates each calendar day in [from_dt, to_dt).
         Never logs or exposes secret_key or Authorization header.
         """
         import requests as _req
+        from datetime import date as _date, timedelta as _td
+
+        try:
+            from_date = _date.fromisoformat(from_dt[:10])
+            to_date = _date.fromisoformat(to_dt[:10])  # exclusive upper bound
+        except Exception as exc:
+            return [], f"date parse error: {exc}", False, {}
+
+        days: list[str] = []
+        _cur = from_date
+        while _cur < to_date:
+            days.append(_cur.isoformat())
+            _cur += _td(days=1)
 
         diag: dict[str, Any] = {
             "shop_id_present": bool(shop_id),
@@ -7299,15 +7311,21 @@ class MiniAppContext:
             "shop_id_last4": shop_id[-4:] if len(shop_id) >= 4 else "****",
             "secret_key_length": len(secret_key),
             "endpoint_used": self._BEPAID_REPORT_URL,
-            "api_version_header_used": None,
+            "api_version_header_used": "2",
+            "date_type": "paid_at",
+            "days_requested": len(days),
+            "payment_method_types_requested": payment_method_types,
             "response_status": None,
             "response_reason": None,
             "response_body_preview": None,
             "request_body_sanitized": None,
             "auth_error": False,
-            "versions_tried": [],
+            "versions_tried": ["2"],
             "exception_type": None,
             "exception_message": None,
+            "per_day_error_statuses": {},
+            "imported_per_day": {},
+            "imported_per_method": {pmt: 0 for pmt in payment_method_types},
         }
 
         all_tx: list[dict[str, Any]] = []
@@ -7315,37 +7333,31 @@ class MiniAppContext:
         api_supported = False
 
         for pmt in payment_method_types:
-            cursor = None
-            working_version: str | None = None  # reuse once confirmed working
-
-            for _page in range(50):
-                req_body: dict[str, Any] = {
+            for day_str in days:
+                base_body: dict[str, Any] = {
                     "report_params": {
                         "date_type": "paid_at",
-                        "from": from_dt,
-                        "to": to_dt,
+                        "date": day_str,
                         "status": "all",
                         "payment_method_type": pmt,
                         "time_zone": time_zone,
                     }
                 }
-                if cursor:
-                    req_body["starting_after"] = cursor
+                diag["request_body_sanitized"] = base_body  # no credentials in body
 
-                diag["request_body_sanitized"] = req_body  # no credentials in body
+                cursor = None
+                for _page in range(10):  # pagination safety limit per day
+                    req_body = dict(base_body)
+                    if cursor:
+                        req_body["starting_after"] = cursor
 
-                versions_to_try = [working_version] if working_version else ["3", "2"]
-                resp = None
-                used_version = None
-
-                for api_ver in versions_to_try:
                     try:
                         resp = _req.post(
                             self._BEPAID_REPORT_URL,
                             json=req_body,
                             auth=(shop_id, secret_key),
                             headers={
-                                "X-Api-Version": api_ver,
+                                "X-Api-Version": "2",
                                 "Content-Type": "application/json",
                                 "Accept": "application/json",
                             },
@@ -7361,9 +7373,6 @@ class MiniAppContext:
                         )
                         return all_tx, last_error, api_supported, diag
 
-                    used_version = api_ver
-                    if api_ver not in diag["versions_tried"]:
-                        diag["versions_tried"].append(api_ver)
                     diag["response_status"] = resp.status_code
                     diag["response_reason"] = getattr(resp, "reason", None) or ""
                     try:
@@ -7373,74 +7382,67 @@ class MiniAppContext:
 
                     if resp.status_code == 401:
                         diag["auth_error"] = True
-                        break  # auth won't change with a different version
+                        last_error = (
+                            "bePaid отклонил авторизацию на reports API v2. "
+                            "Проверьте Shop ID и Secret Key именно этого магазина. "
+                            "Возможно, доступ к Reporting API не активирован — "
+                            "обратитесь в поддержку bePaid."
+                        )
+                        api_supported = True  # endpoint reachable, credentials rejected
+                        log.warning(
+                            "bePaid import auth failed shop_type=%s api_version=2 endpoint=%s "
+                            "shop_id_last4=%s secret_key_length=%s body_preview=%s",
+                            shop_type, self._BEPAID_REPORT_URL,
+                            diag["shop_id_last4"], diag["secret_key_length"],
+                            (diag.get("response_body_preview") or "")[:200],
+                        )
+                        return all_tx, last_error, api_supported, diag  # no point retrying days
 
-                    if resp.status_code in (400, 404, 422) and api_ver != versions_to_try[-1]:
-                        continue  # try next version
-                    break
+                    if resp.status_code in (404, 501, 405):
+                        last_error = f"HTTP {resp.status_code}: endpoint not supported"
+                        log.warning(
+                            "bePaid import endpoint not supported shop_type=%s status=%s endpoint=%s",
+                            shop_type, resp.status_code, self._BEPAID_REPORT_URL,
+                        )
+                        return all_tx, last_error, api_supported, diag
 
-                if resp is None:
-                    break
+                    api_supported = True
 
-                diag["api_version_header_used"] = used_version
+                    if not resp.ok:
+                        try:
+                            err_body = resp.json()
+                            day_error = str(err_body.get("message") or err_body)[:300]
+                        except Exception:
+                            day_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                        last_error = day_error
+                        diag["per_day_error_statuses"][f"{day_str}/{pmt}"] = resp.status_code
+                        log.warning(
+                            "bePaid import API error shop_type=%s day=%s pmt=%s status=%s body=%s",
+                            shop_type, day_str, pmt, resp.status_code,
+                            (diag.get("response_body_preview") or "")[:200],
+                        )
+                        break  # skip this day/pmt, continue with the rest
 
-                if resp.status_code in (404, 501, 405):
-                    last_error = f"HTTP {resp.status_code}: endpoint not supported"
-                    log.warning(
-                        "bePaid import endpoint not supported shop_type=%s status=%s endpoint=%s version=%s",
-                        shop_type, resp.status_code, self._BEPAID_REPORT_URL, used_version,
-                    )
-                    break
-
-                if resp.status_code == 401:
-                    last_error = (
-                        "bePaid отклонил авторизацию. "
-                        "Проверьте Shop ID и Secret Key именно этого магазина. "
-                        "Public Key не подходит для API-запросов."
-                    )
-                    api_supported = True  # endpoint reachable, credentials wrong
-                    log.warning(
-                        "bePaid import auth failed shop_type=%s endpoint=%s versions_tried=%s "
-                        "shop_id_last4=%s secret_key_length=%s body_preview=%s",
-                        shop_type, self._BEPAID_REPORT_URL, diag["versions_tried"],
-                        diag["shop_id_last4"], diag["secret_key_length"],
-                        (diag.get("response_body_preview") or "")[:200],
-                    )
-                    break
-
-                api_supported = True
-                working_version = used_version  # reuse for subsequent pages
-
-                if not resp.ok:
                     try:
-                        err_body = resp.json()
-                        last_error = str(err_body.get("message") or err_body)[:300]
+                        data = resp.json()
                     except Exception:
-                        last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                    log.warning(
-                        "bePaid import API error shop_type=%s status=%s endpoint=%s version=%s body_preview=%s",
-                        shop_type, resp.status_code, self._BEPAID_REPORT_URL, used_version,
-                        (diag.get("response_body_preview") or "")[:200],
-                    )
-                    break
+                        last_error = "invalid JSON in API response"
+                        break
 
-                try:
-                    data = resp.json()
-                except Exception:
-                    last_error = "invalid JSON in API response"
-                    break
+                    items = data.get("transactions") or []
+                    all_tx.extend(items)
+                    day_key = f"{day_str}/{pmt}"
+                    diag["imported_per_day"][day_key] = diag["imported_per_day"].get(day_key, 0) + len(items)
+                    diag["imported_per_method"][pmt] = diag["imported_per_method"].get(pmt, 0) + len(items)
 
-                items = data.get("transactions") or []
-                all_tx.extend(items)
-
-                if not data.get("has_more") or not items:
-                    break
-                cursor = data.get("last_object_id")
-                if not cursor:
-                    break
-                if len(all_tx) >= max_total:
-                    log.warning("bePaid import: reached max_total=%d for %s/%s", max_total, shop_type, pmt)
-                    break
+                    if not data.get("has_more") or not items:
+                        break
+                    cursor = data.get("last_object_id")
+                    if not cursor:
+                        break
+                    if len(all_tx) >= max_total:
+                        log.warning("bePaid import: reached max_total=%d for %s/%s/%s", max_total, shop_type, pmt, day_str)
+                        break
 
         return all_tx, last_error, api_supported, diag
 
@@ -7570,8 +7572,10 @@ class MiniAppContext:
         ):
             auth_shops = [st for st, r in shop_results.items() if r.get("auth_error")]
             _auth_msg = (
-                "bePaid отклонил авторизацию. "
+                "bePaid отклонил авторизацию на reports API v2. "
                 "Проверьте Shop ID и Secret Key именно этого магазина. "
+                "Возможно, доступ к Reporting API не активирован — "
+                "обратитесь в поддержку bePaid. "
                 "Public Key не подходит для API-запросов."
             )
             return {
@@ -7659,9 +7663,15 @@ class MiniAppContext:
                         "shop_id_last4": d.get("shop_id_last4"),
                         "secret_key_length": d.get("secret_key_length"),
                         "endpoint_used": d.get("endpoint_used"),
-                        "versions_tried": d.get("versions_tried"),
                         "api_version_used": d.get("api_version_header_used"),
+                        "date_type": d.get("date_type"),
+                        "days_requested": d.get("days_requested"),
+                        "payment_method_types_requested": d.get("payment_method_types_requested"),
                         "response_status": d.get("response_status"),
+                        "response_reason": d.get("response_reason"),
+                        "response_body_preview": d.get("response_body_preview"),
+                        "per_day_error_statuses": d.get("per_day_error_statuses"),
+                        "imported_per_method": d.get("imported_per_method"),
                     }
                     for st, d in shop_diags.items()
                 },

@@ -4451,8 +4451,9 @@ function renderBepaid() {
         if (!ir.ok && ir.auth_error) {
           const authShops = (ir.shops_with_auth_error || []).join(", ") || "магазин";
           return `<div class="notice notice-error" style="margin-bottom:8px;font-size:13px">
-            bePaid отклонил авторизацию (${escapeHtml(authShops)}).<br>
-            Проверьте <b>Shop ID</b> и <b>Secret Key</b> именно этого магазина — Public Key не подходит для API-запросов.
+            bePaid отклонил авторизацию на reports API v2 (${escapeHtml(authShops)}).<br>
+            Проверьте <b>Shop ID</b> и <b>Secret Key</b> именно этого магазина.<br>
+            Если ключи верные — возможно, доступ к Reporting API не активирован. Обратитесь в поддержку bePaid.
             ${_shopLines ? `<br><pre style="font-size:10px;margin:4px 0 0;overflow-x:auto;white-space:pre-wrap;text-align:left">${escapeHtml(_shopLines)}</pre>` : ""}
           </div>`;
         }
