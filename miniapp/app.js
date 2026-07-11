@@ -4510,26 +4510,33 @@ function renderBepaid() {
   const fmtByn = n => (n == null ? "—" : Number(n).toLocaleString("ru-RU", {minimumFractionDigits:2, maximumFractionDigits:2}) + " BYN");
 
   const MATCH_LABELS = {
-    "already_in_moyklass":                { label: "В МойКласс ✓",          cls: "chip-ok" },
-    "found_in_subscription":              { label: "Абонемент ✓",            cls: "chip-ok" },
-    "possible_subscription_match":        { label: "Похожий абонемент",      cls: "chip-info" },
+    "already_in_moyklass":                   { label: "В МойКласс ✓",       cls: "chip-ok" },
+    "found_in_subscription":                 { label: "Абонемент ✓",         cls: "chip-ok" },
+    "possible_subscription_match":           { label: "Похожий абонемент",   cls: "chip-info" },
+    "historical_subscription_match":         { label: "Старый абонемент",    cls: "chip-muted chip-hist" },
     "user_found_no_payment_or_subscription": { label: "Ученик, нет оплаты", cls: "chip-warn" },
-    "possible_payment_match":             { label: "Возможный платёж",       cls: "chip-info" },
-    "needs_review":                       { label: "Нужна проверка",         cls: "chip-error" },
-    "ignored_not_successful":             { label: "Неуспешная",             cls: "chip-muted" },
-    "ignored_test":                       { label: "Тест",                   cls: "chip-muted" },
-    "ignored_currency":                   { label: "Не BYN",                 cls: "chip-muted" },
+    "possible_payment_match":                { label: "Возможный платёж",    cls: "chip-info" },
+    "needs_review":                          { label: "Нужна проверка",      cls: "chip-error" },
+    "ignored_not_successful":                { label: "Неуспешная",          cls: "chip-muted" },
+    "ignored_test":                          { label: "Тест",                cls: "chip-muted" },
+    "ignored_currency":                      { label: "Не BYN",              cls: "chip-muted" },
   };
+  const CONF_LABELS = { high: "Уверенно", medium: "Средне", low: "Низкая", none: "" };
+  const CONF_CLS = { high: "chip-ok", medium: "chip-info", low: "chip-muted chip-hist", none: "" };
+
+  // "Найдено в МК" = only already_in_moyklass + found_in_subscription (high confidence)
+  // historical_subscription_match is NOT included in green tile
+  const _foundCount = (stats.already_in_moyklass ?? 0) + (stats.found_in_subscription ?? 0);
 
   const tilesHtml = `
     <div class="cr-tiles" style="margin-bottom:12px">
       <div class="cr-tile"><div class="cr-tile-val">${bp.successful_byn_count ?? 0}</div><div class="cr-tile-lbl">Успешных BYN</div></div>
       <div class="cr-tile"><div class="cr-tile-val">${fmtByn(bp.successful_amount_byn)}</div><div class="cr-tile-lbl">Сумма</div></div>
-      <div class="cr-tile cr-tile-ok"><div class="cr-tile-val">${(stats.already_in_moyklass ?? 0) + (stats.found_in_subscription ?? 0)}</div><div class="cr-tile-lbl">Найдено в МК</div></div>
+      <div class="cr-tile cr-tile-ok"><div class="cr-tile-val">${_foundCount}</div><div class="cr-tile-lbl">Найдено в МК</div></div>
       <div class="cr-tile cr-tile-ok"><div class="cr-tile-val">${stats.found_in_subscription ?? 0}</div><div class="cr-tile-lbl">Через абонемент</div></div>
       <div class="cr-tile cr-tile-info"><div class="cr-tile-val">${stats.possible_subscription_match ?? 0}</div><div class="cr-tile-lbl">Похожий абонемент</div></div>
+      <div class="cr-tile cr-tile-muted"><div class="cr-tile-val">${stats.historical_subscription_match ?? 0}</div><div class="cr-tile-lbl">Старый абонемент</div></div>
       <div class="cr-tile cr-tile-warn"><div class="cr-tile-val">${stats.user_found_no_payment_or_subscription ?? 0}</div><div class="cr-tile-lbl">Ученик, нет оплаты/аб.</div></div>
-      <div class="cr-tile cr-tile-info"><div class="cr-tile-val">${stats.possible_payment_match ?? 0}</div><div class="cr-tile-lbl">Возможный платёж</div></div>
       <div class="cr-tile cr-tile-err"><div class="cr-tile-val">${stats.needs_review ?? 0}</div><div class="cr-tile-lbl">Нужна проверка</div></div>
       <div class="cr-tile cr-tile-muted"><div class="cr-tile-val">${(stats.ignored_not_successful ?? 0) + (stats.ignored_test ?? 0)}</div><div class="cr-tile-lbl">Неуспешных/тест</div></div>
     </div>`;
@@ -4606,12 +4613,20 @@ function renderBepaid() {
       return `<div style="font-size:11px;color:var(--muted);margin-top:3px">Абонементы МК: <ul style="margin:2px 0 0 12px;padding:0">${rows}</ul></div>`;
     })();
 
-    return `<div class="bepaid-card${isIgnored ? " bepaid-card-muted" : ""}">
+    const confLabel = CONF_LABELS[tx.match_confidence] || "";
+    const confCls = CONF_CLS[tx.match_confidence] || "";
+    const confChip = confLabel
+      ? `<span class="chip ${confCls}" style="font-size:10px">${escapeHtml(confLabel)}</span>`
+      : "";
+    const isHistorical = tx.match_status === "historical_subscription_match";
+
+    return `<div class="bepaid-card${isIgnored ? " bepaid-card-muted" : ""}${isHistorical ? " bepaid-card-hist" : ""}">
       <div class="bepaid-card-header">
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
           <span style="font-size:12px;color:var(--muted)">${escapeHtml(paidAt)}</span>
           <span class="chip" style="font-size:11px">${escapeHtml(shopLabel)}</span>
           <span class="chip ${ms.cls}" style="font-size:11px">${escapeHtml(ms.label)}</span>
+          ${confChip}
         </div>
         <div style="font-size:16px;font-weight:700;white-space:nowrap">${fmtByn(tx.amount_byn)}</div>
       </div>
@@ -4644,12 +4659,16 @@ function renderBepaid() {
         <div class="cr-diag-row"><span>Абонементов загружено</span><b>${diagData.subscriptions_loaded_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Успешных BYN</span><b>${diagData.successful_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Найдено в платежах МК</span><b>${diagData.matched_count ?? 0}</b></div>
-        <div class="cr-diag-row"><span>Найдено в абонементах</span><b>${diagData.found_in_subscription_count ?? 0}</b></div>
-        <div class="cr-diag-row"><span>Похожие абонементы</span><b>${diagData.possible_subscription_match_count ?? 0}</b></div>
+        <div class="cr-diag-row"><span>Абонемент (уверенно)</span><b>${diagData.found_in_subscription_count ?? 0}</b></div>
+        <div class="cr-diag-row"><span>Абонемент (средне)</span><b>${diagData.possible_subscription_match_count ?? 0}</b></div>
+        <div class="cr-diag-row"><span>Абонемент (старый/низкая уверенность)</span><b>${diagData.historical_subscription_match_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Ученик, нет оплаты/аб.</span><b>${diagData.user_found_no_payment_or_subscription_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Возможный платёж (нет userId)</span><b>${diagData.possible_payment_match_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Нужна проверка</span><b>${diagData.needs_review_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Проигнорировано</span><b>${diagData.ignored_count ?? 0}</b></div>
+        <div class="cr-diag-row" style="margin-top:4px"><span>Уверенных совпадений (high)</span><b>${diagData.subscription_high_confidence_matches ?? 0}</b></div>
+        <div class="cr-diag-row"><span>Средних совпадений (medium)</span><b>${diagData.subscription_medium_confidence_matches ?? 0}</b></div>
+        <div class="cr-diag-row"><span>Старых совпадений (low)</span><b>${diagData.subscription_low_confidence_matches ?? 0}</b></div>
         <div class="cr-diag-row"><span>Посл. webhook</span><b>${diagData.last_webhook_received_at || "—"}</b></div>
         <div class="cr-diag-row" style="color:var(--warn);margin-top:6px"><span>Автосоздание в МойКласс</span><b>Выключено</b></div>
       </div>
@@ -4672,10 +4691,11 @@ async function copyBepaidReconcile() {
   const stats = bp.stats || {};
   const STATUS_TEXT = {
     "already_in_moyklass":                   "Есть в МойКласс (платёж)",
-    "found_in_subscription":                 "Найдено в абонементе",
-    "possible_subscription_match":           "Похожий абонемент",
-    "user_found_no_payment_or_subscription": "Ученик найден, нет оплаты/абонемента",
-    "possible_payment_match":                "Возможный платёж",
+    "found_in_subscription":                 "Абонемент (уверенно)",
+    "possible_subscription_match":           "Абонемент (средняя уверенность)",
+    "historical_subscription_match":         "Старый абонемент (низкая уверенность)",
+    "user_found_no_payment_or_subscription": "Ученик найден, нет релевантной оплаты/абонемента",
+    "possible_payment_match":                "Возможный платёж (нет userId)",
     "needs_review":                          "Нужна проверка",
     "ignored_not_successful":                "Неуспешная",
     "ignored_test":                          "Тест",
@@ -4685,28 +4705,35 @@ async function copyBepaidReconcile() {
     `Сверка bePaid ↔ МойКласс за ${bp.month || "?"}`,
     `Итого успешных BYN: ${bp.successful_byn_count ?? 0}, сумма: ${bp.successful_amount_byn ?? 0} BYN`,
     `Найдено в МойКласс (платежи): ${stats.already_in_moyklass ?? 0}`,
-    `Найдено через абонементы: ${stats.found_in_subscription ?? 0}`,
-    `Похожие абонементы: ${stats.possible_subscription_match ?? 0}`,
-    `Ученик найден, оплата/абонемент не найдены: ${stats.user_found_no_payment_or_subscription ?? 0}`,
+    `Найдено через абонементы (уверенно): ${stats.found_in_subscription ?? 0}`,
+    `Похожие абонементы (средняя уверенность): ${stats.possible_subscription_match ?? 0}`,
+    `Старые абонементы (низкая уверенность): ${stats.historical_subscription_match ?? 0}`,
+    `Ученик найден, но релевантной оплаты/абонемента нет: ${stats.user_found_no_payment_or_subscription ?? 0}`,
     `Возможные платёжные совпадения: ${stats.possible_payment_match ?? 0}`,
     `Нужна проверка: ${stats.needs_review ?? 0}`,
     "",
   ];
-  const header = ["Дата", "Магазин", "Клиент", "Телефон", "Сумма BYN", "Статус сверки", "МК userId", "Причина", "Платёж МК", "Абонемент МК", "Сумма абонемента", "Дата абонемента"].join("\t");
+  const CONF_COPY = { high: "Уверенно", medium: "Средне", low: "Низкая", none: "" };
+  const header = ["Дата", "Магазин", "Клиент", "Телефон", "Сумма BYN", "Статус сверки", "Уверенность", "МК userId", "Причина", "Дата актуальности", "Платёж МК", "Абонемент МК", "Сумма абонемента", "Дата продажи аб.", "Период аб."].join("\t");
   const rows = txns.map(tx => {
     const name = [tx.customer_last_name, tx.customer_first_name].filter(Boolean).join(" ");
     const phone = tx.customer_phone || tx.billing_phone || "";
     const paidAt = (tx.paid_at || tx.received_at || "").slice(0, 10);
     const amt = tx.amount_byn != null ? Number(tx.amount_byn).toFixed(2) : "";
     const status = STATUS_TEXT[tx.match_status] || tx.match_status || "";
+    const conf = CONF_COPY[tx.match_confidence] || "";
     const mkuid = tx.mk_user_id || "";
     const reason = tx.match_reason || "";
+    const dateRel = tx.subscription_date_relevance || "";
     const mkpay = tx.mk_payment_id || "";
     const subid = tx.subscription_id || "";
     const subamt = tx.subscription_amount_byn != null ? Number(tx.subscription_amount_byn).toFixed(2) : "";
-    const subdate = tx.subscription_sell_date || tx.subscription_begin_date || "";
+    const subsell = tx.subscription_sell_date || "";
+    const subperiod = (tx.subscription_begin_date || tx.subscription_end_date)
+      ? `${tx.subscription_begin_date || "?"}—${tx.subscription_end_date || "?"}`
+      : "";
     const shop = tx.shop_type === "erip" ? "ЕРИП" : tx.shop_type === "acquiring" ? "Эквайринг" : (tx.shop_type || "");
-    return [paidAt, shop, name, phone, amt, status, mkuid, reason, mkpay, subid, subamt, subdate].join("\t");
+    return [paidAt, shop, name, phone, amt, status, conf, mkuid, reason, dateRel, mkpay, subid, subamt, subsell, subperiod].join("\t");
   });
   const text = [...summaryLines, header, ...rows].join("\n");
   const btn = $("bepaidCopyBtn");

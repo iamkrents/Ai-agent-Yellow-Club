@@ -7157,6 +7157,11 @@ input:disabled { animation: none !important; transform: none !important; }
   padding: 10px 12px;
 }
 .bepaid-card-muted { opacity: .6; }
+.bepaid-card-hist { border-left: 3px solid #e67e22; opacity: .85; }
+.chip-hist { background: rgba(230,126,34,.12) !important; color: #a04000 !important; }
+@media (prefers-color-scheme: dark) { .chip-hist { background: rgba(230,126,34,.22) !important; color: #f0b27a !important; } }
+:root[data-theme="dark"] .chip-hist { background: rgba(230,126,34,.22) !important; color: #f0b27a !important; }
+:root[data-theme="light"] .chip-hist { background: rgba(230,126,34,.12) !important; color: #a04000 !important; }
 .bepaid-card-header {
   display: flex;
   justify-content: space-between;

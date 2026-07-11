@@ -7940,10 +7940,12 @@ class MiniAppContext:
         _sub_cache: dict[str, list[dict[str, Any]]] = {}
         _sub_api_calls = 0
         _sub_api_calls_limit = 50
-        _sub_exact_hits = 0
-        _sub_possible_hits = 0
+        _sub_high_conf = 0
+        _sub_medium_conf = 0
+        _sub_low_conf = 0
         _sub_example_matches: list[dict[str, Any]] = []
         _sub_example_misses: list[dict[str, Any]] = []
+        _sub_example_hist: list[dict[str, Any]] = []
 
         def _get_user_subs(uid: str) -> list[dict[str, Any]]:
             nonlocal _sub_api_calls
@@ -7986,11 +7988,94 @@ class MiniAppContext:
                     sub.get("endDate") or sub.get("finishDate") or sub.get("overDate") or "").strip()[:10],
             }
 
+        # Date parsing and confidence scoring for subscription matching
+        from datetime import date as _ddate
+
+        def _parse_ds(s: str | None) -> "_ddate | None":
+            if not s:
+                return None
+            try:
+                return _ddate.fromisoformat(str(s).strip()[:10])
+            except Exception:
+                return None
+
+        # Parse month bounds for date relevance checks
+        try:
+            _my, _mm = int(month[:4]), int(month[5:7])
+            _month_start = _ddate(_my, _mm, 1)
+            _month_end = _ddate(_my + 1, 1, 1) if _mm == 12 else _ddate(_my, _mm + 1, 1)
+        except Exception:
+            _month_start = _month_end = None
+
+        def _sub_confidence(
+            sub: dict[str, Any],
+            paid_at_str: str,
+            is_exact: bool,
+        ) -> tuple[str, str, int | None, bool]:
+            """Return (confidence, date_relevance, delta_days, is_historical).
+
+            confidence: "high" | "medium" | "low"
+            date_relevance: human-readable label
+            delta_days: days between paid_at and newest sub date (positive = sub is older)
+            is_historical: sub is >180 days older than paid_at with no high-relevance
+            """
+            paid_dt = _parse_ds(paid_at_str[:10] if paid_at_str else None)
+            sell_dt = _parse_ds(sub.get("sellDate"))
+            begin_dt = _parse_ds(sub.get("beginDate") or sub.get("startDate"))
+            end_dt = _parse_ds(sub.get("endDate") or sub.get("finishDate") or sub.get("overDate"))
+
+            all_sub_dts = [d for d in [sell_dt, begin_dt, end_dt] if d is not None]
+            delta_days: int | None = None
+            if paid_dt and all_sub_dts:
+                delta_days = (paid_dt - max(all_sub_dts)).days  # positive = sub older than paid
+
+            is_historical = bool(delta_days is not None and delta_days > 180)
+
+            # Collect high-relevance signals
+            relevances: list[str] = []
+            if sell_dt and _month_start and _month_start <= sell_dt < _month_end:
+                relevances.append("sell_date_in_selected_month")
+            if sell_dt and paid_dt and abs((paid_dt - sell_dt).days) <= 45:
+                relevances.append("sell_date_near_paid_at")
+            if begin_dt and end_dt and _month_start and _month_end:
+                if begin_dt < _month_end and end_dt >= _month_start:
+                    relevances.append("period_overlaps_selected_month")
+            if paid_dt:
+                for _d in [begin_dt, end_dt]:
+                    if _d and abs((paid_dt - _d).days) <= 45:
+                        if "period_near_paid_at" not in relevances:
+                            relevances.append("period_near_paid_at")
+
+            if not all_sub_dts:
+                date_relevance = "unknown"
+            elif relevances:
+                date_relevance = relevances[0]
+            elif is_historical:
+                date_relevance = "historical"
+            else:
+                date_relevance = "not_recent"
+
+            # Confidence rules
+            # high: exact amount AND at least one high-relevance date condition
+            if is_exact and relevances:
+                confidence = "high"
+            # low: exact amount AND clearly historical (>180 days) AND no high relevance
+            elif is_exact and is_historical:
+                confidence = "low"
+            # medium: everything else (exact+no date info, close amount regardless of date)
+            else:
+                confidence = "medium"
+
+            return confidence, date_relevance, delta_days, is_historical
+
+        _CONF_ORDER = {"high": 0, "medium": 1, "low": 2}
+
         stats = {
             "total": len(bp_txns),
             "already_in_moyklass": 0,
             "found_in_subscription": 0,
             "possible_subscription_match": 0,
+            "historical_subscription_match": 0,
             "user_found_no_payment_or_subscription": 0,
             "possible_payment_match": 0,
             "needs_review": 0,
@@ -8009,6 +8094,7 @@ class MiniAppContext:
             _amount_minor = _tx.get("amount_minor")
             _mk_uid = str(_tx.get("mk_user_id") or "").strip()
             _mk_uid_source = str(_tx.get("mk_user_id_source") or "").strip()
+            _paid_at_str = str(_tx.get("paid_at") or "").strip()
 
             new_match: dict[str, Any] = {}
 
@@ -8025,7 +8111,7 @@ class MiniAppContext:
                              "match_reason": f"валюта: {_currency}"}
                 stats["ignored_currency"] += 1
             else:
-                # Priority 1: exact uid + amount match in payments
+                # Priority 1: exact uid + amount match in MK payments
                 _exact_key = f"{_mk_uid}:{_amount_minor}" if (_mk_uid and _amount_minor is not None) else None
                 _exact_candidates = _mk_pay_by_uid_amount.get(_exact_key, []) if _exact_key else []
 
@@ -8035,6 +8121,7 @@ class MiniAppContext:
                     new_match = {
                         "match_status": "already_in_moyklass",
                         "match_score": 1.0,
+                        "match_confidence": "high",
                         "match_reason": f"userId={_mk_uid} и сумма совпадают в платежах МК",
                         "mk_payment_id": str(_found.get("id") or ""),
                         "mk_user_id": _mk_uid,
@@ -8048,60 +8135,108 @@ class MiniAppContext:
                     _uname = _mk_user_names.get(_mk_uid, "")
                     _user_subs = _get_user_subs(_mk_uid)
 
-                    _exact_subs: list[dict[str, Any]] = []
-                    _close_subs: list[tuple[dict[str, Any], float]] = []
+                    # Build candidate list with confidence scores
+                    # Each entry: (conf_order, kind_order, delta_days, conf, dr, delta_byn, hist, sub)
+                    _cands: list[tuple[int, int, int, str, str, float, bool, dict[str, Any]]] = []
                     if _amount_minor is not None:
                         for _sub in _user_subs:
                             _sm = _sub_amount_minor(_sub)
                             if _sm is None:
                                 continue
                             _diff = abs(_sm - _amount_minor)
-                            if _diff == 0:
-                                _exact_subs.append(_sub)
-                            elif _diff <= 100:  # ≤1 BYN tolerance
-                                _close_subs.append((_sub, round(_diff / 100, 2)))
+                            _is_exact = (_diff == 0)
+                            _is_close = (0 < _diff <= 100)
+                            if not (_is_exact or _is_close):
+                                continue
+                            _conf, _dr, _dd, _hist = _sub_confidence(
+                                _sub, _paid_at_str, _is_exact)
+                            _delta_byn = round(_diff / 100, 2)
+                            _cands.append((
+                                _CONF_ORDER.get(_conf, 3),
+                                0 if _is_exact else 1,
+                                _dd if _dd is not None else 9999,
+                                _conf, _dr, _delta_byn, _hist, _sub,
+                            ))
 
-                    if _exact_subs:
-                        _si = _sub_info(_exact_subs[0])
-                        _sub_exact_hits += 1
-                        new_match = {
-                            "match_status": "found_in_subscription",
-                            "match_score": 0.95,
-                            "match_reason": (
-                                f"Ученик userId={_mk_uid}, сумма найдена в абонементе"
-                                f" #{_si['subscription_id']}"
-                            ),
-                            "mk_user_id": _mk_uid,
-                            "mk_user_name": _uname,
-                            "mk_user_id_source": _mk_uid_source,
-                            **_si,
-                        }
-                        stats["found_in_subscription"] += 1
-                        if len(_sub_example_matches) < 3:
-                            _sub_example_matches.append({
-                                "bp_amount_byn": round((_amount_minor or 0) / 100, 2),
-                                "mk_user_id": _mk_uid,
-                                "subscription_id": _si["subscription_id"],
-                            })
+                    # Best: highest confidence, then exact, then closest date
+                    _cands.sort(key=lambda c: (c[0], c[1], c[2]))
 
-                    elif _close_subs:
-                        _best_sub, _delta = _close_subs[0]
+                    if _cands:
+                        _, _, _, _conf, _dr, _delta_byn, _hist, _best_sub = _cands[0]
                         _si = _sub_info(_best_sub)
-                        _si["subscription_amount_delta_byn"] = _delta
-                        _sub_possible_hits += 1
+                        if _delta_byn:
+                            _si["subscription_amount_delta_byn"] = _delta_byn
+                        _is_exact_best = (not _delta_byn)
+
+                        # Status by confidence
+                        _DR_TEXT = {
+                            "sell_date_in_selected_month": "продажа абонемента в выбранном месяце",
+                            "sell_date_near_paid_at": "дата продажи близко к платежу bePaid",
+                            "period_overlaps_selected_month": "период абонемента перекрывается с месяцем",
+                            "period_near_paid_at": "период абонемента близко к платежу bePaid",
+                            "unknown": "дата абонемента неизвестна",
+                            "not_recent": "дата абонемента не близко к платежу",
+                            "historical": f"абонемент старше 6 месяцев ({_si.get('subscription_sell_date') or '?'})",
+                        }
+                        _dr_text = _DR_TEXT.get(_dr, _dr)
+
+                        if _conf == "high":
+                            _match_status = "found_in_subscription"
+                            _match_score = 0.95
+                            _reason = (f"Ученик userId={_mk_uid}, сумма совпала, "
+                                       f"{_dr_text} (абонемент #{_si['subscription_id']})")
+                            _sub_high_conf += 1
+                            stats["found_in_subscription"] += 1
+                            if len(_sub_example_matches) < 3:
+                                _sub_example_matches.append({
+                                    "bp_amount_byn": round((_amount_minor or 0) / 100, 2),
+                                    "mk_user_id": _mk_uid,
+                                    "subscription_id": _si["subscription_id"],
+                                    "date_relevance": _dr,
+                                })
+                        elif _conf == "low":
+                            _match_status = "historical_subscription_match"
+                            _match_score = 0.40
+                            _reason = (f"Ученик userId={_mk_uid}, сумма совпала, "
+                                       f"но {_dr_text} (абонемент #{_si['subscription_id']})")
+                            _sub_low_conf += 1
+                            stats["historical_subscription_match"] += 1
+                            if len(_sub_example_hist) < 5:
+                                _sub_example_hist.append({
+                                    "bp_amount_byn": round((_amount_minor or 0) / 100, 2),
+                                    "mk_user_id": _mk_uid,
+                                    "subscription_id": _si["subscription_id"],
+                                    "subscription_sell_date": _si.get("subscription_sell_date", ""),
+                                    "bp_paid_at": _paid_at_str[:10] if _paid_at_str else "",
+                                })
+                        else:
+                            _match_status = "possible_subscription_match"
+                            _match_score = 0.75
+                            if _delta_byn:
+                                _reason = (f"Ученик userId={_mk_uid}, похожая сумма"
+                                           f" (Δ {_delta_byn} BYN), {_dr_text}"
+                                           f" (абонемент #{_si['subscription_id']})")
+                            else:
+                                _reason = (f"Ученик userId={_mk_uid}, сумма совпала, "
+                                           f"но {_dr_text} (абонемент #{_si['subscription_id']})")
+                            _sub_medium_conf += 1
+                            stats["possible_subscription_match"] += 1
+
+                        # Retrieve delta_days from the best candidate for output
+                        _dd_out: int | None = _cands[0][2] if _cands[0][2] != 9999 else None
                         new_match = {
-                            "match_status": "possible_subscription_match",
-                            "match_score": 0.80,
-                            "match_reason": (
-                                f"Ученик userId={_mk_uid}, похожая сумма в абонементе"
-                                f" #{_si['subscription_id']} (Δ {_delta} BYN)"
-                            ),
+                            "match_status": _match_status,
+                            "match_score": _match_score,
+                            "match_confidence": _conf,
+                            "match_reason": _reason,
                             "mk_user_id": _mk_uid,
                             "mk_user_name": _uname,
                             "mk_user_id_source": _mk_uid_source,
+                            "subscription_date_relevance": _dr,
+                            "subscription_date_delta_days": _dd_out,
+                            "subscription_is_historical": _hist,
                             **_si,
                         }
-                        stats["possible_subscription_match"] += 1
 
                     else:
                         # User uid known, but no payment or subscription match
@@ -8116,6 +8251,7 @@ class MiniAppContext:
                         new_match = {
                             "match_status": "user_found_no_payment_or_subscription",
                             "match_score": 0.2,
+                            "match_confidence": "none",
                             "match_reason": (
                                 f"userId={_mk_uid} найден, но ни оплата, ни абонемент"
                                 f" на эту сумму не найдены"
@@ -8150,6 +8286,7 @@ class MiniAppContext:
                         new_match = {
                             "match_status": "possible_payment_match",
                             "match_score": 0.5,
+                            "match_confidence": "medium",
                             "match_reason": "userId не извлечён; найдены МК-платежи с той же суммой",
                             "possible_matches": _possible_by_amt,
                         }
@@ -8158,6 +8295,7 @@ class MiniAppContext:
                         new_match = {
                             "match_status": "needs_review",
                             "match_score": 0.0,
+                            "match_confidence": "none",
                             "match_reason": "userId не извлечён, совпадений по сумме нет",
                         }
                         stats["needs_review"] += 1
@@ -8181,7 +8319,7 @@ class MiniAppContext:
             row_out.update(new_match)
             results.append(row_out)
 
-        # Totals
+        # Totals: historical matches are NOT counted as "found in MK"
         _ignored_statuses = {"ignored_test", "ignored_not_successful", "ignored_currency"}
         successful_byn = [r for r in results if r.get("match_status") not in _ignored_statuses]
         total_amount_byn = sum(float(r.get("amount_byn") or 0) for r in successful_byn)
@@ -8210,13 +8348,16 @@ class MiniAppContext:
                 "subscriptions_checked_count": len(_sub_cache),
                 "subscriptions_loaded_count": sum(len(v) for v in _sub_cache.values()),
                 "subscriptions_api_calls": _sub_api_calls,
-                "subscription_exact_matches": _sub_exact_hits,
-                "subscription_possible_matches": _sub_possible_hits,
+                "subscription_high_confidence_matches": _sub_high_conf,
+                "subscription_medium_confidence_matches": _sub_medium_conf,
+                "subscription_low_confidence_matches": _sub_low_conf,
+                "historical_subscription_matches": stats["historical_subscription_match"],
                 "successful_count": len(successful_byn),
                 "successful_amount": round(total_amount_byn, 2),
                 "matched_count": stats["already_in_moyklass"],
                 "found_in_subscription_count": stats["found_in_subscription"],
                 "possible_subscription_match_count": stats["possible_subscription_match"],
+                "historical_subscription_match_count": stats["historical_subscription_match"],
                 "user_found_no_payment_or_subscription_count": stats["user_found_no_payment_or_subscription"],
                 "possible_payment_match_count": stats["possible_payment_match"],
                 "needs_review_count": stats["needs_review"],
@@ -8224,6 +8365,7 @@ class MiniAppContext:
                                   + stats["ignored_test"]
                                   + stats["ignored_currency"]),
                 "examples_subscription_matches": _sub_example_matches,
+                "examples_historical_subscription_matches": _sub_example_hist,
                 "examples_subscription_misses": _sub_example_misses,
                 "last_webhook_received_at": self.storage.get_bepaid_last_webhook_at(),
             },
