@@ -7272,7 +7272,6 @@ class MiniAppContext:
     # ── bePaid integration ─────────────────────────────────────────────────────
 
     _BEPAID_REPORT_URL = "https://merchant.bepaid.by/api/reports"
-    _BEPAID_REPORT_API_VERSION = "3"
 
     def _bepaid_fetch_shop_transactions(
         self,
@@ -7284,14 +7283,27 @@ class MiniAppContext:
         payment_method_types: list[str],
         time_zone: str = "Europe/Minsk",
         max_total: int = 5000,
-    ) -> tuple[list[dict[str, Any]], str, bool]:
+    ) -> tuple[list[dict[str, Any]], str, bool, dict[str, Any]]:
         """Call bePaid paginated report API for one shop.
 
-        Returns (transactions, error_str, api_supported).
-        api_supported=False if endpoint returns 404/not-implemented.
-        Logs nothing about secret_key.
+        Returns (transactions, error_str, api_supported, diagnostics).
+        Tries X-Api-Version 3 first, falls back to 2 on 400/404/422.
+        On 401 stops immediately — auth won't change with a different version.
+        Never logs or exposes secret_key.
         """
         import requests as _req
+
+        diag: dict[str, Any] = {
+            "shop_id_present": bool(shop_id),
+            "secret_key_present": bool(secret_key),
+            "shop_id_last4": shop_id[-4:] if len(shop_id) >= 4 else "****",
+            "secret_key_length": len(secret_key),
+            "endpoint_used": self._BEPAID_REPORT_URL,
+            "api_version_header_used": None,
+            "response_status": None,
+            "auth_error": False,
+            "versions_tried": [],
+        }
 
         all_tx: list[dict[str, Any]] = []
         last_error = ""
@@ -7299,6 +7311,8 @@ class MiniAppContext:
 
         for pmt in payment_method_types:
             cursor = None
+            working_version: str | None = None  # reuse once confirmed working
+
             for _page in range(50):
                 body: dict[str, Any] = {
                     "report_params": {
@@ -7313,31 +7327,60 @@ class MiniAppContext:
                 if cursor:
                     body["starting_after"] = cursor
 
-                try:
-                    resp = _req.post(
-                        self._BEPAID_REPORT_URL,
-                        json=body,
-                        auth=(shop_id, secret_key),
-                        headers={
-                            "X-Api-Version": self._BEPAID_REPORT_API_VERSION,
-                            "Content-Type": "application/json",
-                            "Accept": "application/json",
-                        },
-                        timeout=30,
-                    )
-                except Exception as exc:
-                    last_error = f"network error: {exc}"
+                versions_to_try = [working_version] if working_version else ["3", "2"]
+                resp = None
+                used_version = None
+
+                for api_ver in versions_to_try:
+                    try:
+                        resp = _req.post(
+                            self._BEPAID_REPORT_URL,
+                            json=body,
+                            auth=(shop_id, secret_key),
+                            headers={
+                                "X-Api-Version": api_ver,
+                                "Content-Type": "application/json",
+                                "Accept": "application/json",
+                            },
+                            timeout=30,
+                        )
+                    except Exception as exc:
+                        last_error = f"network error: {exc}"
+                        return all_tx, last_error, api_supported, diag
+
+                    used_version = api_ver
+                    if api_ver not in diag["versions_tried"]:
+                        diag["versions_tried"].append(api_ver)
+                    diag["response_status"] = resp.status_code
+
+                    if resp.status_code == 401:
+                        diag["auth_error"] = True
+                        break  # auth won't change with a different version
+
+                    if resp.status_code in (400, 404, 422) and api_ver != versions_to_try[-1]:
+                        continue  # try next version
                     break
+
+                if resp is None:
+                    break
+
+                diag["api_version_header_used"] = used_version
 
                 if resp.status_code in (404, 501, 405):
                     last_error = f"HTTP {resp.status_code}: endpoint not supported"
                     break
 
-                api_supported = True
-
                 if resp.status_code == 401:
-                    last_error = f"HTTP 401: authentication failed for shop_type={shop_type}"
+                    last_error = (
+                        "bePaid отклонил авторизацию. "
+                        "Проверьте Shop ID и Secret Key именно этого магазина. "
+                        "Public Key не подходит для API-запросов."
+                    )
+                    api_supported = True  # endpoint reachable, credentials wrong
                     break
+
+                api_supported = True
+                working_version = used_version  # reuse for subsequent pages
 
                 if not resp.ok:
                     try:
@@ -7365,7 +7408,7 @@ class MiniAppContext:
                     log.warning("bePaid import: reached max_total=%d for %s/%s", max_total, shop_type, pmt)
                     break
 
-        return all_tx, last_error, api_supported
+        return all_tx, last_error, api_supported, diag
 
     def bepaid_import_history(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         """POST /api/integrations/bepaid/import-history — import bePaid txns via API."""
@@ -7415,25 +7458,36 @@ class MiniAppContext:
         api_supported = False
         warnings: list[str] = []
         shop_results: dict[str, Any] = {}
+        shop_diags: dict[str, Any] = {}
         import_at = now_iso()
+        any_auth_error = False
 
         for st, sid, skey, pmt_types in shops:
-            raw_txns, fetch_error, shop_api_ok = self._bepaid_fetch_shop_transactions(
+            raw_txns, fetch_error, shop_api_ok, shop_diag = self._bepaid_fetch_shop_transactions(
                 st, sid, skey, from_dt, to_dt, pmt_types
             )
             if shop_api_ok:
                 api_supported = True
+            if shop_diag.get("auth_error"):
+                any_auth_error = True
 
-            if not shop_api_ok and not raw_txns:
+            shop_diags[st] = shop_diag
+
+            if not raw_txns and fetch_error:
                 shop_results[st] = {
-                    "api_supported": False,
+                    "api_supported": shop_api_ok,
+                    "auth_error": shop_diag.get("auth_error", False),
                     "loaded": 0,
                     "inserted": 0,
                     "updated": 0,
+                    "skipped": 0,
                     "error": fetch_error,
+                    "shop_id_last4": shop_diag.get("shop_id_last4"),
+                    "secret_key_length": shop_diag.get("secret_key_length"),
+                    "versions_tried": shop_diag.get("versions_tried"),
+                    "response_status": shop_diag.get("response_status"),
                 }
-                if fetch_error:
-                    warnings.append(f"{st}: {fetch_error}")
+                warnings.append(f"{st}: {fetch_error}")
                 continue
 
             ins = upd = skp = 0
@@ -7464,14 +7518,50 @@ class MiniAppContext:
             total_skipped += skp
             shop_results[st] = {
                 "api_supported": True,
+                "auth_error": False,
                 "loaded": len(raw_txns),
                 "inserted": ins,
                 "updated": upd,
                 "skipped": skp,
                 "error": fetch_error,
+                "versions_tried": shop_diag.get("versions_tried"),
+                "api_version_used": shop_diag.get("api_version_header_used"),
             }
             if fetch_error:
                 warnings.append(f"{st}: {fetch_error}")
+
+        # All shops returned auth error → surface as explicit error, not silent zeros
+        if any_auth_error and total_loaded == 0 and not any(
+            not r.get("auth_error") for r in shop_results.values()
+        ):
+            auth_shops = [st for st, r in shop_results.items() if r.get("auth_error")]
+            return {
+                "ok": False,
+                "auth_error": True,
+                "api_supported": True,
+                "month": month,
+                "message": (
+                    "bePaid отклонил авторизацию. "
+                    "Проверьте Shop ID и Secret Key именно этого магазина. "
+                    "Public Key не подходит для API-запросов."
+                ),
+                "shops_with_auth_error": auth_shops,
+                "shops": shop_results,
+                "warnings": warnings,
+                "diagnostics": {
+                    st: {
+                        "shop_id_present": d.get("shop_id_present"),
+                        "secret_key_present": d.get("secret_key_present"),
+                        "shop_id_last4": d.get("shop_id_last4"),
+                        "secret_key_length": d.get("secret_key_length"),
+                        "endpoint_used": d.get("endpoint_used"),
+                        "versions_tried": d.get("versions_tried"),
+                        "response_status": d.get("response_status"),
+                        "auth_error": d.get("auth_error"),
+                    }
+                    for st, d in shop_diags.items()
+                },
+            }
 
         if not api_supported:
             return {
@@ -7497,7 +7587,7 @@ class MiniAppContext:
             "updated": total_updated,
             "skipped": total_skipped,
             "import_at": import_at,
-            **shop_results,
+            "shops": shop_results,
             "warnings": warnings,
             "diagnostics": {
                 "bepaid_import_api_supported": True,
@@ -7511,6 +7601,19 @@ class MiniAppContext:
                 "bepaid_import_errors": len(warnings),
                 "bepaid_import_endpoint_used": self._BEPAID_REPORT_URL,
                 "bepaid_import_warning": warnings[0] if warnings else "",
+                "per_shop": {
+                    st: {
+                        "shop_id_present": d.get("shop_id_present"),
+                        "secret_key_present": d.get("secret_key_present"),
+                        "shop_id_last4": d.get("shop_id_last4"),
+                        "secret_key_length": d.get("secret_key_length"),
+                        "endpoint_used": d.get("endpoint_used"),
+                        "versions_tried": d.get("versions_tried"),
+                        "api_version_used": d.get("api_version_header_used"),
+                        "response_status": d.get("response_status"),
+                    }
+                    for st, d in shop_diags.items()
+                },
             },
         }
 

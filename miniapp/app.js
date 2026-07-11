@@ -4430,8 +4430,15 @@ function renderBepaid() {
             ${escapeHtml(ir.message || "API-импорт не поддерживается в текущей реализации. Используйте CSV/XLSX из кабинета bePaid.")}
           </div>`;
         }
+        if (!ir.ok && ir.auth_error) {
+          const shops = (ir.shops_with_auth_error || []).join(", ") || "магазин";
+          return `<div class="notice notice-error" style="margin-bottom:8px;font-size:13px">
+            bePaid отклонил авторизацию (${escapeHtml(shops)}).<br>
+            Проверьте <b>Shop ID</b> и <b>Secret Key</b> именно этого магазина — Public Key не подходит для API-запросов.
+          </div>`;
+        }
         if (!ir.ok) {
-          return `<div class="notice notice-error" style="margin-bottom:8px;font-size:13px">Импорт bePaid: ${escapeHtml(ir.error || "ошибка")}</div>`;
+          return `<div class="notice notice-error" style="margin-bottom:8px;font-size:13px">Импорт bePaid: ${escapeHtml(ir.error || ir.message || "ошибка")}</div>`;
         }
         const warn = (ir.warnings || []).length > 0 ? `<br><span style="color:var(--warn);font-size:11px">${escapeHtml(ir.warnings.join("; "))}</span>` : "";
         return `<div class="notice notice-ok" style="margin-bottom:8px;font-size:13px">
