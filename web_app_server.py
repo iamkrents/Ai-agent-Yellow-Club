@@ -8385,18 +8385,51 @@ class MiniAppContext:
             return {"ok": False, "error": "Доступ к платёжным черновикам ограничен: owner, admin, director, operations, client_manager."}
         return None
 
+    # Valid technical status values — reject Russian labels or unknown strings
+    _PI_VALID_STATUS_VALUES = {
+        "all", "draft", "ready", "bepaid_created", "paid",
+        "posted_to_moyklass", "cancelled", "error",
+    }
+
     def payment_intents_list(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
         denied = self._require_payment_intent_access(auth)
         if denied:
             return denied
-        month = params.get("month") or ""
-        status = params.get("status") or "all"
+        raw_month = params.get("month") or ""
+        raw_status = params.get("status") or "all"
+
+        # Normalise month to YYYY-MM; reject anything else
+        import re as _re
+        month = raw_month.strip()
+        if month and not _re.match(r"^\d{4}-\d{2}$", month):
+            month = ""  # invalid format — ignore, return all months
+
+        # Normalise status; ignore Russian labels or unknown values
+        status = raw_status.strip()
+        if status not in self._PI_VALID_STATUS_VALUES:
+            status = "all"
+
         intents = self.storage.list_payment_intents(
             month=month or None,
             status=status if status != "all" else None,
         )
         pi_stats = self.storage.payment_intents_stats(month=month or None)
-        return {"ok": True, "intents": intents, "stats": pi_stats, "month": month, "status_filter": status}
+        return {
+            "ok": True,
+            "intents": intents,
+            "items": intents,           # alias for forward-compat
+            "total": len(intents),
+            "stats": pi_stats,
+            "month": month,
+            "status_filter": status,
+            "debug": {
+                "raw_month": raw_month,
+                "raw_status": raw_status,
+                "applied_month": month or "(all)",
+                "applied_status": status,
+                "items_count": len(intents),
+            },
+        }
 
     def payment_intent_get(self, auth: dict[str, Any], public_id: str) -> dict[str, Any]:
         denied = self._require_payment_intent_access(auth)

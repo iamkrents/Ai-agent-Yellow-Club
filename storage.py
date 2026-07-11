@@ -4626,7 +4626,7 @@ class Storage:
         params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(
-                f"SELECT * FROM payment_intents {where} ORDER BY created_at DESC LIMIT ?",
+                f"SELECT * FROM payment_intents {where} ORDER BY id DESC LIMIT ?",
                 params,
             ).fetchall()
         return [dict(r) for r in rows]

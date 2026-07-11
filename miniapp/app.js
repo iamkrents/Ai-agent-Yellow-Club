@@ -11458,12 +11458,16 @@ const PI_PURPOSE_CLS = {
 let _piCancelTarget = null; // public_id being cancelled
 
 function canUsePaymentIntents() {
-  const r = state.role;
+  const r = state.me?.role || "";
   return ["owner", "admin", "director", "operations", "client_manager"].includes(r);
 }
 
 async function loadPaymentIntents() {
-  if (!canUsePaymentIntents()) return;
+  if (!canUsePaymentIntents()) {
+    const listEl = $("piList");
+    if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">Нет доступа (роль: ${escapeHtml(state.me?.role || "(не загружена)")})</div>`;
+    return;
+  }
   const month = $("piMonthFilter")?.value || "";
   const status = $("piStatusFilter")?.value || "all";
   const params = new URLSearchParams();
@@ -11472,18 +11476,26 @@ async function loadPaymentIntents() {
   const qs = params.toString();
   const listEl = $("piList");
   const statsEl = $("piStats");
+  const debugEl = $("piDebug");
   const refreshBtn = $("loadPaymentIntents");
   if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.textContent = "Загрузка..."; }
   if (listEl) listEl.innerHTML = `<div class="pi-empty">Загрузка...</div>`;
+  if (debugEl) debugEl.textContent = "";
   try {
     const data = await apiGet("/api/payments/intents" + (qs ? "?" + qs : ""));
     renderPaymentIntentStats(statsEl, data.stats || {});
-    const intents = data.intents || [];
+    const intents = data.intents || data.items || [];
     renderPaymentIntentList(listEl, intents, { month, status });
     if (refreshBtn) refreshBtn.textContent = `Обновить (${intents.length})`;
+    // Debug line visible to admins
+    if (debugEl) {
+      const d = data.debug || {};
+      debugEl.textContent = `Загружено: ${intents.length} · month=${d.applied_month || month || "all"} · status=${d.applied_status || status}`;
+    }
   } catch (e) {
     if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">Ошибка загрузки: ${escapeHtml(String(e))}</div>`;
     if (refreshBtn) refreshBtn.textContent = "Обновить";
+    if (debugEl) debugEl.textContent = `Ошибка: ${String(e)}`;
   } finally {
     if (refreshBtn) refreshBtn.disabled = false;
   }
