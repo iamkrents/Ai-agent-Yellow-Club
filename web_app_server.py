@@ -7468,17 +7468,18 @@ class MiniAppContext:
         mk_loaded = False
         if self.settings.moyklass_enabled:
             try:
-                from datetime import datetime as _dt
+                from datetime import date as _date2
                 year, mnum = int(month[:4]), int(month[5:7])
-                start = f"{year}-{mnum:02d}-01"
+                start_date = _date2(year, mnum, 1)
                 if mnum == 12:
-                    end = f"{year+1}-01-01"
+                    end_date = _date2(year + 1, 1, 1)
                 else:
-                    end = f"{year}-{mnum+1:02d}-01"
-                result = self.moyklass._scan_payments_for_month(start, end, limit=3000)
+                    end_date = _date2(year, mnum + 1, 1)
+                result = self.moyklass._scan_payments_for_month(start_date, end_date, limit=3000)
                 if result.ok:
                     from moyklass_client import extract_items
-                    mk_payments = [x for x in extract_items(result.data) if isinstance(x, dict)]
+                    raw_items = extract_items(result.data)
+                    mk_payments = [x for x in raw_items if isinstance(x, dict)]
                     mk_loaded = True
                 else:
                     mk_error = str(result.error or "failed")
@@ -7594,6 +7595,9 @@ class MiniAppContext:
                 "signature_verification_enabled_erip": bool(getattr(self.settings, "bepaid_erip_public_key", "")),
                 "signature_verification_enabled_acq": bool(getattr(self.settings, "bepaid_acq_public_key", "")),
                 "transactions_loaded": len(bp_txns),
+                "moyklass_payments_loaded": mk_loaded,
+                "moyklass_payments_load_error": mk_error,
+                "moyklass_payments_count": len(mk_payments),
                 "successful_count": len(successful_byn),
                 "successful_amount": round(total_amount_byn, 2),
                 "matched_count": stats["already_in_moyklass"],

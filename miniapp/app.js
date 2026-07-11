@@ -4472,6 +4472,12 @@ function renderBepaid() {
     ? `<p class="cr-note">Загружено платежей МойКласс: ${bp.mk_payments_count ?? 0}.</p>`
     : `<p class="cr-note" style="color:var(--warn)">Платежи МойКласс не загружены${bp.mk_error ? ": " + escapeHtml(bp.mk_error) : ""}. Сверка по наличию в МойКласс недоступна.</p>`;
 
+  const noTxnsHint = txns.length === 0
+    ? `<div class="notice" style="margin:8px 0;font-size:13px">
+        История bePaid появится после получения webhook-ов. Для прошлых месяцев нужен отдельный импорт из bePaid API.
+      </div>`
+    : "";
+
   const tableRows = txns.map(tx => {
     const ms = MATCH_LABELS[tx.match_status] || { label: tx.match_status || "—", cls: "" };
     const name = [tx.customer_last_name, tx.customer_first_name].filter(Boolean).join(" ") || "—";
@@ -4502,9 +4508,12 @@ function renderBepaid() {
         </tr></thead>
         <tbody>${tableRows}</tbody>
       </table></div>`
-    : `<div class="empty" style="margin-top:8px">Транзакции bePaid за этот период не найдены.</div>`;
+    : noTxnsHint + `<div class="empty" style="margin-top:4px">Транзакции bePaid за этот период не найдены.</div>`;
 
   const diagData = bp.diagnostics || {};
+  const mkLoadRow = diagData.moyklass_payments_loaded === false
+    ? `<div class="cr-diag-row" style="color:var(--warn)"><span>МойКласс платежи — ошибка</span><b>${escapeHtml(diagData.moyklass_payments_load_error || "не загружены")}</b></div>`
+    : `<div class="cr-diag-row"><span>МойКласс платежей загружено</span><b>${diagData.moyklass_payments_count ?? 0}</b></div>`;
   const diagHtml = `
     <details class="cr-diag" style="margin-top:16px">
       <summary>Диагностика bePaid</summary>
@@ -4513,14 +4522,15 @@ function renderBepaid() {
         <div class="cr-diag-row"><span>Эквайринг настроен</span><b>${diagData.bepaid_configured_acquiring ? "Да" : "Нет"}</b></div>
         <div class="cr-diag-row"><span>Верификация подписи ЕРИП</span><b>${diagData.signature_verification_enabled_erip ? "Да" : "Нет"}</b></div>
         <div class="cr-diag-row"><span>Верификация подписи эквайринг</span><b>${diagData.signature_verification_enabled_acq ? "Да" : "Нет"}</b></div>
-        <div class="cr-diag-row"><span>Транзакций загружено</span><b>${diagData.transactions_loaded ?? 0}</b></div>
+        <div class="cr-diag-row"><span>Транзакций bePaid</span><b>${diagData.transactions_loaded ?? 0}</b></div>
+        ${mkLoadRow}
         <div class="cr-diag-row"><span>Успешных BYN</span><b>${diagData.successful_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Есть в МойКласс</span><b>${diagData.matched_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Нет в МойКласс</span><b>${diagData.missing_in_moyklass_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Нужна проверка</span><b>${diagData.needs_review_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Проигнорировано</span><b>${diagData.ignored_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Посл. webhook</span><b>${diagData.last_webhook_received_at || "—"}</b></div>
-        <div class="cr-diag-row" style="color:var(--warn);margin-top:6px"><span>Автосоздание в МойКласс</span><b>Выключено (v7.0.67)</b></div>
+        <div class="cr-diag-row" style="color:var(--warn);margin-top:6px"><span>Автосоздание в МойКласс</span><b>Выключено (v7.0.68)</b></div>
       </div>
     </details>`;
 
