@@ -4375,7 +4375,7 @@ class Storage:
                     return dict(row)
         return None
 
-    def upsert_bepaid_transaction(self, data: dict[str, Any]) -> dict[str, Any]:
+    def upsert_bepaid_transaction(self, data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         import json as _json
         now = now_iso()
         provider = str(data.get("provider") or "bepaid")
@@ -4395,6 +4395,7 @@ class Storage:
                    else (raw if isinstance(raw, str) else None))
 
         existing = self.find_bepaid_transaction(provider, shop_type, transaction_uid, transaction_id, order_id, amount_minor)
+        is_new = existing is None
 
         fields = {
             "shop_id": str(data.get("shop_id") or "").strip() or None,
@@ -4439,7 +4440,7 @@ class Storage:
                     "SELECT last_insert_rowid()"
                 ).fetchone()[0]
             row = conn.execute("SELECT * FROM bepaid_transactions WHERE id=?", (row_id,)).fetchone()
-        return dict(row) if row else {}
+        return dict(row) if row else {}, is_new
 
     def update_bepaid_match(self, row_id: int, match_data: dict[str, Any]) -> None:
         now = now_iso()

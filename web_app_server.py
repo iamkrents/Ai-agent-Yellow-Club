@@ -7270,6 +7270,249 @@ class MiniAppContext:
 
     # ── bePaid integration ─────────────────────────────────────────────────────
 
+    _BEPAID_REPORT_URL = "https://merchant.bepaid.by/api/reports"
+    _BEPAID_REPORT_API_VERSION = "3"
+
+    def _bepaid_fetch_shop_transactions(
+        self,
+        shop_type: str,
+        shop_id: str,
+        secret_key: str,
+        from_dt: str,
+        to_dt: str,
+        payment_method_types: list[str],
+        time_zone: str = "Europe/Minsk",
+        max_total: int = 5000,
+    ) -> tuple[list[dict[str, Any]], str, bool]:
+        """Call bePaid paginated report API for one shop.
+
+        Returns (transactions, error_str, api_supported).
+        api_supported=False if endpoint returns 404/not-implemented.
+        Logs nothing about secret_key.
+        """
+        import requests as _req
+
+        all_tx: list[dict[str, Any]] = []
+        last_error = ""
+        api_supported = False
+
+        for pmt in payment_method_types:
+            cursor = None
+            for _page in range(50):
+                body: dict[str, Any] = {
+                    "report_params": {
+                        "date_type": "paid_at",
+                        "from": from_dt,
+                        "to": to_dt,
+                        "status": "all",
+                        "payment_method_type": pmt,
+                        "time_zone": time_zone,
+                    }
+                }
+                if cursor:
+                    body["starting_after"] = cursor
+
+                try:
+                    resp = _req.post(
+                        self._BEPAID_REPORT_URL,
+                        json=body,
+                        auth=(shop_id, secret_key),
+                        headers={
+                            "X-Api-Version": self._BEPAID_REPORT_API_VERSION,
+                            "Content-Type": "application/json",
+                            "Accept": "application/json",
+                        },
+                        timeout=30,
+                    )
+                except Exception as exc:
+                    last_error = f"network error: {exc}"
+                    break
+
+                if resp.status_code in (404, 501, 405):
+                    last_error = f"HTTP {resp.status_code}: endpoint not supported"
+                    break
+
+                api_supported = True
+
+                if resp.status_code == 401:
+                    last_error = f"HTTP 401: authentication failed for shop_type={shop_type}"
+                    break
+
+                if not resp.ok:
+                    try:
+                        err_body = resp.json()
+                        last_error = str(err_body.get("message") or err_body)[:300]
+                    except Exception:
+                        last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                    break
+
+                try:
+                    data = resp.json()
+                except Exception:
+                    last_error = "invalid JSON in API response"
+                    break
+
+                items = data.get("transactions") or []
+                all_tx.extend(items)
+
+                if not data.get("has_more") or not items:
+                    break
+                cursor = data.get("last_object_id")
+                if not cursor:
+                    break
+                if len(all_tx) >= max_total:
+                    log.warning("bePaid import: reached max_total=%d for %s/%s", max_total, shop_type, pmt)
+                    break
+
+        return all_tx, last_error, api_supported
+
+    def bepaid_import_history(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/integrations/bepaid/import-history — import bePaid txns via API."""
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in BEPAID_RECONCILE_ROLES:
+            return {"ok": False, "error": "access_denied"}
+
+        month = str(body.get("month") or "").strip()
+        shop_type_filter = str(body.get("shop_type") or "all").strip()
+
+        if not month:
+            from datetime import date as _d
+            month = _d.today().strftime("%Y-%m")
+
+        try:
+            year, mnum = int(month[:4]), int(month[5:7])
+        except Exception:
+            return {"ok": False, "error": "invalid month format, expected YYYY-MM"}
+
+        from_dt = f"{year}-{mnum:02d}-01 00:00:00"
+        if mnum == 12:
+            to_dt = f"{year + 1}-01-01 00:00:00"
+        else:
+            to_dt = f"{year}-{mnum + 1:02d}-01 00:00:00"
+
+        cfg = self.settings
+        shops: list[tuple[str, str, str, list[str]]] = []  # (shop_type, shop_id, secret, pmt_types)
+        if shop_type_filter in ("all", "erip") and getattr(cfg, "bepaid_erip_enabled", False):
+            shops.append(("erip", cfg.bepaid_erip_shop_id, cfg.bepaid_erip_secret_key, ["erip"]))
+        if shop_type_filter in ("all", "acquiring") and getattr(cfg, "bepaid_acq_enabled", False):
+            shops.append(("acquiring", cfg.bepaid_acq_shop_id, cfg.bepaid_acq_secret_key, ["credit_card", "alternative"]))
+
+        if not shops:
+            return {
+                "ok": False,
+                "api_supported": False,
+                "message": (
+                    "bePaid не настроен для выбранного типа магазина. "
+                    "Задайте BEPAID_ERIP_SHOP_ID/SECRET_KEY и/или BEPAID_ACQ_SHOP_ID/SECRET_KEY."
+                ),
+            }
+
+        total_inserted = 0
+        total_updated = 0
+        total_skipped = 0
+        total_loaded = 0
+        api_supported = False
+        warnings: list[str] = []
+        shop_results: dict[str, Any] = {}
+        import_at = now_iso()
+
+        for st, sid, skey, pmt_types in shops:
+            raw_txns, fetch_error, shop_api_ok = self._bepaid_fetch_shop_transactions(
+                st, sid, skey, from_dt, to_dt, pmt_types
+            )
+            if shop_api_ok:
+                api_supported = True
+
+            if not shop_api_ok and not raw_txns:
+                shop_results[st] = {
+                    "api_supported": False,
+                    "loaded": 0,
+                    "inserted": 0,
+                    "updated": 0,
+                    "error": fetch_error,
+                }
+                if fetch_error:
+                    warnings.append(f"{st}: {fetch_error}")
+                continue
+
+            ins = upd = skp = 0
+            seen_uids: set[str] = set()
+
+            for raw_tx in raw_txns:
+                uid_key = str(raw_tx.get("uid") or raw_tx.get("id") or "")
+                if uid_key and uid_key in seen_uids:
+                    skp += 1
+                    continue
+                if uid_key:
+                    seen_uids.add(uid_key)
+
+                try:
+                    extracted = self._bepaid_extract_payload(raw_tx, st, sid)
+                    _row, is_new = self.storage.upsert_bepaid_transaction(extracted)
+                    if is_new:
+                        ins += 1
+                    else:
+                        upd += 1
+                except Exception as exc:
+                    skp += 1
+                    warnings.append(f"{st} save error: {exc}")
+
+            total_loaded += len(raw_txns)
+            total_inserted += ins
+            total_updated += upd
+            total_skipped += skp
+            shop_results[st] = {
+                "api_supported": True,
+                "loaded": len(raw_txns),
+                "inserted": ins,
+                "updated": upd,
+                "skipped": skp,
+                "error": fetch_error,
+            }
+            if fetch_error:
+                warnings.append(f"{st}: {fetch_error}")
+
+        if not api_supported:
+            return {
+                "ok": False,
+                "api_supported": False,
+                "month": month,
+                "message": (
+                    "В bePaid API не найден официальный endpoint списка транзакций по периоду. "
+                    "Попробуйте позже или импортируйте CSV/XLSX из кабинета bePaid."
+                ),
+                "warnings": warnings,
+            }
+
+        return {
+            "ok": True,
+            "month": month,
+            "shop_type": shop_type_filter,
+            "api_supported": True,
+            "from": from_dt,
+            "to": to_dt,
+            "imported": total_loaded,
+            "inserted": total_inserted,
+            "updated": total_updated,
+            "skipped": total_skipped,
+            "import_at": import_at,
+            **shop_results,
+            "warnings": warnings,
+            "diagnostics": {
+                "bepaid_import_api_supported": True,
+                "bepaid_import_last_run_at": import_at,
+                "bepaid_import_month": month,
+                "bepaid_import_shop_type": shop_type_filter,
+                "bepaid_import_erip_loaded": shop_results.get("erip", {}).get("loaded", 0),
+                "bepaid_import_acquiring_loaded": shop_results.get("acquiring", {}).get("loaded", 0),
+                "bepaid_import_inserted": total_inserted,
+                "bepaid_import_updated": total_updated,
+                "bepaid_import_errors": len(warnings),
+                "bepaid_import_endpoint_used": self._BEPAID_REPORT_URL,
+                "bepaid_import_warning": warnings[0] if warnings else "",
+            },
+        }
+
     def _bepaid_verify_signature(self, body: bytes, signature_header: str, public_key_pem: str) -> tuple[bool, str]:
         """Verify bePaid Content-Signature header using RSA public key. Returns (ok, reason)."""
         if not public_key_pem:
@@ -7297,8 +7540,14 @@ class MiniAppContext:
             return False, f"verify_failed: {e}"
 
     def _bepaid_extract_payload(self, raw_json: dict[str, Any], shop_type: str, shop_id: str) -> dict[str, Any]:
-        """Extract normalised fields from bePaid webhook payload."""
-        tx = raw_json.get("transaction") or {}
+        """Extract normalised fields from bePaid webhook or API list payload."""
+        # Webhook: {"transaction": {...}}; API list: item is the transaction itself
+        if "transaction" in raw_json and isinstance(raw_json["transaction"], dict):
+            tx = raw_json["transaction"]
+        elif "uid" in raw_json or "status" in raw_json:
+            tx = raw_json  # API list item
+        else:
+            tx = raw_json.get("transaction") or {}
         customer = tx.get("customer") or {}
         billing = tx.get("billing_address") or {}
         additional = tx.get("additional_data") or {}
@@ -7397,11 +7646,12 @@ class MiniAppContext:
         # Extract and save
         try:
             extracted = self._bepaid_extract_payload(payload, shop_type, shop_id)
-            saved = self.storage.upsert_bepaid_transaction(extracted)
-            log.info("bePaid webhook saved: id=%s shop=%s status=%s amount_byn=%s sig=%s",
+            saved, is_new = self.storage.upsert_bepaid_transaction(extracted)
+            log.info("bePaid webhook %s: id=%s shop=%s status=%s amount_byn=%s sig=%s",
+                     "inserted" if is_new else "updated",
                      saved.get("id"), shop_type, extracted.get("status"),
                      extracted.get("amount_byn"), sig_reason)
-            return {"ok": True, "saved_id": saved.get("id"), "signature": sig_reason}, 200
+            return {"ok": True, "saved_id": saved.get("id"), "is_new": is_new, "signature": sig_reason}, 200
         except Exception as e:
             log.exception("bePaid webhook: save error")
             return {"ok": False, "error": str(e)}, 500
@@ -7873,6 +8123,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             )
             if not auth.get("ok"):
                 return self._send_json(auth, status=401)
+            if path == "/api/integrations/bepaid/import-history":
+                return self._send_json(CTX.bepaid_import_history(auth, body))
             if path == "/api/action":
                 return self._send_json(CTX.action(auth, body))
             if path == "/api/ask":

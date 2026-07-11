@@ -109,6 +109,8 @@ const state = {
   bepaidStatus: null,
   bepaidData: null,
   bepaidBusy: false,
+  bepaidImportBusy: false,
+  bepaidImportResult: null,
   bepaidMonth: "",
   kpiData: null,
   kpiBusy: false,
@@ -4418,29 +4420,57 @@ function renderBepaid() {
       ${cfg.last_webhook_received_at ? `<span class="chip">Посл. webhook: ${cfg.last_webhook_received_at?.slice(0,16) || "—"}</span>` : ""}
     </div>`;
 
+  // Import result banner
+  const ir = state.bepaidImportResult;
+  const importBanner = state.bepaidImportBusy
+    ? `<div class="reports-loading" style="margin-bottom:8px">Импортирую bePaid…</div>`
+    : ir ? (() => {
+        if (!ir.ok && ir.api_supported === false) {
+          return `<div class="notice notice-warn" style="margin-bottom:8px;font-size:13px">
+            ${escapeHtml(ir.message || "API-импорт не поддерживается в текущей реализации. Используйте CSV/XLSX из кабинета bePaid.")}
+          </div>`;
+        }
+        if (!ir.ok) {
+          return `<div class="notice notice-error" style="margin-bottom:8px;font-size:13px">Импорт bePaid: ${escapeHtml(ir.error || "ошибка")}</div>`;
+        }
+        const warn = (ir.warnings || []).length > 0 ? `<br><span style="color:var(--warn);font-size:11px">${escapeHtml(ir.warnings.join("; "))}</span>` : "";
+        return `<div class="notice notice-ok" style="margin-bottom:8px;font-size:13px">
+          Импорт bePaid за ${escapeHtml(ir.month || "")}: загружено ${ir.imported ?? 0}, добавлено ${ir.inserted ?? 0}, обновлено ${ir.updated ?? 0}, пропущено ${ir.skipped ?? 0}.${warn}
+        </div>`;
+      })()
+    : "";
+
   // Controls
   const controlsHtml = `
-    <div class="reports-controls" style="margin-bottom:12px">
+    ${importBanner}
+    <div class="reports-controls" style="margin-bottom:12px;flex-wrap:wrap;gap:6px">
       <label><span>Месяц</span><input id="bepaidMonth" type="month" value="${state.bepaidMonth || currentMonthValue()}" /></label>
       <select id="bepaidShopFilter" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text)">
         <option value="all">Все магазины</option>
         <option value="erip">ЕРИП</option>
         <option value="acquiring">Эквайринг</option>
       </select>
-      <button class="primary" id="bepaidReconcileBtn" type="button">Сверить</button>
+      <button class="secondary" id="bepaidImportBtn" type="button" ${state.bepaidImportBusy ? "disabled" : ""}>Импортировать историю</button>
+      <button class="primary" id="bepaidReconcileBtn" type="button" ${state.bepaidBusy ? "disabled" : ""}>Сверить</button>
     </div>`;
 
-  if (!bp) {
-    el.innerHTML = statusHtml + controlsHtml + `<div class="empty">Нажмите «Сверить» для загрузки и сопоставления платежей bePaid с МойКласс.</div>`;
+  const _bindBepaidControls = () => {
     $("bepaidMonth")?.addEventListener("change", e => { state.bepaidMonth = e.target.value; });
+    $("bepaidImportBtn")?.addEventListener("click", runBepaidImport);
     $("bepaidReconcileBtn")?.addEventListener("click", runBepaidReconcile);
+    const sf2 = $("bepaidShopFilter");
+    if (sf2 && bp?.shop_type) sf2.value = bp.shop_type;
+  };
+
+  if (!bp) {
+    el.innerHTML = statusHtml + controlsHtml + `<div class="empty">Нажмите «Импортировать историю» для загрузки транзакций bePaid, затем «Сверить» для сопоставления с МойКласс.</div>`;
+    _bindBepaidControls();
     return;
   }
 
   if (!bp.ok) {
     el.innerHTML = statusHtml + controlsHtml + `<div class="notice notice-error">${escapeHtml(bp.error || "Ошибка")}</div>`;
-    $("bepaidMonth")?.addEventListener("change", e => { state.bepaidMonth = e.target.value; });
-    $("bepaidReconcileBtn")?.addEventListener("click", runBepaidReconcile);
+    _bindBepaidControls();
     return;
   }
 
@@ -4538,7 +4568,8 @@ function renderBepaid() {
 
   $("bepaidMonth")?.addEventListener("change", e => { state.bepaidMonth = e.target.value; });
   const sf = $("bepaidShopFilter");
-  if (sf && bp.shop_type) sf.value = bp.shop_type;
+  if (sf && bp?.shop_type) sf.value = bp.shop_type;
+  $("bepaidImportBtn")?.addEventListener("click", runBepaidImport);
   $("bepaidReconcileBtn")?.addEventListener("click", runBepaidReconcile);
 }
 
@@ -4550,6 +4581,30 @@ async function loadBepaidStatus() {
     state.bepaidStatus = null;
   }
   renderBepaid();
+}
+
+async function runBepaidImport() {
+  if (!canUseBepaid()) return;
+  const month = $("bepaidMonth")?.value || state.bepaidMonth || currentMonthValue();
+  const shopType = $("bepaidShopFilter")?.value || "all";
+  state.bepaidMonth = month;
+  state.bepaidImportBusy = true;
+  state.bepaidImportResult = null;
+  renderBepaid();
+  try {
+    const data = await apiPost("/api/integrations/bepaid/import-history", { month, shop_type: shopType });
+    state.bepaidImportResult = data;
+    if (data.ok) {
+      const ins = data.inserted ?? 0;
+      const upd = data.updated ?? 0;
+      setNotice(`Импорт bePaid за ${month}: +${ins} новых, ${upd} обновлено`, "ok");
+    }
+  } catch (e) {
+    state.bepaidImportResult = { ok: false, error: safeUserError(e) };
+  } finally {
+    state.bepaidImportBusy = false;
+    renderBepaid();
+  }
 }
 
 async function runBepaidReconcile() {
