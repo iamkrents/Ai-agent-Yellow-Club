@@ -4425,20 +4425,43 @@ function renderBepaid() {
   const importBanner = state.bepaidImportBusy
     ? `<div class="reports-loading" style="margin-bottom:8px">Импортирую bePaid…</div>`
     : ir ? (() => {
+        // Helper: build per-shop status lines for diagnostics display
+        const _shopLines = (() => {
+          const shops = ir.shops || {};
+          const diags = ir.diagnostics || {};
+          return Object.entries(shops).map(([st, r]) => {
+            const d = diags[st] || {};
+            const status = r.response_status ?? d.response_status ?? "?";
+            const reason = r.response_reason || d.response_reason || "";
+            const ver = (r.versions_tried || d.versions_tried || []).join("/") || "?";
+            const preview = (d.response_body_preview || r.error || "").slice(0, 150);
+            const sid = d.shop_id_last4 ? `shop_id=…${d.shop_id_last4}` : "";
+            const skl = d.secret_key_length ? `key_len=${d.secret_key_length}` : "";
+            return `${st}: HTTP ${status}${reason ? " " + reason : ""}, X-Api-Version: ${ver}` +
+              (sid || skl ? ` (${[sid, skl].filter(Boolean).join(", ")})` : "") +
+              (preview ? `\n  → ${preview}` : "");
+          }).join("\n");
+        })();
         if (!ir.ok && ir.api_supported === false) {
           return `<div class="notice notice-warn" style="margin-bottom:8px;font-size:13px">
             ${escapeHtml(ir.message || "API-импорт не поддерживается в текущей реализации. Используйте CSV/XLSX из кабинета bePaid.")}
+            ${_shopLines ? `<br><pre style="font-size:10px;margin:4px 0 0;overflow-x:auto;white-space:pre-wrap;text-align:left">${escapeHtml(_shopLines)}</pre>` : ""}
           </div>`;
         }
         if (!ir.ok && ir.auth_error) {
-          const shops = (ir.shops_with_auth_error || []).join(", ") || "магазин";
+          const authShops = (ir.shops_with_auth_error || []).join(", ") || "магазин";
           return `<div class="notice notice-error" style="margin-bottom:8px;font-size:13px">
-            bePaid отклонил авторизацию (${escapeHtml(shops)}).<br>
+            bePaid отклонил авторизацию (${escapeHtml(authShops)}).<br>
             Проверьте <b>Shop ID</b> и <b>Secret Key</b> именно этого магазина — Public Key не подходит для API-запросов.
+            ${_shopLines ? `<br><pre style="font-size:10px;margin:4px 0 0;overflow-x:auto;white-space:pre-wrap;text-align:left">${escapeHtml(_shopLines)}</pre>` : ""}
           </div>`;
         }
         if (!ir.ok) {
-          return `<div class="notice notice-error" style="margin-bottom:8px;font-size:13px">Импорт bePaid: ${escapeHtml(ir.error || ir.message || "ошибка")}</div>`;
+          const mainMsg = ir.message || ir.error || "ошибка";
+          return `<div class="notice notice-error" style="margin-bottom:8px;font-size:13px">
+            Импорт bePaid: ${escapeHtml(mainMsg)}
+            ${_shopLines ? `<br><pre style="font-size:10px;margin:4px 0 0;overflow-x:auto;white-space:pre-wrap;text-align:left">${escapeHtml(_shopLines)}</pre>` : ""}
+          </div>`;
         }
         const warn = (ir.warnings || []).length > 0 ? `<br><span style="color:var(--warn);font-size:11px">${escapeHtml(ir.warnings.join("; "))}</span>` : "";
         return `<div class="notice notice-ok" style="margin-bottom:8px;font-size:13px">
@@ -4599,7 +4622,7 @@ async function runBepaidImport() {
   state.bepaidImportResult = null;
   renderBepaid();
   try {
-    const data = await apiPost("/api/integrations/bepaid/import-history", { month, shop_type: shopType });
+    const data = await _apiPostRaw("/api/integrations/bepaid/import-history", { month, shop_type: shopType });
     state.bepaidImportResult = data;
     if (data.ok) {
       const ins = data.inserted ?? 0;
@@ -4607,7 +4630,7 @@ async function runBepaidImport() {
       setNotice(`Импорт bePaid за ${month}: +${ins} новых, ${upd} обновлено`, "ok");
     }
   } catch (e) {
-    state.bepaidImportResult = { ok: false, error: safeUserError(e) };
+    state.bepaidImportResult = { ok: false, error: safeUserError(e), _network_error: true };
   } finally {
     state.bepaidImportBusy = false;
     renderBepaid();

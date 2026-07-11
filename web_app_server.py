@@ -6759,10 +6759,10 @@ class MiniAppContext:
             return {"ok": False, "error": "МойКласс отключён в настройках агента."}
         try:
             result = self.moyklass.get_month_analytics(month_value)
+            report = self._build_month_report_payload(result, month_value)
         except Exception as exc:
             log.exception("MoyKlass monthly report failed")
             return {"ok": False, "error": f"Не удалось получить отчёт МойКласс: {exc}"}
-        report = self._build_month_report_payload(result, month_value)
         return {"ok": True, "month": report.get("month") or month_value, "report": report}
 
     def reports_monthly_children(self, auth: dict[str, Any], month: str = "") -> dict[str, Any]:
@@ -7289,7 +7289,7 @@ class MiniAppContext:
         Returns (transactions, error_str, api_supported, diagnostics).
         Tries X-Api-Version 3 first, falls back to 2 on 400/404/422.
         On 401 stops immediately — auth won't change with a different version.
-        Never logs or exposes secret_key.
+        Never logs or exposes secret_key or Authorization header.
         """
         import requests as _req
 
@@ -7301,8 +7301,13 @@ class MiniAppContext:
             "endpoint_used": self._BEPAID_REPORT_URL,
             "api_version_header_used": None,
             "response_status": None,
+            "response_reason": None,
+            "response_body_preview": None,
+            "request_body_sanitized": None,
             "auth_error": False,
             "versions_tried": [],
+            "exception_type": None,
+            "exception_message": None,
         }
 
         all_tx: list[dict[str, Any]] = []
@@ -7314,7 +7319,7 @@ class MiniAppContext:
             working_version: str | None = None  # reuse once confirmed working
 
             for _page in range(50):
-                body: dict[str, Any] = {
+                req_body: dict[str, Any] = {
                     "report_params": {
                         "date_type": "paid_at",
                         "from": from_dt,
@@ -7325,7 +7330,9 @@ class MiniAppContext:
                     }
                 }
                 if cursor:
-                    body["starting_after"] = cursor
+                    req_body["starting_after"] = cursor
+
+                diag["request_body_sanitized"] = req_body  # no credentials in body
 
                 versions_to_try = [working_version] if working_version else ["3", "2"]
                 resp = None
@@ -7335,7 +7342,7 @@ class MiniAppContext:
                     try:
                         resp = _req.post(
                             self._BEPAID_REPORT_URL,
-                            json=body,
+                            json=req_body,
                             auth=(shop_id, secret_key),
                             headers={
                                 "X-Api-Version": api_ver,
@@ -7345,13 +7352,24 @@ class MiniAppContext:
                             timeout=30,
                         )
                     except Exception as exc:
+                        diag["exception_type"] = type(exc).__name__
+                        diag["exception_message"] = str(exc)[:200]
                         last_error = f"network error: {exc}"
+                        log.warning(
+                            "bePaid import network error shop_type=%s endpoint=%s exc_type=%s exc=%s",
+                            shop_type, self._BEPAID_REPORT_URL, type(exc).__name__, str(exc)[:200],
+                        )
                         return all_tx, last_error, api_supported, diag
 
                     used_version = api_ver
                     if api_ver not in diag["versions_tried"]:
                         diag["versions_tried"].append(api_ver)
                     diag["response_status"] = resp.status_code
+                    diag["response_reason"] = getattr(resp, "reason", None) or ""
+                    try:
+                        diag["response_body_preview"] = resp.text[:1000]
+                    except Exception:
+                        diag["response_body_preview"] = ""
 
                     if resp.status_code == 401:
                         diag["auth_error"] = True
@@ -7368,6 +7386,10 @@ class MiniAppContext:
 
                 if resp.status_code in (404, 501, 405):
                     last_error = f"HTTP {resp.status_code}: endpoint not supported"
+                    log.warning(
+                        "bePaid import endpoint not supported shop_type=%s status=%s endpoint=%s version=%s",
+                        shop_type, resp.status_code, self._BEPAID_REPORT_URL, used_version,
+                    )
                     break
 
                 if resp.status_code == 401:
@@ -7377,6 +7399,13 @@ class MiniAppContext:
                         "Public Key не подходит для API-запросов."
                     )
                     api_supported = True  # endpoint reachable, credentials wrong
+                    log.warning(
+                        "bePaid import auth failed shop_type=%s endpoint=%s versions_tried=%s "
+                        "shop_id_last4=%s secret_key_length=%s body_preview=%s",
+                        shop_type, self._BEPAID_REPORT_URL, diag["versions_tried"],
+                        diag["shop_id_last4"], diag["secret_key_length"],
+                        (diag.get("response_body_preview") or "")[:200],
+                    )
                     break
 
                 api_supported = True
@@ -7388,6 +7417,11 @@ class MiniAppContext:
                         last_error = str(err_body.get("message") or err_body)[:300]
                     except Exception:
                         last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                    log.warning(
+                        "bePaid import API error shop_type=%s status=%s endpoint=%s version=%s body_preview=%s",
+                        shop_type, resp.status_code, self._BEPAID_REPORT_URL, used_version,
+                        (diag.get("response_body_preview") or "")[:200],
+                    )
                     break
 
                 try:
@@ -7535,16 +7569,18 @@ class MiniAppContext:
             not r.get("auth_error") for r in shop_results.values()
         ):
             auth_shops = [st for st, r in shop_results.items() if r.get("auth_error")]
+            _auth_msg = (
+                "bePaid отклонил авторизацию. "
+                "Проверьте Shop ID и Secret Key именно этого магазина. "
+                "Public Key не подходит для API-запросов."
+            )
             return {
                 "ok": False,
                 "auth_error": True,
                 "api_supported": True,
+                "error": _auth_msg,
+                "message": _auth_msg,
                 "month": month,
-                "message": (
-                    "bePaid отклонил авторизацию. "
-                    "Проверьте Shop ID и Secret Key именно этого магазина. "
-                    "Public Key не подходит для API-запросов."
-                ),
                 "shops_with_auth_error": auth_shops,
                 "shops": shop_results,
                 "warnings": warnings,
@@ -7557,6 +7593,8 @@ class MiniAppContext:
                         "endpoint_used": d.get("endpoint_used"),
                         "versions_tried": d.get("versions_tried"),
                         "response_status": d.get("response_status"),
+                        "response_reason": d.get("response_reason"),
+                        "response_body_preview": d.get("response_body_preview"),
                         "auth_error": d.get("auth_error"),
                     }
                     for st, d in shop_diags.items()
@@ -7564,15 +7602,28 @@ class MiniAppContext:
             }
 
         if not api_supported:
+            _no_ep_msg = (
+                "В bePaid API не найден официальный endpoint списка транзакций по периоду. "
+                "Попробуйте позже или импортируйте CSV/XLSX из кабинета bePaid."
+            )
             return {
                 "ok": False,
                 "api_supported": False,
+                "error": _no_ep_msg,
+                "message": _no_ep_msg,
                 "month": month,
-                "message": (
-                    "В bePaid API не найден официальный endpoint списка транзакций по периоду. "
-                    "Попробуйте позже или импортируйте CSV/XLSX из кабинета bePaid."
-                ),
+                "shops": shop_results,
                 "warnings": warnings,
+                "diagnostics": {
+                    st: {
+                        "endpoint_used": d.get("endpoint_used"),
+                        "versions_tried": d.get("versions_tried"),
+                        "response_status": d.get("response_status"),
+                        "response_reason": d.get("response_reason"),
+                        "response_body_preview": d.get("response_body_preview"),
+                    }
+                    for st, d in shop_diags.items()
+                },
             }
 
         return {
