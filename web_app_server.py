@@ -7904,7 +7904,6 @@ class MiniAppContext:
                     end_date = _date2(year, mnum + 1, 1)
                 result = self.moyklass._scan_payments_for_month(start_date, end_date, limit=3000)
                 if result.ok:
-                    from moyklass_client import extract_items
                     raw_items = extract_items(result.data)
                     mk_payments = [x for x in raw_items if isinstance(x, dict)]
                     mk_loaded = True
@@ -7913,16 +7912,11 @@ class MiniAppContext:
             except Exception as e:
                 mk_error = str(e)
 
-        # Build MK indexes
-        # uid+amount → [payment, ...]
+        # Build MK payment indexes
         _mk_pay_by_uid_amount: dict[str, list[dict[str, Any]]] = {}
-        # uid → [payment, ...] (any amount)
         _mk_pay_by_uid: dict[str, list[dict[str, Any]]] = {}
-        # amount_minor → [payment, ...] (any user)
         _mk_pay_by_amount: dict[int, list[dict[str, Any]]] = {}
-        # uid → display name
         _mk_user_names: dict[str, str] = {}
-        # set of all known mk user ids
         _mk_known_uids: set[str] = set()
 
         for _mp in mk_payments:
@@ -7942,11 +7936,62 @@ class MiniAppContext:
             _mk_pay_by_uid.setdefault(_uid, []).append(_mp)
             _mk_pay_by_amount.setdefault(_amt_minor, []).append(_mp)
 
+        # Subscription lookup helpers (lazy, per-user, cached)
+        _sub_cache: dict[str, list[dict[str, Any]]] = {}
+        _sub_api_calls = 0
+        _sub_api_calls_limit = 50
+        _sub_exact_hits = 0
+        _sub_possible_hits = 0
+        _sub_example_matches: list[dict[str, Any]] = []
+        _sub_example_misses: list[dict[str, Any]] = []
+
+        def _get_user_subs(uid: str) -> list[dict[str, Any]]:
+            nonlocal _sub_api_calls
+            if uid in _sub_cache:
+                return _sub_cache[uid]
+            if not self.settings.moyklass_enabled or _sub_api_calls >= _sub_api_calls_limit:
+                _sub_cache[uid] = []
+                return []
+            _sub_api_calls += 1
+            try:
+                _sr = self.moyklass.get_user_subscriptions(uid)
+                items = [x for x in extract_items(_sr.data) if isinstance(x, dict)] if _sr.ok else []
+            except Exception:
+                items = []
+            _sub_cache[uid] = items
+            return items
+
+        def _sub_amount_minor(sub: dict[str, Any]) -> int | None:
+            raw = (sub.get("payed") or sub.get("paid") or sub.get("paidSum")
+                   or sub.get("price") or sub.get("originalPrice"))
+            if raw is None:
+                return None
+            try:
+                return int(round(float(raw) * 100))
+            except Exception:
+                return None
+
+        def _sub_info(sub: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "subscription_id": str(sub.get("id") or sub.get("userSubscriptionId") or ""),
+                "subscription_type_id": str(sub.get("subscriptionId") or ""),
+                "subscription_name": str(sub.get("_ycSubscriptionName") or "").strip(),
+                "subscription_amount_byn": round(float(
+                    sub.get("payed") or sub.get("paid") or sub.get("paidSum")
+                    or sub.get("price") or sub.get("originalPrice") or 0), 2),
+                "subscription_sell_date": str(sub.get("sellDate") or "").strip()[:10],
+                "subscription_begin_date": str(
+                    sub.get("beginDate") or sub.get("startDate") or "").strip()[:10],
+                "subscription_end_date": str(
+                    sub.get("endDate") or sub.get("finishDate") or sub.get("overDate") or "").strip()[:10],
+            }
+
         stats = {
             "total": len(bp_txns),
             "already_in_moyklass": 0,
-            "user_found_no_payment": 0,
-            "user_not_in_mk": 0,
+            "found_in_subscription": 0,
+            "possible_subscription_match": 0,
+            "user_found_no_payment_or_subscription": 0,
             "possible_payment_match": 0,
             "needs_review": 0,
             "ignored_not_successful": 0,
@@ -7980,16 +8025,17 @@ class MiniAppContext:
                              "match_reason": f"валюта: {_currency}"}
                 stats["ignored_currency"] += 1
             else:
-                # Priority 1: exact uid + amount match
+                # Priority 1: exact uid + amount match in payments
                 _exact_key = f"{_mk_uid}:{_amount_minor}" if (_mk_uid and _amount_minor is not None) else None
                 _exact_candidates = _mk_pay_by_uid_amount.get(_exact_key, []) if _exact_key else []
+
                 if _exact_candidates:
                     _found = _exact_candidates[0]
                     _uname = _mk_user_names.get(_mk_uid, "")
                     new_match = {
                         "match_status": "already_in_moyklass",
                         "match_score": 1.0,
-                        "match_reason": f"userId={_mk_uid} и сумма совпадают",
+                        "match_reason": f"userId={_mk_uid} и сумма совпадают в платежах МК",
                         "mk_payment_id": str(_found.get("id") or ""),
                         "mk_user_id": _mk_uid,
                         "mk_user_name": _uname,
@@ -7998,53 +8044,98 @@ class MiniAppContext:
                     stats["already_in_moyklass"] += 1
 
                 elif _mk_uid:
-                    # Priority 2: user exists in MK but no exact amount match
-                    _uid_payments = _mk_pay_by_uid.get(_mk_uid, [])
+                    # Priority 2: uid known, no payment match → check subscriptions
                     _uname = _mk_user_names.get(_mk_uid, "")
-                    if _uid_payments:
-                        # User found, but different amount
-                        _possible = [
-                            {"mk_payment_id": str(p.get("id") or ""),
-                             "amount_byn": round(float(p.get("sum") or p.get("amount") or 0), 2),
-                             "date": str(p.get("date") or p.get("createdAt") or ""),
-                             "mk_user_name": _uname}
-                            for p in _uid_payments[:5]
-                        ]
+                    _user_subs = _get_user_subs(_mk_uid)
+
+                    _exact_subs: list[dict[str, Any]] = []
+                    _close_subs: list[tuple[dict[str, Any], float]] = []
+                    if _amount_minor is not None:
+                        for _sub in _user_subs:
+                            _sm = _sub_amount_minor(_sub)
+                            if _sm is None:
+                                continue
+                            _diff = abs(_sm - _amount_minor)
+                            if _diff == 0:
+                                _exact_subs.append(_sub)
+                            elif _diff <= 100:  # ≤1 BYN tolerance
+                                _close_subs.append((_sub, round(_diff / 100, 2)))
+
+                    if _exact_subs:
+                        _si = _sub_info(_exact_subs[0])
+                        _sub_exact_hits += 1
                         new_match = {
-                            "match_status": "user_found_no_payment",
-                            "match_score": 0.7,
-                            "match_reason": f"userId={_mk_uid} есть в МК, но оплаты на эту сумму нет",
+                            "match_status": "found_in_subscription",
+                            "match_score": 0.95,
+                            "match_reason": (
+                                f"Ученик userId={_mk_uid}, сумма найдена в абонементе"
+                                f" #{_si['subscription_id']}"
+                            ),
                             "mk_user_id": _mk_uid,
                             "mk_user_name": _uname,
                             "mk_user_id_source": _mk_uid_source,
-                            "possible_matches": _possible,
+                            **_si,
                         }
-                        stats["user_found_no_payment"] += 1
+                        stats["found_in_subscription"] += 1
+                        if len(_sub_example_matches) < 3:
+                            _sub_example_matches.append({
+                                "bp_amount_byn": round((_amount_minor or 0) / 100, 2),
+                                "mk_user_id": _mk_uid,
+                                "subscription_id": _si["subscription_id"],
+                            })
+
+                    elif _close_subs:
+                        _best_sub, _delta = _close_subs[0]
+                        _si = _sub_info(_best_sub)
+                        _si["subscription_amount_delta_byn"] = _delta
+                        _sub_possible_hits += 1
+                        new_match = {
+                            "match_status": "possible_subscription_match",
+                            "match_score": 0.80,
+                            "match_reason": (
+                                f"Ученик userId={_mk_uid}, похожая сумма в абонементе"
+                                f" #{_si['subscription_id']} (Δ {_delta} BYN)"
+                            ),
+                            "mk_user_id": _mk_uid,
+                            "mk_user_name": _uname,
+                            "mk_user_id_source": _mk_uid_source,
+                            **_si,
+                        }
+                        stats["possible_subscription_match"] += 1
+
                     else:
-                        # User ID extracted but not in MK at all
-                        # Fallback: look for same amount in MK (different user?)
-                        _amt_candidates = (_mk_pay_by_amount.get(_amount_minor, [])
-                                           if _amount_minor is not None else [])
-                        _possible_by_amt = [
+                        # User uid known, but no payment or subscription match
+                        _uid_payments = _mk_pay_by_uid.get(_mk_uid, [])
+                        _possible_pay = [
                             {"mk_payment_id": str(p.get("id") or ""),
                              "amount_byn": round(float(p.get("sum") or p.get("amount") or 0), 2),
-                             "date": str(p.get("date") or p.get("createdAt") or ""),
-                             "mk_user_id": str(p.get("userId") or ""),
-                             "mk_user_name": _mk_user_names.get(str(p.get("userId") or ""), "")}
-                            for p in _amt_candidates[:5]
+                             "date": str(p.get("date") or p.get("createdAt") or "")}
+                            for p in _uid_payments[:3]
                         ]
+                        _possible_subs = [_sub_info(s) for s in _user_subs[:3]]
                         new_match = {
-                            "match_status": "user_not_in_mk",
-                            "match_score": 0.3,
-                            "match_reason": f"userId={_mk_uid} (из {_mk_uid_source or '?'}) не найден в МК",
+                            "match_status": "user_found_no_payment_or_subscription",
+                            "match_score": 0.2,
+                            "match_reason": (
+                                f"userId={_mk_uid} найден, но ни оплата, ни абонемент"
+                                f" на эту сумму не найдены"
+                            ),
                             "mk_user_id": _mk_uid,
+                            "mk_user_name": _uname,
                             "mk_user_id_source": _mk_uid_source,
-                            "possible_matches": _possible_by_amt,
+                            "possible_matches": _possible_pay,
+                            "possible_subscriptions": _possible_subs,
                         }
-                        stats["user_not_in_mk"] += 1
+                        stats["user_found_no_payment_or_subscription"] += 1
+                        if len(_sub_example_misses) < 3:
+                            _sub_example_misses.append({
+                                "bp_amount_byn": round((_amount_minor or 0) / 100, 2),
+                                "mk_user_id": _mk_uid,
+                                "subscriptions_count": len(_user_subs),
+                            })
 
                 else:
-                    # No mk_user_id — try amount-only match
+                    # No mk_user_id — try amount-only match in payments
                     _amt_candidates = (_mk_pay_by_amount.get(_amount_minor, [])
                                        if _amount_minor is not None else [])
                     if _amt_candidates:
@@ -8091,8 +8182,8 @@ class MiniAppContext:
             results.append(row_out)
 
         # Totals
-        successful_byn = [r for r in results if r.get("match_status") not in
-                          ("ignored_test", "ignored_not_successful", "ignored_currency")]
+        _ignored_statuses = {"ignored_test", "ignored_not_successful", "ignored_currency"}
+        successful_byn = [r for r in results if r.get("match_status") not in _ignored_statuses]
         total_amount_byn = sum(float(r.get("amount_byn") or 0) for r in successful_byn)
 
         return {
@@ -8116,16 +8207,24 @@ class MiniAppContext:
                 "moyklass_payments_load_error": mk_error,
                 "moyklass_payments_count": len(mk_payments),
                 "mk_known_uids_count": len(_mk_known_uids),
+                "subscriptions_checked_count": len(_sub_cache),
+                "subscriptions_loaded_count": sum(len(v) for v in _sub_cache.values()),
+                "subscriptions_api_calls": _sub_api_calls,
+                "subscription_exact_matches": _sub_exact_hits,
+                "subscription_possible_matches": _sub_possible_hits,
                 "successful_count": len(successful_byn),
                 "successful_amount": round(total_amount_byn, 2),
                 "matched_count": stats["already_in_moyklass"],
-                "user_found_no_payment_count": stats["user_found_no_payment"],
-                "user_not_in_mk_count": stats["user_not_in_mk"],
+                "found_in_subscription_count": stats["found_in_subscription"],
+                "possible_subscription_match_count": stats["possible_subscription_match"],
+                "user_found_no_payment_or_subscription_count": stats["user_found_no_payment_or_subscription"],
                 "possible_payment_match_count": stats["possible_payment_match"],
                 "needs_review_count": stats["needs_review"],
                 "ignored_count": (stats["ignored_not_successful"]
                                   + stats["ignored_test"]
                                   + stats["ignored_currency"]),
+                "examples_subscription_matches": _sub_example_matches,
+                "examples_subscription_misses": _sub_example_misses,
                 "last_webhook_received_at": self.storage.get_bepaid_last_webhook_at(),
             },
         }
