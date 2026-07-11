@@ -564,13 +564,16 @@ class Storage:
                 customer_email TEXT,
                 billing_phone TEXT,
                 mk_user_id TEXT,
+                mk_user_id_source TEXT,
                 mk_user_name TEXT,
                 mk_filial_id TEXT,
+                description TEXT,
                 raw_json TEXT,
                 received_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 match_status TEXT,
                 match_score REAL,
+                match_reason TEXT,
                 mk_payment_id TEXT,
                 posting_status TEXT,
                 posting_error TEXT
@@ -581,6 +584,16 @@ class Storage:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_bepaid_tx_uid ON bepaid_transactions(provider, shop_type, transaction_uid)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_bepaid_tx_order ON bepaid_transactions(order_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_bepaid_tx_match ON bepaid_transactions(match_status)")
+        # Migration: add columns for existing DBs (no-op if already present)
+        for _col_sql in [
+            "ALTER TABLE bepaid_transactions ADD COLUMN mk_user_id_source TEXT",
+            "ALTER TABLE bepaid_transactions ADD COLUMN description TEXT",
+            "ALTER TABLE bepaid_transactions ADD COLUMN match_reason TEXT",
+        ]:
+            try:
+                conn.execute(_col_sql)
+            except Exception:
+                pass
 
     def _init_food_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -4417,8 +4430,10 @@ class Storage:
             "customer_email": str(data.get("customer_email") or "").strip() or None,
             "billing_phone": str(data.get("billing_phone") or "").strip() or None,
             "mk_user_id": str(data.get("mk_user_id") or "").strip() or None,
+            "mk_user_id_source": str(data.get("mk_user_id_source") or "").strip() or None,
             "mk_user_name": str(data.get("mk_user_name") or "").strip() or None,
             "mk_filial_id": str(data.get("mk_filial_id") or "").strip() or None,
+            "description": str(data.get("description") or "").strip() or None,
             "raw_json": raw_str,
         }
 
@@ -4444,7 +4459,7 @@ class Storage:
 
     def update_bepaid_match(self, row_id: int, match_data: dict[str, Any]) -> None:
         now = now_iso()
-        allowed = {"match_status", "match_score", "mk_payment_id", "mk_user_id", "mk_user_name", "posting_status", "posting_error"}
+        allowed = {"match_status", "match_score", "match_reason", "mk_payment_id", "mk_user_id", "mk_user_name", "posting_status", "posting_error"}
         sets, vals = [], []
         for k, v in match_data.items():
             if k in allowed:

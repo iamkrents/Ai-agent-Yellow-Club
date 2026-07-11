@@ -7733,21 +7733,31 @@ class MiniAppContext:
             str(billing.get("phone") or "").strip() or None
         )
 
-        # Try to find mk_user_id in various fields
+        # Try to find mk_user_id in various fields; track which field it came from
+        import re as _re
+        _id_sources = [
+            ("tracking_id", tracking_id),
+            ("order_id", order_id),
+            ("additional_data.contract_number", str(additional.get("contract_number") or "")),
+            ("additional_data.user_id", str(additional.get("user_id") or "")),
+            ("additional_data.mk_user_id", str(additional.get("mk_user_id") or "")),
+            ("custom_fields.user_id", str((tx.get("custom_fields") or {}).get("user_id") or "")),
+            ("custom_fields.mk_user_id", str((tx.get("custom_fields") or {}).get("mk_user_id") or "")),
+        ]
         mk_user_id = None
-        for src in [tracking_id, order_id,
-                    str(additional.get("contract_number") or ""),
-                    str(additional.get("user_id") or ""),
-                    str(additional.get("mk_user_id") or ""),
-                    str((tx.get("custom_fields") or {}).get("user_id") or ""),
-                    str((tx.get("custom_fields") or {}).get("mk_user_id") or ""),
-                    ]:
-            if src:
-                import re as _re
-                m = _re.search(r'\b(\d{4,9})\b', src)
-                if m:
-                    mk_user_id = m.group(1)
-                    break
+        mk_user_id_source = None
+        numeric_candidates: list[str] = []
+        for _src_name, _src_val in _id_sources:
+            if _src_val:
+                for _m in _re.finditer(r'\b(\d{4,9})\b', _src_val):
+                    _cand = _m.group(1)
+                    if _cand not in numeric_candidates:
+                        numeric_candidates.append(_cand)
+                if mk_user_id is None:
+                    _m2 = _re.search(r'\b(\d{4,9})\b', _src_val)
+                    if _m2:
+                        mk_user_id = _m2.group(1)
+                        mk_user_id_source = _src_name
 
         return {
             "provider": "bepaid",
@@ -7770,7 +7780,9 @@ class MiniAppContext:
             "customer_phone": customer_phone,
             "customer_email": str(customer.get("email") or "").strip() or None,
             "billing_phone": str(billing.get("phone") or "").strip() or None,
+            "description": str(tx.get("description") or "").strip() or None,
             "mk_user_id": mk_user_id,
+            "mk_user_id_source": mk_user_id_source,
             "raw_json": raw_json,
         }
 
@@ -7901,29 +7913,45 @@ class MiniAppContext:
             except Exception as e:
                 mk_error = str(e)
 
-        # Index MK payments by userId + amount for fast lookup
+        # Build MK indexes
+        # uid+amount → [payment, ...]
         _mk_pay_by_uid_amount: dict[str, list[dict[str, Any]]] = {}
+        # uid → [payment, ...] (any amount)
+        _mk_pay_by_uid: dict[str, list[dict[str, Any]]] = {}
+        # amount_minor → [payment, ...] (any user)
+        _mk_pay_by_amount: dict[int, list[dict[str, Any]]] = {}
+        # uid → display name
         _mk_user_names: dict[str, str] = {}
+        # set of all known mk user ids
+        _mk_known_uids: set[str] = set()
+
         for _mp in mk_payments:
             _uid = str(_mp.get("userId") or _mp.get("user_id") or "")
             if not _uid:
                 continue
+            _mk_known_uids.add(_uid)
             _uname = str(_mp.get("userName") or _mp.get("user_name") or "")
-            if _uname and _uid:
+            if _uname:
                 _mk_user_names[_uid] = _uname
             _amt_raw = _mp.get("sum") or _mp.get("amount") or 0
             try:
                 _amt_minor = int(round(float(_amt_raw) * 100))
             except Exception:
                 _amt_minor = 0
-            _key = f"{_uid}:{_amt_minor}"
-            _mk_pay_by_uid_amount.setdefault(_key, []).append(_mp)
+            _mk_pay_by_uid_amount.setdefault(f"{_uid}:{_amt_minor}", []).append(_mp)
+            _mk_pay_by_uid.setdefault(_uid, []).append(_mp)
+            _mk_pay_by_amount.setdefault(_amt_minor, []).append(_mp)
 
         stats = {
-            "matched": 0, "already_in_moyklass": 0, "missing_in_moyklass": 0,
-            "probable_match": 0, "needs_review": 0,
-            "ignored_not_successful": 0, "ignored_test": 0,
-            "ignored_currency": 0, "total": len(bp_txns),
+            "total": len(bp_txns),
+            "already_in_moyklass": 0,
+            "user_found_no_payment": 0,
+            "user_not_in_mk": 0,
+            "possible_payment_match": 0,
+            "needs_review": 0,
+            "ignored_not_successful": 0,
+            "ignored_test": 0,
+            "ignored_currency": 0,
         }
 
         results: list[dict[str, Any]] = []
@@ -7935,57 +7963,131 @@ class MiniAppContext:
             _currency = str(_tx.get("currency") or "BYN").upper()
             _amount_minor = _tx.get("amount_minor")
             _mk_uid = str(_tx.get("mk_user_id") or "").strip()
-            _phone = str(_tx.get("customer_phone") or _tx.get("billing_phone") or "").strip()
-            _phone_digits = "".join(c for c in _phone if c.isdigit())[-9:] if _phone else ""  # noqa: F841
+            _mk_uid_source = str(_tx.get("mk_user_id_source") or "").strip()
 
-            new_match = None
+            new_match: dict[str, Any] = {}
 
             if _test:
-                new_match = {"match_status": "ignored_test", "match_score": 0.0}
+                new_match = {"match_status": "ignored_test", "match_score": 0.0,
+                             "match_reason": "тестовая транзакция"}
                 stats["ignored_test"] += 1
             elif _status != "successful":
-                new_match = {"match_status": "ignored_not_successful", "match_score": 0.0}
+                new_match = {"match_status": "ignored_not_successful", "match_score": 0.0,
+                             "match_reason": f"статус: {_status}"}
                 stats["ignored_not_successful"] += 1
             elif _currency != "BYN":
-                new_match = {"match_status": "ignored_currency", "match_score": 0.0}
+                new_match = {"match_status": "ignored_currency", "match_score": 0.0,
+                             "match_reason": f"валюта: {_currency}"}
                 stats["ignored_currency"] += 1
             else:
-                if _mk_uid and _amount_minor is not None:
-                    _key = f"{_mk_uid}:{_amount_minor}"
-                    candidates = _mk_pay_by_uid_amount.get(_key, [])
-                    if candidates:
-                        found_mk_payment = candidates[0]
+                # Priority 1: exact uid + amount match
+                _exact_key = f"{_mk_uid}:{_amount_minor}" if (_mk_uid and _amount_minor is not None) else None
+                _exact_candidates = _mk_pay_by_uid_amount.get(_exact_key, []) if _exact_key else []
+                if _exact_candidates:
+                    _found = _exact_candidates[0]
+                    _uname = _mk_user_names.get(_mk_uid, "")
+                    new_match = {
+                        "match_status": "already_in_moyklass",
+                        "match_score": 1.0,
+                        "match_reason": f"userId={_mk_uid} и сумма совпадают",
+                        "mk_payment_id": str(_found.get("id") or ""),
+                        "mk_user_id": _mk_uid,
+                        "mk_user_name": _uname,
+                        "mk_user_id_source": _mk_uid_source,
+                    }
+                    stats["already_in_moyklass"] += 1
+
+                elif _mk_uid:
+                    # Priority 2: user exists in MK but no exact amount match
+                    _uid_payments = _mk_pay_by_uid.get(_mk_uid, [])
+                    _uname = _mk_user_names.get(_mk_uid, "")
+                    if _uid_payments:
+                        # User found, but different amount
+                        _possible = [
+                            {"mk_payment_id": str(p.get("id") or ""),
+                             "amount_byn": round(float(p.get("sum") or p.get("amount") or 0), 2),
+                             "date": str(p.get("date") or p.get("createdAt") or ""),
+                             "mk_user_name": _uname}
+                            for p in _uid_payments[:5]
+                        ]
                         new_match = {
-                            "match_status": "already_in_moyklass",
-                            "match_score": 1.0,
-                            "mk_payment_id": str(found_mk_payment.get("id") or ""),
-                            "mk_user_name": _mk_user_names.get(_mk_uid, ""),
-                        }
-                        stats["already_in_moyklass"] += 1
-                    else:
-                        # User ID known, but no matching payment found
-                        new_match = {
-                            "match_status": "missing_in_moyklass",
-                            "match_score": 0.9,
+                            "match_status": "user_found_no_payment",
+                            "match_score": 0.7,
+                            "match_reason": f"userId={_mk_uid} есть в МК, но оплаты на эту сумму нет",
                             "mk_user_id": _mk_uid,
-                            "mk_user_name": _mk_user_names.get(_mk_uid, ""),
+                            "mk_user_name": _uname,
+                            "mk_user_id_source": _mk_uid_source,
+                            "possible_matches": _possible,
                         }
-                        stats["missing_in_moyklass"] += 1
+                        stats["user_found_no_payment"] += 1
+                    else:
+                        # User ID extracted but not in MK at all
+                        # Fallback: look for same amount in MK (different user?)
+                        _amt_candidates = (_mk_pay_by_amount.get(_amount_minor, [])
+                                           if _amount_minor is not None else [])
+                        _possible_by_amt = [
+                            {"mk_payment_id": str(p.get("id") or ""),
+                             "amount_byn": round(float(p.get("sum") or p.get("amount") or 0), 2),
+                             "date": str(p.get("date") or p.get("createdAt") or ""),
+                             "mk_user_id": str(p.get("userId") or ""),
+                             "mk_user_name": _mk_user_names.get(str(p.get("userId") or ""), "")}
+                            for p in _amt_candidates[:5]
+                        ]
+                        new_match = {
+                            "match_status": "user_not_in_mk",
+                            "match_score": 0.3,
+                            "match_reason": f"userId={_mk_uid} (из {_mk_uid_source or '?'}) не найден в МК",
+                            "mk_user_id": _mk_uid,
+                            "mk_user_id_source": _mk_uid_source,
+                            "possible_matches": _possible_by_amt,
+                        }
+                        stats["user_not_in_mk"] += 1
+
                 else:
-                    # No mk_user_id — needs manual review
-                    new_match = {"match_status": "needs_review", "match_score": 0.0}
-                    stats["needs_review"] += 1
+                    # No mk_user_id — try amount-only match
+                    _amt_candidates = (_mk_pay_by_amount.get(_amount_minor, [])
+                                       if _amount_minor is not None else [])
+                    if _amt_candidates:
+                        _possible_by_amt = [
+                            {"mk_payment_id": str(p.get("id") or ""),
+                             "amount_byn": round(float(p.get("sum") or p.get("amount") or 0), 2),
+                             "date": str(p.get("date") or p.get("createdAt") or ""),
+                             "mk_user_id": str(p.get("userId") or ""),
+                             "mk_user_name": _mk_user_names.get(str(p.get("userId") or ""), "")}
+                            for p in _amt_candidates[:5]
+                        ]
+                        new_match = {
+                            "match_status": "possible_payment_match",
+                            "match_score": 0.5,
+                            "match_reason": "userId не извлечён; найдены МК-платежи с той же суммой",
+                            "possible_matches": _possible_by_amt,
+                        }
+                        stats["possible_payment_match"] += 1
+                    else:
+                        new_match = {
+                            "match_status": "needs_review",
+                            "match_score": 0.0,
+                            "match_reason": "userId не извлечён, совпадений по сумме нет",
+                        }
+                        stats["needs_review"] += 1
 
             # Persist match result
             if new_match and _txid:
                 try:
-                    self.storage.update_bepaid_match(_txid, new_match)
+                    self.storage.update_bepaid_match(_txid, {
+                        "match_status": new_match.get("match_status"),
+                        "match_score": new_match.get("match_score"),
+                        "match_reason": new_match.get("match_reason"),
+                        "mk_payment_id": new_match.get("mk_payment_id"),
+                        "mk_user_id": new_match.get("mk_user_id") or _mk_uid or None,
+                        "mk_user_name": new_match.get("mk_user_name"),
+                    })
                 except Exception:
                     pass
 
             row_out = dict(_tx)
             row_out.pop("raw_json", None)
-            row_out.update(new_match or {})
+            row_out.update(new_match)
             results.append(row_out)
 
         # Totals
@@ -8013,13 +8115,17 @@ class MiniAppContext:
                 "moyklass_payments_loaded": mk_loaded,
                 "moyklass_payments_load_error": mk_error,
                 "moyklass_payments_count": len(mk_payments),
+                "mk_known_uids_count": len(_mk_known_uids),
                 "successful_count": len(successful_byn),
                 "successful_amount": round(total_amount_byn, 2),
                 "matched_count": stats["already_in_moyklass"],
-                "missing_in_moyklass_count": stats["missing_in_moyklass"],
+                "user_found_no_payment_count": stats["user_found_no_payment"],
+                "user_not_in_mk_count": stats["user_not_in_mk"],
+                "possible_payment_match_count": stats["possible_payment_match"],
                 "needs_review_count": stats["needs_review"],
-                "ignored_count": stats["ignored_not_successful"] + stats["ignored_test"] + stats["ignored_currency"],
-                "duplicate_detected_count": 0,
+                "ignored_count": (stats["ignored_not_successful"]
+                                  + stats["ignored_test"]
+                                  + stats["ignored_currency"]),
                 "last_webhook_received_at": self.storage.get_bepaid_last_webhook_at(),
             },
         }

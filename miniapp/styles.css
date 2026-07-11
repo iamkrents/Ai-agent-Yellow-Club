@@ -7110,3 +7110,62 @@ body { -webkit-overflow-scrolling: touch; }
 button:disabled:active,
 button[disabled]:active,
 input:disabled { animation: none !important; transform: none !important; }
+
+/* --- bePaid chips and tiles (v7.0.74) --- */
+.chip { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 12px; font-size: 11px; font-weight: 600; background: rgba(0,0,0,.07); color: var(--text); line-height: 1.5; }
+.chip-ok    { background: rgba(39,174,96,.15);  color: #1e8449; }
+.chip-warn  { background: rgba(230,126,34,.15); color: #a04000; }
+.chip-error { background: rgba(231,76,60,.15);  color: #a93226; }
+.chip-info  { background: rgba(52,152,219,.15); color: #1a6da0; }
+.chip-muted { background: rgba(0,0,0,.06);      color: var(--muted); }
+@media (prefers-color-scheme: dark) {
+  .chip       { background: rgba(255,255,255,.10); }
+  .chip-ok    { background: rgba(39,174,96,.25);  color: #58d68d; }
+  .chip-warn  { background: rgba(230,126,34,.25); color: #f0b27a; }
+  .chip-error { background: rgba(231,76,60,.25);  color: #f1948a; }
+  .chip-info  { background: rgba(52,152,219,.25); color: #7fb3d3; }
+  .chip-muted { background: rgba(255,255,255,.08); }
+}
+:root[data-theme="dark"] .chip       { background: rgba(255,255,255,.10); }
+:root[data-theme="dark"] .chip-ok    { background: rgba(39,174,96,.25);  color: #58d68d; }
+:root[data-theme="dark"] .chip-warn  { background: rgba(230,126,34,.25); color: #f0b27a; }
+:root[data-theme="dark"] .chip-error { background: rgba(231,76,60,.25);  color: #f1948a; }
+:root[data-theme="dark"] .chip-info  { background: rgba(52,152,219,.25); color: #7fb3d3; }
+:root[data-theme="dark"] .chip-muted { background: rgba(255,255,255,.08); }
+:root[data-theme="light"] .chip       { background: rgba(0,0,0,.07); color: var(--text); }
+:root[data-theme="light"] .chip-ok    { background: rgba(39,174,96,.15);  color: #1e8449; }
+:root[data-theme="light"] .chip-warn  { background: rgba(230,126,34,.15); color: #a04000; }
+:root[data-theme="light"] .chip-error { background: rgba(231,76,60,.15);  color: #a93226; }
+:root[data-theme="light"] .chip-info  { background: rgba(52,152,219,.15); color: #1a6da0; }
+:root[data-theme="light"] .chip-muted { background: rgba(0,0,0,.06);      color: var(--muted); }
+
+.cr-tile-val { font-size: 18px; font-weight: 800; color: var(--text); line-height: 1.1; }
+.cr-tile-lbl { font-size: 10px; color: var(--muted); margin-top: 2px; line-height: 1.2; }
+.cr-tile-ok   { border-top: 3px solid #27ae60; }
+.cr-tile-warn { border-top: 3px solid #e67e22; }
+.cr-tile-err  { border-top: 3px solid #e74c3c; }
+.cr-tile-info { border-top: 3px solid #3498db; }
+.cr-tile-muted { border-top: 3px solid var(--muted); }
+.cr-note { font-size: 12px; color: var(--muted); margin: 4px 0 8px; }
+.cr-diag-grid { margin-top: 6px; }
+
+/* --- bePaid reconcile mobile cards (v7.0.74) --- */
+.bepaid-card {
+  background: var(--card-bg, rgba(0,0,0,.03));
+  border: 1px solid var(--line, rgba(0,0,0,.1));
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.bepaid-card-muted { opacity: .6; }
+.bepaid-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+@media (prefers-color-scheme: dark) {
+  .bepaid-card { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.09); }
+}
+:root[data-theme="dark"] .bepaid-card { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.09); }
+:root[data-theme="light"] .bepaid-card { background: rgba(0,0,0,.03); border-color: rgba(0,0,0,.10); }

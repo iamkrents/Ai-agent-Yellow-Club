@@ -4510,13 +4510,14 @@ function renderBepaid() {
   const fmtByn = n => (n == null ? "—" : Number(n).toLocaleString("ru-RU", {minimumFractionDigits:2, maximumFractionDigits:2}) + " BYN");
 
   const MATCH_LABELS = {
-    "already_in_moyklass": { label: "В МойКласс ✓", cls: "chip-ok" },
-    "missing_in_moyklass": { label: "Нет в МойКласс", cls: "chip-warn" },
-    "needs_review": { label: "Нужна проверка", cls: "chip-error" },
-    "probable_match": { label: "Вероятное совпадение", cls: "chip-info" },
-    "ignored_not_successful": { label: "Неуспешная", cls: "chip-muted" },
-    "ignored_test": { label: "Тест", cls: "chip-muted" },
-    "ignored_currency": { label: "Не BYN", cls: "chip-muted" },
+    "already_in_moyklass":    { label: "В МойКласс ✓",         cls: "chip-ok" },
+    "user_found_no_payment":  { label: "Найден, нет оплаты",   cls: "chip-warn" },
+    "user_not_in_mk":         { label: "UserId не найден",      cls: "chip-warn" },
+    "possible_payment_match": { label: "Возможное совпадение",  cls: "chip-info" },
+    "needs_review":           { label: "Нужна проверка",        cls: "chip-error" },
+    "ignored_not_successful": { label: "Неуспешная",            cls: "chip-muted" },
+    "ignored_test":           { label: "Тест",                  cls: "chip-muted" },
+    "ignored_currency":       { label: "Не BYN",                cls: "chip-muted" },
   };
 
   const tilesHtml = `
@@ -4524,7 +4525,9 @@ function renderBepaid() {
       <div class="cr-tile"><div class="cr-tile-val">${bp.successful_byn_count ?? 0}</div><div class="cr-tile-lbl">Успешных BYN</div></div>
       <div class="cr-tile"><div class="cr-tile-val">${fmtByn(bp.successful_amount_byn)}</div><div class="cr-tile-lbl">Сумма</div></div>
       <div class="cr-tile cr-tile-ok"><div class="cr-tile-val">${stats.already_in_moyklass ?? 0}</div><div class="cr-tile-lbl">Есть в МойКласс</div></div>
-      <div class="cr-tile cr-tile-warn"><div class="cr-tile-val">${stats.missing_in_moyklass ?? 0}</div><div class="cr-tile-lbl">Нет в МойКласс</div></div>
+      <div class="cr-tile cr-tile-warn"><div class="cr-tile-val">${stats.user_found_no_payment ?? 0}</div><div class="cr-tile-lbl">Найден, нет оплаты</div></div>
+      <div class="cr-tile cr-tile-warn"><div class="cr-tile-val">${stats.user_not_in_mk ?? 0}</div><div class="cr-tile-lbl">UserId не найден</div></div>
+      <div class="cr-tile cr-tile-info"><div class="cr-tile-val">${stats.possible_payment_match ?? 0}</div><div class="cr-tile-lbl">Возможные совпадения</div></div>
       <div class="cr-tile cr-tile-err"><div class="cr-tile-val">${stats.needs_review ?? 0}</div><div class="cr-tile-lbl">Нужна проверка</div></div>
       <div class="cr-tile cr-tile-muted"><div class="cr-tile-val">${(stats.ignored_not_successful ?? 0) + (stats.ignored_test ?? 0)}</div><div class="cr-tile-lbl">Неуспешных/тест</div></div>
     </div>`;
@@ -4533,46 +4536,69 @@ function renderBepaid() {
     ? `<p class="cr-note">Загружено платежей МойКласс: ${bp.mk_payments_count ?? 0}.</p>`
     : `<p class="cr-note" style="color:var(--warn)">Платежи МойКласс не загружены${bp.mk_error ? ": " + escapeHtml(bp.mk_error) : ""}. Сверка по наличию в МойКласс недоступна.</p>`;
 
-  const noTxnsHint = txns.length === 0
-    ? `<div class="notice" style="margin:8px 0;font-size:13px">
-        История bePaid появится после получения webhook-ов. Для прошлых месяцев нужен отдельный импорт из bePaid API.
-      </div>`
+  const copyBtnHtml = txns.length
+    ? `<button class="secondary" id="bepaidCopyBtn" type="button" style="margin-bottom:10px;font-size:13px">Скопировать сверку bePaid</button>`
     : "";
 
-  const tableRows = txns.map(tx => {
+  // Mobile cards
+  const cards = txns.map(tx => {
     const ms = MATCH_LABELS[tx.match_status] || { label: tx.match_status || "—", cls: "" };
-    const name = [tx.customer_last_name, tx.customer_first_name].filter(Boolean).join(" ") || "—";
-    const phone = tx.customer_phone || "—";
-    const shopBadge = tx.shop_type === "erip" ? "ЕРИП" : tx.shop_type === "acquiring" ? "Эквайр." : (tx.shop_type || "—");
+    const name = [tx.customer_last_name, tx.customer_first_name].filter(Boolean).join(" ") || null;
+    const phone = tx.customer_phone || tx.billing_phone || null;
+    const shopLabel = tx.shop_type === "erip" ? "ЕРИП" : tx.shop_type === "acquiring" ? "Эквайринг" : (tx.shop_type || "?");
     const paidAt = (tx.paid_at || tx.received_at || "").slice(0, 10);
-    return `<tr>
-      <td style="white-space:nowrap">${escapeHtml(paidAt)}</td>
-      <td><span class="chip">${escapeHtml(shopBadge)}</span></td>
-      <td>${escapeHtml(name)}<br><span style="font-size:10px;color:var(--muted)">${escapeHtml(phone)}</span></td>
-      <td style="text-align:right"><b>${fmtByn(tx.amount_byn)}</b></td>
-      <td><span class="chip ${ms.cls}">${escapeHtml(ms.label)}</span></td>
-      <td style="font-size:10px;color:var(--muted)">${escapeHtml(tx.mk_user_name || tx.mk_user_id || "")}</td>
-      <td style="font-size:10px;color:var(--muted)">${escapeHtml(tx.mk_payment_id || "")}</td>
-    </tr>`;
+    const isIgnored = ["ignored_not_successful", "ignored_test", "ignored_currency"].includes(tx.match_status);
+
+    const mkUserLine = (() => {
+      const uid = tx.mk_user_id || "";
+      const uname = tx.mk_user_name || "";
+      const src = tx.mk_user_id_source || "";
+      if (!uid) return "";
+      const label = uname || `userId=${uid}`;
+      const srcHint = src ? ` <span style="color:var(--muted);font-size:10px">(из ${escapeHtml(src)})</span>` : "";
+      return `<div style="margin-top:4px;font-size:12px">МК: <b>${escapeHtml(label)}</b>${srcHint}</div>`;
+    })();
+
+    const reasonLine = tx.match_reason
+      ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">${escapeHtml(tx.match_reason)}</div>`
+      : "";
+
+    const possibleLine = (() => {
+      const pm = tx.possible_matches;
+      if (!pm || !pm.length) return "";
+      const rows = pm.slice(0, 3).map(m => {
+        const uname = m.mk_user_name || (m.mk_user_id ? `userId=${m.mk_user_id}` : "?");
+        const amt = m.amount_byn != null ? fmtByn(m.amount_byn) : "";
+        const dt = (m.date || "").slice(0, 10);
+        return `<li>${escapeHtml(uname)}${dt ? ", " + escapeHtml(dt) : ""}${amt ? ", " + escapeHtml(amt) : ""}</li>`;
+      }).join("");
+      return `<div style="font-size:11px;color:var(--muted);margin-top:3px">Возможные: <ul style="margin:2px 0 0 12px;padding:0">${rows}</ul></div>`;
+    })();
+
+    const mkPayId = tx.mk_payment_id
+      ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">ID платежа МК: ${escapeHtml(tx.mk_payment_id)}</div>`
+      : "";
+
+    return `<div class="bepaid-card${isIgnored ? " bepaid-card-muted" : ""}">
+      <div class="bepaid-card-header">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span style="font-size:12px;color:var(--muted)">${escapeHtml(paidAt)}</span>
+          <span class="chip" style="font-size:11px">${escapeHtml(shopLabel)}</span>
+          <span class="chip ${ms.cls}" style="font-size:11px">${escapeHtml(ms.label)}</span>
+        </div>
+        <div style="font-size:16px;font-weight:700;white-space:nowrap">${fmtByn(tx.amount_byn)}</div>
+      </div>
+      ${name || phone ? `<div style="margin-top:4px;font-size:13px">${name ? escapeHtml(name) : ""}${phone ? `<span style="color:var(--muted);font-size:11px;margin-left:6px">${escapeHtml(phone)}</span>` : ""}</div>` : ""}
+      ${mkUserLine}${reasonLine}${possibleLine}${mkPayId}
+    </div>`;
   }).join("");
 
-  const tableHtml = txns.length
-    ? `<div style="overflow-x:auto;margin-top:8px"><table style="width:100%;border-collapse:collapse;font-size:12px">
-        <thead><tr style="border-bottom:1px solid var(--border)">
-          <th style="text-align:left;padding:4px 6px">Дата</th>
-          <th style="text-align:left;padding:4px 6px">Магазин</th>
-          <th style="text-align:left;padding:4px 6px">Клиент</th>
-          <th style="text-align:right;padding:4px 6px">Сумма</th>
-          <th style="text-align:left;padding:4px 6px">Статус сверки</th>
-          <th style="text-align:left;padding:4px 6px">Ученик МК</th>
-          <th style="text-align:left;padding:4px 6px">ID платежа</th>
-        </tr></thead>
-        <tbody>${tableRows}</tbody>
-      </table></div>`
-    : noTxnsHint + `<div class="empty" style="margin-top:4px">Транзакции bePaid за этот период не найдены.</div>`;
+  const cardsHtml = txns.length
+    ? `<div id="bepaidCards" style="display:flex;flex-direction:column;gap:8px;margin-top:8px">${cards}</div>`
+    : `<div class="empty" style="margin-top:4px">Транзакции bePaid за этот период не найдены.</div>`;
 
   const diagData = bp.diagnostics || {};
-  const mkLoadRow = diagData.moyklass_payments_loaded === false
+  const mkLoadRow = bp.mk_payments_loaded === false
     ? `<div class="cr-diag-row" style="color:var(--warn)"><span>МойКласс платежи — ошибка</span><b>${escapeHtml(diagData.moyklass_payments_load_error || "не загружены")}</b></div>`
     : `<div class="cr-diag-row"><span>МойКласс платежей загружено</span><b>${diagData.moyklass_payments_count ?? 0}</b></div>`;
   const diagHtml = `
@@ -4585,9 +4611,12 @@ function renderBepaid() {
         <div class="cr-diag-row"><span>Верификация подписи эквайринг</span><b>${diagData.signature_verification_enabled_acq ? "Да" : "Нет"}</b></div>
         <div class="cr-diag-row"><span>Транзакций bePaid</span><b>${diagData.transactions_loaded ?? 0}</b></div>
         ${mkLoadRow}
+        <div class="cr-diag-row"><span>Уникальных userId МК</span><b>${diagData.mk_known_uids_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Успешных BYN</span><b>${diagData.successful_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Есть в МойКласс</span><b>${diagData.matched_count ?? 0}</b></div>
-        <div class="cr-diag-row"><span>Нет в МойКласс</span><b>${diagData.missing_in_moyklass_count ?? 0}</b></div>
+        <div class="cr-diag-row"><span>Найден, нет оплаты</span><b>${diagData.user_found_no_payment_count ?? 0}</b></div>
+        <div class="cr-diag-row"><span>UserId не найден в МК</span><b>${diagData.user_not_in_mk_count ?? 0}</b></div>
+        <div class="cr-diag-row"><span>Возможные совпадения</span><b>${diagData.possible_payment_match_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Нужна проверка</span><b>${diagData.needs_review_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Проигнорировано</span><b>${diagData.ignored_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Посл. webhook</span><b>${diagData.last_webhook_received_at || "—"}</b></div>
@@ -4595,13 +4624,51 @@ function renderBepaid() {
       </div>
     </details>`;
 
-  el.innerHTML = statusHtml + controlsHtml + tilesHtml + mkNote + tableHtml + diagHtml;
+  el.innerHTML = statusHtml + controlsHtml + tilesHtml + mkNote + copyBtnHtml + cardsHtml + diagHtml;
 
   $("bepaidMonth")?.addEventListener("change", e => { state.bepaidMonth = e.target.value; });
   const sf = $("bepaidShopFilter");
   if (sf && bp?.shop_type) sf.value = bp.shop_type;
   $("bepaidImportBtn")?.addEventListener("click", runBepaidImport);
   $("bepaidReconcileBtn")?.addEventListener("click", runBepaidReconcile);
+  $("bepaidCopyBtn")?.addEventListener("click", copyBepaidReconcile);
+}
+
+async function copyBepaidReconcile() {
+  const bp = state.bepaidData;
+  if (!bp || !bp.transactions) return;
+  const txns = bp.transactions;
+  const STATUS_TEXT = {
+    "already_in_moyklass":    "Есть в МойКласс",
+    "user_found_no_payment":  "Найден, нет оплаты",
+    "user_not_in_mk":         "UserId не найден",
+    "possible_payment_match": "Возможное совпадение",
+    "needs_review":           "Нужна проверка",
+    "ignored_not_successful": "Неуспешная",
+    "ignored_test":           "Тест",
+    "ignored_currency":       "Не BYN",
+  };
+  const header = ["Дата", "Магазин", "Клиент", "Телефон", "Сумма BYN", "Статус сверки", "МК userId", "Причина", "ID платежа МК"].join("\t");
+  const rows = txns.map(tx => {
+    const name = [tx.customer_last_name, tx.customer_first_name].filter(Boolean).join(" ");
+    const phone = tx.customer_phone || tx.billing_phone || "";
+    const paidAt = (tx.paid_at || tx.received_at || "").slice(0, 10);
+    const amt = tx.amount_byn != null ? Number(tx.amount_byn).toFixed(2) : "";
+    const status = STATUS_TEXT[tx.match_status] || tx.match_status || "";
+    const mkuid = tx.mk_user_id || "";
+    const reason = tx.match_reason || "";
+    const mkpay = tx.mk_payment_id || "";
+    const shop = tx.shop_type === "erip" ? "ЕРИП" : tx.shop_type === "acquiring" ? "Эквайринг" : (tx.shop_type || "");
+    return [paidAt, shop, name, phone, amt, status, mkuid, reason, mkpay].join("\t");
+  });
+  const text = [header, ...rows].join("\n");
+  const btn = $("bepaidCopyBtn");
+  try {
+    await navigator.clipboard.writeText(text);
+    if (btn) { btn.textContent = "Скопировано!"; setTimeout(() => { if (btn) btn.textContent = "Скопировать сверку bePaid"; }, 2000); }
+  } catch {
+    if (btn) { btn.textContent = "Ошибка копирования"; setTimeout(() => { if (btn) btn.textContent = "Скопировать сверку bePaid"; }, 2000); }
+  }
 }
 
 async function loadBepaidStatus() {
