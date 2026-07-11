@@ -42,6 +42,7 @@ from storage import Storage
 from llm import OllamaClient
 from agent_core import AgentCore, AnswerContext
 from query_tools import build_query_profile
+from utils import now_iso
 
 log = logging.getLogger("yellow_club_miniapp")
 WEB_DIR = BASE_DIR / "miniapp"

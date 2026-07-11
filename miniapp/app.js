@@ -4560,7 +4560,7 @@ function renderBepaid() {
         <div class="cr-diag-row"><span>Нужна проверка</span><b>${diagData.needs_review_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Проигнорировано</span><b>${diagData.ignored_count ?? 0}</b></div>
         <div class="cr-diag-row"><span>Посл. webhook</span><b>${diagData.last_webhook_received_at || "—"}</b></div>
-        <div class="cr-diag-row" style="color:var(--warn);margin-top:6px"><span>Автосоздание в МойКласс</span><b>Выключено (v7.0.68)</b></div>
+        <div class="cr-diag-row" style="color:var(--warn);margin-top:6px"><span>Автосоздание в МойКласс</span><b>Выключено</b></div>
       </div>
     </details>`;
 
