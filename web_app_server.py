@@ -8446,29 +8446,46 @@ class MiniAppContext:
         if payment_method not in self._PI_VALID_METHODS:
             return {"ok": False, "error": f"payment_method должен быть одним из: {', '.join(sorted(self._PI_VALID_METHODS))}"}
 
-        student_name = str(body.get("student_name") or "").strip() or None
+        student_name_form = str(body.get("student_name") or "").strip() or None
         comment = str(body.get("comment") or "").strip() or None
         tg_id = int(auth.get("user_id") or 0) or None
         tg_name = str(auth.get("full_name") or auth.get("username") or "").strip() or None
         now = now_iso()
 
-        # Optional: try to enrich student_name from MoyKlass
+        # Always look up student name from MoyKlass (authoritative source)
         warnings: list[str] = []
-        if not student_name:
-            try:
-                _mk_user_result = self.moyklass.request("GET", f"/v1/company/users/{mk_user_id}")
-                if _mk_user_result.ok and isinstance(_mk_user_result.data, dict):
-                    _u = _mk_user_result.data
-                    _fn = str(_u.get("name") or "").strip()
-                    if not _fn:
-                        _fn = " ".join(filter(None, [
-                            str(_u.get("clientName") or _u.get("lastName") or ""),
-                            str(_u.get("firstName") or ""),
-                        ])).strip()
-                    if _fn:
-                        student_name = _fn
-            except Exception:
-                warnings.append("Не удалось получить данные ученика из МойКласс")
+        mk_fetched_name: str | None = None
+        mk_name_warning: str | None = None
+        try:
+            _mk_user_result = self.moyklass.request("GET", f"/v1/company/users/{mk_user_id}")
+            if _mk_user_result.ok and isinstance(_mk_user_result.data, dict):
+                _u = _mk_user_result.data
+                _fn = str(_u.get("name") or "").strip()
+                if not _fn:
+                    _fn = " ".join(filter(None, [
+                        str(_u.get("clientName") or _u.get("lastName") or ""),
+                        str(_u.get("firstName") or ""),
+                    ])).strip()
+                mk_fetched_name = _fn or None
+            elif not _mk_user_result.ok:
+                mk_name_warning = f"Ученик mk_user_id={mk_user_id} не найден в МойКласс (статус {_mk_user_result.status})"
+        except Exception as _mk_exc:
+            mk_name_warning = f"Не удалось получить данные ученика из МойКласс: {_mk_exc}"
+
+        # Resolve final student_name; warn on mismatch
+        student_name_mismatch: str | None = None
+        if mk_fetched_name:
+            if (student_name_form and
+                    student_name_form.lower().strip() != mk_fetched_name.lower().strip()):
+                student_name_mismatch = (
+                    f"Имя в форме «{student_name_form}» отличается от МойКласс «{mk_fetched_name}». "
+                    "Сохранено имя из МойКласс."
+                )
+            student_name = mk_fetched_name
+        else:
+            student_name = student_name_form
+            if mk_name_warning:
+                warnings.append(mk_name_warning)
 
         # Check for duplicates (soft warning, not hard block)
         duplicates = self.storage.find_duplicate_payment_intents(
@@ -8508,10 +8525,14 @@ class MiniAppContext:
             intent.get("public_id"), mk_user_id, amount_byn, purpose, tg_id,
         )
 
+        if student_name_mismatch:
+            warnings.append(student_name_mismatch)
+
         return {
             "ok": True,
             "intent": intent,
             "duplicate_warning": duplicate_warning,
+            "student_name_mismatch": student_name_mismatch,
             "warnings": warnings,
             "message": "Черновик платежа создан. На этом этапе платёж в bePaid и МойКласс не создавался.",
         }

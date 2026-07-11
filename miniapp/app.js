@@ -4622,6 +4622,8 @@ function renderBepaid() {
 
     // Show "create draft" button for unresolved statuses
     const canCreateDraft = ["needs_review", "user_found_no_payment_or_subscription", "possible_subscription_match", "possible_payment_match"].includes(tx.match_status);
+    // Use the active reconcile month (not transaction paid_at) as the billing period
+    const _draftPeriodMonth = $("bepaidMonth")?.value || state.bepaidMonth || currentMonthValue();
     const createDraftBtn = canCreateDraft && tx.mk_user_id
       ? `<button class="secondary" style="font-size:12px;padding:4px 10px;margin-top:8px"
            onclick="openCreateIntentFromBepaid(${JSON.stringify({
@@ -4629,7 +4631,7 @@ function renderBepaid() {
              student_name: tx.mk_user_name || '',
              amount_byn: tx.amount_byn,
              payment_method: tx.shop_type === 'erip' ? 'erip' : 'acquiring',
-             period_month: (tx.paid_at || '').slice(0,7),
+             period_month: _draftPeriodMonth,
              transaction_uid: tx.transaction_uid || '',
            })})"
          >📝 Создать черновик платежа</button>`
@@ -11470,13 +11472,20 @@ async function loadPaymentIntents() {
   const qs = params.toString();
   const listEl = $("piList");
   const statsEl = $("piStats");
+  const refreshBtn = $("loadPaymentIntents");
+  if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.textContent = "Загрузка..."; }
   if (listEl) listEl.innerHTML = `<div class="pi-empty">Загрузка...</div>`;
   try {
     const data = await apiGet("/api/payments/intents" + (qs ? "?" + qs : ""));
     renderPaymentIntentStats(statsEl, data.stats || {});
-    renderPaymentIntentList(listEl, data.intents || []);
+    const intents = data.intents || [];
+    renderPaymentIntentList(listEl, intents, { month, status });
+    if (refreshBtn) refreshBtn.textContent = `Обновить (${intents.length})`;
   } catch (e) {
     if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">Ошибка загрузки: ${escapeHtml(String(e))}</div>`;
+    if (refreshBtn) refreshBtn.textContent = "Обновить";
+  } finally {
+    if (refreshBtn) refreshBtn.disabled = false;
   }
 }
 
@@ -11497,10 +11506,14 @@ function renderPaymentIntentStats(el, stats) {
   }).join("");
 }
 
-function renderPaymentIntentList(el, intents) {
+function renderPaymentIntentList(el, intents, filters = {}) {
   if (!el) return;
   if (!intents.length) {
-    el.innerHTML = `<div class="pi-empty">Черновики платежей не найдены.</div>`;
+    const parts = [];
+    if (filters.month) parts.push(`за ${filters.month}`);
+    if (filters.status && filters.status !== "all") parts.push(`со статусом «${filters.status}»`);
+    const hint = parts.length ? ` ${parts.join(", ")}` : "";
+    el.innerHTML = `<div class="pi-empty">Черновики${hint} не найдены.</div>`;
     return;
   }
   el.innerHTML = intents.map(pi => renderPaymentIntentCard(pi)).join("");
@@ -11553,12 +11566,14 @@ function renderPaymentIntentCard(pi) {
 function openCreateIntentModal(prefill) {
   const modal = $("piCreateModal");
   if (!modal) return;
-  // Reset form
+  // Always reset all fields to avoid stale values from previous open
   $("piUserId").value = prefill?.mk_user_id || "";
   $("piStudentName").value = prefill?.student_name || "";
   $("piAmount").value = prefill?.amount_byn != null ? prefill.amount_byn : "";
   $("piPurpose").value = prefill?.purpose || "current_month";
-  $("piPeriodMonth").value = prefill?.period_month || new Date().toISOString().slice(0,7);
+  // Default period_month: use current filter month if set, else current month
+  const filterMonth = $("piMonthFilter")?.value || "";
+  $("piPeriodMonth").value = prefill?.period_month || filterMonth || new Date().toISOString().slice(0,7);
   $("piPaymentMethod").value = prefill?.payment_method || "erip";
   $("piComment").value = prefill?.comment || "";
   $("piCreateError").classList.add("hidden");
@@ -11628,13 +11643,28 @@ async function submitCreateIntent() {
       errEl.classList.remove("hidden");
       return;
     }
-    if (data.duplicate_warning) {
-      warnEl.textContent = data.duplicate_warning;
+    // Show any warnings before closing the modal
+    const allWarnings = [
+      data.student_name_mismatch,
+      data.duplicate_warning,
+      ...(data.warnings || []),
+    ].filter(Boolean);
+    if (allWarnings.length) {
+      warnEl.textContent = allWarnings.join(" | ");
       warnEl.classList.remove("hidden");
+      // Keep modal open briefly so user sees the warning
+      await new Promise(r => setTimeout(r, 2200));
     }
-    // Success
+    // Success — sync month filter so new intent is visible in the list
+    if (data.intent?.period_month) {
+      const mf = $("piMonthFilter");
+      if (mf) mf.value = data.intent.period_month;
+    }
     closeCreateIntentModal();
     showToast(data.message || "Черновик создан.");
+    // Ensure accordion is open so user sees the new intent
+    const acc = $("paymentIntentsAccordion");
+    if (acc && !acc.open) acc.open = true;
     await loadPaymentIntents();
   } catch (e) {
     errEl.textContent = String(e);
