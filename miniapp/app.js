@@ -4620,6 +4620,21 @@ function renderBepaid() {
       : "";
     const isHistorical = tx.match_status === "historical_subscription_match";
 
+    // Show "create draft" button for unresolved statuses
+    const canCreateDraft = ["needs_review", "user_found_no_payment_or_subscription", "possible_subscription_match", "possible_payment_match"].includes(tx.match_status);
+    const createDraftBtn = canCreateDraft && tx.mk_user_id
+      ? `<button class="secondary" style="font-size:12px;padding:4px 10px;margin-top:8px"
+           onclick="openCreateIntentFromBepaid(${JSON.stringify({
+             mk_user_id: tx.mk_user_id,
+             student_name: tx.mk_user_name || '',
+             amount_byn: tx.amount_byn,
+             payment_method: tx.shop_type === 'erip' ? 'erip' : 'acquiring',
+             period_month: (tx.paid_at || '').slice(0,7),
+             transaction_uid: tx.transaction_uid || '',
+           })})"
+         >📝 Создать черновик платежа</button>`
+      : "";
+
     return `<div class="bepaid-card${isIgnored ? " bepaid-card-muted" : ""}${isHistorical ? " bepaid-card-hist" : ""}">
       <div class="bepaid-card-header">
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
@@ -4632,6 +4647,7 @@ function renderBepaid() {
       </div>
       ${name || phone ? `<div style="margin-top:4px;font-size:13px">${name ? escapeHtml(name) : ""}${phone ? `<span style="color:var(--muted);font-size:11px;margin-left:6px">${escapeHtml(phone)}</span>` : ""}</div>` : ""}
       ${mkUserLine}${subscriptionLine}${reasonLine}${mkPayId}${possiblePayLine}${possibleSubsLine}
+      ${createDraftBtn}
     </div>`;
   }).join("");
 
@@ -11406,3 +11422,310 @@ async function boot() {
   } catch (e) { console.error("[boot]", e); setNotice("Не удалось загрузить данные. Обновите страницу.", "error"); }
 }
 boot();
+
+// ── Payment Intents v7.0.77 ───────────────────────────────────────────────
+
+const PI_PURPOSE_LABELS = {
+  current_month:        "Текущий месяц",
+  previous_month_debt:  "Долг прошлого периода",
+  old_debt:             "Старый долг",
+  advance:              "Аванс",
+  city_program:         "Городская программа",
+  other:                "Другое",
+};
+
+const PI_METHOD_LABELS = { erip: "ЕРИП", acquiring: "Эквайринг", manual: "Ручной" };
+
+const PI_STATUS_LABELS = {
+  draft:              { label: "Черновик",     cls: "chip-pi-draft" },
+  ready:              { label: "Готов",         cls: "chip-pi-ready" },
+  bepaid_created:     { label: "В bePaid",      cls: "chip-pi-bepaid" },
+  paid:               { label: "Оплачен",       cls: "chip-pi-paid" },
+  posted_to_moyklass: { label: "В МойКласс",   cls: "chip-pi-posted" },
+  cancelled:          { label: "Отменён",       cls: "chip-pi-cancel" },
+  error:              { label: "Ошибка",        cls: "chip-pi-error" },
+};
+
+const PI_PURPOSE_CLS = {
+  previous_month_debt: "chip-purpose-debt",
+  old_debt: "chip-purpose-debt",
+  advance: "chip-purpose-adv",
+  city_program: "chip-purpose-city",
+};
+
+let _piCancelTarget = null; // public_id being cancelled
+
+function canUsePaymentIntents() {
+  const r = state.role;
+  return ["owner", "admin", "director", "operations", "client_manager"].includes(r);
+}
+
+async function loadPaymentIntents() {
+  if (!canUsePaymentIntents()) return;
+  const month = $("piMonthFilter")?.value || "";
+  const status = $("piStatusFilter")?.value || "all";
+  const params = new URLSearchParams();
+  if (month) params.set("month", month);
+  if (status !== "all") params.set("status", status);
+  const qs = params.toString();
+  const listEl = $("piList");
+  const statsEl = $("piStats");
+  if (listEl) listEl.innerHTML = `<div class="pi-empty">Загрузка...</div>`;
+  try {
+    const data = await apiGet("/api/payments/intents" + (qs ? "?" + qs : ""));
+    renderPaymentIntentStats(statsEl, data.stats || {});
+    renderPaymentIntentList(listEl, data.intents || []);
+  } catch (e) {
+    if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">Ошибка загрузки: ${escapeHtml(String(e))}</div>`;
+  }
+}
+
+function renderPaymentIntentStats(el, stats) {
+  if (!el) return;
+  const chips = [
+    { key: "total", label: "Всего" },
+    { key: "draft", label: "Черновик" },
+    { key: "ready", label: "Готово" },
+    { key: "paid", label: "Оплачено" },
+    { key: "posted_to_moyklass", label: "В МК" },
+    { key: "cancelled", label: "Отменено" },
+    { key: "error", label: "Ошибка" },
+  ];
+  el.innerHTML = chips.map(c => {
+    const v = stats[c.key] ?? 0;
+    return `<span class="pi-stat-chip${v > 0 ? " has-value" : ""}">${escapeHtml(c.label)}: ${v}</span>`;
+  }).join("");
+}
+
+function renderPaymentIntentList(el, intents) {
+  if (!el) return;
+  if (!intents.length) {
+    el.innerHTML = `<div class="pi-empty">Черновики платежей не найдены.</div>`;
+    return;
+  }
+  el.innerHTML = intents.map(pi => renderPaymentIntentCard(pi)).join("");
+}
+
+function renderPaymentIntentCard(pi) {
+  const st = PI_STATUS_LABELS[pi.status] || { label: pi.status, cls: "chip-pi-draft" };
+  const purposeLabel = PI_PURPOSE_LABELS[pi.purpose] || pi.purpose || "—";
+  const methodLabel = PI_METHOD_LABELS[pi.payment_method] || pi.payment_method || "—";
+  const purposeCls = PI_PURPOSE_CLS[pi.purpose] || "";
+  const amount = pi.amount_byn != null ? fmtByn(pi.amount_byn) : "—";
+  const name = pi.student_name ? escapeHtml(pi.student_name) : `userId=${pi.mk_user_id}`;
+  const period = pi.period_month ? `<span class="chip chip-info" style="font-size:10px">${escapeHtml(pi.period_month)}</span>` : "";
+  const method = `<span class="chip" style="font-size:10px">${escapeHtml(methodLabel)}</span>`;
+  const purposeChip = `<span class="chip ${purposeCls}" style="font-size:10px">${escapeHtml(purposeLabel)}</span>`;
+  const statusChip = `<span class="chip ${st.cls}" style="font-size:10px">${escapeHtml(st.label)}</span>`;
+  const comment = pi.comment ? `<div class="pi-card-comment">${escapeHtml(pi.comment)}</div>` : "";
+  const createdBy = pi.created_by_name ? `<span style="font-size:10px;color:var(--muted)">создал: ${escapeHtml(pi.created_by_name)}</span>` : "";
+  const createdAt = pi.created_at ? `<span style="font-size:10px;color:var(--muted)">${escapeHtml(pi.created_at.slice(0,10))}</span>` : "";
+
+  const canCancel = ["draft", "ready"].includes(pi.status);
+  const cancelBtn = canCancel
+    ? `<button class="secondary" style="font-size:12px;padding:4px 10px" onclick="openCancelIntent('${escapeHtml(pi.public_id)}','${escapeHtml(pi.student_name||pi.mk_user_id)}',${pi.amount_byn})">Отменить</button>`
+    : "";
+
+  const cancelInfo = pi.status === "cancelled" && pi.cancel_reason
+    ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">Причина: ${escapeHtml(pi.cancel_reason)}</div>`
+    : "";
+
+  const extraCls = pi.status === "cancelled" ? " pi-card-cancelled"
+    : pi.status === "posted_to_moyklass" ? " pi-card-posted"
+    : pi.status === "error" ? " pi-card-error" : "";
+
+  return `<div class="pi-card${extraCls}">
+    <div class="pi-card-head">
+      <div class="pi-card-name">${name}</div>
+      <div class="pi-card-amount">${amount}</div>
+    </div>
+    <div class="pi-card-meta">
+      ${statusChip}${purposeChip}${period}${method}
+    </div>
+    ${comment}${cancelInfo}
+    <div class="pi-card-footer">${cancelBtn}</div>
+    <div class="pi-card-id">${escapeHtml(pi.public_id)} · mk_user_id: ${pi.mk_user_id} · ${createdAt} ${createdBy}</div>
+  </div>`;
+}
+
+// ── Create intent modal ───────────────────────────────────────────────────
+
+function openCreateIntentModal(prefill) {
+  const modal = $("piCreateModal");
+  if (!modal) return;
+  // Reset form
+  $("piUserId").value = prefill?.mk_user_id || "";
+  $("piStudentName").value = prefill?.student_name || "";
+  $("piAmount").value = prefill?.amount_byn != null ? prefill.amount_byn : "";
+  $("piPurpose").value = prefill?.purpose || "current_month";
+  $("piPeriodMonth").value = prefill?.period_month || new Date().toISOString().slice(0,7);
+  $("piPaymentMethod").value = prefill?.payment_method || "erip";
+  $("piComment").value = prefill?.comment || "";
+  $("piCreateError").classList.add("hidden");
+  $("piCreateError").textContent = "";
+  $("piCreateWarning").classList.add("hidden");
+  $("piCreateWarning").textContent = "";
+  modal._prefillContext = prefill || null;
+  modal.classList.remove("hidden");
+}
+
+function closeCreateIntentModal() {
+  $("piCreateModal")?.classList.add("hidden");
+}
+
+// Called from bePaid card button
+window.openCreateIntentFromBepaid = function(prefill) {
+  const comment = prefill.transaction_uid
+    ? `Создано из bePaid transaction ${prefill.transaction_uid}`
+    : "";
+  openCreateIntentModal({ ...prefill, comment });
+  // Open the accordion if not already open
+  const acc = $("paymentIntentsAccordion");
+  if (acc && !acc.open) acc.open = true;
+  // Scroll to modal (it's fixed, so just remove hidden)
+};
+
+async function submitCreateIntent() {
+  const errEl = $("piCreateError");
+  const warnEl = $("piCreateWarning");
+  errEl.classList.add("hidden");
+  warnEl.classList.add("hidden");
+
+  const mk_user_id = parseInt($("piUserId").value);
+  const student_name = $("piStudentName").value.trim();
+  const amount_byn = parseFloat($("piAmount").value);
+  const purpose = $("piPurpose").value;
+  const period_month = $("piPeriodMonth").value;
+  const payment_method = $("piPaymentMethod").value;
+  const comment = $("piComment").value.trim();
+
+  if (!mk_user_id || mk_user_id <= 0) {
+    errEl.textContent = "Укажите МойКласс userId (числовой ID ученика).";
+    errEl.classList.remove("hidden");
+    return;
+  }
+  if (!amount_byn || amount_byn <= 0) {
+    errEl.textContent = "Укажите сумму больше нуля.";
+    errEl.classList.remove("hidden");
+    return;
+  }
+
+  const submitBtn = $("piModalSubmit");
+  submitBtn.disabled = true;
+  submitBtn.textContent = "Создаю...";
+
+  try {
+    const ctx = $("piCreateModal")._prefillContext;
+    const body = {
+      mk_user_id, student_name, amount_byn, purpose,
+      period_month: period_month || undefined,
+      payment_method, comment: comment || undefined,
+      raw_context: ctx ? { source: "bepaid_card", ...ctx } : undefined,
+    };
+    const data = await apiPost("/api/payments/intents", body);
+    if (!data.ok) {
+      errEl.textContent = data.error || "Ошибка создания черновика.";
+      errEl.classList.remove("hidden");
+      return;
+    }
+    if (data.duplicate_warning) {
+      warnEl.textContent = data.duplicate_warning;
+      warnEl.classList.remove("hidden");
+    }
+    // Success
+    closeCreateIntentModal();
+    showToast(data.message || "Черновик создан.");
+    await loadPaymentIntents();
+  } catch (e) {
+    errEl.textContent = String(e);
+    errEl.classList.remove("hidden");
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = "Создать черновик";
+  }
+}
+
+// ── Cancel intent modal ───────────────────────────────────────────────────
+
+function openCancelIntent(publicId, nameOrId, amountByn) {
+  _piCancelTarget = publicId;
+  const info = $("piCancelInfo");
+  if (info) info.textContent = `Отменить черновик ${publicId} (${nameOrId}, ${fmtByn(amountByn)})?`;
+  $("piCancelReason").value = "";
+  $("piCancelError").classList.add("hidden");
+  $("piCancelModal")?.classList.remove("hidden");
+}
+
+function closeCancelIntentModal() {
+  $("piCancelModal")?.classList.add("hidden");
+  _piCancelTarget = null;
+}
+
+async function confirmCancelIntent() {
+  if (!_piCancelTarget) return;
+  const errEl = $("piCancelError");
+  errEl.classList.add("hidden");
+  const reason = $("piCancelReason").value.trim() || "Отменён пользователем";
+  const btn = $("piCancelModalConfirm");
+  btn.disabled = true;
+  btn.textContent = "Отменяю...";
+  try {
+    const data = await apiPost(`/api/payments/intents/${_piCancelTarget}/cancel`, { reason });
+    if (!data.ok) {
+      errEl.textContent = data.error || "Ошибка отмены.";
+      errEl.classList.remove("hidden");
+      return;
+    }
+    closeCancelIntentModal();
+    showToast("Черновик отменён.");
+    await loadPaymentIntents();
+  } catch (e) {
+    errEl.textContent = String(e);
+    errEl.classList.remove("hidden");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Отменить черновик";
+  }
+}
+
+// ── Toast helper ─────────────────────────────────────────────────────────
+
+function showToast(msg) {
+  let t = document.getElementById("piToast");
+  if (!t) {
+    t = document.createElement("div");
+    t.id = "piToast";
+    t.style.cssText = "position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#172033;color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:80vw;text-align:center";
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.style.opacity = "1";
+  clearTimeout(t._timeout);
+  t._timeout = setTimeout(() => { t.style.opacity = "0"; }, 3000);
+}
+
+// ── Wire up event listeners ───────────────────────────────────────────────
+
+document.addEventListener("DOMContentLoaded", () => {
+  // Load intents when accordion opens
+  $("paymentIntentsAccordion")?.addEventListener("toggle", e => {
+    if (e.target.open && canUsePaymentIntents()) loadPaymentIntents();
+  });
+
+  $("loadPaymentIntents")?.addEventListener("click", loadPaymentIntents);
+  $("openCreateIntent")?.addEventListener("click", () => openCreateIntentModal());
+  $("piMonthFilter")?.addEventListener("change", loadPaymentIntents);
+  $("piStatusFilter")?.addEventListener("change", loadPaymentIntents);
+
+  // Create modal
+  $("piModalSubmit")?.addEventListener("click", submitCreateIntent);
+  $("piModalCancel")?.addEventListener("click", closeCreateIntentModal);
+  $("piModalClose")?.addEventListener("click", closeCreateIntentModal);
+  $("piModalOverlay")?.addEventListener("click", closeCreateIntentModal);
+
+  // Cancel modal
+  $("piCancelModalConfirm")?.addEventListener("click", confirmCancelIntent);
+  $("piCancelModalBack")?.addEventListener("click", closeCancelIntentModal);
+  $("piCancelModalClose")?.addEventListener("click", closeCancelIntentModal);
+  $("piCancelOverlay")?.addEventListener("click", closeCancelIntentModal);
+});

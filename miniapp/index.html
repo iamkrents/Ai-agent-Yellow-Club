@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.0.76" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.0.77" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -293,6 +293,120 @@
             <div id="bepaidResult"></div>
           </div>
         </details>
+
+        <details class="report-section-accordion" id="paymentIntentsAccordion" style="margin-top:20px">
+          <summary>
+            <span class="reports-hero-mark" style="width:28px;height:28px;font-size:14px;border-radius:8px">📝</span>
+            Платёжные черновики
+            <span class="rsm-desc">намерения · ожидание · очередь</span>
+          </summary>
+          <div class="rsm-content">
+            <div class="pi-toolbar">
+              <label>
+                <span>Месяц</span>
+                <input type="month" id="piMonthFilter" />
+              </label>
+              <label>
+                <span>Статус</span>
+                <select id="piStatusFilter">
+                  <option value="all">Все</option>
+                  <option value="draft">Черновик</option>
+                  <option value="ready">Готов</option>
+                  <option value="bepaid_created">В bePaid</option>
+                  <option value="paid">Оплачен</option>
+                  <option value="posted_to_moyklass">В МойКласс</option>
+                  <option value="cancelled">Отменён</option>
+                  <option value="error">Ошибка</option>
+                </select>
+              </label>
+              <button class="secondary" id="loadPaymentIntents" type="button">Обновить</button>
+              <button class="primary" id="openCreateIntent" type="button">+ Создать черновик</button>
+            </div>
+            <div id="piStats" class="pi-stats-row"></div>
+            <div id="piList" class="pi-list"></div>
+          </div>
+        </details>
+
+        <!-- Payment intent create modal -->
+        <div id="piCreateModal" class="pi-modal hidden">
+          <div class="pi-modal-overlay" id="piModalOverlay"></div>
+          <div class="pi-modal-box">
+            <div class="pi-modal-head">
+              <h3>Создать черновик платежа</h3>
+              <button class="pi-modal-close" id="piModalClose" type="button">✕</button>
+            </div>
+            <div class="pi-modal-body">
+              <label>
+                <span>МойКласс userId <span class="req">*</span></span>
+                <input type="number" id="piUserId" placeholder="8875658" min="1" />
+              </label>
+              <label>
+                <span>Имя ученика</span>
+                <input type="text" id="piStudentName" placeholder="Иванова Анна (необязательно)" />
+              </label>
+              <label>
+                <span>Сумма BYN <span class="req">*</span></span>
+                <input type="number" id="piAmount" placeholder="171.75" min="0.01" step="0.01" />
+              </label>
+              <label>
+                <span>Назначение <span class="req">*</span></span>
+                <select id="piPurpose">
+                  <option value="current_month">Текущий месяц</option>
+                  <option value="previous_month_debt">Долг прошлого периода</option>
+                  <option value="old_debt">Старый долг</option>
+                  <option value="advance">Аванс</option>
+                  <option value="city_program">Городская программа</option>
+                  <option value="other">Другое</option>
+                </select>
+              </label>
+              <label>
+                <span>Период (YYYY-MM)</span>
+                <input type="month" id="piPeriodMonth" />
+              </label>
+              <label>
+                <span>Способ оплаты</span>
+                <select id="piPaymentMethod">
+                  <option value="erip">ЕРИП</option>
+                  <option value="acquiring">Эквайринг</option>
+                  <option value="manual">Ручной</option>
+                </select>
+              </label>
+              <label>
+                <span>Комментарий</span>
+                <textarea id="piComment" rows="2" placeholder="Необязательно"></textarea>
+              </label>
+              <div id="piCreateError" class="pi-form-error hidden"></div>
+              <div id="piCreateWarning" class="pi-form-warning hidden"></div>
+            </div>
+            <div class="pi-modal-footer">
+              <button class="secondary" id="piModalCancel" type="button">Отмена</button>
+              <button class="primary" id="piModalSubmit" type="button">Создать черновик</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Payment intent cancel confirm modal -->
+        <div id="piCancelModal" class="pi-modal hidden">
+          <div class="pi-modal-overlay" id="piCancelOverlay"></div>
+          <div class="pi-modal-box pi-modal-box-sm">
+            <div class="pi-modal-head">
+              <h3>Отменить черновик</h3>
+              <button class="pi-modal-close" id="piCancelModalClose" type="button">✕</button>
+            </div>
+            <div class="pi-modal-body">
+              <p id="piCancelInfo" style="margin:0 0 10px"></p>
+              <label>
+                <span>Причина отмены</span>
+                <input type="text" id="piCancelReason" placeholder="Создан ошибочно" />
+              </label>
+              <div id="piCancelError" class="pi-form-error hidden"></div>
+            </div>
+            <div class="pi-modal-footer">
+              <button class="secondary" id="piCancelModalBack" type="button">Назад</button>
+              <button class="danger" id="piCancelModalConfirm" type="button">Отменить черновик</button>
+            </div>
+          </div>
+        </div>
 
         <details class="report-section-accordion" style="margin-top:20px">
           <summary>
@@ -657,6 +771,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=7.0.76"></script>
+  <script src="/static/app.js?v=7.0.77"></script>
 </body>
 </html>

@@ -87,6 +87,7 @@ FOOD_MENU_EDIT_ROLES = {"kitchen", "restaurant", "owner", "admin", "methodist", 
 FOOD_MENU_DELETE_ROLES = {"kitchen", "restaurant", "owner", "admin", "operations"}
 FOOD_ADMIN_EDIT_ROLES = {"owner", "admin", "operations"}
 BEPAID_RECONCILE_ROLES = {"owner", "admin", "director", "operations", "client_manager"}
+PAYMENT_INTENT_ROLES = {"owner", "admin", "director", "operations", "client_manager"}
 ADMIN_TABS_BY_ROLE = {
     "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
     "admin": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
@@ -8372,6 +8373,170 @@ class MiniAppContext:
         }
 
 
+    # ── payment_intents ───────────────────────────────────────────────────────
+
+    _PI_VALID_PURPOSES = {"current_month", "previous_month_debt", "old_debt", "advance", "city_program", "other"}
+    _PI_VALID_METHODS = {"erip", "acquiring", "manual"}
+    _PI_VALID_STATUSES_CANCEL = {"draft", "ready"}
+
+    def _require_payment_intent_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in PAYMENT_INTENT_ROLES:
+            return {"ok": False, "error": "Доступ к платёжным черновикам ограничен: owner, admin, director, operations, client_manager."}
+        return None
+
+    def payment_intents_list(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+        month = params.get("month") or ""
+        status = params.get("status") or "all"
+        intents = self.storage.list_payment_intents(
+            month=month or None,
+            status=status if status != "all" else None,
+        )
+        pi_stats = self.storage.payment_intents_stats(month=month or None)
+        return {"ok": True, "intents": intents, "stats": pi_stats, "month": month, "status_filter": status}
+
+    def payment_intent_get(self, auth: dict[str, Any], public_id: str) -> dict[str, Any]:
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+        intent = self.storage.get_payment_intent(public_id)
+        if not intent:
+            return {"ok": False, "error": "Черновик платежа не найден", "public_id": public_id}
+        return {"ok": True, "intent": intent}
+
+    def payment_intent_create(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+
+        # Validate required fields
+        mk_user_id_raw = body.get("mk_user_id")
+        if not mk_user_id_raw:
+            return {"ok": False, "error": "mk_user_id обязателен"}
+        try:
+            mk_user_id = int(mk_user_id_raw)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "mk_user_id должен быть числом"}
+        if mk_user_id <= 0:
+            return {"ok": False, "error": "mk_user_id должен быть положительным числом"}
+
+        amount_byn_raw = body.get("amount_byn")
+        try:
+            amount_byn = float(amount_byn_raw)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "amount_byn обязателен и должен быть числом"}
+        if amount_byn <= 0:
+            return {"ok": False, "error": "amount_byn должен быть больше нуля"}
+        amount_minor = round(amount_byn * 100)
+
+        purpose = str(body.get("purpose") or "other").strip()
+        if purpose not in self._PI_VALID_PURPOSES:
+            return {"ok": False, "error": f"purpose должен быть одним из: {', '.join(sorted(self._PI_VALID_PURPOSES))}"}
+
+        period_month = str(body.get("period_month") or "").strip() or None
+        if period_month:
+            import re as _re
+            if not _re.fullmatch(r"\d{4}-\d{2}", period_month):
+                return {"ok": False, "error": "period_month должен быть в формате YYYY-MM"}
+
+        payment_method = str(body.get("payment_method") or "erip").strip()
+        if payment_method not in self._PI_VALID_METHODS:
+            return {"ok": False, "error": f"payment_method должен быть одним из: {', '.join(sorted(self._PI_VALID_METHODS))}"}
+
+        student_name = str(body.get("student_name") or "").strip() or None
+        comment = str(body.get("comment") or "").strip() or None
+        tg_id = int(auth.get("user_id") or 0) or None
+        tg_name = str(auth.get("full_name") or auth.get("username") or "").strip() or None
+        now = now_iso()
+
+        # Optional: try to enrich student_name from MoyKlass
+        warnings: list[str] = []
+        if not student_name:
+            try:
+                _mk_user_result = self.moyklass.request("GET", f"/v1/company/users/{mk_user_id}")
+                if _mk_user_result.ok and isinstance(_mk_user_result.data, dict):
+                    _u = _mk_user_result.data
+                    _fn = str(_u.get("name") or "").strip()
+                    if not _fn:
+                        _fn = " ".join(filter(None, [
+                            str(_u.get("clientName") or _u.get("lastName") or ""),
+                            str(_u.get("firstName") or ""),
+                        ])).strip()
+                    if _fn:
+                        student_name = _fn
+            except Exception:
+                warnings.append("Не удалось получить данные ученика из МойКласс")
+
+        # Check for duplicates (soft warning, not hard block)
+        duplicates = self.storage.find_duplicate_payment_intents(
+            mk_user_id=mk_user_id,
+            amount_minor=amount_minor,
+            purpose=purpose,
+            period_month=period_month,
+        )
+        duplicate_warning = None
+        if duplicates:
+            first = duplicates[0]
+            duplicate_warning = (
+                f"Уже существует похожий черновик #{first['public_id']} "
+                f"(статус: {first['status']}, дата: {first['created_at'][:10]}). "
+                "Черновик создан, но проверьте наличие дублей."
+            )
+
+        intent = self.storage.create_payment_intent({
+            "mk_user_id": mk_user_id,
+            "student_name": student_name,
+            "amount_minor": amount_minor,
+            "amount_byn": round(amount_byn, 2),
+            "currency": "BYN",
+            "purpose": purpose,
+            "period_month": period_month,
+            "payment_method": payment_method,
+            "status": "draft",
+            "comment": comment,
+            "created_by_tg_id": tg_id,
+            "created_by_name": tg_name,
+            "created_at": now,
+            "raw_context_json": json.dumps(body.get("raw_context") or {}, ensure_ascii=False) if body.get("raw_context") else None,
+        })
+
+        log.info(
+            "payment_intent created public_id=%s mk_user_id=%s amount_byn=%s purpose=%s by=%s",
+            intent.get("public_id"), mk_user_id, amount_byn, purpose, tg_id,
+        )
+
+        return {
+            "ok": True,
+            "intent": intent,
+            "duplicate_warning": duplicate_warning,
+            "warnings": warnings,
+            "message": "Черновик платежа создан. На этом этапе платёж в bePaid и МойКласс не создавался.",
+        }
+
+    def payment_intent_cancel(self, auth: dict[str, Any], public_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+        existing = self.storage.get_payment_intent(public_id)
+        if not existing:
+            return {"ok": False, "error": "Черновик не найден", "public_id": public_id}
+        if existing["status"] not in self._PI_VALID_STATUSES_CANCEL:
+            return {
+                "ok": False,
+                "error": f"Нельзя отменить черновик в статусе '{existing['status']}'. Отмена доступна только для статусов: draft, ready.",
+            }
+        reason = str(body.get("reason") or "Отменён пользователем").strip()
+        now = now_iso()
+        updated = self.storage.cancel_payment_intent(public_id, reason, now)
+        if not updated:
+            return {"ok": False, "error": "Не удалось обновить черновик"}
+        log.info("payment_intent cancelled public_id=%s by=%s reason=%s", public_id, auth.get("user_id"), reason)
+        return {"ok": True, "intent": updated, "message": "Черновик отменён."}
+
+
 CTX = MiniAppContext()
 
 
@@ -8555,6 +8720,13 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.bepaid_list_transactions(auth, params))
                 if path == "/api/integrations/bepaid/reconcile":
                     return self._send_json(CTX.bepaid_reconcile(auth, params))
+                if path == "/api/payments/intents":
+                    return self._send_json(CTX.payment_intents_list(auth, params))
+                if path.startswith("/api/payments/intents/"):
+                    _pi_rest = path[len("/api/payments/intents/"):]
+                    _pi_parts = _pi_rest.split("/")
+                    if len(_pi_parts) == 1 and _pi_parts[0]:
+                        return self._send_json(CTX.payment_intent_get(auth, _pi_parts[0]))
                 if path.startswith("/api/food/kitchen/menus/"):
                     _krest = path[len("/api/food/kitchen/menus/"):]
                     _kparts = _krest.split("/")
@@ -8635,6 +8807,13 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             )
             if not auth.get("ok"):
                 return self._send_json(auth, status=401)
+            if path == "/api/payments/intents":
+                return self._send_json(CTX.payment_intent_create(auth, body))
+            if path.startswith("/api/payments/intents/"):
+                _pi_rest = path[len("/api/payments/intents/"):]
+                _pi_parts = _pi_rest.split("/")
+                if len(_pi_parts) == 2 and _pi_parts[1] == "cancel":
+                    return self._send_json(CTX.payment_intent_cancel(auth, _pi_parts[0], body))
             if path == "/api/integrations/bepaid/import-history":
                 return self._send_json(CTX.bepaid_import_history(auth, body))
             if path == "/api/action":

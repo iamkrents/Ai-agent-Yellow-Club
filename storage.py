@@ -538,6 +538,51 @@ class Storage:
 
             self._init_food_tables(conn)
             self._init_bepaid_tables(conn)
+            self._init_payment_intent_tables(conn)
+
+    def _init_payment_intent_tables(self, conn: sqlite3.Connection) -> None:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payment_intents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                public_id TEXT UNIQUE NOT NULL,
+                mk_user_id INTEGER NOT NULL,
+                student_name TEXT,
+                amount_minor INTEGER NOT NULL,
+                amount_byn REAL NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'BYN',
+                purpose TEXT NOT NULL DEFAULT 'other',
+                period_month TEXT,
+                payment_method TEXT NOT NULL DEFAULT 'erip',
+                status TEXT NOT NULL DEFAULT 'draft',
+                mk_filial_id INTEGER,
+                location_code TEXT,
+                class_id INTEGER,
+                comment TEXT,
+                created_by_tg_id INTEGER,
+                created_by_name TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                cancelled_at TEXT,
+                cancel_reason TEXT,
+                bepaid_shop_type TEXT,
+                bepaid_order_id TEXT,
+                bepaid_tracking_id TEXT,
+                bepaid_uid TEXT,
+                bepaid_payment_url TEXT,
+                bepaid_status TEXT,
+                paid_at TEXT,
+                mk_payment_id INTEGER,
+                mk_posted_at TEXT,
+                mk_post_error TEXT,
+                raw_context_json TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pi_public_id ON payment_intents(public_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pi_mk_user ON payment_intents(mk_user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pi_period ON payment_intents(period_month)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pi_status ON payment_intents(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pi_bepaid_uid ON payment_intents(bepaid_uid)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pi_mk_payment ON payment_intents(mk_payment_id)")
 
     def _init_bepaid_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -4504,3 +4549,151 @@ class Storage:
                 "SELECT received_at FROM bepaid_transactions ORDER BY received_at DESC LIMIT 1"
             ).fetchone()
         return row["received_at"] if row else None
+
+    # ── payment_intents ───────────────────────────────────────────────────────
+
+    def create_payment_intent(self, data: dict) -> dict:
+        import uuid as _uuid
+        now = data.get("created_at") or __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO payment_intents
+                  (public_id, mk_user_id, student_name, amount_minor, amount_byn, currency,
+                   purpose, period_month, payment_method, status, mk_filial_id, location_code,
+                   class_id, comment, created_by_tg_id, created_by_name, created_at, updated_at,
+                   raw_context_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "ycpi_tmp",
+                    int(data["mk_user_id"]),
+                    data.get("student_name"),
+                    int(data["amount_minor"]),
+                    float(data["amount_byn"]),
+                    data.get("currency", "BYN"),
+                    data.get("purpose", "other"),
+                    data.get("period_month"),
+                    data.get("payment_method", "erip"),
+                    data.get("status", "draft"),
+                    data.get("mk_filial_id"),
+                    data.get("location_code"),
+                    data.get("class_id"),
+                    data.get("comment"),
+                    data.get("created_by_tg_id"),
+                    data.get("created_by_name"),
+                    now,
+                    now,
+                    data.get("raw_context_json"),
+                ),
+            )
+            row_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            period_part = (data.get("period_month") or now[:7]).replace("-", "")
+            public_id = f"ycpi_{period_part}_{row_id}"
+            conn.execute(
+                "UPDATE payment_intents SET public_id=? WHERE id=?",
+                (public_id, row_id),
+            )
+            row = conn.execute("SELECT * FROM payment_intents WHERE id=?", (row_id,)).fetchone()
+        return dict(row)
+
+    def get_payment_intent(self, public_id: str) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM payment_intents WHERE public_id=?", (public_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_payment_intents(
+        self,
+        month: Optional[str] = None,
+        status: Optional[str] = None,
+        mk_user_id: Optional[int] = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        clauses: list[str] = []
+        params: list = []
+        if month:
+            clauses.append("period_month=?")
+            params.append(month)
+        if status and status != "all":
+            clauses.append("status=?")
+            params.append(status)
+        if mk_user_id:
+            clauses.append("mk_user_id=?")
+            params.append(mk_user_id)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM payment_intents {where} ORDER BY created_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def cancel_payment_intent(self, public_id: str, reason: str, now: str) -> Optional[dict]:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE payment_intents
+                SET status='cancelled', cancel_reason=?, cancelled_at=?, updated_at=?
+                WHERE public_id=? AND status IN ('draft','ready')
+                """,
+                (reason, now, now, public_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM payment_intents WHERE public_id=?", (public_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def find_duplicate_payment_intents(
+        self,
+        mk_user_id: int,
+        amount_minor: int,
+        purpose: str,
+        period_month: Optional[str],
+    ) -> list[dict]:
+        params: list = [mk_user_id, amount_minor, purpose]
+        period_clause = ""
+        if period_month:
+            period_clause = "AND period_month=? "
+            params.append(period_month)
+        params += ["cancelled", "error"]
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM payment_intents
+                WHERE mk_user_id=? AND amount_minor=? AND purpose=?
+                  {period_clause}
+                  AND status NOT IN (?,?)
+                ORDER BY created_at DESC LIMIT 5
+                """,
+                params,
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def payment_intents_stats(self, month: Optional[str] = None) -> dict:
+        with self._connect() as conn:
+            clauses = []
+            params: list = []
+            if month:
+                clauses.append("period_month=?")
+                params.append(month)
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            rows = conn.execute(
+                f"SELECT status, COUNT(*) as cnt FROM payment_intents {where} GROUP BY status",
+                params,
+            ).fetchall()
+        stats: dict[str, int] = {}
+        for r in rows:
+            stats[r["status"]] = r["cnt"]
+        return {
+            "total": sum(stats.values()),
+            "draft": stats.get("draft", 0),
+            "ready": stats.get("ready", 0),
+            "bepaid_created": stats.get("bepaid_created", 0),
+            "paid": stats.get("paid", 0),
+            "posted_to_moyklass": stats.get("posted_to_moyklass", 0),
+            "cancelled": stats.get("cancelled", 0),
+            "error": stats.get("error", 0),
+        }

@@ -7174,3 +7174,143 @@ input:disabled { animation: none !important; transform: none !important; }
 }
 :root[data-theme="dark"] .bepaid-card { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.09); }
 :root[data-theme="light"] .bepaid-card { background: rgba(0,0,0,.03); border-color: rgba(0,0,0,.10); }
+
+/* ── payment intents v7.0.77 ─────────────────────────────────────────────── */
+.pi-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.pi-toolbar label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.pi-toolbar input, .pi-toolbar select { font-size: 13px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--card, #fff); color: var(--ink); }
+.pi-stats-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.pi-stat-chip {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 10px;
+  background: rgba(0,0,0,.06);
+  color: var(--muted);
+}
+.pi-stat-chip.has-value { background: rgba(52,152,219,.12); color: #1a6da0; }
+.pi-list { display: flex; flex-direction: column; gap: 10px; }
+.pi-card {
+  background: var(--card, #fff);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.pi-card-cancelled { opacity: .6; }
+.pi-card-posted { border-left: 3px solid var(--green, #1fa56b); }
+.pi-card-error { border-left: 3px solid var(--red, #d84c4c); }
+.pi-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.pi-card-name { font-weight: 700; font-size: 14px; }
+.pi-card-amount { font-weight: 700; font-size: 15px; color: var(--green, #1fa56b); }
+.pi-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 6px;
+}
+.pi-card-comment { font-size: 12px; color: var(--muted); margin-top: 4px; font-style: italic; }
+.pi-card-footer {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.pi-card-id { font-size: 10px; color: var(--muted); margin-top: 4px; }
+.pi-empty { text-align: center; color: var(--muted); font-size: 13px; padding: 24px 0; }
+/* status chips for pi */
+.chip-pi-draft   { background: rgba(0,0,0,.07); color: var(--muted); }
+.chip-pi-ready   { background: rgba(52,152,219,.13); color: #1a6da0; }
+.chip-pi-bepaid  { background: rgba(155,89,182,.13); color: #6c3483; }
+.chip-pi-paid    { background: rgba(39,174,96,.15); color: #1e8449; }
+.chip-pi-posted  { background: rgba(39,174,96,.22); color: #145a32; }
+.chip-pi-cancel  { background: rgba(0,0,0,.06); color: var(--muted); }
+.chip-pi-error   { background: rgba(231,76,60,.13); color: #a93226; }
+/* purpose chips */
+.chip-purpose-debt { background: rgba(230,126,34,.12); color: #a04000; }
+.chip-purpose-adv  { background: rgba(155,89,182,.12); color: #6c3483; }
+.chip-purpose-city { background: rgba(52,152,219,.12); color: #1a6da0; }
+/* modal */
+.pi-modal { position: fixed; inset: 0; z-index: 900; display: flex; align-items: center; justify-content: center; }
+.pi-modal.hidden { display: none !important; }
+.pi-modal-overlay { position: absolute; inset: 0; background: rgba(0,0,0,.45); }
+.pi-modal-box {
+  position: relative;
+  background: var(--card, #fff);
+  border-radius: 18px;
+  width: min(96vw, 420px);
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 16px 48px rgba(0,0,0,.25);
+  display: flex;
+  flex-direction: column;
+}
+.pi-modal-box-sm { width: min(96vw, 340px); }
+.pi-modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 18px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.pi-modal-head h3 { margin: 0; font-size: 16px; }
+.pi-modal-close { background: none; border: none; font-size: 18px; cursor: pointer; color: var(--muted); padding: 2px 6px; line-height: 1; }
+.pi-modal-body { padding: 14px 18px; display: flex; flex-direction: column; gap: 12px; }
+.pi-modal-body label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.pi-modal-body label span { font-weight: 600; }
+.pi-modal-body input, .pi-modal-body select, .pi-modal-body textarea {
+  font-size: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg, #f6f7fb);
+  color: var(--ink);
+  font-family: inherit;
+  width: 100%;
+}
+.pi-modal-body textarea { resize: vertical; min-height: 56px; }
+.pi-modal-footer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--line);
+}
+.pi-modal-footer button { flex: 1; }
+.pi-form-error { background: rgba(231,76,60,.1); color: #a93226; border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+.pi-form-warning { background: rgba(230,126,34,.1); color: #a04000; border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+.req { color: var(--red, #d84c4c); }
+button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padding: 9px 18px; border-radius: 10px; font-weight: 700; font-size: 14px; cursor: pointer; }
+/* dark theme */
+@media (prefers-color-scheme: dark) {
+  .pi-card { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.09); }
+  .pi-modal-box { background: #1c2333; }
+  .pi-modal-body input, .pi-modal-body select, .pi-modal-body textarea { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.12); color: #e8ecf4; }
+  .pi-toolbar input, .pi-toolbar select { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.12); color: #e8ecf4; }
+  .chip-pi-draft { background: rgba(255,255,255,.08); }
+  .chip-pi-cancel { background: rgba(255,255,255,.06); }
+}
+:root[data-theme="dark"] .pi-card { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.09); }
+:root[data-theme="dark"] .pi-modal-box { background: #1c2333; }
+:root[data-theme="dark"] .pi-modal-body input,
+:root[data-theme="dark"] .pi-modal-body select,
+:root[data-theme="dark"] .pi-modal-body textarea { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.12); color: #e8ecf4; }
+:root[data-theme="dark"] .pi-toolbar input,
+:root[data-theme="dark"] .pi-toolbar select { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.12); color: #e8ecf4; }
+:root[data-theme="light"] .pi-card { background: #fff; border-color: rgba(0,0,0,.10); }
