@@ -225,6 +225,16 @@ function availableAdminTabs() {
   return all;
 }
 function escapeHtml(s) { return String(s || "").replace(/[&<>\"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+function fmtByn(value) {
+  const n = Number(value == null ? 0 : value);
+  if (isNaN(n)) return "— BYN";
+  return n.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " BYN";
+}
+function paymentIntentAmountByn(intent) {
+  if (intent && intent.amount_byn != null) return Number(intent.amount_byn || 0);
+  if (intent && intent.amount_minor != null) return Number(intent.amount_minor || 0) / 100;
+  return 0;
+}
 function formatFileSize(bytes) {
   const n = Number(bytes || 0);
   if (!n || n < 1) return "";
@@ -11528,15 +11538,23 @@ function renderPaymentIntentList(el, intents, filters = {}) {
     el.innerHTML = `<div class="pi-empty">Черновики${hint} не найдены.</div>`;
     return;
   }
-  el.innerHTML = intents.map(pi => renderPaymentIntentCard(pi)).join("");
+  el.innerHTML = intents.map(pi => {
+    try {
+      return renderPaymentIntentCard(pi);
+    } catch (err) {
+      const pid = (pi && pi.public_id) ? escapeHtml(pi.public_id) : "?";
+      return `<div class="pi-card pi-card-error"><div class="pi-card-id">${pid}</div><div style="color:var(--red);font-size:12px">Ошибка отрисовки: ${escapeHtml(String(err))}</div></div>`;
+    }
+  }).join("");
 }
 
 function renderPaymentIntentCard(pi) {
-  const st = PI_STATUS_LABELS[pi.status] || { label: pi.status, cls: "chip-pi-draft" };
+  const st = PI_STATUS_LABELS[pi.status] || { label: pi.status || "unknown", cls: "chip-pi-draft" };
   const purposeLabel = PI_PURPOSE_LABELS[pi.purpose] || pi.purpose || "—";
   const methodLabel = PI_METHOD_LABELS[pi.payment_method] || pi.payment_method || "—";
   const purposeCls = PI_PURPOSE_CLS[pi.purpose] || "";
-  const amount = pi.amount_byn != null ? fmtByn(pi.amount_byn) : "—";
+  const amountVal = paymentIntentAmountByn(pi);   // uses amount_byn first, then amount_minor/100
+  const amount = fmtByn(amountVal);
   const name = pi.student_name ? escapeHtml(pi.student_name) : `userId=${pi.mk_user_id}`;
   const period = pi.period_month ? `<span class="chip chip-info" style="font-size:10px">${escapeHtml(pi.period_month)}</span>` : "";
   const method = `<span class="chip" style="font-size:10px">${escapeHtml(methodLabel)}</span>`;
@@ -11544,11 +11562,12 @@ function renderPaymentIntentCard(pi) {
   const statusChip = `<span class="chip ${st.cls}" style="font-size:10px">${escapeHtml(st.label)}</span>`;
   const comment = pi.comment ? `<div class="pi-card-comment">${escapeHtml(pi.comment)}</div>` : "";
   const createdBy = pi.created_by_name ? `<span style="font-size:10px;color:var(--muted)">создал: ${escapeHtml(pi.created_by_name)}</span>` : "";
-  const createdAt = pi.created_at ? `<span style="font-size:10px;color:var(--muted)">${escapeHtml(pi.created_at.slice(0,10))}</span>` : "";
+  const createdAt = pi.created_at ? `<span style="font-size:10px;color:var(--muted)">${escapeHtml(String(pi.created_at).slice(0,10))}</span>` : "";
 
   const canCancel = ["draft", "ready"].includes(pi.status);
+  const cancelSafeName = escapeHtml(String(pi.student_name || pi.mk_user_id || "?"));
   const cancelBtn = canCancel
-    ? `<button class="secondary" style="font-size:12px;padding:4px 10px" onclick="openCancelIntent('${escapeHtml(pi.public_id)}','${escapeHtml(pi.student_name||pi.mk_user_id)}',${pi.amount_byn})">Отменить</button>`
+    ? `<button class="secondary" style="font-size:12px;padding:4px 10px" onclick="openCancelIntent('${escapeHtml(pi.public_id)}','${cancelSafeName}',${amountVal})">Отменить</button>`
     : "";
 
   const cancelInfo = pi.status === "cancelled" && pi.cancel_reason
