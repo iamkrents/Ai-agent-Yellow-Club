@@ -537,6 +537,50 @@ class Storage:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_client_task_events_type ON client_task_events(event_type, created_at)")
 
             self._init_food_tables(conn)
+            self._init_bepaid_tables(conn)
+
+    def _init_bepaid_tables(self, conn: sqlite3.Connection) -> None:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bepaid_transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL DEFAULT 'bepaid',
+                shop_type TEXT NOT NULL DEFAULT 'unknown',
+                shop_id TEXT,
+                transaction_uid TEXT,
+                transaction_id TEXT,
+                order_id TEXT,
+                tracking_id TEXT,
+                status TEXT,
+                payment_method_type TEXT,
+                amount_minor INTEGER,
+                amount_byn REAL,
+                currency TEXT,
+                paid_at TEXT,
+                created_at_provider TEXT,
+                test INTEGER NOT NULL DEFAULT 0,
+                customer_first_name TEXT,
+                customer_last_name TEXT,
+                customer_phone TEXT,
+                customer_email TEXT,
+                billing_phone TEXT,
+                mk_user_id TEXT,
+                mk_user_name TEXT,
+                mk_filial_id TEXT,
+                raw_json TEXT,
+                received_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                match_status TEXT,
+                match_score REAL,
+                mk_payment_id TEXT,
+                posting_status TEXT,
+                posting_error TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_bepaid_tx_type_status ON bepaid_transactions(shop_type, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_bepaid_tx_paid_at ON bepaid_transactions(paid_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_bepaid_tx_uid ON bepaid_transactions(provider, shop_type, transaction_uid)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_bepaid_tx_order ON bepaid_transactions(order_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_bepaid_tx_match ON bepaid_transactions(match_status)")
 
     def _init_food_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -4301,3 +4345,146 @@ class Storage:
             "by_actor": sorted(actor_map.values(), key=lambda x: x["total_events"], reverse=True),
             "avg_completion_hours": avg_hours,
         }
+
+    # ── bePaid integration ─────────────────────────────────────────────────────
+
+    def find_bepaid_transaction(self, provider: str, shop_type: str, transaction_uid: str | None,
+                                transaction_id: str | None, order_id: str | None,
+                                amount_minor: int | None) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            if transaction_uid:
+                row = conn.execute(
+                    "SELECT * FROM bepaid_transactions WHERE provider=? AND shop_type=? AND transaction_uid=? LIMIT 1",
+                    (provider, shop_type, transaction_uid),
+                ).fetchone()
+                if row:
+                    return dict(row)
+            if transaction_id:
+                row = conn.execute(
+                    "SELECT * FROM bepaid_transactions WHERE provider=? AND shop_type=? AND transaction_id=? LIMIT 1",
+                    (provider, shop_type, transaction_id),
+                ).fetchone()
+                if row:
+                    return dict(row)
+            if order_id and amount_minor is not None:
+                row = conn.execute(
+                    "SELECT * FROM bepaid_transactions WHERE provider=? AND shop_type=? AND order_id=? AND amount_minor=? LIMIT 1",
+                    (provider, shop_type, order_id, amount_minor),
+                ).fetchone()
+                if row:
+                    return dict(row)
+        return None
+
+    def upsert_bepaid_transaction(self, data: dict[str, Any]) -> dict[str, Any]:
+        import json as _json
+        now = now_iso()
+        provider = str(data.get("provider") or "bepaid")
+        shop_type = str(data.get("shop_type") or "unknown")
+        transaction_uid = str(data.get("transaction_uid") or "").strip() or None
+        transaction_id = str(data.get("transaction_id") or "").strip() or None
+        order_id = str(data.get("order_id") or "").strip() or None
+        amount_minor = data.get("amount_minor")
+        if amount_minor is not None:
+            try:
+                amount_minor = int(amount_minor)
+            except Exception:
+                amount_minor = None
+
+        raw = data.get("raw_json")
+        raw_str = (_json.dumps(raw, ensure_ascii=False) if isinstance(raw, dict)
+                   else (raw if isinstance(raw, str) else None))
+
+        existing = self.find_bepaid_transaction(provider, shop_type, transaction_uid, transaction_id, order_id, amount_minor)
+
+        fields = {
+            "shop_id": str(data.get("shop_id") or "").strip() or None,
+            "transaction_uid": transaction_uid,
+            "transaction_id": transaction_id,
+            "order_id": order_id,
+            "tracking_id": str(data.get("tracking_id") or "").strip() or None,
+            "status": str(data.get("status") or "").strip() or None,
+            "payment_method_type": str(data.get("payment_method_type") or "").strip() or None,
+            "amount_minor": amount_minor,
+            "amount_byn": data.get("amount_byn"),
+            "currency": str(data.get("currency") or "").strip() or None,
+            "paid_at": str(data.get("paid_at") or "").strip() or None,
+            "created_at_provider": str(data.get("created_at_provider") or "").strip() or None,
+            "test": 1 if data.get("test") else 0,
+            "customer_first_name": str(data.get("customer_first_name") or "").strip() or None,
+            "customer_last_name": str(data.get("customer_last_name") or "").strip() or None,
+            "customer_phone": str(data.get("customer_phone") or "").strip() or None,
+            "customer_email": str(data.get("customer_email") or "").strip() or None,
+            "billing_phone": str(data.get("billing_phone") or "").strip() or None,
+            "mk_user_id": str(data.get("mk_user_id") or "").strip() or None,
+            "mk_user_name": str(data.get("mk_user_name") or "").strip() or None,
+            "mk_filial_id": str(data.get("mk_filial_id") or "").strip() or None,
+            "raw_json": raw_str,
+        }
+
+        with self._connect() as conn:
+            if existing:
+                row_id = existing["id"]
+                sets = ", ".join(f"{k}=?" for k in fields)
+                vals = list(fields.values()) + [now, row_id]
+                conn.execute(f"UPDATE bepaid_transactions SET {sets}, updated_at=? WHERE id=?", vals)
+            else:
+                cols = list(fields.keys()) + ["provider", "shop_type", "received_at", "updated_at"]
+                placeholders = ", ".join("?" * len(cols))
+                vals = list(fields.values()) + [provider, shop_type, now, now]
+                conn.execute(
+                    f"INSERT INTO bepaid_transactions ({', '.join(cols)}) VALUES ({placeholders})",
+                    vals,
+                )
+                row_id = conn.execute(
+                    "SELECT last_insert_rowid()"
+                ).fetchone()[0]
+            row = conn.execute("SELECT * FROM bepaid_transactions WHERE id=?", (row_id,)).fetchone()
+        return dict(row) if row else {}
+
+    def update_bepaid_match(self, row_id: int, match_data: dict[str, Any]) -> None:
+        now = now_iso()
+        allowed = {"match_status", "match_score", "mk_payment_id", "mk_user_id", "mk_user_name", "posting_status", "posting_error"}
+        sets, vals = [], []
+        for k, v in match_data.items():
+            if k in allowed:
+                sets.append(f"{k}=?")
+                vals.append(v)
+        if not sets:
+            return
+        vals.extend([now, int(row_id)])
+        with self._connect() as conn:
+            conn.execute(f"UPDATE bepaid_transactions SET {', '.join(sets)}, updated_at=? WHERE id=?", vals)
+
+    def list_bepaid_transactions(
+        self,
+        month: str = "",
+        shop_type: str = "all",
+        match_status: str = "all",
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if month:
+            conditions.append("(paid_at LIKE ? OR (paid_at IS NULL AND received_at LIKE ?))")
+            params.extend([f"{month}%", f"{month}%"])
+        if shop_type and shop_type != "all":
+            conditions.append("shop_type=?")
+            params.append(shop_type)
+        if match_status and match_status != "all":
+            conditions.append("match_status=?")
+            params.append(match_status)
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        params.append(max(1, min(int(limit), 2000)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM bepaid_transactions {where} ORDER BY paid_at DESC, received_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_bepaid_last_webhook_at(self) -> Optional[str]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT received_at FROM bepaid_transactions ORDER BY received_at DESC LIMIT 1"
+            ).fetchone()
+        return row["received_at"] if row else None

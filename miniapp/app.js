@@ -106,6 +106,10 @@ const state = {
   childrenReportMonth: "",
   childrenReportData: null,
   childrenReportBusy: false,
+  bepaidStatus: null,
+  bepaidData: null,
+  bepaidBusy: false,
+  bepaidMonth: "",
   kpiData: null,
   kpiBusy: false,
   adminWorkScheduleWeek: "current",
@@ -1206,7 +1210,7 @@ function activateTab(name) {
   if (name === "admin") loadAdmin();
   if (name === "schedule") loadWorkSchedule();
   if (name === "windows") loadOpenSlots();
-  if (name === "reports") { loadReports(); loadKpi(); renderChildrenReport(); }
+  if (name === "reports") { loadReports(); loadKpi(); renderChildrenReport(); renderBepaid(); loadBepaidStatus(); }
   if (name === "ask") renderAskMessages();
   if (name === "my-children") { if (state.myChildren === null) loadMyChildren(); else renderMyChildren(); }
   if (name === "food") { if (state.activeMenus === null) loadActiveMenus(); else renderParentFoodMenu(); }
@@ -4365,6 +4369,201 @@ async function copyChildrenReport() {
     setNotice("Отчёт скопирован", "ok");
   } catch (_) {
     setNotice("Не удалось скопировать автоматически", "error");
+  }
+}
+
+// ── bePaid reconciliation ─────────────────────────────────────────────────────
+
+function canUseBepaid() {
+  const role = state.me?.role || "";
+  return ["owner", "admin", "director", "operations", "client_manager"].includes(role);
+}
+
+function renderBepaid() {
+  const el = $("bepaidResult");
+  if (!el) return;
+  if (!canUseBepaid()) {
+    el.innerHTML = `<div class="empty">bePaid-сверка недоступна для вашей роли.</div>`;
+    return;
+  }
+
+  const bp = state.bepaidData;
+  const busy = state.bepaidBusy;
+
+  if (busy) {
+    el.innerHTML = `<div class="reports-loading">Загружаю bePaid…</div>`;
+    return;
+  }
+
+  // Status header (always show if not loaded yet)
+  const cfg = state.bepaidStatus || {};
+  const configured = cfg.erip_configured || cfg.acquiring_configured;
+
+  if (!configured && !bp) {
+    el.innerHTML = `
+      <div class="notice notice-warn" style="margin:12px 0">
+        bePaid не настроен. Задайте переменные окружения:<br>
+        <code>BEPAID_ERIP_SHOP_ID</code>, <code>BEPAID_ERIP_SECRET_KEY</code> (ЕРИП)<br>
+        <code>BEPAID_ACQ_SHOP_ID</code>, <code>BEPAID_ACQ_SECRET_KEY</code> (эквайринг)
+      </div>
+      <button class="secondary" id="bepaidLoadStatus" type="button" style="margin-top:8px">Проверить статус</button>`;
+    $("bepaidLoadStatus")?.addEventListener("click", loadBepaidStatus);
+    return;
+  }
+
+  const statusHtml = `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      <span class="chip ${cfg.erip_configured ? "chip-ok" : "chip-warn"}">ЕРИП ${cfg.erip_configured ? "✓" : "—"}</span>
+      <span class="chip ${cfg.acquiring_configured ? "chip-ok" : "chip-warn"}">Эквайринг ${cfg.acquiring_configured ? "✓" : "—"}</span>
+      ${cfg.last_webhook_received_at ? `<span class="chip">Посл. webhook: ${cfg.last_webhook_received_at?.slice(0,16) || "—"}</span>` : ""}
+    </div>`;
+
+  // Controls
+  const controlsHtml = `
+    <div class="reports-controls" style="margin-bottom:12px">
+      <label><span>Месяц</span><input id="bepaidMonth" type="month" value="${state.bepaidMonth || currentMonthValue()}" /></label>
+      <select id="bepaidShopFilter" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text)">
+        <option value="all">Все магазины</option>
+        <option value="erip">ЕРИП</option>
+        <option value="acquiring">Эквайринг</option>
+      </select>
+      <button class="primary" id="bepaidReconcileBtn" type="button">Сверить</button>
+    </div>`;
+
+  if (!bp) {
+    el.innerHTML = statusHtml + controlsHtml + `<div class="empty">Нажмите «Сверить» для загрузки и сопоставления платежей bePaid с МойКласс.</div>`;
+    $("bepaidMonth")?.addEventListener("change", e => { state.bepaidMonth = e.target.value; });
+    $("bepaidReconcileBtn")?.addEventListener("click", runBepaidReconcile);
+    return;
+  }
+
+  if (!bp.ok) {
+    el.innerHTML = statusHtml + controlsHtml + `<div class="notice notice-error">${escapeHtml(bp.error || "Ошибка")}</div>`;
+    $("bepaidMonth")?.addEventListener("change", e => { state.bepaidMonth = e.target.value; });
+    $("bepaidReconcileBtn")?.addEventListener("click", runBepaidReconcile);
+    return;
+  }
+
+  const stats = bp.stats || {};
+  const txns = bp.transactions || [];
+  const fmtByn = n => (n == null ? "—" : Number(n).toLocaleString("ru-RU", {minimumFractionDigits:2, maximumFractionDigits:2}) + " BYN");
+
+  const MATCH_LABELS = {
+    "already_in_moyklass": { label: "В МойКласс ✓", cls: "chip-ok" },
+    "missing_in_moyklass": { label: "Нет в МойКласс", cls: "chip-warn" },
+    "needs_review": { label: "Нужна проверка", cls: "chip-error" },
+    "probable_match": { label: "Вероятное совпадение", cls: "chip-info" },
+    "ignored_not_successful": { label: "Неуспешная", cls: "chip-muted" },
+    "ignored_test": { label: "Тест", cls: "chip-muted" },
+    "ignored_currency": { label: "Не BYN", cls: "chip-muted" },
+  };
+
+  const tilesHtml = `
+    <div class="cr-tiles" style="margin-bottom:12px">
+      <div class="cr-tile"><div class="cr-tile-val">${bp.successful_byn_count ?? 0}</div><div class="cr-tile-lbl">Успешных BYN</div></div>
+      <div class="cr-tile"><div class="cr-tile-val">${fmtByn(bp.successful_amount_byn)}</div><div class="cr-tile-lbl">Сумма</div></div>
+      <div class="cr-tile cr-tile-ok"><div class="cr-tile-val">${stats.already_in_moyklass ?? 0}</div><div class="cr-tile-lbl">Есть в МойКласс</div></div>
+      <div class="cr-tile cr-tile-warn"><div class="cr-tile-val">${stats.missing_in_moyklass ?? 0}</div><div class="cr-tile-lbl">Нет в МойКласс</div></div>
+      <div class="cr-tile cr-tile-err"><div class="cr-tile-val">${stats.needs_review ?? 0}</div><div class="cr-tile-lbl">Нужна проверка</div></div>
+      <div class="cr-tile cr-tile-muted"><div class="cr-tile-val">${(stats.ignored_not_successful ?? 0) + (stats.ignored_test ?? 0)}</div><div class="cr-tile-lbl">Неуспешных/тест</div></div>
+    </div>`;
+
+  const mkNote = bp.mk_payments_loaded
+    ? `<p class="cr-note">Загружено платежей МойКласс: ${bp.mk_payments_count ?? 0}.</p>`
+    : `<p class="cr-note" style="color:var(--warn)">Платежи МойКласс не загружены${bp.mk_error ? ": " + escapeHtml(bp.mk_error) : ""}. Сверка по наличию в МойКласс недоступна.</p>`;
+
+  const tableRows = txns.map(tx => {
+    const ms = MATCH_LABELS[tx.match_status] || { label: tx.match_status || "—", cls: "" };
+    const name = [tx.customer_last_name, tx.customer_first_name].filter(Boolean).join(" ") || "—";
+    const phone = tx.customer_phone || "—";
+    const shopBadge = tx.shop_type === "erip" ? "ЕРИП" : tx.shop_type === "acquiring" ? "Эквайр." : (tx.shop_type || "—");
+    const paidAt = (tx.paid_at || tx.received_at || "").slice(0, 10);
+    return `<tr>
+      <td style="white-space:nowrap">${escapeHtml(paidAt)}</td>
+      <td><span class="chip">${escapeHtml(shopBadge)}</span></td>
+      <td>${escapeHtml(name)}<br><span style="font-size:10px;color:var(--muted)">${escapeHtml(phone)}</span></td>
+      <td style="text-align:right"><b>${fmtByn(tx.amount_byn)}</b></td>
+      <td><span class="chip ${ms.cls}">${escapeHtml(ms.label)}</span></td>
+      <td style="font-size:10px;color:var(--muted)">${escapeHtml(tx.mk_user_name || tx.mk_user_id || "")}</td>
+      <td style="font-size:10px;color:var(--muted)">${escapeHtml(tx.mk_payment_id || "")}</td>
+    </tr>`;
+  }).join("");
+
+  const tableHtml = txns.length
+    ? `<div style="overflow-x:auto;margin-top:8px"><table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="border-bottom:1px solid var(--border)">
+          <th style="text-align:left;padding:4px 6px">Дата</th>
+          <th style="text-align:left;padding:4px 6px">Магазин</th>
+          <th style="text-align:left;padding:4px 6px">Клиент</th>
+          <th style="text-align:right;padding:4px 6px">Сумма</th>
+          <th style="text-align:left;padding:4px 6px">Статус сверки</th>
+          <th style="text-align:left;padding:4px 6px">Ученик МК</th>
+          <th style="text-align:left;padding:4px 6px">ID платежа</th>
+        </tr></thead>
+        <tbody>${tableRows}</tbody>
+      </table></div>`
+    : `<div class="empty" style="margin-top:8px">Транзакции bePaid за этот период не найдены.</div>`;
+
+  const diagData = bp.diagnostics || {};
+  const diagHtml = `
+    <details class="cr-diag" style="margin-top:16px">
+      <summary>Диагностика bePaid</summary>
+      <div class="cr-diag-grid">
+        <div class="cr-diag-row"><span>ЕРИП настроен</span><b>${diagData.bepaid_configured_erip ? "Да" : "Нет"}</b></div>
+        <div class="cr-diag-row"><span>Эквайринг настроен</span><b>${diagData.bepaid_configured_acquiring ? "Да" : "Нет"}</b></div>
+        <div class="cr-diag-row"><span>Верификация подписи ЕРИП</span><b>${diagData.signature_verification_enabled_erip ? "Да" : "Нет"}</b></div>
+        <div class="cr-diag-row"><span>Верификация подписи эквайринг</span><b>${diagData.signature_verification_enabled_acq ? "Да" : "Нет"}</b></div>
+        <div class="cr-diag-row"><span>Транзакций загружено</span><b>${diagData.transactions_loaded ?? 0}</b></div>
+        <div class="cr-diag-row"><span>Успешных BYN</span><b>${diagData.successful_count ?? 0}</b></div>
+        <div class="cr-diag-row"><span>Есть в МойКласс</span><b>${diagData.matched_count ?? 0}</b></div>
+        <div class="cr-diag-row"><span>Нет в МойКласс</span><b>${diagData.missing_in_moyklass_count ?? 0}</b></div>
+        <div class="cr-diag-row"><span>Нужна проверка</span><b>${diagData.needs_review_count ?? 0}</b></div>
+        <div class="cr-diag-row"><span>Проигнорировано</span><b>${diagData.ignored_count ?? 0}</b></div>
+        <div class="cr-diag-row"><span>Посл. webhook</span><b>${diagData.last_webhook_received_at || "—"}</b></div>
+        <div class="cr-diag-row" style="color:var(--warn);margin-top:6px"><span>Автосоздание в МойКласс</span><b>Выключено (v7.0.67)</b></div>
+      </div>
+    </details>`;
+
+  el.innerHTML = statusHtml + controlsHtml + tilesHtml + mkNote + tableHtml + diagHtml;
+
+  $("bepaidMonth")?.addEventListener("change", e => { state.bepaidMonth = e.target.value; });
+  const sf = $("bepaidShopFilter");
+  if (sf && bp.shop_type) sf.value = bp.shop_type;
+  $("bepaidReconcileBtn")?.addEventListener("click", runBepaidReconcile);
+}
+
+async function loadBepaidStatus() {
+  try {
+    const data = await apiGet("/api/integrations/bepaid/status");
+    state.bepaidStatus = data.ok ? data : null;
+  } catch (e) {
+    state.bepaidStatus = null;
+  }
+  renderBepaid();
+}
+
+async function runBepaidReconcile() {
+  if (!canUseBepaid()) return;
+  const month = $("bepaidMonth")?.value || state.bepaidMonth || currentMonthValue();
+  const shopType = $("bepaidShopFilter")?.value || "all";
+  state.bepaidMonth = month;
+  state.bepaidBusy = true;
+  state.bepaidData = null;
+  renderBepaid();
+  try {
+    const data = await apiGet(`/api/integrations/bepaid/reconcile?month=${encodeURIComponent(month)}&shop_type=${encodeURIComponent(shopType)}`);
+    state.bepaidData = data;
+    state.bepaidStatus = {
+      erip_configured: data.diagnostics?.bepaid_configured_erip,
+      acquiring_configured: data.diagnostics?.bepaid_configured_acquiring,
+      last_webhook_received_at: data.diagnostics?.last_webhook_received_at,
+    };
+    setNotice(`bePaid сверка за ${month} готова`, "ok");
+  } catch (e) {
+    state.bepaidData = { ok: false, error: safeUserError(e) };
+  } finally {
+    state.bepaidBusy = false;
+    renderBepaid();
   }
 }
 

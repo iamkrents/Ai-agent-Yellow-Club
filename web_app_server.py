@@ -85,6 +85,7 @@ FOOD_PRICE_ROLES = {"kitchen", "restaurant", "owner", "admin", "methodist", "ope
 FOOD_MENU_EDIT_ROLES = {"kitchen", "restaurant", "owner", "admin", "methodist", "operations"}
 FOOD_MENU_DELETE_ROLES = {"kitchen", "restaurant", "owner", "admin", "operations"}
 FOOD_ADMIN_EDIT_ROLES = {"owner", "admin", "operations"}
+BEPAID_RECONCILE_ROLES = {"owner", "admin", "director", "operations", "client_manager"}
 ADMIN_TABS_BY_ROLE = {
     "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
     "admin": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
@@ -7267,6 +7268,343 @@ class MiniAppContext:
                 row = self.storage.mark_teacher_preparation(lesson_id, user_id, "not_started")
         return {"ok": True, "control": row}
 
+    # ── bePaid integration ─────────────────────────────────────────────────────
+
+    def _bepaid_verify_signature(self, body: bytes, signature_header: str, public_key_pem: str) -> tuple[bool, str]:
+        """Verify bePaid Content-Signature header using RSA public key. Returns (ok, reason)."""
+        if not public_key_pem:
+            return True, "no_public_key_configured"
+        if not signature_header:
+            return False, "missing_signature_header"
+        try:
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
+        except ImportError:
+            log.warning("bePaid: cryptography package not installed; skipping RSA signature verification")
+            return True, "crypto_unavailable"
+        try:
+            parts = signature_header.strip().split("=", 1)
+            if len(parts) != 2:
+                return False, "bad_signature_format"
+            algo, sig_hex = parts[0].lower(), parts[1]
+            sig_bytes = bytes.fromhex(sig_hex)
+            pem = public_key_pem.encode("utf-8") if isinstance(public_key_pem, str) else public_key_pem
+            pub_key = serialization.load_pem_public_key(pem)
+            hash_algo = hashes.SHA256() if algo == "sha256" else hashes.SHA1()
+            pub_key.verify(sig_bytes, body, asym_padding.PKCS1v15(), hash_algo)
+            return True, "verified"
+        except Exception as e:
+            return False, f"verify_failed: {e}"
+
+    def _bepaid_extract_payload(self, raw_json: dict[str, Any], shop_type: str, shop_id: str) -> dict[str, Any]:
+        """Extract normalised fields from bePaid webhook payload."""
+        tx = raw_json.get("transaction") or {}
+        customer = tx.get("customer") or {}
+        billing = tx.get("billing_address") or {}
+        additional = tx.get("additional_data") or {}
+
+        amount_raw = tx.get("amount")
+        try:
+            amount_minor = int(amount_raw) if amount_raw is not None else None
+        except (TypeError, ValueError):
+            amount_minor = None
+        amount_byn = round(amount_minor / 100.0, 2) if amount_minor is not None else None
+
+        tracking_id = str(tx.get("tracking_id") or "").strip() or None
+        order_id_raw = (tx.get("order") or {}).get("id") or tx.get("order_id") or None
+        order_id = str(order_id_raw or "").strip() or None
+
+        customer_phone = (
+            str(customer.get("phone") or "").strip() or
+            str(billing.get("phone") or "").strip() or None
+        )
+
+        # Try to find mk_user_id in various fields
+        mk_user_id = None
+        for src in [tracking_id, order_id,
+                    str(additional.get("contract_number") or ""),
+                    str(additional.get("user_id") or ""),
+                    str(additional.get("mk_user_id") or ""),
+                    str((tx.get("custom_fields") or {}).get("user_id") or ""),
+                    str((tx.get("custom_fields") or {}).get("mk_user_id") or ""),
+                    ]:
+            if src:
+                import re as _re
+                m = _re.search(r'\b(\d{4,9})\b', src)
+                if m:
+                    mk_user_id = m.group(1)
+                    break
+
+        return {
+            "provider": "bepaid",
+            "shop_type": shop_type,
+            "shop_id": shop_id,
+            "transaction_uid": str(tx.get("uid") or "").strip() or None,
+            "transaction_id": str(tx.get("id") or "").strip() or None,
+            "order_id": order_id,
+            "tracking_id": tracking_id,
+            "status": str(tx.get("status") or "").strip() or None,
+            "payment_method_type": str(tx.get("payment_method_type") or "").strip() or None,
+            "amount_minor": amount_minor,
+            "amount_byn": amount_byn,
+            "currency": str(tx.get("currency") or "").strip() or None,
+            "paid_at": str(tx.get("paid_at") or "").strip() or None,
+            "created_at_provider": str(tx.get("created_at") or "").strip() or None,
+            "test": bool(tx.get("test")),
+            "customer_first_name": str(customer.get("first_name") or "").strip() or None,
+            "customer_last_name": str(customer.get("last_name") or "").strip() or None,
+            "customer_phone": customer_phone,
+            "customer_email": str(customer.get("email") or "").strip() or None,
+            "billing_phone": str(billing.get("phone") or "").strip() or None,
+            "mk_user_id": mk_user_id,
+            "raw_json": raw_json,
+        }
+
+    def bepaid_handle_webhook(self, shop_type: str, raw_body: bytes,
+                               content_signature: str, path_secret: str) -> tuple[dict[str, Any], int]:
+        """Process an incoming bePaid webhook. Returns (response_dict, http_status)."""
+        cfg = self.settings
+        # Validate path secret if configured
+        expected_secret = getattr(cfg, "bepaid_webhook_path_secret", "")
+        if expected_secret and path_secret != expected_secret:
+            log.warning("bePaid webhook: invalid path secret from %s", shop_type)
+            return {"ok": False, "error": "invalid_secret"}, 403
+
+        # Select shop config
+        if shop_type == "erip":
+            shop_id = getattr(cfg, "bepaid_erip_shop_id", "")
+            public_key_pem = getattr(cfg, "bepaid_erip_public_key", "")
+        elif shop_type in ("acquiring", "acq"):
+            shop_type = "acquiring"
+            shop_id = getattr(cfg, "bepaid_acq_shop_id", "")
+            public_key_pem = getattr(cfg, "bepaid_acq_public_key", "")
+        else:
+            shop_id = ""
+            public_key_pem = ""
+
+        # Verify signature
+        sig_ok, sig_reason = self._bepaid_verify_signature(raw_body, content_signature, public_key_pem)
+        if not sig_ok:
+            log.warning("bePaid webhook: signature verification failed (%s) for shop_type=%s", sig_reason, shop_type)
+            return {"ok": False, "error": f"signature_failed: {sig_reason}"}, 401
+
+        # Parse JSON
+        try:
+            payload = json.loads(raw_body.decode("utf-8", errors="replace"))
+        except Exception as e:
+            return {"ok": False, "error": f"invalid_json: {e}"}, 400
+
+        # Extract and save
+        try:
+            extracted = self._bepaid_extract_payload(payload, shop_type, shop_id)
+            saved = self.storage.upsert_bepaid_transaction(extracted)
+            log.info("bePaid webhook saved: id=%s shop=%s status=%s amount_byn=%s sig=%s",
+                     saved.get("id"), shop_type, extracted.get("status"),
+                     extracted.get("amount_byn"), sig_reason)
+            return {"ok": True, "saved_id": saved.get("id"), "signature": sig_reason}, 200
+        except Exception as e:
+            log.exception("bePaid webhook: save error")
+            return {"ok": False, "error": str(e)}, 500
+
+    def bepaid_status(self, auth: dict[str, Any]) -> dict[str, Any]:
+        """GET /api/integrations/bepaid/status — configuration status."""
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in BEPAID_RECONCILE_ROLES:
+            return {"ok": False, "error": "access_denied"}
+        cfg = self.settings
+        last_webhook = self.storage.get_bepaid_last_webhook_at()
+        return {
+            "ok": True,
+            "enabled": getattr(cfg, "bepaid_enabled", False),
+            "erip_configured": getattr(cfg, "bepaid_erip_enabled", False),
+            "acquiring_configured": getattr(cfg, "bepaid_acq_enabled", False),
+            "auto_post_to_moyklass": getattr(cfg, "bepaid_auto_post_to_moyklass", False),
+            "erip_shop_id": getattr(cfg, "bepaid_erip_shop_id", "") or None,
+            "acq_shop_id": getattr(cfg, "bepaid_acq_shop_id", "") or None,
+            "erip_sig_verification": bool(getattr(cfg, "bepaid_erip_public_key", "")),
+            "acq_sig_verification": bool(getattr(cfg, "bepaid_acq_public_key", "")),
+            "last_webhook_received_at": last_webhook,
+        }
+
+    def bepaid_list_transactions(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        """GET /api/integrations/bepaid/transactions — list with filters."""
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in BEPAID_RECONCILE_ROLES:
+            return {"ok": False, "error": "access_denied"}
+        month = params.get("month", "")
+        shop_type = params.get("shop_type", "all")
+        match_status = params.get("match_status", "all")
+        try:
+            rows = self.storage.list_bepaid_transactions(month=month, shop_type=shop_type, match_status=match_status)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        # Strip raw_json for list view (keep it light)
+        for r in rows:
+            r.pop("raw_json", None)
+        return {"ok": True, "transactions": rows, "count": len(rows)}
+
+    def bepaid_reconcile(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        """GET /api/integrations/bepaid/reconcile — match bePaid txns against MoyKlass payments."""
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in BEPAID_RECONCILE_ROLES:
+            return {"ok": False, "error": "access_denied"}
+
+        month = params.get("month", "")
+        shop_type = params.get("shop_type", "all")
+
+        if not month:
+            from datetime import date as _date
+            month = _date.today().strftime("%Y-%m")
+
+        # Load bePaid transactions for month
+        try:
+            bp_txns = self.storage.list_bepaid_transactions(month=month, shop_type=shop_type)
+        except Exception as e:
+            return {"ok": False, "error": f"storage error: {e}"}
+
+        # Load MoyKlass payments for month
+        mk_payments: list[dict[str, Any]] = []
+        mk_error = ""
+        mk_loaded = False
+        if self.settings.moyklass_enabled:
+            try:
+                from datetime import datetime as _dt
+                year, mnum = int(month[:4]), int(month[5:7])
+                start = f"{year}-{mnum:02d}-01"
+                if mnum == 12:
+                    end = f"{year+1}-01-01"
+                else:
+                    end = f"{year}-{mnum+1:02d}-01"
+                result = self.moyklass._scan_payments_for_month(start, end, limit=3000)
+                if result.ok:
+                    from moyklass_client import extract_items
+                    mk_payments = [x for x in extract_items(result.data) if isinstance(x, dict)]
+                    mk_loaded = True
+                else:
+                    mk_error = str(result.error or "failed")
+            except Exception as e:
+                mk_error = str(e)
+
+        # Index MK payments by userId + amount for fast lookup
+        _mk_pay_by_uid_amount: dict[str, list[dict[str, Any]]] = {}
+        _mk_user_names: dict[str, str] = {}
+        for _mp in mk_payments:
+            _uid = str(_mp.get("userId") or _mp.get("user_id") or "")
+            if not _uid:
+                continue
+            _uname = str(_mp.get("userName") or _mp.get("user_name") or "")
+            if _uname and _uid:
+                _mk_user_names[_uid] = _uname
+            _amt_raw = _mp.get("sum") or _mp.get("amount") or 0
+            try:
+                _amt_minor = int(round(float(_amt_raw) * 100))
+            except Exception:
+                _amt_minor = 0
+            _key = f"{_uid}:{_amt_minor}"
+            _mk_pay_by_uid_amount.setdefault(_key, []).append(_mp)
+
+        stats = {
+            "matched": 0, "already_in_moyklass": 0, "missing_in_moyklass": 0,
+            "probable_match": 0, "needs_review": 0,
+            "ignored_not_successful": 0, "ignored_test": 0,
+            "ignored_currency": 0, "total": len(bp_txns),
+        }
+
+        results: list[dict[str, Any]] = []
+
+        for _tx in bp_txns:
+            _txid = int(_tx.get("id") or 0)
+            _status = str(_tx.get("status") or "").lower()
+            _test = bool(_tx.get("test"))
+            _currency = str(_tx.get("currency") or "BYN").upper()
+            _amount_minor = _tx.get("amount_minor")
+            _mk_uid = str(_tx.get("mk_user_id") or "").strip()
+            _phone = str(_tx.get("customer_phone") or _tx.get("billing_phone") or "").strip()
+            _phone_digits = "".join(c for c in _phone if c.isdigit())[-9:] if _phone else ""  # noqa: F841
+
+            new_match = None
+
+            if _test:
+                new_match = {"match_status": "ignored_test", "match_score": 0.0}
+                stats["ignored_test"] += 1
+            elif _status != "successful":
+                new_match = {"match_status": "ignored_not_successful", "match_score": 0.0}
+                stats["ignored_not_successful"] += 1
+            elif _currency != "BYN":
+                new_match = {"match_status": "ignored_currency", "match_score": 0.0}
+                stats["ignored_currency"] += 1
+            else:
+                if _mk_uid and _amount_minor is not None:
+                    _key = f"{_mk_uid}:{_amount_minor}"
+                    candidates = _mk_pay_by_uid_amount.get(_key, [])
+                    if candidates:
+                        found_mk_payment = candidates[0]
+                        new_match = {
+                            "match_status": "already_in_moyklass",
+                            "match_score": 1.0,
+                            "mk_payment_id": str(found_mk_payment.get("id") or ""),
+                            "mk_user_name": _mk_user_names.get(_mk_uid, ""),
+                        }
+                        stats["already_in_moyklass"] += 1
+                    else:
+                        # User ID known, but no matching payment found
+                        new_match = {
+                            "match_status": "missing_in_moyklass",
+                            "match_score": 0.9,
+                            "mk_user_id": _mk_uid,
+                            "mk_user_name": _mk_user_names.get(_mk_uid, ""),
+                        }
+                        stats["missing_in_moyklass"] += 1
+                else:
+                    # No mk_user_id — needs manual review
+                    new_match = {"match_status": "needs_review", "match_score": 0.0}
+                    stats["needs_review"] += 1
+
+            # Persist match result
+            if new_match and _txid:
+                try:
+                    self.storage.update_bepaid_match(_txid, new_match)
+                except Exception:
+                    pass
+
+            row_out = dict(_tx)
+            row_out.pop("raw_json", None)
+            row_out.update(new_match or {})
+            results.append(row_out)
+
+        # Totals
+        successful_byn = [r for r in results if r.get("match_status") not in
+                          ("ignored_test", "ignored_not_successful", "ignored_currency")]
+        total_amount_byn = sum(float(r.get("amount_byn") or 0) for r in successful_byn)
+
+        return {
+            "ok": True,
+            "month": month,
+            "shop_type": shop_type,
+            "mk_payments_loaded": mk_loaded,
+            "mk_payments_count": len(mk_payments),
+            "mk_error": mk_error,
+            "stats": stats,
+            "successful_byn_count": len(successful_byn),
+            "successful_amount_byn": round(total_amount_byn, 2),
+            "transactions": results,
+            "diagnostics": {
+                "bepaid_configured_erip": getattr(self.settings, "bepaid_erip_enabled", False),
+                "bepaid_configured_acquiring": getattr(self.settings, "bepaid_acq_enabled", False),
+                "signature_verification_enabled_erip": bool(getattr(self.settings, "bepaid_erip_public_key", "")),
+                "signature_verification_enabled_acq": bool(getattr(self.settings, "bepaid_acq_public_key", "")),
+                "transactions_loaded": len(bp_txns),
+                "successful_count": len(successful_byn),
+                "successful_amount": round(total_amount_byn, 2),
+                "matched_count": stats["already_in_moyklass"],
+                "missing_in_moyklass_count": stats["missing_in_moyklass"],
+                "needs_review_count": stats["needs_review"],
+                "ignored_count": stats["ignored_not_successful"] + stats["ignored_test"] + stats["ignored_currency"],
+                "duplicate_detected_count": 0,
+                "last_webhook_received_at": self.storage.get_bepaid_last_webhook_at(),
+            },
+        }
+
 
 CTX = MiniAppContext()
 
@@ -7445,6 +7783,12 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.food_teacher_class_orders(auth, params))
                 if path == "/api/food/kitchen/menus":
                     return self._send_json(CTX.food_kitchen_menus(auth))
+                if path == "/api/integrations/bepaid/status":
+                    return self._send_json(CTX.bepaid_status(auth))
+                if path == "/api/integrations/bepaid/transactions":
+                    return self._send_json(CTX.bepaid_list_transactions(auth, params))
+                if path == "/api/integrations/bepaid/reconcile":
+                    return self._send_json(CTX.bepaid_reconcile(auth, params))
                 if path.startswith("/api/food/kitchen/menus/"):
                     _krest = path[len("/api/food/kitchen/menus/"):]
                     _kparts = _krest.split("/")
@@ -7467,9 +7811,26 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             log.exception("Mini app GET error")
             self._send_json({"ok": False, "error": str(exc)}, status=500)
 
+    def _read_body_raw(self) -> bytes:
+        length = _safe_int(self.headers.get("Content-Length"), 0)
+        if length <= 0:
+            return b""
+        return self.rfile.read(length)
+
     def do_POST(self) -> None:  # noqa: N802
         path, params = _parse_query(self.path)
         try:
+            # ── bePaid webhooks: no Telegram auth, handled separately ──
+            if path.startswith("/api/integrations/bepaid/webhook/"):
+                rest = path[len("/api/integrations/bepaid/webhook/"):]
+                parts = rest.split("/")
+                shop_type = parts[0] if parts else "unknown"
+                path_secret = parts[1] if len(parts) > 1 else ""
+                raw_body = self._read_body_raw()
+                content_sig = self.headers.get("Content-Signature", "") or self.headers.get("X-Content-Signature", "")
+                resp, status = CTX.bepaid_handle_webhook(shop_type, raw_body, content_sig, path_secret)
+                return self._send_json(resp, status=status)
+
             content_type = self.headers.get("Content-Type", "")
             if content_type.lower().startswith("multipart/form-data"):
                 length = _safe_int(self.headers.get("Content-Length"), 0)

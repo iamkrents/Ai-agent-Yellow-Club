@@ -109,6 +109,28 @@ class Settings:
     food_auto_reminder_minutes_before_deadline: int
     food_auto_reminder_check_interval_minutes: int
 
+    # bePaid integration
+    bepaid_erip_shop_id: str
+    bepaid_erip_secret_key: str
+    bepaid_erip_public_key: str
+    bepaid_acq_shop_id: str
+    bepaid_acq_secret_key: str
+    bepaid_acq_public_key: str
+    bepaid_auto_post_to_moyklass: bool
+    bepaid_webhook_path_secret: str
+
+    @property
+    def bepaid_erip_enabled(self) -> bool:
+        return bool(self.bepaid_erip_shop_id and self.bepaid_erip_secret_key)
+
+    @property
+    def bepaid_acq_enabled(self) -> bool:
+        return bool(self.bepaid_acq_shop_id and self.bepaid_acq_secret_key)
+
+    @property
+    def bepaid_enabled(self) -> bool:
+        return self.bepaid_erip_enabled or self.bepaid_acq_enabled
+
     @property
     def allow_all_groups(self) -> bool:
         return not self.allowed_group_ids or 0 in self.allowed_group_ids
@@ -204,4 +226,12 @@ def load_settings() -> Settings:
         food_auto_reminders_enabled=_bool(os.getenv("FOOD_AUTO_REMINDERS_ENABLED", "false"), False),
         food_auto_reminder_minutes_before_deadline=max(1, int(os.getenv("FOOD_AUTO_REMINDER_MINUTES_BEFORE_DEADLINE", "120"))),
         food_auto_reminder_check_interval_minutes=max(1, int(os.getenv("FOOD_AUTO_REMINDER_CHECK_INTERVAL_MINUTES", "15"))),
+        bepaid_erip_shop_id=os.getenv("BEPAID_ERIP_SHOP_ID", "").strip(),
+        bepaid_erip_secret_key=os.getenv("BEPAID_ERIP_SECRET_KEY", "").strip(),
+        bepaid_erip_public_key=os.getenv("BEPAID_ERIP_PUBLIC_KEY", "").strip(),
+        bepaid_acq_shop_id=os.getenv("BEPAID_ACQ_SHOP_ID", "").strip(),
+        bepaid_acq_secret_key=os.getenv("BEPAID_ACQ_SECRET_KEY", "").strip(),
+        bepaid_acq_public_key=os.getenv("BEPAID_ACQ_PUBLIC_KEY", "").strip(),
+        bepaid_auto_post_to_moyklass=_bool(os.getenv("BEPAID_AUTO_POST_TO_MOYKLASS", "false"), False),
+        bepaid_webhook_path_secret=os.getenv("BEPAID_WEBHOOK_PATH_SECRET", "").strip(),
     )
