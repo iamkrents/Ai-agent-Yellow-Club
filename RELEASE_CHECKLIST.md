@@ -1,9 +1,10 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.84**
+**Cache version: v7.0.85**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.85 | 2026-07-12 | Fix: модальные окна в правильном месте viewport на iPhone/Telegram. DOM portal `#piModalRoot`, iOS scroll lock (`position:fixed; top:-scrollY`), backdrop = `.pi-modal`, sheet = `.pi-modal-sheet`, z-index 10000. |
 | v7.0.84 | 2026-07-12 | Fix: фильтрация меню питания по смене/филиалу ребёнка. `_get_child_week_period`, `eligibleChildIds`, `menu_not_for_child`, 15 тестов. |
 | v7.0.83 | 2026-07-12 | UI/UX: animated modals (slide-up/fade), bottom sheet, safe-area, toast CSS class. |
 | v7.0.82.1 | 2026-07-12 | Hotfix: формат order_id — `1{row_id:011d}` вместо `{row_id:012d}`. Устраняет HTTP 422 "should not begin with 0" при малых pi_row_id. Счёт при 422 не создавался, черновик можно переотправить. |

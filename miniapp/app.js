@@ -66,7 +66,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.84");
+console.log("MiniApp version: v7.0.85");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -11655,29 +11655,70 @@ function renderPaymentIntentCard(pi) {
   </div>`;
 }
 
+// ── iOS-safe scroll lock (v7.0.85) ───────────────────────────────────────
+let piLockedScrollY = 0;
+let piOpenModalCount = 0;
+
+function piLockPageScroll() {
+  piOpenModalCount += 1;
+  if (piOpenModalCount > 1) return;
+  piLockedScrollY = window.scrollY || window.pageYOffset || 0;
+  document.documentElement.classList.add("pi-modal-open");
+  document.body.classList.add("pi-modal-open");
+  document.body.style.position = "fixed";
+  document.body.style.top = `-${piLockedScrollY}px`;
+  document.body.style.left = "0";
+  document.body.style.right = "0";
+  document.body.style.width = "100%";
+  document.body.style.overflow = "hidden";
+}
+
+function piUnlockPageScroll() {
+  if (piOpenModalCount > 0) piOpenModalCount -= 1;
+  if (piOpenModalCount > 0) return;
+  document.documentElement.classList.remove("pi-modal-open");
+  document.body.classList.remove("pi-modal-open");
+  document.body.style.position = "";
+  document.body.style.top = "";
+  document.body.style.left = "";
+  document.body.style.right = "";
+  document.body.style.width = "";
+  document.body.style.overflow = "";
+  window.scrollTo(0, piLockedScrollY);
+}
+
 // ── modal helpers (animated open / close) ────────────────────────────────
 
 function piModalOpen(el) {
   if (!el) return;
-  el.classList.remove("hidden");
-  document.body.style.overflow = "hidden";
+  if (el.dataset.piOpen === "1") return;
+  // Ensure modal lives in #piModalRoot (direct child of body) to fix iOS viewport bug
+  const root = document.getElementById("piModalRoot") || document.body;
+  if (el.parentElement !== root) root.appendChild(el);
+  el.dataset.piOpen = "1";
+  el.classList.remove("hidden", "pi-closing");
+  piLockPageScroll();
 }
 
 function piModalClose(el, cb) {
   if (!el) { if (cb) cb(); return; }
-  const box = el.querySelector(".pi-modal-box");
-  const overlay = el.querySelector(".pi-modal-overlay");
-  const mobile = window.matchMedia("(max-width:599px)").matches;
-  if (box) box.classList.add("pi-closing");
-  if (overlay) overlay.classList.add("pi-closing");
-  const dur = mobile ? 210 : 160;
-  setTimeout(() => {
+  if (el.dataset.piOpen !== "1") { if (cb) cb(); return; }
+  el.dataset.piOpen = "0";
+  el.classList.add("pi-closing");
+  const mobile = !window.matchMedia("(min-width:600px)").matches;
+  const dur = mobile ? 225 : 165;
+  const sheet = el.querySelector(".pi-modal-sheet");
+  let done = false;
+  const onEnd = () => {
+    if (done) return; done = true;
+    if (sheet) sheet.removeEventListener("animationend", onEnd);
     el.classList.add("hidden");
-    if (box) box.classList.remove("pi-closing");
-    if (overlay) overlay.classList.remove("pi-closing");
-    document.body.style.overflow = "";
+    el.classList.remove("pi-closing");
+    piUnlockPageScroll();
     if (cb) cb();
-  }, dur);
+  };
+  if (sheet) sheet.addEventListener("animationend", onEnd);
+  setTimeout(onEnd, dur + 55);
 }
 
 // ── Create intent modal ───────────────────────────────────────────────────
@@ -11928,17 +11969,18 @@ document.addEventListener("DOMContentLoaded", () => {
   $("piModalSubmit")?.addEventListener("click", submitCreateIntent);
   $("piModalCancel")?.addEventListener("click", closeCreateIntentModal);
   $("piModalClose")?.addEventListener("click", closeCreateIntentModal);
-  $("piModalOverlay")?.addEventListener("click", closeCreateIntentModal);
+  // backdrop click — only fires when clicking the dark overlay (not the sheet itself)
+  $("piCreateModal")?.addEventListener("click", e => { if (e.target === $("piCreateModal")) closeCreateIntentModal(); });
 
   // Cancel modal
   $("piCancelModalConfirm")?.addEventListener("click", confirmCancelIntent);
   $("piCancelModalBack")?.addEventListener("click", closeCancelIntentModal);
   $("piCancelModalClose")?.addEventListener("click", closeCancelIntentModal);
-  $("piCancelOverlay")?.addEventListener("click", closeCancelIntentModal);
+  $("piCancelModal")?.addEventListener("click", e => { if (e.target === $("piCancelModal")) closeCancelIntentModal(); });
 
   // bePaid ERIP modal
   $("piBePaidModalConfirm")?.addEventListener("click", confirmCreateBePaid);
   $("piBePaidModalBack")?.addEventListener("click", closeBePaidModal);
   $("piBePaidModalClose")?.addEventListener("click", closeBePaidModal);
-  $("piBePaidOverlay")?.addEventListener("click", closeBePaidModal);
+  $("piBePaidModal")?.addEventListener("click", e => { if (e.target === $("piBePaidModal")) closeBePaidModal(); });
 });

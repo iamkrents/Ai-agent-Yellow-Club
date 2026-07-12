@@ -1,6 +1,6 @@
 # Yellow Club Agent — Current State
 
-> Последнее обновление: 2026-07-12 (v7.0.84)  
+> Последнее обновление: 2026-07-12 (v7.0.85)  
 > Цель файла: позволить возобновить работу из любого нового чата без потери контекста.  
 > **Этот файл — только документация. Production-код не менять через этот файл.**
 
@@ -31,11 +31,30 @@ Claude Code (локально) → редактирование кода → git
 | Параметр | Значение |
 |---|---|
 | Последняя задеплоенная версия | **v7.0.81** (commit `db0f1e9`) — НЕ развёрнут, production-дата неизвестна |
-| Последний коммит в `main` | **v7.0.84** — Fix parent food menus by child week and location |
-| Frontend cache-bust | **`v=7.0.84`** (в `index.html`: `styles.css?v=7.0.84`, `app.js?v=7.0.84`) |
-| `console.log` в app.js | `MiniApp version: v7.0.84` |
+| Последний коммит в `main` | **v7.0.85** — Fix payment modal viewport positioning on iOS |
+| Frontend cache-bust | **`v=7.0.85`** (в `index.html`: `styles.css?v=7.0.85`, `app.js?v=7.0.85`) |
+| `console.log` в app.js | `MiniApp version: v7.0.85` |
 
 > v7.0.82 и hotfix v7.0.82.1 запушены, но **НЕ деплоились** на production-сервер. Деплой — только по команде владельца.
+
+### v7.0.85 — Fix: модальные окна в правильном месте viewport на iPhone
+
+**Причина бага:** три модалки (`piCreateModal`, `piCancelModal`, `piBePaidModal`) были вложены в section отчётов, которая создаёт новый stacking context (CSS-анимации `ycFadeIn` и `overflow`). `position: fixed` на iOS Telegram WebApp позиционировалось относительно анимированного/scroll-контейнера, а не реального viewport → форма появлялась ниже экрана, боковые полосы на overlay.
+
+**Исправление:**
+- DOM portal: `<div id="piModalRoot">` — прямой потомок `<body>` (перед `</body>`) — все 3 модалки перенесены туда
+- `.pi-modal` — сам является тёмным backdrop (`position: fixed; inset: 0; width: 100dvw; height: 100dvh; z-index: 10000; background: rgba(8,14,27,.62)`)
+- `.pi-modal-sheet` (переименован с `.pi-modal-box`) — белая панель внутри; header `flex:0 0 auto`, body `flex:1 1 auto; min-height:0; overflow-y:auto`, footer `flex:0 0 auto`
+- `.pi-modal-overlay` удалён из HTML (backdrop = сам `.pi-modal`)
+- iOS scroll lock: `piLockPageScroll()` / `piUnlockPageScroll()` — `body.style.position="fixed"; body.style.top="-${scrollY}px"` с восстановлением позиции
+- `piOpenModalCount` — счётчик защищает от преждевременного разлока при вложенных вызовах
+- `piModalOpen` / `piModalClose` — перезаписаны; `piModalOpen` перемещает элемент в `#piModalRoot` при необходимости
+- Backdrop click: `.addEventListener("click", e => { if(e.target === el) close() })` — не реагирует на клик по sheet
+- `@media (prefers-reduced-motion: reduce)` — анимации 1ms
+- `env(safe-area-inset-bottom)` в footer — home indicator на iPhone
+- z-index: toast 9999, modal 10000
+- Cache-bust: `v=7.0.85`
+- Бизнес-логика, backend, bePaid, food module, reports — не изменены
 
 ### v7.0.84 — Фильтрация меню питания по ребёнку, смене, филиалу
 

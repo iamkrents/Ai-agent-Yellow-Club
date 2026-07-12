@@ -7285,62 +7285,87 @@ input:disabled { animation: none !important; transform: none !important; }
 .chip-purpose-debt { background: rgba(230,126,34,.12); color: #a04000; }
 .chip-purpose-adv  { background: rgba(155,89,182,.12); color: #6c3483; }
 .chip-purpose-city { background: rgba(52,152,219,.12); color: #1a6da0; }
-/* modal v7.0.83 — animated bottom-sheet (mobile) / centered (desktop) ───── */
-@keyframes piOverlayIn  { from { opacity: 0 }    to { opacity: 1 } }
-@keyframes piOverlayOut { from { opacity: 1 }    to { opacity: 0 } }
-@keyframes piSheetUp    { from { transform: translateY(60%) } to { transform: none } }
-@keyframes piSheetDown  { from { transform: none } to { transform: translateY(100%) } }
-@keyframes piScaleIn    { from { opacity: 0; transform: translateY(8px) scale(.97) } to { opacity: 1; transform: none } }
-@keyframes piScaleOut   { from { opacity: 1 }    to { opacity: 0; transform: translateY(8px) scale(.97) } }
+/* ── PI Modal System v7.0.85 — portal-based, iOS-safe ─────────────────────── */
 
+/* scroll-lock state applied by JS piLockPageScroll() */
+html.pi-modal-open,
+body.pi-modal-open {
+  overscroll-behavior: none;
+}
+
+/* keyframes */
+@keyframes piBackdropIn  { from { opacity: 0 } to { opacity: 1 } }
+@keyframes piBackdropOut { from { opacity: 1 } to { opacity: 0 } }
+@keyframes piSheetUp     { from { transform: translateY(60%) } to { transform: none } }
+@keyframes piSheetDown   { from { transform: none } to { transform: translateY(110%) } }
+@keyframes piScaleIn     { from { opacity: 0; transform: translateY(8px) scale(.97) } to { opacity: 1; transform: none } }
+@keyframes piScaleOut    { from { opacity: 1 } to { opacity: 0; transform: translateY(8px) scale(.97) } }
+
+/* backdrop — IS the full-screen dark overlay; direct child of <body> via #piModalRoot */
 .pi-modal {
-  position: fixed; inset: 0; z-index: 900;
-  display: flex; align-items: flex-end; justify-content: center;
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  width: 100dvw;
+  height: 100dvh;
+  z-index: 10000;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(8, 14, 27, 0.62);
+  overscroll-behavior: none;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  animation: piBackdropIn 180ms ease both;
 }
 .pi-modal.hidden { display: none !important; }
-@media (min-width: 600px) { .pi-modal { align-items: center; } }
+.pi-modal.pi-closing { animation: piBackdropOut 215ms ease both; }
 
-.pi-modal-overlay {
-  position: absolute; inset: 0;
-  background: rgba(0,0,0,.48);
-  animation: piOverlayIn 180ms ease both;
+@media (min-width: 600px) {
+  .pi-modal { align-items: center; padding: 20px; }
 }
-.pi-modal-overlay.pi-closing { animation: piOverlayOut 190ms ease both; }
 
-.pi-modal-box {
+/* sheet — the visible sliding / scaling panel */
+.pi-modal-sheet {
   position: relative;
+  width: 100%;
+  max-width: 100%;
+  max-height: calc(100dvh - env(safe-area-inset-top, 0px) - 8px);
   background: #fff;
   color: #172033;
-  border-radius: 18px 18px 0 0;
-  width: 100%;
-  max-width: 420px;
-  max-height: 92dvh;
-  overflow-y: auto;
-  box-shadow: 0 -4px 32px rgba(0,0,0,.18);
+  border-radius: 20px 20px 0 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+  box-shadow: 0 -4px 40px rgba(0, 0, 0, .22);
   animation: piSheetUp 220ms cubic-bezier(.32,.72,0,1) both;
 }
-.pi-modal-box.pi-closing { animation: piSheetDown 200ms cubic-bezier(.32,.72,0,1) both; }
+.pi-modal.pi-closing .pi-modal-sheet { animation: piSheetDown 215ms cubic-bezier(.32,.72,0,1) both; }
+.pi-modal-sheet-sm { max-width: 420px; }
+
 @media (min-width: 600px) {
-  .pi-modal-box {
-    border-radius: 18px;
-    width: min(96vw, 420px);
-    max-height: 92vh;
-    box-shadow: 0 16px 48px rgba(0,0,0,.25);
+  .pi-modal-sheet {
+    width: min(96vw, 500px);
+    max-height: calc(100dvh - 40px);
+    border-radius: 20px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, .28);
     animation: piScaleIn 160ms ease both;
   }
-  .pi-modal-box.pi-closing { animation: piScaleOut 150ms ease both; }
+  .pi-modal.pi-closing .pi-modal-sheet { animation: piScaleOut 150ms ease both; }
+  .pi-modal-sheet-sm { width: min(96vw, 400px); }
 }
-.pi-modal-box-sm { max-width: 340px; }
 
+/* header — never scrolls */
 .pi-modal-head {
+  flex: 0 0 auto;
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 14px 16px 10px;
   border-bottom: 1px solid #e8ecf4;
-  flex-shrink: 0;
 }
 .pi-modal-head h3 { margin: 0; font-size: 15px; }
 .pi-modal-close {
@@ -7348,8 +7373,21 @@ input:disabled { animation: none !important; transform: none !important; }
   cursor: pointer; color: #657089; padding: 4px 8px; line-height: 1;
   border-radius: 8px;
 }
-.pi-modal-close:hover { background: rgba(0,0,0,.06); }
-.pi-modal-body { padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
+.pi-modal-close:hover { background: rgba(0, 0, 0, .06); }
+
+/* body — ONLY this scrolls; header and footer stay fixed */
+.pi-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
 .pi-modal-body label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #657089; }
 .pi-modal-body label span { font-weight: 600; }
 .pi-modal-body input, .pi-modal-body select, .pi-modal-body textarea {
@@ -7370,28 +7408,30 @@ input:disabled { animation: none !important; transform: none !important; }
   background: #fff;
 }
 .pi-modal-body textarea { resize: vertical; min-height: 52px; }
+
+/* footer — never scrolls, home-indicator safe */
 .pi-modal-footer {
+  flex: 0 0 auto;
   display: flex;
   gap: 8px;
   padding: 10px 16px;
   padding-bottom: max(14px, env(safe-area-inset-bottom, 14px));
   border-top: 1px solid #e8ecf4;
-  flex-shrink: 0;
 }
 .pi-modal-footer button { flex: 1; }
-.pi-form-error { background: rgba(231,76,60,.1); color: #a93226; border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+
+.pi-form-error   { background: rgba(231,76,60,.1);  color: #a93226; border-radius: 8px; padding: 8px 10px; font-size: 13px; }
 .pi-form-warning { background: rgba(230,126,34,.1); color: #a04000; border-radius: 8px; padding: 8px 10px; font-size: 13px; }
 .req { color: var(--red, #d84c4c); }
 button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padding: 9px 18px; border-radius: 10px; font-weight: 700; font-size: 14px; cursor: pointer; }
 
-/* toast — safe-area aware */
+/* toast — above bottom-nav (bottom-nav ≈ z 100), below modal */
 .pi-toast {
   position: fixed;
   bottom: calc(76px + env(safe-area-inset-bottom, 0px));
   left: 50%;
   transform: translateX(-50%);
-  background: #172033;
-  color: #fff;
+  background: #172033; color: #fff;
   padding: 10px 18px;
   border-radius: 10px;
   font-size: 13px;
@@ -7406,23 +7446,28 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
   text-overflow: ellipsis;
 }
 
+/* reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .pi-modal, .pi-modal-sheet {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
+}
+
 /* dark theme */
 @media (prefers-color-scheme: dark) {
   .pi-card { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.09); }
-  .pi-modal-box { background: #1c2333; color: #e8ecf4; }
+  .pi-modal-sheet { background: #1c2333; color: #e8ecf4; }
   .pi-modal-head { border-bottom-color: rgba(255,255,255,.10); }
   .pi-modal-head h3 { color: #e8ecf4; }
   .pi-modal-close { color: #8899b4; }
   .pi-modal-close:hover { background: rgba(255,255,255,.08); }
   .pi-modal-body label { color: #8899b4; }
   .pi-modal-body input, .pi-modal-body select, .pi-modal-body textarea {
-    background: #263047;
-    border-color: rgba(255,255,255,.14);
-    color: #e8ecf4;
+    background: #263047; border-color: rgba(255,255,255,.14); color: #e8ecf4;
   }
   .pi-modal-body input:focus, .pi-modal-body select:focus, .pi-modal-body textarea:focus {
-    border-color: #3498db;
-    background: #172b40;
+    border-color: #3498db; background: #172b40;
   }
   .pi-modal-footer { border-top-color: rgba(255,255,255,.10); }
   .pi-toolbar input, .pi-toolbar select { background: #263047; border-color: rgba(255,255,255,.14); color: #e8ecf4; }
@@ -7431,7 +7476,7 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
   .pi-toast { background: #e8ecf4; color: #172033; }
 }
 :root[data-theme="dark"] .pi-card { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.09); }
-:root[data-theme="dark"] .pi-modal-box { background: #1c2333; color: #e8ecf4; }
+:root[data-theme="dark"] .pi-modal-sheet { background: #1c2333; color: #e8ecf4; }
 :root[data-theme="dark"] .pi-modal-head { border-bottom-color: rgba(255,255,255,.10); }
 :root[data-theme="dark"] .pi-modal-head h3 { color: #e8ecf4; }
 :root[data-theme="dark"] .pi-modal-close { color: #8899b4; }
@@ -7439,23 +7484,16 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
 :root[data-theme="dark"] .pi-modal-body label { color: #8899b4; }
 :root[data-theme="dark"] .pi-modal-body input,
 :root[data-theme="dark"] .pi-modal-body select,
-:root[data-theme="dark"] .pi-modal-body textarea {
-  background: #263047;
-  border-color: rgba(255,255,255,.14);
-  color: #e8ecf4;
-}
+:root[data-theme="dark"] .pi-modal-body textarea { background: #263047; border-color: rgba(255,255,255,.14); color: #e8ecf4; }
 :root[data-theme="dark"] .pi-modal-body input:focus,
 :root[data-theme="dark"] .pi-modal-body select:focus,
-:root[data-theme="dark"] .pi-modal-body textarea:focus {
-  border-color: #3498db;
-  background: #172b40;
-}
+:root[data-theme="dark"] .pi-modal-body textarea:focus { border-color: #3498db; background: #172b40; }
 :root[data-theme="dark"] .pi-modal-footer { border-top-color: rgba(255,255,255,.10); }
 :root[data-theme="dark"] .pi-toolbar input,
 :root[data-theme="dark"] .pi-toolbar select { background: #263047; border-color: rgba(255,255,255,.14); color: #e8ecf4; }
 :root[data-theme="dark"] .pi-toast { background: #e8ecf4; color: #172033; }
 :root[data-theme="light"] .pi-card { background: #fff; border-color: rgba(0,0,0,.10); }
-:root[data-theme="light"] .pi-modal-box { background: #fff; color: #172033; }
+:root[data-theme="light"] .pi-modal-sheet { background: #fff; color: #172033; }
 :root[data-theme="light"] .pi-modal-body input,
 :root[data-theme="light"] .pi-modal-body select,
 :root[data-theme="light"] .pi-modal-body textarea { background: #f6f7fb; border-color: #e0e4ef; color: #172033; }

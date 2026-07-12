@@ -1,12 +1,31 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-12 (v7.0.84)_
+_Последнее обновление: 2026-07-12 (v7.0.85)_
 
 ---
 
 ## Что сделано
 
-### v7.0.84 — Fix: фильтрация меню питания по ребёнку, смене и филиалу (текущая)
+### v7.0.85 — Fix: позиционирование модальных окон на iPhone (текущая)
+
+**Причина бага:** модалки платёжных черновиков были вложены в section отчётов с CSS-анимациями. `position: fixed` в iOS Telegram WebApp фиксировалось к анимированному ancestor, а не к viewport → форма уходила за экран, overlay не покрывал экран полностью.
+
+**Исправления:**
+- Три модалки перенесены в `<div id="piModalRoot">` — прямой потомок `<body>` (DOM portal)
+- `.pi-modal` = сам backdrop: `position: fixed; inset: 0; width: 100dvw; height: 100dvh; z-index: 10000; background: rgba(8,14,27,.62)`
+- `.pi-modal-sheet` (переименован с `.pi-modal-box`): `flex-direction: column; overflow: hidden`; body единственная прокручиваемая часть
+- `.pi-modal-overlay` удалён из HTML (больше не нужен)
+- iOS scroll lock: `piLockPageScroll()` — `body.style.position="fixed"; body.style.top="-${scrollY}px"`; `piUnlockPageScroll()` — `window.scrollTo(0, piLockedScrollY)`
+- `piOpenModalCount` — предотвращает преждевременный разлок при вложенных open/close
+- Backdrop click: только если `e.target === modal` (не `.pi-modal-sheet`)
+- `@media (prefers-reduced-motion: reduce)`, `env(safe-area-inset-bottom)` в footer
+- Cache-bust: `v=7.0.85`
+
+**Что НЕ менялось:** bePaid, payment_intents backend, storage schema, food module, reports, webhook, роли, production DB, .env
+
+---
+
+### v7.0.84 — Fix: фильтрация меню питания по ребёнку, смене и филиалу
 
 **Причина бага:** `food_active_menus()` возвращал ALL published меню без фильтрации по ребёнку, дате и локации. Родитель видел меню от 01.07 для ребёнка из смены 13.07–17.07.
 
