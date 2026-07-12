@@ -241,12 +241,26 @@ class BePaidClient:
 
     @staticmethod
     def erip_order_id(pi_row_id: int) -> str:
-        """Build 12-digit numeric order_id from the payment_intent table row ID.
+        """Build a 12-digit numeric order_id that does NOT start with zero.
+
+        bePaid rejects order_id values that begin with "0" (HTTP 422:
+        "order_id should not begin with 0"). Format: "1" + zero-padded row ID
+        (11 digits), e.g. pi_row_id=8 → "100000000008".
+
+        Constraints:
+        - Exactly 12 digits.
+        - First digit is always "1" (never 0).
+        - pi_row_id must be positive and ≤ 99_999_999_999.
 
         Official constraint: max 12 digits (integer or numeric string).
         Source: https://docs.bepaid.by/en/payment_methods/apms/erip/create_payment/
         """
-        return f"{int(pi_row_id):012d}"
+        row_id = int(pi_row_id)
+        if row_id <= 0:
+            raise ValueError(f"pi_row_id must be positive, got {row_id}")
+        if row_id > 99_999_999_999:
+            raise ValueError(f"pi_row_id {row_id} is too large for bePaid order_id (max 99_999_999_999)")
+        return f"1{row_id:011d}"
 
 
 def build_erip_description(intent: dict) -> str:

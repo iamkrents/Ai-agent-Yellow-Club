@@ -1,12 +1,23 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-12 (v7.0.82)_
+_Последнее обновление: 2026-07-12 (v7.0.82.1)_
 
 ---
 
 ## Что сделано
 
-### v7.0.82 — Укрепление идемпотентности bePaid ERIP (текущая)
+### v7.0.82.1 — Hotfix: формат order_id для bePaid (текущая)
+- **Причина:** bePaid возвращал HTTP 422 `order_id: ["should not begin with 0"]` при `pi_row_id` < 10
+- **Старый формат:** `f"{pi_row_id:012d}"` → `"000000000008"` для `pi_row_id=8` — отклонено bePaid
+- **Новый формат:** `f"1{pi_row_id:011d}"` → `"100000000008"` — ровно 12 цифр, первая всегда `1`
+- **Счёт НЕ был создан** при 422 — atomic claim снимался через `payment_intent_release_claim`, статус возвращался в `draft`/`ready`
+- **После деплоя:** повторное создание счёта из существующего черновика работает штатно
+- `account_number` не менялся (формула `{mk_user_id}{YYMM}{pi_row_id}` корректна и уникальна)
+- Frontend не менялся, cache-bust остался `v=7.0.82`
+- Добавлены регрессионные тесты: `erip_order_id(8) == "100000000008"`, `not startswith("0")`, ValueError для `<=0` и `>99_999_999_999`
+- Всего тестов: 47 (все проходят)
+
+### v7.0.82 — Укрепление идемпотентности bePaid ERIP
 - Исправлен endpoint: `POST https://api.bepaid.by/beyag/payments` (подтверждён по официальной документации)
 - ERIP-данные теперь извлекаются из `transaction.erip` (не `transaction.payment_method`)
 - `account_number` включает `pi_row_id`: `{mk_user_id}{YYMM}{pi_row_id}` — уникальность per-intent гарантирована

@@ -40,7 +40,7 @@ def _success_body(
     amount: int = 5000,
     currency: str = "BYN",
     tracking_id: str = "ycpi_202607_1",
-    order_id: str = "000000000001",
+    order_id: str = "100000000001",
     account_number: str = "88756582607",
 ) -> dict:
     return {
@@ -75,10 +75,35 @@ class TestBePaidAccountNumber(unittest.TestCase):
         result = BePaidClient.erip_account_number(12345, "", 1)
         self.assertEqual(result, "123451")
 
-    def test_erip_order_id_pads_to_12(self):
-        self.assertEqual(BePaidClient.erip_order_id(1), "000000000001")
-        self.assertEqual(BePaidClient.erip_order_id(999), "000000000999")
-        self.assertEqual(BePaidClient.erip_order_id(123456789012), "123456789012")
+    def test_erip_order_id_specific_values(self):
+        """Regression: exact expected values after hotfix v7.0.82.1."""
+        self.assertEqual(BePaidClient.erip_order_id(1),  "100000000001")
+        self.assertEqual(BePaidClient.erip_order_id(8),  "100000000008")
+        self.assertEqual(BePaidClient.erip_order_id(42), "100000000042")
+        self.assertEqual(BePaidClient.erip_order_id(999), "100000000999")
+
+    def test_erip_order_id_format(self):
+        """order_id must be exactly 12 digits, never start with 0."""
+        result = BePaidClient.erip_order_id(8)
+        self.assertEqual(len(result), 12)
+        self.assertTrue(result.isdigit())
+        self.assertFalse(result.startswith("0"),
+                         "bePaid rejects order_id starting with 0 (HTTP 422)")
+
+    def test_erip_order_id_unique_per_row(self):
+        self.assertNotEqual(BePaidClient.erip_order_id(1), BePaidClient.erip_order_id(2))
+
+    def test_erip_order_id_invalid_zero_raises(self):
+        with self.assertRaises(ValueError):
+            BePaidClient.erip_order_id(0)
+
+    def test_erip_order_id_negative_raises(self):
+        with self.assertRaises(ValueError):
+            BePaidClient.erip_order_id(-1)
+
+    def test_erip_order_id_too_large_raises(self):
+        with self.assertRaises(ValueError):
+            BePaidClient.erip_order_id(100_000_000_000)
 
     def test_erip_account_number_unique_per_user_and_period(self):
         a1 = BePaidClient.erip_account_number(100, "2026-07", 1)
@@ -86,9 +111,6 @@ class TestBePaidAccountNumber(unittest.TestCase):
         a3 = BePaidClient.erip_account_number(100, "2026-08", 1)
         self.assertNotEqual(a1, a2)
         self.assertNotEqual(a1, a3)
-
-    def test_erip_order_id_unique_per_row(self):
-        self.assertNotEqual(BePaidClient.erip_order_id(1), BePaidClient.erip_order_id(2))
 
     def test_same_student_same_month_two_intents_have_different_account_numbers(self):
         """Same student + same month but different pi_row_id must yield different account numbers."""
@@ -125,7 +147,7 @@ class TestBePaidPayloadBuilder(unittest.TestCase):
             description="Жёлтый Клуб — оплата",
             account_number="88756582607",
             tracking_id="ycpi_202607_1",
-            order_id="000000000001",
+            order_id="100000000001",
             notification_url="https://example.com/webhook/erip/secret",
         )
         defaults.update(kw)
@@ -167,8 +189,14 @@ class TestBePaidPayloadBuilder(unittest.TestCase):
         self.assertNotIn("customer", p["request"])
 
     def test_order_id_in_payload(self):
-        p = self._build(order_id="000000000042")
-        self.assertEqual(p["request"]["order_id"], "000000000042")
+        p = self._build(order_id="100000000042")
+        self.assertEqual(p["request"]["order_id"], "100000000042")
+
+    def test_order_id_payload_regression_pi_row_id_8(self):
+        """Regression v7.0.82.1: pi_row_id=8 must produce '100000000008', not '000000000008'."""
+        order_id = BePaidClient.erip_order_id(8)
+        p = self._build(order_id=order_id)
+        self.assertEqual(p["request"]["order_id"], "100000000008")
 
     def test_official_endpoint_constant(self):
         self.assertEqual(BEPAID_ERIP_ENDPOINT, "https://api.bepaid.by/beyag/payments")
@@ -189,7 +217,7 @@ class TestBePaidClientCreateErip(unittest.TestCase):
             description="Тест",
             account_number="88756582607",
             tracking_id="ycpi_202607_1",
-            order_id="000000000001",
+            order_id="100000000001",
             notification_url="https://example.com/webhook/erip/tok",
         )
 
@@ -214,7 +242,7 @@ class TestBePaidClientCreateErip(unittest.TestCase):
                 "amount": 5000,
                 "currency": "BYN",
                 "tracking_id": "ycpi_202607_1",
-                "order_id": "000000000001",
+                "order_id": "100000000001",
                 "erip": {
                     "account_number": "ERIP_ACCT",
                     "qr_code_raw": "QR_RAW_DATA",
@@ -414,21 +442,21 @@ class TestStorageAtomicClaim(unittest.TestCase):
 
     def test_claim_succeeds_for_draft(self):
         claimed = self.storage.payment_intent_claim_bepaid_creation(
-            "pid_draft", account_number="1234260742", order_id="000000000042", tracking_id="pid_draft"
+            "pid_draft", account_number="1234260742", order_id="100000000042", tracking_id="pid_draft"
         )
         self.assertTrue(claimed)
         self.assertEqual(self._get_status("pid_draft"), "bepaid_creating")
 
     def test_claim_succeeds_for_ready(self):
         claimed = self.storage.payment_intent_claim_bepaid_creation(
-            "pid_ready", account_number="1234260743", order_id="000000000043", tracking_id="pid_ready"
+            "pid_ready", account_number="1234260743", order_id="100000000043", tracking_id="pid_ready"
         )
         self.assertTrue(claimed)
         self.assertEqual(self._get_status("pid_ready"), "bepaid_creating")
 
     def test_claim_fails_when_already_creating(self):
         claimed = self.storage.payment_intent_claim_bepaid_creation(
-            "pid_creating", account_number="1234260744", order_id="000000000044", tracking_id="pid_creating"
+            "pid_creating", account_number="1234260744", order_id="100000000044", tracking_id="pid_creating"
         )
         self.assertFalse(claimed)
         self.assertEqual(self._get_status("pid_creating"), "bepaid_creating")
@@ -436,13 +464,13 @@ class TestStorageAtomicClaim(unittest.TestCase):
     def test_claim_fails_when_bepaid_uid_set(self):
         """Atomic guard: COALESCE(bepaid_uid,'')='' prevents double-creation."""
         claimed = self.storage.payment_intent_claim_bepaid_creation(
-            "pid_with_uid", account_number="1234260745", order_id="000000000045", tracking_id="pid_with_uid"
+            "pid_with_uid", account_number="1234260745", order_id="100000000045", tracking_id="pid_with_uid"
         )
         self.assertFalse(claimed)
 
     def test_claim_fails_when_not_draft_or_ready(self):
         claimed = self.storage.payment_intent_claim_bepaid_creation(
-            "pid_cancelled", account_number="1234260746", order_id="000000000046", tracking_id="pid_cancelled"
+            "pid_cancelled", account_number="1234260746", order_id="100000000046", tracking_id="pid_cancelled"
         )
         self.assertFalse(claimed)
         self.assertEqual(self._get_status("pid_cancelled"), "cancelled")
@@ -450,24 +478,24 @@ class TestStorageAtomicClaim(unittest.TestCase):
     def test_two_claims_only_one_succeeds(self):
         """Simulate two concurrent callers — only one may claim."""
         c1 = self.storage.payment_intent_claim_bepaid_creation(
-            "pid_draft", account_number="A1", order_id="000000000001", tracking_id="pid_draft"
+            "pid_draft", account_number="A1", order_id="100000000001", tracking_id="pid_draft"
         )
         c2 = self.storage.payment_intent_claim_bepaid_creation(
-            "pid_draft", account_number="A1", order_id="000000000001", tracking_id="pid_draft"
+            "pid_draft", account_number="A1", order_id="100000000001", tracking_id="pid_draft"
         )
         self.assertTrue(c1)
         self.assertFalse(c2)
 
     def test_mark_requires_check_sets_status(self):
         self.storage.payment_intent_claim_bepaid_creation(
-            "pid_draft", account_number="B1", order_id="000000000001", tracking_id="pid_draft"
+            "pid_draft", account_number="B1", order_id="100000000001", tracking_id="pid_draft"
         )
         self.storage.payment_intent_mark_requires_check("pid_draft", "timeout")
         self.assertEqual(self._get_status("pid_draft"), "bepaid_requires_check")
 
     def test_release_claim_restores_original_status(self):
         self.storage.payment_intent_claim_bepaid_creation(
-            "pid_draft", account_number="C1", order_id="000000000001", tracking_id="pid_draft"
+            "pid_draft", account_number="C1", order_id="100000000001", tracking_id="pid_draft"
         )
         self.storage.payment_intent_release_claim("pid_draft", "draft", "4xx_error")
         self.assertEqual(self._get_status("pid_draft"), "draft")
