@@ -583,11 +583,13 @@ class Storage:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pi_status ON payment_intents(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pi_bepaid_uid ON payment_intents(bepaid_uid)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pi_mk_payment ON payment_intents(mk_payment_id)")
-        # Migrations for v7.0.81 columns (safe: no-op if already present)
+        # Migrations: safe no-op if columns already present
         self._ensure_column(conn, "payment_intents", "bepaid_account_number", "bepaid_account_number TEXT")
         self._ensure_column(conn, "payment_intents", "bepaid_created_at", "bepaid_created_at TEXT")
         self._ensure_column(conn, "payment_intents", "bepaid_error", "bepaid_error TEXT")
         self._ensure_column(conn, "payment_intents", "bepaid_request_attempts", "bepaid_request_attempts INTEGER DEFAULT 0")
+        # v7.0.82
+        self._ensure_column(conn, "payment_intents", "bepaid_qr_code_raw", "bepaid_qr_code_raw TEXT")
 
     def _init_bepaid_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -4696,37 +4698,88 @@ class Storage:
             "total": sum(stats.values()),
             "draft": stats.get("draft", 0),
             "ready": stats.get("ready", 0),
+            "bepaid_creating": stats.get("bepaid_creating", 0),
             "bepaid_created": stats.get("bepaid_created", 0),
+            "bepaid_requires_check": stats.get("bepaid_requires_check", 0),
             "paid": stats.get("paid", 0),
             "posted_to_moyklass": stats.get("posted_to_moyklass", 0),
             "cancelled": stats.get("cancelled", 0),
             "error": stats.get("error", 0),
         }
 
-    def payment_intent_begin_bepaid_attempt(
+    def payment_intent_claim_bepaid_creation(
         self,
         public_id: str,
         account_number: str,
         order_id: str,
         tracking_id: str,
-    ) -> None:
-        """Record that a bePaid creation attempt has started. Increments attempt counter."""
+    ) -> bool:
+        """Atomically claim this intent for bePaid invoice creation.
+
+        Sets status='bepaid_creating' only if current status is draft/ready AND
+        bepaid_uid is not yet set. Returns True if exactly one row was updated
+        (claim succeeded). Concurrent callers get False and must not call bePaid.
+        """
         from utils import now_iso
         now = now_iso()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE payment_intents
+                SET status                  = 'bepaid_creating',
+                    bepaid_account_number   = ?,
+                    bepaid_order_id         = ?,
+                    bepaid_tracking_id      = ?,
+                    bepaid_shop_type        = 'erip',
+                    bepaid_request_attempts = COALESCE(bepaid_request_attempts, 0) + 1,
+                    bepaid_created_at       = ?,
+                    updated_at              = ?
+                WHERE public_id = ?
+                  AND status IN ('draft', 'ready')
+                  AND COALESCE(bepaid_uid, '') = ''
+                """,
+                (account_number, order_id, tracking_id, now, now, public_id),
+            )
+            return cursor.rowcount == 1
+
+    def payment_intent_mark_requires_check(self, public_id: str, error: str) -> None:
+        """Transition to bepaid_requires_check after an ambiguous bePaid result.
+
+        Used after: timeout, ConnectionError, HTTP 5xx, or HTTP 2xx without UID.
+        Blocks further creation attempts until manually resolved.
+        """
+        from utils import now_iso
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE payment_intents
-                SET bepaid_account_number = COALESCE(bepaid_account_number, ?),
-                    bepaid_order_id       = COALESCE(bepaid_order_id, ?),
-                    bepaid_tracking_id    = COALESCE(bepaid_tracking_id, ?),
-                    bepaid_shop_type      = 'erip',
-                    bepaid_request_attempts = COALESCE(bepaid_request_attempts, 0) + 1,
-                    bepaid_created_at     = ?,
-                    updated_at            = ?
-                WHERE public_id = ? AND status IN ('draft', 'ready')
+                SET status      = 'bepaid_requires_check',
+                    bepaid_error = ?,
+                    updated_at  = ?
+                WHERE public_id = ?
                 """,
-                (account_number, order_id, tracking_id, now, now, public_id),
+                (str(error)[:500], now_iso(), public_id),
+            )
+
+    def payment_intent_release_claim(
+        self, public_id: str, original_status: str, error: str = ""
+    ) -> None:
+        """Release a bepaid_creating claim back to original status after a definitive 4xx error.
+
+        Only reverts if status is still 'bepaid_creating' (no-op otherwise).
+        """
+        from utils import now_iso
+        safe_status = original_status if original_status in ("draft", "ready") else "ready"
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE payment_intents
+                SET status      = ?,
+                    bepaid_error = ?,
+                    updated_at  = ?
+                WHERE public_id = ? AND status = 'bepaid_creating'
+                """,
+                (safe_status, str(error)[:500], now_iso(), public_id),
             )
 
     def payment_intent_save_bepaid_success(
@@ -4738,37 +4791,30 @@ class Storage:
         bepaid_account_number: str,
         bepaid_payment_url: str,
         bepaid_status: str,
+        bepaid_qr_code_raw: str = "",
     ) -> Optional[dict]:
-        """Save successful bePaid invoice and transition status to bepaid_created."""
+        """Save confirmed bePaid invoice and transition bepaid_creating → bepaid_created."""
         from utils import now_iso
         now = now_iso()
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE payment_intents
-                SET status              = 'bepaid_created',
-                    bepaid_uid          = ?,
-                    bepaid_order_id     = ?,
+                SET status                = 'bepaid_created',
+                    bepaid_uid            = ?,
+                    bepaid_order_id       = ?,
                     bepaid_account_number = ?,
-                    bepaid_payment_url  = ?,
-                    bepaid_status       = ?,
-                    bepaid_error        = NULL,
-                    updated_at          = ?
-                WHERE public_id = ? AND status IN ('draft', 'ready')
+                    bepaid_payment_url    = ?,
+                    bepaid_status         = ?,
+                    bepaid_qr_code_raw    = ?,
+                    bepaid_error          = NULL,
+                    updated_at            = ?
+                WHERE public_id = ? AND status = 'bepaid_creating'
                 """,
                 (bepaid_uid, bepaid_order_id, bepaid_account_number,
-                 bepaid_payment_url, bepaid_status, now, public_id),
+                 bepaid_payment_url, bepaid_status, bepaid_qr_code_raw, now, public_id),
             )
             row = conn.execute(
                 "SELECT * FROM payment_intents WHERE public_id = ?", (public_id,)
             ).fetchone()
         return dict(row) if row else None
-
-    def payment_intent_save_bepaid_error(self, public_id: str, error: str) -> None:
-        """Record a bePaid error without changing the payment intent status."""
-        from utils import now_iso
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE payment_intents SET bepaid_error = ?, updated_at = ? WHERE public_id = ?",
-                (str(error)[:500], now_iso(), public_id),
-            )

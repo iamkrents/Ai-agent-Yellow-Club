@@ -7253,13 +7253,32 @@ input:disabled { animation: none !important; transform: none !important; }
 }
 .pi-empty { text-align: center; color: var(--muted); font-size: 13px; padding: 24px 0; }
 /* status chips for pi */
-.chip-pi-draft   { background: rgba(0,0,0,.07); color: var(--muted); }
-.chip-pi-ready   { background: rgba(52,152,219,.13); color: #1a6da0; }
-.chip-pi-bepaid  { background: rgba(155,89,182,.13); color: #6c3483; }
-.chip-pi-paid    { background: rgba(39,174,96,.15); color: #1e8449; }
-.chip-pi-posted  { background: rgba(39,174,96,.22); color: #145a32; }
-.chip-pi-cancel  { background: rgba(0,0,0,.06); color: var(--muted); }
-.chip-pi-error   { background: rgba(231,76,60,.13); color: #a93226; }
+.chip-pi-draft          { background: rgba(0,0,0,.07); color: var(--muted); }
+.chip-pi-ready          { background: rgba(52,152,219,.13); color: #1a6da0; }
+.chip-pi-creating       { background: rgba(230,126,34,.13); color: #a04000; }
+.chip-pi-bepaid         { background: rgba(155,89,182,.13); color: #6c3483; }
+.chip-pi-requires-check { background: rgba(231,76,60,.13); color: #a93226; }
+.chip-pi-paid           { background: rgba(39,174,96,.15); color: #1e8449; }
+.chip-pi-posted         { background: rgba(39,174,96,.22); color: #145a32; }
+.chip-pi-cancel         { background: rgba(0,0,0,.06); color: var(--muted); }
+.chip-pi-error          { background: rgba(231,76,60,.13); color: #a93226; }
+.pi-bepaid-creating {
+  font-size: 12px;
+  color: #a04000;
+  background: rgba(230,126,34,.10);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-top: 6px;
+}
+.pi-bepaid-requires-check {
+  font-size: 12px;
+  color: #7b241c;
+  background: rgba(231,76,60,.10);
+  border: 1px solid rgba(231,76,60,.25);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-top: 6px;
+}
 /* purpose chips */
 .chip-purpose-debt { background: rgba(230,126,34,.12); color: #a04000; }
 .chip-purpose-adv  { background: rgba(155,89,182,.12); color: #6c3483; }

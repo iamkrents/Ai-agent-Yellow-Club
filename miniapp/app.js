@@ -66,7 +66,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.40");
+console.log("MiniApp version: v7.0.82");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -11449,13 +11449,15 @@ const PI_PURPOSE_LABELS = {
 const PI_METHOD_LABELS = { erip: "ЕРИП", acquiring: "Эквайринг", manual: "Ручной" };
 
 const PI_STATUS_LABELS = {
-  draft:              { label: "Черновик",     cls: "chip-pi-draft" },
-  ready:              { label: "Готов",         cls: "chip-pi-ready" },
-  bepaid_created:     { label: "В bePaid",      cls: "chip-pi-bepaid" },
-  paid:               { label: "Оплачен",       cls: "chip-pi-paid" },
-  posted_to_moyklass: { label: "В МойКласс",   cls: "chip-pi-posted" },
-  cancelled:          { label: "Отменён",       cls: "chip-pi-cancel" },
-  error:              { label: "Ошибка",        cls: "chip-pi-error" },
+  draft:                  { label: "Черновик",           cls: "chip-pi-draft" },
+  ready:                  { label: "Готов",               cls: "chip-pi-ready" },
+  bepaid_creating:        { label: "Создаётся...",        cls: "chip-pi-creating" },
+  bepaid_created:         { label: "В bePaid",            cls: "chip-pi-bepaid" },
+  bepaid_requires_check:  { label: "Требует проверки",    cls: "chip-pi-requires-check" },
+  paid:                   { label: "Оплачен",             cls: "chip-pi-paid" },
+  posted_to_moyklass:     { label: "В МойКласс",         cls: "chip-pi-posted" },
+  cancelled:              { label: "Отменён",             cls: "chip-pi-cancel" },
+  error:                  { label: "Ошибка",              cls: "chip-pi-error" },
 };
 
 const PI_PURPOSE_CLS = {
@@ -11514,13 +11516,16 @@ async function loadPaymentIntents() {
 function renderPaymentIntentStats(el, stats) {
   if (!el) return;
   const chips = [
-    { key: "total", label: "Всего" },
-    { key: "draft", label: "Черновик" },
-    { key: "ready", label: "Готово" },
-    { key: "paid", label: "Оплачено" },
-    { key: "posted_to_moyklass", label: "В МК" },
-    { key: "cancelled", label: "Отменено" },
-    { key: "error", label: "Ошибка" },
+    { key: "total",                 label: "Всего" },
+    { key: "draft",                 label: "Черновик" },
+    { key: "ready",                 label: "Готово" },
+    { key: "bepaid_creating",       label: "Создаётся" },
+    { key: "bepaid_created",        label: "В bePaid" },
+    { key: "bepaid_requires_check", label: "Проверка" },
+    { key: "paid",                  label: "Оплачено" },
+    { key: "posted_to_moyklass",    label: "В МК" },
+    { key: "cancelled",             label: "Отменено" },
+    { key: "error",                 label: "Ошибка" },
   ];
   el.innerHTML = chips.map(c => {
     const v = stats[c.key] ?? 0;
@@ -11573,9 +11578,24 @@ function renderPaymentIntentCard(pi) {
   const canCreateBePaid = pi.payment_method === "erip"
     && ["draft", "ready"].includes(pi.status)
     && !pi.bepaid_uid
+    && !["bepaid_creating", "bepaid_requires_check"].includes(pi.status)
     && canUsePaymentIntents();
   const bePaidBtn = canCreateBePaid
     ? `<button class="primary" style="font-size:12px;padding:4px 10px" onclick="openBePaidConfirm('${escapeHtml(pi.public_id)}','${cancelSafeName}',${amountVal})">Выставить счёт bePaid</button>`
+    : "";
+
+  const bePaidCreatingBlock = pi.status === "bepaid_creating"
+    ? `<div class="pi-bepaid-creating">⏳ Счёт bePaid создаётся... Обновите страницу через несколько секунд.</div>`
+    : "";
+
+  const bePaidRequiresCheckBlock = pi.status === "bepaid_requires_check"
+    ? `<div class="pi-bepaid-requires-check">
+        <strong>Требуется проверка в bePaid</strong>
+        <div style="font-size:11px;margin-top:4px">Статус счёта неизвестен. Проверьте операцию вручную в личном кабинете bePaid до создания нового счёта.</div>
+        ${pi.bepaid_order_id ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">order_id: ${escapeHtml(pi.bepaid_order_id)}</div>` : ""}
+        ${pi.bepaid_tracking_id ? `<div style="font-size:10px;color:var(--muted)">tracking_id: ${escapeHtml(pi.bepaid_tracking_id)}</div>` : ""}
+        ${pi.bepaid_account_number ? `<div style="font-size:10px;color:var(--muted)">account_number: ${escapeHtml(pi.bepaid_account_number)}</div>` : ""}
+       </div>`
     : "";
 
   const bePaidInfo = pi.bepaid_uid
@@ -11601,7 +11621,7 @@ function renderPaymentIntentCard(pi) {
     <div class="pi-card-meta">
       ${statusChip}${purposeChip}${period}${method}
     </div>
-    ${comment}${cancelInfo}${bePaidInfo}
+    ${comment}${cancelInfo}${bePaidCreatingBlock}${bePaidRequiresCheckBlock}${bePaidInfo}
     <div class="pi-card-footer">${bePaidBtn}${cancelBtn}</div>
     <div class="pi-card-id">${escapeHtml(pi.public_id)} · mk_user_id: ${pi.mk_user_id} · ${createdAt} ${createdBy}</div>
   </div>`;

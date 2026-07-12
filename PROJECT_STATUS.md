@@ -1,12 +1,27 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-12 (v7.0.81)_
+_Последнее обновление: 2026-07-12 (v7.0.82)_
 
 ---
 
 ## Что сделано
 
-### v7.0.81 — Выставление счёта bePaid ERIP из платёжного черновика (текущая)
+### v7.0.82 — Укрепление идемпотентности bePaid ERIP (текущая)
+- Исправлен endpoint: `POST https://api.bepaid.by/beyag/payments` (подтверждён по официальной документации)
+- ERIP-данные теперь извлекаются из `transaction.erip` (не `transaction.payment_method`)
+- `account_number` включает `pi_row_id`: `{mk_user_id}{YYMM}{pi_row_id}` — уникальность per-intent гарантирована
+- Атомарный захват: `UPDATE ... WHERE status IN ('draft','ready') AND COALESCE(bepaid_uid,'')=''` + `rowcount==1`
+- Новые статусы: `bepaid_creating` (промежуточный) и `bepaid_requires_check` (требует ручной проверки)
+- Timeout / ConnectionError / HTTP 5xx / пустой UID → `bepaid_requires_check` (повторное создание заблокировано)
+- Валидация ответа bePaid: UID, amount, currency, tracking_id, order_id — несовпадение → `bepaid_requires_check`
+- Все 4 конфига обязательны до вызова bePaid: `BEPAID_PUBLIC_BASE_URL`, `BEPAID_WEBHOOK_PATH_SECRET`, `BEPAID_ERIP_SHOP_ID`, `BEPAID_ERIP_SECRET_KEY`
+- `notification_url` всегда передаётся в запросе
+- Новая колонка `bepaid_qr_code_raw TEXT`, `qr_code_raw` сохраняется из `transaction.erip.qr_code_raw`
+- UI: кнопка скрыта при `bepaid_creating` / `bepaid_requires_check`; предупреждающий блок при `bepaid_requires_check`
+- 42 unit-теста (нет реальных HTTP-запросов), в том числе storage-тесты с in-memory SQLite
+- Cache-bust: `v=7.0.82`
+
+### v7.0.81 — Выставление счёта bePaid ERIP из платёжного черновика
 - Новый модуль `bepaid_client.py`: `BePaidClient`, `build_erip_description`, статик-хелперы (`erip_account_number`, `erip_order_id`, `build_erip_payload`)
 - Endpoint `POST /api/payments/intents/{public_id}/create-bepaid` — создаёт ERIP-счёт в bePaid
 - Идемпотентность: если `bepaid_uid` уже выставлен → возвращает существующие данные

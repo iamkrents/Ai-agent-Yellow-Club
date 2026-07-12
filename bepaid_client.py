@@ -1,8 +1,10 @@
 """
 bePaid merchant API client for Yellow Club AI Agent.
 
+Official API docs: https://docs.bepaid.by/en/payment_methods/apms/erip/create_payment/
+
 Security: Shop ID and Secret Key are passed via constructor from Settings;
-they are never logged. HTTP Basic auth credentials are not persisted or printed.
+they are never logged or included in the request body.
 """
 from __future__ import annotations
 
@@ -14,7 +16,9 @@ import requests
 
 log = logging.getLogger(__name__)
 
-BEPAID_ERIP_ENDPOINT = "https://api.bepaid.by/beyag/transactions/payments"
+# Official bePaid ERIP endpoint.
+# Source: https://docs.bepaid.by/en/payment_methods/apms/erip/create_payment/
+BEPAID_ERIP_ENDPOINT = "https://api.bepaid.by/beyag/payments"
 
 _PURPOSE_MAP: dict[str, str] = {
     "current_month": "Текущий месяц",
@@ -30,6 +34,10 @@ _MONTH_RU = [
     "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
 ]
 
+# Official bePaid constraint: account_number max 30 characters.
+# Warning from docs: a new request with the same account_number expires the previous invoice.
+BEPAID_ACCOUNT_NUMBER_MAX_LEN = 30
+
 
 @dataclass
 class BePaidResult:
@@ -37,6 +45,10 @@ class BePaidResult:
     http_status: int
     data: dict = field(default_factory=dict)
     error: str = ""
+    # True when the invoice may or may not have been created:
+    # - requests.Timeout
+    # - requests.ConnectionError
+    # - HTTP 5xx
     requires_check: bool = False
 
     def as_dict(self) -> dict:
@@ -51,8 +63,10 @@ class BePaidResult:
 
 class BePaidClient:
     """
-    Client for bePaid merchant API.
+    Client for bePaid merchant API (ERIP payments).
     Credentials are kept only in memory and never logged.
+
+    Reference: https://docs.bepaid.by/en/payment_methods/apms/erip/create_payment/
     """
 
     def __init__(self, shop_id: str, secret_key: str, timeout: int = 30) -> None:
@@ -81,6 +95,9 @@ class BePaidClient:
         except requests.Timeout:
             log.warning("bePaid timeout url=%s timeout=%ss", url, self._timeout)
             return BePaidResult(ok=False, http_status=0, error="timeout", requires_check=True)
+        except requests.ConnectionError as exc:
+            log.warning("bePaid connection_error url=%s type=%s", url, type(exc).__name__)
+            return BePaidResult(ok=False, http_status=0, error=f"connection_error:{type(exc).__name__}", requires_check=True)
         except requests.RequestException as exc:
             log.warning("bePaid network error url=%s type=%s", url, type(exc).__name__)
             return BePaidResult(ok=False, http_status=0, error=f"network_error:{type(exc).__name__}")
@@ -92,20 +109,37 @@ class BePaidClient:
         except Exception:
             raw = {}
 
+        # HTTP 5xx: invoice may or may not have been created
+        if resp.status_code >= 500:
+            msg = f"HTTP {resp.status_code}"
+            if isinstance(raw, dict):
+                errs = raw.get("errors") or raw.get("message") or raw.get("error")
+                if isinstance(errs, str):
+                    msg = errs[:120]
+                elif isinstance(errs, dict):
+                    msg = "; ".join(f"{k}: {v}" for k, v in list(errs.items())[:2])[:120]
+            return BePaidResult(
+                ok=False, http_status=resp.status_code,
+                error=f"server_error:{msg}", requires_check=True,
+            )
+
         if resp.status_code in (200, 201):
             outer = raw if isinstance(raw, dict) else {}
             tx = outer.get("transaction") or {}
             if not isinstance(tx, dict):
                 tx = {}
-            pm = tx.get("payment_method") or {}
-            if not isinstance(pm, dict):
-                pm = {}
+            # Per official docs, ERIP data lives under transaction.erip (not payment_method).
+            # Source: https://docs.bepaid.by/en/payment_methods/apms/erip/create_payment/
+            erip = tx.get("erip") or {}
+            if not isinstance(erip, dict):
+                erip = {}
             data: dict[str, Any] = {
                 "transaction_uid": tx.get("uid"),
                 "status": tx.get("status"),
-                "payment_method_type": pm.get("type"),
-                "erip_account_number": pm.get("account_number"),
-                "qr_code_raw": pm.get("qr_code_raw") or pm.get("qr"),
+                "payment_method_type": tx.get("payment_method_type"),
+                "erip_account_number": erip.get("account_number"),
+                "qr_code_raw": erip.get("qr_code_raw"),
+                "qr_code": erip.get("qr_code"),
                 "pay_url": tx.get("pay_url") or tx.get("payment_url"),
                 "order_id": tx.get("order_id"),
                 "tracking_id": tx.get("tracking_id"),
@@ -115,7 +149,8 @@ class BePaidClient:
             }
             return BePaidResult(ok=True, http_status=resp.status_code, data=data)
 
-        errors: Any = raw.get("errors") or raw.get("error") if isinstance(raw, dict) else None
+        # HTTP 4xx: definitive client-side error, invoice was NOT created
+        errors: Any = raw.get("errors") or raw.get("error") or raw.get("message") if isinstance(raw, dict) else None
         if isinstance(errors, list):
             msg = "; ".join(str(e)[:120] for e in errors[:3])
         elif isinstance(errors, dict):
@@ -135,17 +170,22 @@ class BePaidClient:
         account_number: str,
         tracking_id: str,
         order_id: str,
-        notification_url: str = "",
+        notification_url: str,
         customer_first_name: str = "",
         customer_last_name: str = "",
     ) -> dict:
-        """Build the request body for bePaid /beyag/transactions/payments."""
+        """Build the request body for bePaid /beyag/payments (ERIP).
+
+        Reference: https://docs.bepaid.by/en/payment_methods/apms/erip/create_payment/
+        notification_url is required for webhook delivery and must always be provided.
+        """
         request: dict[str, Any] = {
             "amount": int(amount_minor),
             "currency": str(currency or "BYN"),
             "description": str(description),
             "tracking_id": str(tracking_id),
             "ip": "127.0.0.1",
+            "notification_url": str(notification_url),
             "payment_method": {
                 "type": "erip",
                 "account_number": str(account_number),
@@ -153,8 +193,6 @@ class BePaidClient:
         }
         if order_id:
             request["order_id"] = str(order_id)
-        if notification_url:
-            request["notification_url"] = str(notification_url)
         customer: dict[str, str] = {}
         if customer_first_name:
             customer["first_name"] = customer_first_name
@@ -165,10 +203,19 @@ class BePaidClient:
         return {"request": request}
 
     @staticmethod
-    def erip_account_number(mk_user_id: int, period_month: str) -> str:
+    def erip_account_number(mk_user_id: int, period_month: str, pi_row_id: int) -> str:
         """
-        Build ERIP account_number: {mk_user_id}{YYMM}.
-        E.g. mk_user_id=8875658, period_month="2026-07" → "88756582607"
+        Build a globally unique ERIP account_number: {mk_user_id}{YYMM}{pi_row_id}.
+
+        Official constraint: max 30 characters (digits only recommended).
+        Warning per docs: a new invoice with the same account_number expires the previous one.
+        Including pi_row_id guarantees one unique number per payment_intent.
+
+        E.g. mk_user_id=8875658, period_month="2026-07", pi_row_id=42 → "882756582607 42"
+        = "88756582607 42" → "8875658260742"
+
+        If the combined string exceeds 30 chars (extremely large mk_user_id + pi_row_id),
+        the leftmost digits of mk_user_id are trimmed to keep the rightmost unique part.
         """
         yymm = ""
         if period_month and len(period_month) >= 7:
@@ -179,11 +226,26 @@ class BePaidClient:
                 yymm = year + month   # "2607"
             except (IndexError, ValueError):
                 pass
-        return f"{mk_user_id}{yymm}"
+        candidate = f"{mk_user_id}{yymm}{pi_row_id}"
+        if len(candidate) > BEPAID_ACCOUNT_NUMBER_MAX_LEN:
+            # Trim leftmost chars of mk_user_id to keep the always-unique pi_row_id suffix
+            suffix = f"{yymm}{pi_row_id}"
+            max_mk = BEPAID_ACCOUNT_NUMBER_MAX_LEN - len(suffix)
+            mk_str = str(mk_user_id)
+            if max_mk < 0:
+                # pi_row_id alone overflows — extremely unlikely (>26-digit row id)
+                candidate = str(pi_row_id)[-BEPAID_ACCOUNT_NUMBER_MAX_LEN:]
+            else:
+                candidate = mk_str[-max_mk:] + suffix if max_mk > 0 else suffix
+        return candidate[:BEPAID_ACCOUNT_NUMBER_MAX_LEN]
 
     @staticmethod
     def erip_order_id(pi_row_id: int) -> str:
-        """Build 12-digit numeric order_id from the payment_intent table row ID."""
+        """Build 12-digit numeric order_id from the payment_intent table row ID.
+
+        Official constraint: max 12 digits (integer or numeric string).
+        Source: https://docs.bepaid.by/en/payment_methods/apms/erip/create_payment/
+        """
         return f"{int(pi_row_id):012d}"
 
 

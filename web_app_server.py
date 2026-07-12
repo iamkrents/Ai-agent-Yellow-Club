@@ -8605,22 +8605,18 @@ class MiniAppContext:
         if pi.get("payment_method") != "erip":
             return {"ok": False, "error": "Выставление счёта bePaid доступно только для метода ERIP."}
 
-        if pi["status"] not in ("draft", "ready"):
-            # If already created, return existing data (idempotency)
-            if pi["status"] == "bepaid_created" and pi.get("bepaid_uid"):
-                return {
-                    "ok": True,
-                    "already_exists": True,
-                    "intent": pi,
-                    "message": f"Счёт bePaid уже выставлен (UID: {pi['bepaid_uid']}).",
-                }
+        status = pi["status"]
+
+        # Idempotency: already successfully created
+        if status == "bepaid_created" and pi.get("bepaid_uid"):
             return {
-                "ok": False,
-                "error": f"Нельзя выставить счёт bePaid для черновика в статусе '{pi['status']}'. "
-                         "Доступно только для статусов: draft, ready.",
+                "ok": True,
+                "already_exists": True,
+                "intent": pi,
+                "message": f"Счёт bePaid уже выставлен (UID: {pi['bepaid_uid']}).",
             }
 
-        # Strict idempotency: bepaid_uid already set → return existing
+        # Also handle bepaid_uid set on draft/ready (shouldn't happen, but guard it)
         if pi.get("bepaid_uid"):
             return {
                 "ok": True,
@@ -8629,24 +8625,77 @@ class MiniAppContext:
                 "message": f"Счёт bePaid уже выставлен (UID: {pi['bepaid_uid']}).",
             }
 
-        if not self.settings.bepaid_erip_enabled:
-            return {"ok": False, "error": "bePaid ERIP не настроен на сервере (BEPAID_ERIP_SHOP_ID / BEPAID_ERIP_SECRET_KEY)."}
+        # Ambiguous state: requires manual operator review before any retry
+        if status == "bepaid_requires_check":
+            return {
+                "ok": False,
+                "requires_check": True,
+                "error": (
+                    "Статус счёта неизвестен. Новый счёт не создавался повторно. "
+                    "Требуется проверить операцию в bePaid вручную."
+                ),
+                "intent": pi,
+            }
+
+        # In-progress: another concurrent request holds the claim
+        if status == "bepaid_creating":
+            return {
+                "ok": False,
+                "error": "Счёт уже создаётся или требует проверки. Подождите и обновите страницу.",
+            }
+
+        if status not in ("draft", "ready"):
+            return {
+                "ok": False,
+                "error": f"Нельзя выставить счёт bePaid для черновика в статусе '{status}'. "
+                         "Доступно только для статусов: draft, ready.",
+            }
+
+        # ── Pre-flight config check (before claiming to avoid stuck state) ──────
+        missing_cfg: list[str] = []
+        if not self.settings.bepaid_erip_shop_id:
+            missing_cfg.append("BEPAID_ERIP_SHOP_ID")
+        if not self.settings.bepaid_erip_secret_key:
+            missing_cfg.append("BEPAID_ERIP_SECRET_KEY")
+        if not self.settings.bepaid_public_base_url:
+            missing_cfg.append("BEPAID_PUBLIC_BASE_URL")
+        if not self.settings.bepaid_webhook_path_secret:
+            missing_cfg.append("BEPAID_WEBHOOK_PATH_SECRET")
+        if missing_cfg:
+            return {
+                "ok": False,
+                "error": (
+                    f"Не настроены обязательные переменные: {', '.join(missing_cfg)}. "
+                    "Счёт не выставлен, статус черновика не изменён."
+                ),
+            }
 
         mk_user_id = int(pi["mk_user_id"])
         period_month = str(pi.get("period_month") or "")
         pi_row_id = int(pi["id"])
+        original_status = status
 
-        account_number = BePaidClient.erip_account_number(mk_user_id, period_month)
+        account_number = BePaidClient.erip_account_number(mk_user_id, period_month, pi_row_id)
         order_id = BePaidClient.erip_order_id(pi_row_id)
         tracking_id = str(pi["public_id"])
 
-        notification_url = ""
-        if self.settings.bepaid_public_base_url and self.settings.bepaid_webhook_path_secret:
-            notification_url = (
-                f"{self.settings.bepaid_public_base_url}"
-                f"/api/integrations/bepaid/webhook/erip/{self.settings.bepaid_webhook_path_secret}"
-            )
+        # ── Atomic claim ──────────────────────────────────────────────────────────
+        claimed = self.storage.payment_intent_claim_bepaid_creation(
+            public_id,
+            account_number=account_number,
+            order_id=order_id,
+            tracking_id=tracking_id,
+        )
+        if not claimed:
+            return {
+                "ok": False,
+                "error": "Счёт уже создаётся или требует проверки. Подождите и обновите страницу.",
+            }
 
+        notification_url = (
+            f"{self.settings.bepaid_public_base_url}"
+            f"/api/integrations/bepaid/webhook/erip/{self.settings.bepaid_webhook_path_secret}"
+        )
         description = build_erip_description(pi)
         payload = BePaidClient.build_erip_payload(
             amount_minor=int(pi["amount_minor"]),
@@ -8658,16 +8707,12 @@ class MiniAppContext:
             notification_url=notification_url,
         )
 
-        # Log attempt (safe — no credentials)
         shop_id = self.settings.bepaid_erip_shop_id
         log.info(
-            "bepaid create_erip public_id=%s account_number=%s order_id=%s shop_id_len=%d shop_id_last4=%s",
-            public_id, account_number, order_id, len(shop_id), shop_id[-4:] if len(shop_id) >= 4 else "****",
-        )
-
-        # Record attempt start
-        self.storage.payment_intent_begin_bepaid_attempt(
-            public_id, account_number=account_number, order_id=order_id, tracking_id=tracking_id
+            "bepaid create_erip public_id=%s account_number=%s order_id=%s "
+            "shop_id_len=%d shop_id_last4=%s",
+            public_id, account_number, order_id,
+            len(shop_id), shop_id[-4:] if len(shop_id) >= 4 else "****",
         )
 
         client = BePaidClient(
@@ -8677,33 +8722,117 @@ class MiniAppContext:
         )
         result = client.create_erip_payment(payload)
 
+        # ── Ambiguous result: invoice may or may not exist ────────────────────────
         if result.requires_check:
-            # Timeout — unknown state; do NOT retry blindly
-            self.storage.payment_intent_save_bepaid_error(public_id, "timeout")
-            log.warning("bepaid timeout requires_check public_id=%s", public_id)
+            self.storage.payment_intent_mark_requires_check(
+                public_id, result.error or "ambiguous_result"
+            )
+            log.warning(
+                "bepaid ambiguous_result public_id=%s http=%s error=%s",
+                public_id, result.http_status, result.error,
+            )
             return {
                 "ok": False,
                 "requires_check": True,
                 "error": (
-                    "Запрос к bePaid завершился по таймауту. Статус счёта неизвестен. "
-                    "Проверьте вручную в личном кабинете bePaid и обновите черновик."
+                    "Статус счёта неизвестен. Новый счёт не создавался повторно. "
+                    "Требуется проверить операцию в bePaid."
                 ),
             }
 
+        # ── Definitive client-side error (4xx): invoice was NOT created ───────────
         if not result.ok:
-            self.storage.payment_intent_save_bepaid_error(public_id, result.error)
-            log.warning("bepaid error public_id=%s http=%s error=%s", public_id, result.http_status, result.error)
+            self.storage.payment_intent_release_claim(public_id, original_status, result.error)
+            log.warning(
+                "bepaid client_error public_id=%s http=%s error=%s",
+                public_id, result.http_status, result.error,
+            )
             return {
                 "ok": False,
                 "error": f"bePaid вернул ошибку (HTTP {result.http_status}): {result.error}",
             }
 
-        # Success
-        tx_uid = str(result.data.get("transaction_uid") or "")
-        bp_order_id = str(result.data.get("order_id") or order_id)
+        # ── Validate success response fields ──────────────────────────────────────
+        tx_uid = str(result.data.get("transaction_uid") or "").strip()
+
+        if not tx_uid:
+            self.storage.payment_intent_mark_requires_check(public_id, "missing_uid_in_response")
+            log.error("bepaid http2xx_no_uid public_id=%s", public_id)
+            return {
+                "ok": False,
+                "requires_check": True,
+                "error": (
+                    "Статус счёта неизвестен. Новый счёт не создавался повторно. "
+                    "bePaid вернул HTTP 200 без UID транзакции. Требуется проверка."
+                ),
+            }
+
+        resp_amount = result.data.get("amount_minor")
+        if resp_amount is not None and int(resp_amount) != int(pi["amount_minor"]):
+            self.storage.payment_intent_mark_requires_check(
+                public_id, f"amount_mismatch:{resp_amount}!={pi['amount_minor']}"
+            )
+            log.error(
+                "bepaid amount_mismatch public_id=%s expected=%s got=%s",
+                public_id, pi["amount_minor"], resp_amount,
+            )
+            return {
+                "ok": False,
+                "requires_check": True,
+                "error": "Сумма в ответе bePaid не совпадает с суммой черновика. Требуется проверка.",
+            }
+
+        resp_currency = str(result.data.get("currency") or "").strip()
+        if resp_currency and resp_currency != "BYN":
+            self.storage.payment_intent_mark_requires_check(
+                public_id, f"currency_mismatch:{resp_currency}"
+            )
+            log.error(
+                "bepaid currency_mismatch public_id=%s expected=BYN got=%s",
+                public_id, resp_currency,
+            )
+            return {
+                "ok": False,
+                "requires_check": True,
+                "error": f"Валюта в ответе bePaid не BYN ({resp_currency}). Требуется проверка.",
+            }
+
+        resp_tracking = str(result.data.get("tracking_id") or "").strip()
+        if resp_tracking and resp_tracking != tracking_id:
+            self.storage.payment_intent_mark_requires_check(
+                public_id, f"tracking_id_mismatch:{resp_tracking}"
+            )
+            log.error(
+                "bepaid tracking_id_mismatch public_id=%s expected=%s got=%s",
+                public_id, tracking_id, resp_tracking,
+            )
+            return {
+                "ok": False,
+                "requires_check": True,
+                "error": "tracking_id в ответе bePaid не совпадает. Требуется проверка.",
+            }
+
+        resp_order_id = str(result.data.get("order_id") or "").strip()
+        if resp_order_id and resp_order_id != order_id:
+            self.storage.payment_intent_mark_requires_check(
+                public_id, f"order_id_mismatch:{resp_order_id}"
+            )
+            log.error(
+                "bepaid order_id_mismatch public_id=%s expected=%s got=%s",
+                public_id, order_id, resp_order_id,
+            )
+            return {
+                "ok": False,
+                "requires_check": True,
+                "error": "order_id в ответе bePaid не совпадает. Требуется проверка.",
+            }
+
+        # ── All checks passed — save success ──────────────────────────────────────
+        bp_order_id = resp_order_id or order_id
         bp_account_number = str(result.data.get("erip_account_number") or account_number)
         bp_pay_url = str(result.data.get("pay_url") or "")
-        bp_status = str(result.data.get("status") or "successful")
+        bp_status = str(result.data.get("status") or "pending")
+        bp_qr_code_raw = str(result.data.get("qr_code_raw") or "")
 
         updated = self.storage.payment_intent_save_bepaid_success(
             public_id,
@@ -8712,6 +8841,7 @@ class MiniAppContext:
             bepaid_account_number=bp_account_number,
             bepaid_payment_url=bp_pay_url,
             bepaid_status=bp_status,
+            bepaid_qr_code_raw=bp_qr_code_raw,
         )
 
         log.info(
