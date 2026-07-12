@@ -1,12 +1,49 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-12 (v7.0.88)_
+_Последнее обновление: 2026-07-12 (v7.0.89)_
 
 ---
 
 ## Что сделано
 
-### v7.0.88 — Fix: белый month picker в тёмной модалке + единая система анимаций (текущая)
+### v7.0.89 — Tune: увеличение длительности анимаций (текущая)
+
+**Цель:** сделать анимации более заметными на реальном iPhone в Telegram Mini App.
+
+**Изменены motion tokens:**
+- `--motion-fast`: 140ms → 180ms
+- `--motion-normal`: 200ms → 260ms
+- `--motion-slow`: 280ms → 340ms
+- `--yc-fast`: 120ms → 160ms (синхронизирован с motion-fast, чуть меньше для press-feedback)
+- `--yc-normal`: 180ms → 260ms
+- `--yc-slow`: 240ms → 340ms
+
+**Модальные окна (`.modal` + PI Modal):**
+- Открытие overlay: 160ms → 240ms; backdrop PI: 180ms → 240ms
+- Открытие bottom sheet: 220ms → 300ms; piSheetUp: 220ms → 300ms
+- Закрытие overlay: 170ms → 200ms; backdrop PI: 215ms → 200ms
+- Закрытие bottom sheet: 170ms → 240ms; piSheetDown: 215ms → 240ms
+- Desktop scale modal: piScaleIn 160ms → 240ms; piScaleOut 150ms → 200ms
+
+**Аккордеоны:** авто-обновились через `--motion-normal` (стрелка: 200ms → 260ms) и `--motion-fast` (контент: 140ms → 180ms)
+
+**Вкладки:** `.tab-panel.active` теперь использует `--motion-normal (260ms)` и `--ease-enter` (было `--yc-fast = 120ms`)
+
+**Карточки:** translateY 6px → 8px в `ycCardEnter`; stagger шаг 25ms → 30ms; max задержка 155ms → 200ms
+
+**Toast:** авто-обновился через `--motion-normal` (transition 200ms → 260ms)
+
+**Кнопки:** `transform: 140ms → 150ms; background/border: 160ms → 180ms` — остаются быстрыми
+
+**Что НЕ менялось:** архитектура анимаций, модалки, month picker, навигация, бизнес-логика, API, backend, bePaid, food module, reports, webhook, storage, роли, production DB, .env
+
+**Что НЕ реализовано:** анимация закрытия `<details>` аккордеона — браузер мгновенно скрывает контент при закрытии нативного `<details>`; требует JS-рефакторинга (отдельная задача)
+
+**Cache-bust:** v=7.0.89
+
+---
+
+### v7.0.88 — Fix: белый month picker в тёмной модалке + единая система анимаций
 
 **Баг: белый month picker в тёмной модалке:**
 - **Причина:** `.pi-modal-body .yc-month-picker { background: #f6f7fb }` имеет специфичность 0,2,0 — выше, чем `@media (prefers-color-scheme: dark) { .yc-month-picker { background: #263047 } }` (0,1,0). Результат: светлый фон отображался в тёмной модалке.

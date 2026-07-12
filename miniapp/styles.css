@@ -11,15 +11,15 @@
   --card: #ffffff;
   --bg: #f6f7fb;
   --shadow: 0 10px 30px rgba(26, 38, 66, 0.10);
-  /* animation tokens */
+  /* animation tokens — v7.0.89 */
   --yc-ease: cubic-bezier(.2, .8, .2, 1);
-  --yc-fast: 120ms;
-  --yc-normal: 180ms;
-  --yc-slow: 240ms;
-  /* v7.0.88 unified motion system */
-  --motion-fast: 140ms;
-  --motion-normal: 200ms;
-  --motion-slow: 280ms;
+  --yc-fast: 160ms;
+  --yc-normal: 260ms;
+  --yc-slow: 340ms;
+  /* unified motion system */
+  --motion-fast: 180ms;
+  --motion-normal: 260ms;
+  --motion-slow: 340ms;
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
@@ -1410,18 +1410,18 @@ button.red.wide {
 /* v4.3.2 - speed and animation polish */
 .modal:not(.hidden) {
   display: flex;
-  animation: ycModalFadeIn 160ms ease-out;
+  animation: ycModalFadeIn 240ms ease-out;
 }
 .modal:not(.hidden) .modal-card {
-  animation: ycModalSlideIn 220ms cubic-bezier(.2,.8,.2,1);
+  animation: ycModalSlideIn 300ms cubic-bezier(.2,.8,.2,1);
   will-change: transform, opacity;
 }
 .modal.is-closing {
   pointer-events: none;
-  animation: ycModalFadeOut 170ms ease-in forwards;
+  animation: ycModalFadeOut 200ms ease-in forwards;
 }
 .modal.is-closing .modal-card {
-  animation: ycModalSlideOut 170ms ease-in forwards;
+  animation: ycModalSlideOut 240ms ease-in forwards;
 }
 @keyframes ycModalFadeIn {
   from { opacity: 0; }
@@ -1445,7 +1445,7 @@ button.red.wide {
 .card,
 .proto-box,
 button {
-  transition: transform 140ms ease, background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease, opacity 160ms ease;
+  transition: transform 150ms ease, background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease, opacity 180ms ease;
 }
 button:active,
 .open-lesson:active,
@@ -7047,7 +7047,7 @@ body { -webkit-overflow-scrolling: touch; }
   to   { opacity: 1; transform: translateY(0); }
 }
 @keyframes ycCardEnter {
-  from { opacity: 0; transform: translateY(6px) scale(.985); }
+  from { opacity: 0; transform: translateY(8px) scale(.985); }
   to   { opacity: 1; transform: none; }
 }
 @keyframes ycSlideUp {
@@ -7076,7 +7076,7 @@ body { -webkit-overflow-scrolling: touch; }
 .yc-pressable:active:not(:disabled) { transform: scale(.97); }
 
 /* --- Tab panel switch --- */
-.tab-panel.active { animation: ycFadeIn var(--yc-fast) var(--yc-ease) both; }
+.tab-panel.active { animation: ycFadeIn var(--motion-normal, 260ms) var(--ease-enter, ease) both; }
 
 /* --- Notice bar --- */
 .notice.ok    { animation: ycNoticeIn var(--yc-fast) var(--yc-ease) both; }
@@ -7374,14 +7374,14 @@ input:disabled { animation: none !important; transform: none !important; }
 .pi-stat-chip.has-value { background: rgba(52,152,219,.12); color: #1a6da0; }
 .pi-list { display: flex; flex-direction: column; gap: 10px; }
 .pi-list > .pi-card { animation: ycCardEnter var(--motion-normal, 200ms) var(--ease-enter, ease) both; }
-.pi-list > .pi-card:nth-child(2) { animation-delay: 25ms; }
-.pi-list > .pi-card:nth-child(3) { animation-delay: 50ms; }
-.pi-list > .pi-card:nth-child(4) { animation-delay: 75ms; }
-.pi-list > .pi-card:nth-child(5) { animation-delay: 100ms; }
-.pi-list > .pi-card:nth-child(6) { animation-delay: 120ms; }
-.pi-list > .pi-card:nth-child(7) { animation-delay: 140ms; }
-.pi-list > .pi-card:nth-child(8) { animation-delay: 155ms; }
-.pi-list > .pi-card:nth-child(n+9) { animation-delay: 155ms; }
+.pi-list > .pi-card:nth-child(2) { animation-delay: 30ms; }
+.pi-list > .pi-card:nth-child(3) { animation-delay: 60ms; }
+.pi-list > .pi-card:nth-child(4) { animation-delay: 90ms; }
+.pi-list > .pi-card:nth-child(5) { animation-delay: 120ms; }
+.pi-list > .pi-card:nth-child(6) { animation-delay: 150ms; }
+.pi-list > .pi-card:nth-child(7) { animation-delay: 175ms; }
+.pi-list > .pi-card:nth-child(8) { animation-delay: 200ms; }
+.pi-list > .pi-card:nth-child(n+9) { animation-delay: 200ms; }
 .pi-card {
   background: var(--card, #fff);
   border: 1px solid var(--line);
@@ -7490,10 +7490,10 @@ body.pi-modal-open {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
-  animation: piBackdropIn 180ms ease both;
+  animation: piBackdropIn 240ms ease both;
 }
 .pi-modal.hidden { display: none !important; }
-.pi-modal.pi-closing { animation: piBackdropOut 215ms ease both; }
+.pi-modal.pi-closing { animation: piBackdropOut 200ms ease both; }
 
 @media (min-width: 600px) {
   .pi-modal { align-items: center; padding: 20px; }
@@ -7513,9 +7513,9 @@ body.pi-modal-open {
   overflow: hidden;
   box-sizing: border-box;
   box-shadow: 0 -4px 40px rgba(0, 0, 0, .22);
-  animation: piSheetUp 220ms cubic-bezier(.32,.72,0,1) both;
+  animation: piSheetUp 300ms cubic-bezier(.32,.72,0,1) both;
 }
-.pi-modal.pi-closing .pi-modal-sheet { animation: piSheetDown 215ms cubic-bezier(.32,.72,0,1) both; }
+.pi-modal.pi-closing .pi-modal-sheet { animation: piSheetDown 240ms cubic-bezier(.32,.72,0,1) both; }
 .pi-modal-sheet-sm { max-width: 420px; }
 
 @media (min-width: 600px) {
@@ -7524,9 +7524,9 @@ body.pi-modal-open {
     max-height: calc(100dvh - 40px);
     border-radius: 20px;
     box-shadow: 0 16px 48px rgba(0, 0, 0, .28);
-    animation: piScaleIn 160ms ease both;
+    animation: piScaleIn 240ms ease both;
   }
-  .pi-modal.pi-closing .pi-modal-sheet { animation: piScaleOut 150ms ease both; }
+  .pi-modal.pi-closing .pi-modal-sheet { animation: piScaleOut 200ms ease both; }
   .pi-modal-sheet-sm { width: min(96vw, 400px); }
 }
 

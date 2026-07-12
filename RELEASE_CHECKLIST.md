@@ -1,9 +1,10 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.88**
+**Cache version: v7.0.89**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.89 | 2026-07-12 | Tune: motion tokens увеличены (fast 140→180ms, normal 200→260ms, slow 280→340ms). Модалки 240–300ms открытие, 200–240ms закрытие. Вкладки 260ms. Карточки translateY 8px, stagger 30ms. Бизнес-логика не менялась. |
 | v7.0.88 | 2026-07-12 | Fix: белый month picker в тёмной модалке (специфичность CSS + data-theme от Telegram). Анимации: motion tokens, accordion arrow rotate, toast translateY + класс pi-toast-visible, PI cards stagger, global prefers-reduced-motion. |
 | v7.0.87 | 2026-07-12 | Fix: iOS month input overflow и наложение фильтров. Паттерн `.yc-month-picker` (нативный input opacity:0, видимый span), helpers `isValidMonthValue/formatMonthLabel/syncMonthPicker/initMonthPicker`, переписан toolbar HTML+CSS на `.pi-toolbar-field`. |
 | v7.0.86 | 2026-07-12 | Fix: month input overflow, toolbar grid layout, childrenReportMonth init. `min-width:0` на month inputs, CSS Grid toolbar, `ensureMonthInputValue` helper. |
