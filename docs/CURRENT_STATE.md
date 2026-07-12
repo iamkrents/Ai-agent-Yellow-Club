@@ -14,8 +14,8 @@
 **Пользователь на сервере:** `ycagent`
 
 **Сервисы (systemd):**
-- `ycagent-bot` — Telegram-бот (`bot.py`), запускается как daemon, отвечает в личке и группах
-- `ycagent-web` — Mini App сервер (`web_app_server.py`), слушает на `127.0.0.1:8088` (за nginx reverse proxy)
+- `yellow-bot.service` — Telegram-бот (`bot.py`), запускается как daemon, отвечает в личке и группах
+- `yellow-miniapp.service` — Mini App сервер (`web_app_server.py`), слушает на `127.0.0.1:8088` (за nginx reverse proxy)
 - nginx — TLS-терминация и проксирование на `localhost:8088`
 
 **Основной workflow (единственный безопасный):**
@@ -264,16 +264,16 @@ grep -r "v=7\." miniapp/index.html
 python -m py_compile config.py storage.py web_app_server.py intern_track.py bepaid_client.py
 
 # 8. Перезапустить сервисы
-sudo systemctl restart ycagent-bot
-sudo systemctl restart ycagent-web
+sudo systemctl restart yellow-miniapp
+sudo systemctl restart yellow-bot
 
 # 9. Проверить статус
-sudo systemctl status ycagent-bot --no-pager
-sudo systemctl status ycagent-web --no-pager
+sudo systemctl status yellow-miniapp --no-pager
+sudo systemctl status yellow-bot --no-pager
 
 # 10. Посмотреть логи
-sudo journalctl -u ycagent-web -n 50 --no-pager
-sudo journalctl -u ycagent-bot -n 50 --no-pager
+sudo journalctl -u yellow-miniapp -n 50 --no-pager
+sudo journalctl -u yellow-bot -n 50 --no-pager
 ```
 
 ---
