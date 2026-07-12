@@ -66,7 +66,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.82");
+console.log("MiniApp version: v7.0.83");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -11627,6 +11627,31 @@ function renderPaymentIntentCard(pi) {
   </div>`;
 }
 
+// ── modal helpers (animated open / close) ────────────────────────────────
+
+function piModalOpen(el) {
+  if (!el) return;
+  el.classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+}
+
+function piModalClose(el, cb) {
+  if (!el) { if (cb) cb(); return; }
+  const box = el.querySelector(".pi-modal-box");
+  const overlay = el.querySelector(".pi-modal-overlay");
+  const mobile = window.matchMedia("(max-width:599px)").matches;
+  if (box) box.classList.add("pi-closing");
+  if (overlay) overlay.classList.add("pi-closing");
+  const dur = mobile ? 210 : 160;
+  setTimeout(() => {
+    el.classList.add("hidden");
+    if (box) box.classList.remove("pi-closing");
+    if (overlay) overlay.classList.remove("pi-closing");
+    document.body.style.overflow = "";
+    if (cb) cb();
+  }, dur);
+}
+
 // ── Create intent modal ───────────────────────────────────────────────────
 
 function openCreateIntentModal(prefill) {
@@ -11647,11 +11672,11 @@ function openCreateIntentModal(prefill) {
   $("piCreateWarning").classList.add("hidden");
   $("piCreateWarning").textContent = "";
   modal._prefillContext = prefill || null;
-  modal.classList.remove("hidden");
+  piModalOpen(modal);
 }
 
 function closeCreateIntentModal() {
-  $("piCreateModal")?.classList.add("hidden");
+  piModalClose($("piCreateModal"));
 }
 
 // Called from bePaid card button
@@ -11749,12 +11774,11 @@ function openCancelIntent(publicId, nameOrId, amountByn) {
   if (info) info.textContent = `Отменить черновик ${publicId} (${nameOrId}, ${fmtByn(amountByn)})?`;
   $("piCancelReason").value = "";
   $("piCancelError").classList.add("hidden");
-  $("piCancelModal")?.classList.remove("hidden");
+  piModalOpen($("piCancelModal"));
 }
 
 function closeCancelIntentModal() {
-  $("piCancelModal")?.classList.add("hidden");
-  _piCancelTarget = null;
+  piModalClose($("piCancelModal"), () => { _piCancelTarget = null; });
 }
 
 async function confirmCancelIntent() {
@@ -11797,12 +11821,11 @@ window.openBePaidConfirm = function(publicId, nameOrId, amountByn) {
   $("piBePaidError")?.classList.add("hidden");
   const btn = $("piBePaidModalConfirm");
   if (btn) { btn.disabled = false; btn.textContent = "Выставить счёт"; }
-  $("piBePaidModal")?.classList.remove("hidden");
+  piModalOpen($("piBePaidModal"));
 };
 
 function closeBePaidModal() {
-  $("piBePaidModal")?.classList.add("hidden");
-  _piBePaidTarget = null;
+  piModalClose($("piBePaidModal"), () => { _piBePaidTarget = null; });
 }
 
 async function confirmCreateBePaid() {
@@ -11851,7 +11874,7 @@ function showToast(msg) {
   if (!t) {
     t = document.createElement("div");
     t.id = "piToast";
-    t.style.cssText = "position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#172033;color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:80vw;text-align:center";
+    t.className = "pi-toast";
     document.body.appendChild(t);
   }
   t.textContent = msg;
