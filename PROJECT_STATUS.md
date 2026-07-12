@@ -1,12 +1,38 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-12 (v7.0.89)_
+_Последнее обновление: 2026-07-12 (v7.0.90)_
 
 ---
 
 ## Что сделано
 
-### v7.0.89 — Tune: увеличение длительности анимаций (текущая)
+### v7.0.90 — Feature: создание черновиков bePaid из счетов МойКласс (текущая)
+
+**Цель:** связать первый контролируемый платёж bePaid с реальным учеником, абонементом и счётом МойКласс.
+
+**Backend:**
+- `storage.py`: 9 новых колонок через `_ensure_column` в `payment_intents` — `mk_invoice_id`, `mk_user_subscription_id`, `source` (moyklass_invoice/manual), `source_reference`, `invoice_amount_minor`, `invoice_remaining_minor`, `invoice_snapshot_json`, `verified_mk_user_at`, `verified_invoice_at`; индекс `idx_pi_mk_invoice`
+- `storage.py`: новый метод `find_active_intent_by_invoice(mk_invoice_id)` — ищет активный черновик (не отменённый/не ошибочный) по ID счёта
+- `web_app_server.py`: `GET /api/payments/moyklass/invoices` — возвращает неоплаченные/частично оплаченные счета из МойКласс с нормализацией и проверкой дублей
+- `web_app_server.py`: `POST /api/payments/intents/from-moyklass-invoice` — перепроверяет счёт в МойКласс, запрещает доверять суммам фронтенда, создаёт черновик с `source=moyklass_invoice`
+- `web_app_server.py`: preflight `_preflight_mk_invoice()` перед выставлением счёта bePaid: проверяет существование счёта, суммы, отсутствие дублей
+- Защита от дублей: один активный черновик на `mk_invoice_id`
+
+**Frontend:**
+- `miniapp/index.html`: блок «Счета МойКласс» с кнопкой «Загрузить счета» и списком карточек; предупреждение для ручной формы
+- `miniapp/app.js`: `loadMkInvoices()`, `renderMkInvoiceCard()`, `openMkInvoiceCreate()` — двухшаговый flow (просмотр счёта → подтверждение → создание черновика)
+- `miniapp/app.js`: source badge на карточках черновиков — «Данные проверены в МойКласс» / «Ручной ввод»
+- `miniapp/styles.css`: стили `.mk-invoices-section`, `.mk-invoice-card`, `.pi-source-badge`, `.pi-manual-form-warning`
+
+**Тесты:** 14 unit-тестов в `tests/test_mk_invoice_intent.py` — 8 чистых тестов расчёта остатка/статуса, 4 теста `find_active_intent_by_invoice`, 2 теста `create_payment_intent` с source-полями
+
+**Что НЕ менялось:** Food Module, отчёты, существующий импорт bePaid, webhook, клиентские роли, .env, автоматическая отправка сообщений
+
+**Cache-bust:** v=7.0.90
+
+---
+
+### v7.0.89 — Tune: увеличение длительности анимаций
 
 **Цель:** сделать анимации более заметными на реальном iPhone в Telegram Mini App.
 

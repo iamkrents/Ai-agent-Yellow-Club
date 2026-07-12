@@ -8683,6 +8683,314 @@ class MiniAppContext:
         log.info("payment_intent cancelled public_id=%s by=%s reason=%s", public_id, auth.get("user_id"), reason)
         return {"ok": True, "intent": updated, "message": "Черновик отменён."}
 
+    def moyklass_invoices_list(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+
+        status_filter = str(params.get("status") or "unpaid_partial").lower()
+        mk_user_id_raw = params.get("userId") or params.get("user_id") or ""
+        try:
+            limit = min(int(params.get("limit") or 50), 100)
+        except (TypeError, ValueError):
+            limit = 50
+
+        mk_params: dict[str, Any] = {
+            "includeUserSubscriptions": "true",
+            "limit": limit,
+        }
+        if mk_user_id_raw:
+            try:
+                mk_params["userId"] = int(mk_user_id_raw)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "userId должен быть числом"}
+
+        try:
+            result = self.moyklass.request("GET", "/v1/company/invoices", params=mk_params)
+        except Exception as exc:
+            log.exception("moyklass_invoices_list error")
+            return {"ok": False, "error": f"Ошибка запроса к МойКласс: {exc}"}
+
+        if not result.ok:
+            return {"ok": False, "error": f"МойКласс вернул ошибку (статус {result.status})"}
+
+        raw = result.data
+        if isinstance(raw, dict):
+            raw = raw.get("items") or raw.get("invoices") or []
+        if not isinstance(raw, list):
+            raw = []
+
+        normalized: list[dict] = []
+        for inv in raw:
+            if not isinstance(inv, dict):
+                continue
+            price = float(inv.get("price") or 0)
+            payed = float(inv.get("payed") or 0)
+            remaining = max(0.0, price - payed)
+
+            if remaining <= 0.01:
+                inv_status = "paid"
+            elif payed > 0:
+                inv_status = "partial"
+            else:
+                inv_status = "unpaid"
+
+            if status_filter not in ("all",):
+                if status_filter == "unpaid" and inv_status != "unpaid":
+                    continue
+                if status_filter == "partial" and inv_status != "partial":
+                    continue
+                if status_filter == "unpaid_partial" and inv_status == "paid":
+                    continue
+
+            sub = inv.get("userSubscription") if isinstance(inv.get("userSubscription"), dict) else None
+            invoice_id = str(inv.get("id") or "")
+
+            # Check if an active intent already exists for this invoice
+            active = self.storage.find_active_intent_by_invoice(invoice_id)
+
+            normalized.append({
+                "invoice_id": invoice_id,
+                "mk_user_id": inv.get("userId"),
+                "price": price,
+                "payed": payed,
+                "payed_bonuses": float(inv.get("payedBonuses") or 0),
+                "remaining": remaining,
+                "remaining_minor": round(remaining * 100),
+                "price_minor": round(price * 100),
+                "invoice_status": inv_status,
+                "date": inv.get("date"),
+                "pay_until": inv.get("payUntil"),
+                "created_at": inv.get("createdAt"),
+                "comment": inv.get("comment"),
+                "user_subscription_id": inv.get("userSubscriptionId"),
+                "join_id": inv.get("joinId"),
+                "subscription": {
+                    "id": sub.get("id"),
+                    "subscription_id": sub.get("subscriptionId"),
+                    "begin_date": sub.get("beginDate"),
+                    "end_date": sub.get("endDate"),
+                    "sell_date": sub.get("sellDate"),
+                    "price": sub.get("price"),
+                    "status_id": sub.get("statusId"),
+                } if sub else None,
+                "active_intent_id": active["public_id"] if active else None,
+                "active_intent_status": active["status"] if active else None,
+            })
+
+        return {"ok": True, "invoices": normalized, "count": len(normalized)}
+
+    def payment_intent_from_mk_invoice(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+
+        invoice_id = str(body.get("invoice_id") or "").strip()
+        if not invoice_id:
+            return {"ok": False, "error": "invoice_id обязателен"}
+
+        mk_user_id_raw = body.get("mk_user_id")
+        if not mk_user_id_raw:
+            return {"ok": False, "error": "mk_user_id обязателен"}
+        try:
+            mk_user_id = int(mk_user_id_raw)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "mk_user_id должен быть числом"}
+        if mk_user_id <= 0:
+            return {"ok": False, "error": "mk_user_id должен быть положительным числом"}
+
+        payment_method = str(body.get("payment_method") or "erip").strip()
+        if payment_method not in self._PI_VALID_METHODS:
+            return {"ok": False, "error": f"payment_method должен быть одним из: {', '.join(sorted(self._PI_VALID_METHODS))}"}
+
+        # Guard: one active intent per invoice
+        existing = self.storage.find_active_intent_by_invoice(invoice_id)
+        if existing:
+            return {
+                "ok": False,
+                "error": (
+                    f"Для счёта МойКласс #{invoice_id} уже существует активный черновик "
+                    f"#{existing['public_id']} (статус: {existing['status']}). "
+                    "Отмените его перед созданием нового."
+                ),
+                "duplicate_id": existing["public_id"],
+            }
+
+        # Re-fetch invoice from MoyKlass — do not trust frontend amounts
+        try:
+            mk_result = self.moyklass.request("GET", "/v1/company/invoices", params={
+                "userId": mk_user_id,
+                "includeUserSubscriptions": "true",
+                "limit": 100,
+            })
+        except Exception as exc:
+            log.exception("payment_intent_from_mk_invoice: MK request error")
+            return {"ok": False, "error": f"Ошибка запроса к МойКласс: {exc}"}
+
+        if not mk_result.ok:
+            return {"ok": False, "error": f"Не удалось получить счета из МойКласс (статус {mk_result.status})"}
+
+        raw = mk_result.data
+        if isinstance(raw, dict):
+            raw = raw.get("items") or raw.get("invoices") or []
+        if not isinstance(raw, list):
+            raw = []
+
+        invoice = next((inv for inv in raw if str(inv.get("id") or "") == invoice_id), None)
+        if not invoice:
+            return {"ok": False, "error": f"Счёт МойКласс #{invoice_id} не найден для пользователя {mk_user_id}"}
+
+        price = float(invoice.get("price") or 0)
+        payed = float(invoice.get("payed") or 0)
+        remaining = max(0.0, price - payed)
+
+        if remaining <= 0.01:
+            return {"ok": False, "error": f"Счёт МойКласс #{invoice_id} уже полностью оплачен"}
+
+        verified_user_id = int(invoice.get("userId") or mk_user_id)
+        amount_minor = round(remaining * 100)
+        amount_byn = round(remaining, 2)
+
+        # Fetch student name
+        student_name: str | None = None
+        try:
+            _user_result = self.moyklass.request("GET", f"/v1/company/users/{verified_user_id}")
+            if _user_result.ok and isinstance(_user_result.data, dict):
+                _u = _user_result.data
+                _fn = str(_u.get("name") or "").strip()
+                if not _fn:
+                    _fn = " ".join(filter(None, [
+                        str(_u.get("clientName") or _u.get("lastName") or ""),
+                        str(_u.get("firstName") or ""),
+                    ])).strip()
+                student_name = _fn or None
+        except Exception as _exc:
+            log.warning("payment_intent_from_mk_invoice: could not fetch user name: %s", _exc)
+
+        sub = invoice.get("userSubscription") if isinstance(invoice.get("userSubscription"), dict) else None
+        user_sub_id = str(invoice.get("userSubscriptionId") or "").strip() or None
+
+        # Derive period_month from subscription begin date or payUntil
+        period_month: str | None = None
+        if sub:
+            begin = str(sub.get("beginDate") or "")[:7]
+            if len(begin) == 7:
+                period_month = begin
+        if not period_month:
+            pay_until = str(invoice.get("payUntil") or "")[:7]
+            if len(pay_until) == 7:
+                period_month = pay_until
+
+        tg_id = int(auth.get("user_id") or 0) or None
+        tg_name = str(auth.get("full_name") or auth.get("username") or "").strip() or None
+        now = now_iso()
+
+        intent = self.storage.create_payment_intent({
+            "mk_user_id": verified_user_id,
+            "student_name": student_name,
+            "amount_minor": amount_minor,
+            "amount_byn": amount_byn,
+            "currency": "BYN",
+            "purpose": "subscription",
+            "period_month": period_month,
+            "payment_method": payment_method,
+            "status": "draft",
+            "comment": str(invoice.get("comment") or "").strip() or None,
+            "created_by_tg_id": tg_id,
+            "created_by_name": tg_name,
+            "created_at": now,
+            "mk_invoice_id": invoice_id,
+            "mk_user_subscription_id": user_sub_id,
+            "source": "moyklass_invoice",
+            "source_reference": f"mk_invoice_{invoice_id}",
+            "invoice_amount_minor": round(price * 100),
+            "invoice_remaining_minor": round(remaining * 100),
+            "invoice_snapshot_json": json.dumps(invoice, ensure_ascii=False),
+            "verified_mk_user_at": now,
+            "verified_invoice_at": now,
+        })
+
+        log.info(
+            "payment_intent_from_mk_invoice created public_id=%s mk_user_id=%s invoice_id=%s amount_byn=%s by=%s",
+            intent.get("public_id"), verified_user_id, invoice_id, amount_byn, tg_id,
+        )
+
+        return {
+            "ok": True,
+            "intent": intent,
+            "message": "Черновик создан на основе счёта МойКласс. Сумма взята напрямую из МойКласс.",
+        }
+
+    def _preflight_mk_invoice(self, pi: dict) -> dict:
+        """Re-verify a MoyKlass invoice before issuing a bePaid payment."""
+        invoice_id = str(pi.get("mk_invoice_id") or "").strip()
+        mk_user_id = int(pi.get("mk_user_id") or 0)
+
+        try:
+            result = self.moyklass.request("GET", "/v1/company/invoices", params={
+                "userId": mk_user_id,
+                "includeUserSubscriptions": "false",
+                "limit": 100,
+            })
+        except Exception as exc:
+            log.warning("_preflight_mk_invoice MK request error: %s", exc)
+            return {"ok": False, "error": f"Не удалось проверить счёт МойКласс перед выставлением: {exc}"}
+
+        if not result.ok:
+            return {"ok": False, "error": f"МойКласс вернул ошибку при проверке счёта (статус {result.status})"}
+
+        raw = result.data
+        if isinstance(raw, dict):
+            raw = raw.get("items") or raw.get("invoices") or []
+        if not isinstance(raw, list):
+            raw = []
+
+        invoice = next((inv for inv in raw if str(inv.get("id") or "") == invoice_id), None)
+        if not invoice:
+            return {
+                "ok": False,
+                "error": (
+                    f"Счёт МойКласс #{invoice_id} не найден. "
+                    "Возможно, он был удалён или изменён. Проверьте в МойКласс."
+                ),
+            }
+
+        price = float(invoice.get("price") or 0)
+        payed = float(invoice.get("payed") or 0)
+        remaining = max(0.0, price - payed)
+
+        if remaining <= 0.01:
+            return {
+                "ok": False,
+                "error": f"Счёт МойКласс #{invoice_id} уже полностью оплачен (остаток 0 BYN). Счёт bePaid не выставлен.",
+            }
+
+        remaining_minor = round(remaining * 100)
+        intent_amount_minor = int(pi.get("amount_minor") or 0)
+        if abs(remaining_minor - intent_amount_minor) > 1:
+            return {
+                "ok": False,
+                "error": (
+                    f"Сумма в МойКласс изменилась. "
+                    f"Остаток сейчас: {remaining_minor / 100:.2f} BYN, "
+                    f"в черновике: {intent_amount_minor / 100:.2f} BYN. "
+                    "Отмените черновик и создайте новый на актуальную сумму."
+                ),
+            }
+
+        # Ensure no other active intent for this invoice
+        other = self.storage.find_active_intent_by_invoice(invoice_id)
+        if other and str(other.get("public_id")) != str(pi.get("public_id")):
+            return {
+                "ok": False,
+                "error": (
+                    f"Для счёта МойКласс #{invoice_id} уже есть активный черновик "
+                    f"#{other['public_id']} (статус: {other['status']})."
+                ),
+            }
+
+        return {"ok": True}
+
     def payment_intent_create_bepaid(
         self, auth: dict[str, Any], public_id: str, body: dict[str, Any]
     ) -> dict[str, Any]:
@@ -8761,6 +9069,12 @@ class MiniAppContext:
                     "Счёт не выставлен, статус черновика не изменён."
                 ),
             }
+
+        # ── Preflight: re-verify MoyKlass invoice before claiming ─────────────────
+        if pi.get("source") == "moyklass_invoice" and pi.get("mk_invoice_id"):
+            mk_check = self._preflight_mk_invoice(pi)
+            if not mk_check["ok"]:
+                return mk_check
 
         mk_user_id = int(pi["mk_user_id"])
         period_month = str(pi.get("period_month") or "")
@@ -9135,6 +9449,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.bepaid_reconcile(auth, params))
                 if path == "/api/payments/intents":
                     return self._send_json(CTX.payment_intents_list(auth, params))
+                if path == "/api/payments/moyklass/invoices":
+                    return self._send_json(CTX.moyklass_invoices_list(auth, params))
                 if path.startswith("/api/payments/intents/"):
                     _pi_rest = path[len("/api/payments/intents/"):]
                     _pi_parts = _pi_rest.split("/")
@@ -9222,6 +9538,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 return self._send_json(auth, status=401)
             if path == "/api/payments/intents":
                 return self._send_json(CTX.payment_intent_create(auth, body))
+            if path == "/api/payments/intents/from-moyklass-invoice":
+                return self._send_json(CTX.payment_intent_from_mk_invoice(auth, body))
             if path.startswith("/api/payments/intents/"):
                 _pi_rest = path[len("/api/payments/intents/"):]
                 _pi_parts = _pi_rest.split("/")

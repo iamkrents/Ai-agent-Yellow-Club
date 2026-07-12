@@ -7457,6 +7457,80 @@ input:disabled { animation: none !important; transform: none !important; }
 .chip-purpose-debt { background: rgba(230,126,34,.12); color: #a04000; }
 .chip-purpose-adv  { background: rgba(155,89,182,.12); color: #6c3483; }
 .chip-purpose-city { background: rgba(52,152,219,.12); color: #1a6da0; }
+/* ── MK Invoices section v7.0.90 ─────────────────────────────────────────── */
+.mk-invoices-section {
+  margin-top: 20px;
+  border-top: 1px solid var(--border, rgba(0,0,0,.1));
+  padding-top: 16px;
+}
+.mk-invoices-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.mk-invoices-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+.mk-invoices-subtitle {
+  font-size: 12px;
+  color: var(--muted);
+}
+.mk-invoices-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mk-invoice-card {
+  background: var(--surface, #f5f5f5);
+  border-radius: 12px;
+  padding: 12px 14px;
+  animation: ycCardEnter var(--motion-normal, 260ms) var(--ease-enter, ease) both;
+}
+.mk-invoice-card.has-active-intent {
+  opacity: .65;
+}
+.mk-invoice-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.mk-invoice-card-user { font-weight: 600; font-size: 14px; }
+.mk-invoice-card-amount { font-weight: 700; font-size: 15px; color: var(--accent, #1fa56b); }
+.mk-invoice-card-meta { display: flex; gap: 6px; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+.mk-invoice-card-footer { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.mk-invoice-card-id { font-size: 10px; color: var(--muted); margin-top: 4px; }
+.mk-invoice-blocked-note { font-size: 11px; color: var(--muted); font-style: italic; margin-top: 4px; }
+/* source badge on intent cards */
+.pi-source-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+.pi-source-badge-mk  { background: rgba(39,174,96,.12); color: #1e8449; }
+.pi-source-badge-manual { background: rgba(0,0,0,.06); color: var(--muted); }
+/* manual form warning */
+.pi-manual-form-warning {
+  margin-top: 16px;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 8px 12px;
+  background: rgba(230,126,34,.08);
+  border: 1px solid rgba(230,126,34,.18);
+  border-radius: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  .mk-invoice-card { background: rgba(255,255,255,.06); }
+}
+:root[data-theme="dark"] .mk-invoice-card { background: rgba(255,255,255,.06); }
 /* ── PI Modal System v7.0.85 — portal-based, iOS-safe ─────────────────────── */
 
 /* scroll-lock state applied by JS piLockPageScroll() */

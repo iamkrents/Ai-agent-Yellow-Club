@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.0.89" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.0.90" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -337,6 +337,22 @@
             <div id="piDebug" style="font-size:11px;color:var(--muted);padding:2px 0 4px;min-height:16px"></div>
             <div id="piStats" class="pi-stats-row"></div>
             <div id="piList" class="pi-list"></div>
+
+            <!-- Счета МойКласс — v7.0.90 -->
+            <div class="mk-invoices-section" id="mkInvoicesSection">
+              <div class="mk-invoices-header">
+                <span class="mk-invoices-title">Счета МойКласс</span>
+                <span class="mk-invoices-subtitle">неоплаченные и частично оплаченные</span>
+                <button class="secondary" id="loadMkInvoices" type="button" style="margin-left:auto">Загрузить счета</button>
+              </div>
+              <div id="mkInvoicesDebug" style="font-size:11px;color:var(--muted);min-height:14px"></div>
+              <div id="mkInvoicesList" class="mk-invoices-list"></div>
+            </div>
+
+            <!-- Ручная форма (запасной вариант) -->
+            <div class="pi-manual-form-warning">
+              Ручная форма — только для корректировок. Для обычных платежей используйте «Счета МойКласс» выше.
+            </div>
           </div>
         </details>
 
@@ -814,6 +830,6 @@
 
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.0.89"></script>
+  <script src="/static/app.js?v=7.0.90"></script>
 </body>
 </html>

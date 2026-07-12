@@ -645,6 +645,17 @@ class Storage:
         self._ensure_column(conn, "payment_intents", "bepaid_request_attempts", "bepaid_request_attempts INTEGER DEFAULT 0")
         # v7.0.82
         self._ensure_column(conn, "payment_intents", "bepaid_qr_code_raw", "bepaid_qr_code_raw TEXT")
+        # v7.0.90 — MK invoice source tracking
+        self._ensure_column(conn, "payment_intents", "mk_invoice_id", "mk_invoice_id TEXT")
+        self._ensure_column(conn, "payment_intents", "mk_user_subscription_id", "mk_user_subscription_id TEXT")
+        self._ensure_column(conn, "payment_intents", "source", "source TEXT DEFAULT 'manual'")
+        self._ensure_column(conn, "payment_intents", "source_reference", "source_reference TEXT")
+        self._ensure_column(conn, "payment_intents", "invoice_amount_minor", "invoice_amount_minor INTEGER")
+        self._ensure_column(conn, "payment_intents", "invoice_remaining_minor", "invoice_remaining_minor INTEGER")
+        self._ensure_column(conn, "payment_intents", "invoice_snapshot_json", "invoice_snapshot_json TEXT")
+        self._ensure_column(conn, "payment_intents", "verified_mk_user_at", "verified_mk_user_at TEXT")
+        self._ensure_column(conn, "payment_intents", "verified_invoice_at", "verified_invoice_at TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pi_mk_invoice ON payment_intents(mk_invoice_id)")
 
     def _init_bepaid_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -4624,8 +4635,11 @@ class Storage:
                   (public_id, mk_user_id, student_name, amount_minor, amount_byn, currency,
                    purpose, period_month, payment_method, status, mk_filial_id, location_code,
                    class_id, comment, created_by_tg_id, created_by_name, created_at, updated_at,
-                   raw_context_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   raw_context_json,
+                   mk_invoice_id, mk_user_subscription_id, source, source_reference,
+                   invoice_amount_minor, invoice_remaining_minor, invoice_snapshot_json,
+                   verified_mk_user_at, verified_invoice_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     "ycpi_tmp",
@@ -4647,6 +4661,15 @@ class Storage:
                     now,
                     now,
                     data.get("raw_context_json"),
+                    data.get("mk_invoice_id"),
+                    data.get("mk_user_subscription_id"),
+                    data.get("source", "manual"),
+                    data.get("source_reference"),
+                    data.get("invoice_amount_minor"),
+                    data.get("invoice_remaining_minor"),
+                    data.get("invoice_snapshot_json"),
+                    data.get("verified_mk_user_at"),
+                    data.get("verified_invoice_at"),
                 ),
             )
             row_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -4733,6 +4756,26 @@ class Storage:
                 params,
             ).fetchall()
         return [dict(r) for r in rows]
+
+    _PI_ACTIVE_STATUSES = (
+        "draft", "ready", "bepaid_creating", "bepaid_created",
+        "paid", "posted_to_moyklass", "bepaid_requires_check",
+    )
+
+    def find_active_intent_by_invoice(self, mk_invoice_id: str) -> Optional[dict]:
+        """Return the most recent active intent for this MK invoice (excludes cancelled/error)."""
+        placeholders = ",".join("?" * len(self._PI_ACTIVE_STATUSES))
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT * FROM payment_intents
+                WHERE mk_invoice_id = ?
+                  AND status IN ({placeholders})
+                ORDER BY id DESC LIMIT 1
+                """,
+                (str(mk_invoice_id), *self._PI_ACTIVE_STATUSES),
+            ).fetchone()
+        return dict(row) if row else None
 
     def payment_intents_stats(self, month: Optional[str] = None) -> dict:
         with self._connect() as conn:

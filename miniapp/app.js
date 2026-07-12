@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.89");
+console.log("MiniApp version: v7.0.90");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -11689,6 +11689,10 @@ function renderPaymentIntentCard(pi) {
     : pi.status === "posted_to_moyklass" ? " pi-card-posted"
     : pi.status === "error" ? " pi-card-error" : "";
 
+  const sourceBadge = pi.source === "moyklass_invoice"
+    ? `<span class="pi-source-badge pi-source-badge-mk">Данные проверены в МойКласс</span>`
+    : `<span class="pi-source-badge pi-source-badge-manual">Ручной ввод</span>`;
+
   return `<div class="pi-card${extraCls}">
     <div class="pi-card-head">
       <div class="pi-card-name">${name}</div>
@@ -11697,6 +11701,7 @@ function renderPaymentIntentCard(pi) {
     <div class="pi-card-meta">
       ${statusChip}${purposeChip}${period}${method}
     </div>
+    ${sourceBadge}
     ${comment}${cancelInfo}${bePaidCreatingBlock}${bePaidRequiresCheckBlock}${bePaidInfo}
     <div class="pi-card-footer">${bePaidBtn}${cancelBtn}</div>
     <div class="pi-card-id">${escapeHtml(pi.public_id)} · mk_user_id: ${pi.mk_user_id} · ${createdAt} ${createdBy}</div>
@@ -12004,6 +12009,115 @@ function showToast(msg) {
   });
 }
 
+// ── MK Invoices (v7.0.90) ────────────────────────────────────────────────
+
+let _mkInvoicesLoading = false;
+
+async function loadMkInvoices() {
+  if (!canUsePaymentIntents()) return;
+  if (_mkInvoicesLoading) return;
+  _mkInvoicesLoading = true;
+  const listEl = $("mkInvoicesList");
+  const debugEl = $("mkInvoicesDebug");
+  const btn = $("loadMkInvoices");
+  if (btn) { btn.disabled = true; btn.textContent = "Загрузка..."; }
+  if (listEl) listEl.innerHTML = "";
+  if (debugEl) debugEl.textContent = "";
+  try {
+    const data = await apiGet("/api/payments/moyklass/invoices?status=unpaid_partial&limit=50");
+    if (!data.ok) {
+      if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">${escapeHtml(data.error || "Ошибка")}</div>`;
+      return;
+    }
+    const invoices = data.invoices || [];
+    if (debugEl) debugEl.textContent = `Загружено: ${invoices.length} счетов`;
+    if (!invoices.length) {
+      if (listEl) listEl.innerHTML = `<div class="pi-empty">Неоплаченных счетов нет</div>`;
+      return;
+    }
+    if (listEl) listEl.innerHTML = invoices.map(renderMkInvoiceCard).join("");
+  } catch (err) {
+    if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">Ошибка: ${escapeHtml(String(err))}</div>`;
+  } finally {
+    _mkInvoicesLoading = false;
+    if (btn) { btn.disabled = false; btn.textContent = "Загрузить счета"; }
+  }
+}
+
+function renderMkInvoiceCard(inv) {
+  const remaining = Number(inv.remaining || 0);
+  const price = Number(inv.price || 0);
+  const userId = inv.mk_user_id || "?";
+  const status = inv.invoice_status || "—";
+  const statusLabel = status === "unpaid" ? "Не оплачен" : status === "partial" ? "Частично оплачен" : status;
+  const statusCls = status === "partial" ? "chip-pi-bepaid" : "chip-pi-draft";
+  const payUntil = inv.pay_until ? `до ${escapeHtml(String(inv.pay_until).slice(0,10))}` : "";
+  const sub = inv.subscription;
+  const period = (sub?.begin_date || sub?.sell_date)
+    ? String(sub.begin_date || sub.sell_date).slice(0, 7)
+    : (inv.pay_until ? String(inv.pay_until).slice(0, 7) : "");
+  const periodChip = period ? `<span class="chip chip-info" style="font-size:10px">${escapeHtml(period)}</span>` : "";
+  const hasActive = !!inv.active_intent_id;
+  const blockedNote = hasActive
+    ? `<div class="mk-invoice-blocked-note">Черновик уже создан: <strong>${escapeHtml(inv.active_intent_id)}</strong> (${escapeHtml(inv.active_intent_status || "")}). Отмените его, чтобы создать новый.</div>`
+    : "";
+  const createBtn = !hasActive
+    ? `<button class="primary" style="font-size:12px;padding:4px 12px" onclick="openMkInvoiceCreate(${escapeHtml(JSON.stringify({invoice_id: inv.invoice_id, mk_user_id: userId, remaining, price, period, pay_until: inv.pay_until, comment: inv.comment}))})">Подготовить черновик bePaid</button>`
+    : "";
+  const comment = inv.comment ? `<div class="pi-card-comment">${escapeHtml(inv.comment)}</div>` : "";
+  const priceLine = price > remaining
+    ? `<span>Всего: ${fmtByn(price)}; оплачено: ${fmtByn(price - remaining)}</span>`
+    : "";
+
+  return `<div class="mk-invoice-card${hasActive ? " has-active-intent" : ""}">
+    <div class="mk-invoice-card-head">
+      <div class="mk-invoice-card-user">userId: ${escapeHtml(String(userId))}</div>
+      <div class="mk-invoice-card-amount">${fmtByn(remaining)}</div>
+    </div>
+    <div class="mk-invoice-card-meta">
+      <span class="chip ${escapeHtml(statusCls)}" style="font-size:10px">${escapeHtml(statusLabel)}</span>
+      ${periodChip}
+      ${payUntil ? `<span>${escapeHtml(payUntil)}</span>` : ""}
+      ${priceLine}
+    </div>
+    ${comment}
+    ${blockedNote}
+    <div class="mk-invoice-card-footer">${createBtn}</div>
+    <div class="mk-invoice-card-id">invoice_id: ${escapeHtml(String(inv.invoice_id))}</div>
+  </div>`;
+}
+
+async function openMkInvoiceCreate(inv) {
+  if (!canUsePaymentIntents()) return;
+  const confirmMsg = `Создать черновик bePaid для счёта МойКласс #${inv.invoice_id}?\n\nСумма: ${fmtByn(Number(inv.remaining))}\nПользователь: userId=${inv.mk_user_id}\nПериод: ${inv.period || "—"}\n\nДанные будут подтверждены в МойКласс.`;
+  if (!confirm(confirmMsg)) return;
+
+  const listEl = $("mkInvoicesList");
+  const debugEl = $("mkInvoicesDebug");
+  if (debugEl) debugEl.textContent = "Создание черновика...";
+  try {
+    const data = await apiPost("/api/payments/intents/from-moyklass-invoice", {
+      invoice_id: String(inv.invoice_id),
+      mk_user_id: inv.mk_user_id,
+      payment_method: "erip",
+    });
+    if (!data.ok) {
+      if (debugEl) debugEl.textContent = "";
+      alert("Ошибка: " + (data.error || "Неизвестная ошибка"));
+      return;
+    }
+    const intent = data.intent;
+    if (debugEl) debugEl.textContent = `Черновик ${intent?.public_id || ""} создан.`;
+    piShowToast(data.message || "Черновик создан!");
+    // Refresh both lists
+    loadMkInvoices();
+    loadPaymentIntents();
+  } catch (err) {
+    if (debugEl) debugEl.textContent = "";
+    alert("Ошибка: " + String(err));
+  }
+}
+
 // ── Wire up event listeners ───────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -12019,6 +12133,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("openCreateIntent")?.addEventListener("click", () => openCreateIntentModal());
   $("piMonthFilter")?.addEventListener("change", loadPaymentIntents);
   $("piStatusFilter")?.addEventListener("change", loadPaymentIntents);
+  $("loadMkInvoices")?.addEventListener("click", loadMkInvoices);
 
   // Create modal
   $("piModalSubmit")?.addEventListener("click", submitCreateIntent);
