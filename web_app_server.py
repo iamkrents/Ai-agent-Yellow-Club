@@ -37,6 +37,7 @@ from moyklass_client import (
     _v3991_user_name_from_user_obj,
     _v3991_user_id_from_any,
 )
+from bepaid_client import BePaidClient, build_erip_description
 from food_menu_ocr import ocr_image_to_text
 from storage import Storage
 from llm import OllamaClient
@@ -8590,6 +8591,142 @@ class MiniAppContext:
         log.info("payment_intent cancelled public_id=%s by=%s reason=%s", public_id, auth.get("user_id"), reason)
         return {"ok": True, "intent": updated, "message": "Черновик отменён."}
 
+    def payment_intent_create_bepaid(
+        self, auth: dict[str, Any], public_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+
+        pi = self.storage.get_payment_intent(public_id)
+        if not pi:
+            return {"ok": False, "error": "Черновик не найден", "public_id": public_id}
+
+        if pi.get("payment_method") != "erip":
+            return {"ok": False, "error": "Выставление счёта bePaid доступно только для метода ERIP."}
+
+        if pi["status"] not in ("draft", "ready"):
+            # If already created, return existing data (idempotency)
+            if pi["status"] == "bepaid_created" and pi.get("bepaid_uid"):
+                return {
+                    "ok": True,
+                    "already_exists": True,
+                    "intent": pi,
+                    "message": f"Счёт bePaid уже выставлен (UID: {pi['bepaid_uid']}).",
+                }
+            return {
+                "ok": False,
+                "error": f"Нельзя выставить счёт bePaid для черновика в статусе '{pi['status']}'. "
+                         "Доступно только для статусов: draft, ready.",
+            }
+
+        # Strict idempotency: bepaid_uid already set → return existing
+        if pi.get("bepaid_uid"):
+            return {
+                "ok": True,
+                "already_exists": True,
+                "intent": pi,
+                "message": f"Счёт bePaid уже выставлен (UID: {pi['bepaid_uid']}).",
+            }
+
+        if not self.settings.bepaid_erip_enabled:
+            return {"ok": False, "error": "bePaid ERIP не настроен на сервере (BEPAID_ERIP_SHOP_ID / BEPAID_ERIP_SECRET_KEY)."}
+
+        mk_user_id = int(pi["mk_user_id"])
+        period_month = str(pi.get("period_month") or "")
+        pi_row_id = int(pi["id"])
+
+        account_number = BePaidClient.erip_account_number(mk_user_id, period_month)
+        order_id = BePaidClient.erip_order_id(pi_row_id)
+        tracking_id = str(pi["public_id"])
+
+        notification_url = ""
+        if self.settings.bepaid_public_base_url and self.settings.bepaid_webhook_path_secret:
+            notification_url = (
+                f"{self.settings.bepaid_public_base_url}"
+                f"/api/integrations/bepaid/webhook/erip/{self.settings.bepaid_webhook_path_secret}"
+            )
+
+        description = build_erip_description(pi)
+        payload = BePaidClient.build_erip_payload(
+            amount_minor=int(pi["amount_minor"]),
+            currency=str(pi.get("currency") or "BYN"),
+            description=description,
+            account_number=account_number,
+            tracking_id=tracking_id,
+            order_id=order_id,
+            notification_url=notification_url,
+        )
+
+        # Log attempt (safe — no credentials)
+        shop_id = self.settings.bepaid_erip_shop_id
+        log.info(
+            "bepaid create_erip public_id=%s account_number=%s order_id=%s shop_id_len=%d shop_id_last4=%s",
+            public_id, account_number, order_id, len(shop_id), shop_id[-4:] if len(shop_id) >= 4 else "****",
+        )
+
+        # Record attempt start
+        self.storage.payment_intent_begin_bepaid_attempt(
+            public_id, account_number=account_number, order_id=order_id, tracking_id=tracking_id
+        )
+
+        client = BePaidClient(
+            shop_id=shop_id,
+            secret_key=self.settings.bepaid_erip_secret_key,
+            timeout=self.settings.bepaid_request_timeout,
+        )
+        result = client.create_erip_payment(payload)
+
+        if result.requires_check:
+            # Timeout — unknown state; do NOT retry blindly
+            self.storage.payment_intent_save_bepaid_error(public_id, "timeout")
+            log.warning("bepaid timeout requires_check public_id=%s", public_id)
+            return {
+                "ok": False,
+                "requires_check": True,
+                "error": (
+                    "Запрос к bePaid завершился по таймауту. Статус счёта неизвестен. "
+                    "Проверьте вручную в личном кабинете bePaid и обновите черновик."
+                ),
+            }
+
+        if not result.ok:
+            self.storage.payment_intent_save_bepaid_error(public_id, result.error)
+            log.warning("bepaid error public_id=%s http=%s error=%s", public_id, result.http_status, result.error)
+            return {
+                "ok": False,
+                "error": f"bePaid вернул ошибку (HTTP {result.http_status}): {result.error}",
+            }
+
+        # Success
+        tx_uid = str(result.data.get("transaction_uid") or "")
+        bp_order_id = str(result.data.get("order_id") or order_id)
+        bp_account_number = str(result.data.get("erip_account_number") or account_number)
+        bp_pay_url = str(result.data.get("pay_url") or "")
+        bp_status = str(result.data.get("status") or "successful")
+
+        updated = self.storage.payment_intent_save_bepaid_success(
+            public_id,
+            bepaid_uid=tx_uid,
+            bepaid_order_id=bp_order_id,
+            bepaid_account_number=bp_account_number,
+            bepaid_payment_url=bp_pay_url,
+            bepaid_status=bp_status,
+        )
+
+        log.info(
+            "bepaid success public_id=%s bepaid_uid=%s account_number=%s",
+            public_id, tx_uid, bp_account_number,
+        )
+
+        return {
+            "ok": True,
+            "intent": updated or pi,
+            "bepaid_uid": tx_uid,
+            "account_number": bp_account_number,
+            "message": f"Счёт bePaid ERIP выставлен. Номер счёта: {bp_account_number}.",
+        }
+
 
 CTX = MiniAppContext()
 
@@ -8868,6 +9005,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 _pi_parts = _pi_rest.split("/")
                 if len(_pi_parts) == 2 and _pi_parts[1] == "cancel":
                     return self._send_json(CTX.payment_intent_cancel(auth, _pi_parts[0], body))
+                if len(_pi_parts) == 2 and _pi_parts[1] == "create-bepaid":
+                    return self._send_json(CTX.payment_intent_create_bepaid(auth, _pi_parts[0], body))
             if path == "/api/integrations/bepaid/import-history":
                 return self._send_json(CTX.bepaid_import_history(auth, body))
             if path == "/api/action":

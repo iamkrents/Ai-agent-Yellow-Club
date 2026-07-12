@@ -11570,6 +11570,21 @@ function renderPaymentIntentCard(pi) {
     ? `<button class="secondary" style="font-size:12px;padding:4px 10px" onclick="openCancelIntent('${escapeHtml(pi.public_id)}','${cancelSafeName}',${amountVal})">Отменить</button>`
     : "";
 
+  const canCreateBePaid = pi.payment_method === "erip"
+    && ["draft", "ready"].includes(pi.status)
+    && !pi.bepaid_uid
+    && canUsePaymentIntents();
+  const bePaidBtn = canCreateBePaid
+    ? `<button class="primary" style="font-size:12px;padding:4px 10px" onclick="openBePaidConfirm('${escapeHtml(pi.public_id)}','${cancelSafeName}',${amountVal})">Выставить счёт bePaid</button>`
+    : "";
+
+  const bePaidInfo = pi.bepaid_uid
+    ? `<div class="pi-bepaid-info">
+        <span>Счёт ERIP: <strong>${escapeHtml(pi.bepaid_account_number || "—")}</strong></span>
+        <span style="color:var(--muted);font-size:10px">UID: ${escapeHtml(pi.bepaid_uid)}</span>
+       </div>`
+    : "";
+
   const cancelInfo = pi.status === "cancelled" && pi.cancel_reason
     ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">Причина: ${escapeHtml(pi.cancel_reason)}</div>`
     : "";
@@ -11586,8 +11601,8 @@ function renderPaymentIntentCard(pi) {
     <div class="pi-card-meta">
       ${statusChip}${purposeChip}${period}${method}
     </div>
-    ${comment}${cancelInfo}
-    <div class="pi-card-footer">${cancelBtn}</div>
+    ${comment}${cancelInfo}${bePaidInfo}
+    <div class="pi-card-footer">${bePaidBtn}${cancelBtn}</div>
     <div class="pi-card-id">${escapeHtml(pi.public_id)} · mk_user_id: ${pi.mk_user_id} · ${createdAt} ${createdBy}</div>
   </div>`;
 }
@@ -11749,6 +11764,66 @@ async function confirmCancelIntent() {
   }
 }
 
+// ── bePaid ERIP confirm modal ─────────────────────────────────────────────
+
+let _piBePaidTarget = null;
+
+window.openBePaidConfirm = function(publicId, nameOrId, amountByn) {
+  _piBePaidTarget = publicId;
+  const info = $("piBePaidInfo");
+  if (info) info.textContent = `Выставить счёт bePaid ERIP для ${nameOrId} на ${fmtByn(amountByn)}?`;
+  const resultEl = $("piBePaidResult");
+  if (resultEl) { resultEl.classList.add("hidden"); resultEl.textContent = ""; }
+  $("piBePaidError")?.classList.add("hidden");
+  const btn = $("piBePaidModalConfirm");
+  if (btn) { btn.disabled = false; btn.textContent = "Выставить счёт"; }
+  $("piBePaidModal")?.classList.remove("hidden");
+};
+
+function closeBePaidModal() {
+  $("piBePaidModal")?.classList.add("hidden");
+  _piBePaidTarget = null;
+}
+
+async function confirmCreateBePaid() {
+  if (!_piBePaidTarget) return;
+  const errEl = $("piBePaidError");
+  const resultEl = $("piBePaidResult");
+  errEl.classList.add("hidden");
+  resultEl.classList.add("hidden");
+  const btn = $("piBePaidModalConfirm");
+  btn.disabled = true;
+  btn.textContent = "Выставляю...";
+  try {
+    const data = await apiPost(`/api/payments/intents/${_piBePaidTarget}/create-bepaid`, {});
+    if (!data.ok) {
+      if (data.requires_check) {
+        errEl.textContent = data.error || "Таймаут bePaid. Проверьте вручную в личном кабинете.";
+      } else {
+        errEl.textContent = data.error || "Ошибка выставления счёта.";
+      }
+      errEl.classList.remove("hidden");
+      return;
+    }
+    if (data.already_exists) {
+      resultEl.textContent = data.message || "Счёт уже выставлен.";
+      resultEl.classList.remove("hidden");
+    } else {
+      resultEl.textContent = data.message || "Счёт bePaid выставлен.";
+      resultEl.classList.remove("hidden");
+      showToast(data.message || "Счёт bePaid ERIP выставлен.");
+    }
+    await loadPaymentIntents();
+    setTimeout(() => closeBePaidModal(), 2000);
+  } catch (e) {
+    errEl.textContent = String(e);
+    errEl.classList.remove("hidden");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Выставить счёт";
+  }
+}
+
 // ── Toast helper ─────────────────────────────────────────────────────────
 
 function showToast(msg) {
@@ -11789,4 +11864,10 @@ document.addEventListener("DOMContentLoaded", () => {
   $("piCancelModalBack")?.addEventListener("click", closeCancelIntentModal);
   $("piCancelModalClose")?.addEventListener("click", closeCancelIntentModal);
   $("piCancelOverlay")?.addEventListener("click", closeCancelIntentModal);
+
+  // bePaid ERIP modal
+  $("piBePaidModalConfirm")?.addEventListener("click", confirmCreateBePaid);
+  $("piBePaidModalBack")?.addEventListener("click", closeBePaidModal);
+  $("piBePaidModalClose")?.addEventListener("click", closeBePaidModal);
+  $("piBePaidOverlay")?.addEventListener("click", closeBePaidModal);
 });

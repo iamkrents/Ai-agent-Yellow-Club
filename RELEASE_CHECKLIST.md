@@ -1,5 +1,14 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.5**
+**Cache version: v7.0.81**
+
+## История версий (последние)
+| Версия | Дата | Описание |
+|--------|------|----------|
+| v7.0.81 | 2026-07-12 | Выставление счёта bePaid ERIP из черновика (bepaid_client.py, endpoint create-bepaid, UI кнопка + модал, 24 unit-теста) |
+| v7.0.80 | 2026-07-12 | Исправление fmtByn (глобальная функция вместо локальной const) |
+| v7.0.79 | 2026-07-12 | Исправление state.me?.role и фильтров payment_intents |
+| v7.0.78 | 2026-07-12 | Исправление UI Payment Intents |
+| v7.0.77 | 2026-07-12 | Фундамент Payment Intents |
 
 ---
 

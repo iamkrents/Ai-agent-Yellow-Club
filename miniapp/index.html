@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.0.80" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.0.81" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -409,6 +409,26 @@
           </div>
         </div>
 
+        <!-- Payment intent bePaid ERIP confirm modal -->
+        <div id="piBePaidModal" class="pi-modal hidden">
+          <div class="pi-modal-overlay" id="piBePaidOverlay"></div>
+          <div class="pi-modal-box pi-modal-box-sm">
+            <div class="pi-modal-head">
+              <h3>Выставить счёт bePaid ERIP</h3>
+              <button class="pi-modal-close" id="piBePaidModalClose" type="button">✕</button>
+            </div>
+            <div class="pi-modal-body">
+              <p id="piBePaidInfo" style="margin:0 0 10px"></p>
+              <div id="piBePaidResult" class="hidden" style="font-size:13px;color:var(--green,#1fa56b);padding:6px 0"></div>
+              <div id="piBePaidError" class="pi-form-error hidden"></div>
+            </div>
+            <div class="pi-modal-footer">
+              <button class="secondary" id="piBePaidModalBack" type="button">Назад</button>
+              <button class="primary" id="piBePaidModalConfirm" type="button">Выставить счёт</button>
+            </div>
+          </div>
+        </div>
+
         <details class="report-section-accordion" style="margin-top:20px">
           <summary>
             <span class="reports-hero-mark" style="width:28px;height:28px;font-size:14px;border-radius:8px">📊</span>
@@ -772,6 +792,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=7.0.80"></script>
+  <script src="/static/app.js?v=7.0.81"></script>
 </body>
 </html>

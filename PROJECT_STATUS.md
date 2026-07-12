@@ -1,12 +1,38 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-06-24 (v6.3.0)_
+_Последнее обновление: 2026-07-12 (v7.0.81)_
 
 ---
 
 ## Что сделано
 
-### v6.3.0 — Улучшенный админ-контроль стажёров (текущая)
+### v7.0.81 — Выставление счёта bePaid ERIP из платёжного черновика (текущая)
+- Новый модуль `bepaid_client.py`: `BePaidClient`, `build_erip_description`, статик-хелперы (`erip_account_number`, `erip_order_id`, `build_erip_payload`)
+- Endpoint `POST /api/payments/intents/{public_id}/create-bepaid` — создаёт ERIP-счёт в bePaid
+- Идемпотентность: если `bepaid_uid` уже выставлен → возвращает существующие данные
+- Таймаут → статус `requires_check` (не ретраит)
+- Кнопка «Выставить счёт bePaid» в карточке черновика (только ERIP, только draft/ready, пока нет uid)
+- Модальное подтверждение выставления счёта
+- После создания карточка показывает номер счёта ERIP и bePaid UID
+- Миграция БД: 4 новых колонки (`bepaid_account_number`, `bepaid_created_at`, `bepaid_error`, `bepaid_request_attempts`)
+- Новые env: `BEPAID_PUBLIC_BASE_URL`, `BEPAID_REQUEST_TIMEOUT`
+- 24 unit-теста (нет реальных HTTP-запросов)
+- Cache-bust: `v=7.0.81`
+
+### v7.0.80 — Исправление formatByn (v7.0.79 regression)
+- Исправлен `ReferenceError: fmtByn` — переведён из локальной const в глобальную функцию
+
+### v7.0.79 — Исправление фильтрации Payment Intents и роли
+- Исправлен доступ к роли: `state.me?.role` вместо `state.role`
+- Исправлен рендер списка и фильтров
+
+### v7.0.78 — Исправление UI Payment Intents
+
+### v7.0.77 — Фундамент Payment Intents
+- Таблица `payment_intents` в SQLite
+- Создание / просмотр / отмена черновиков через Mini App
+
+### v6.3.0 — Улучшенный админ-контроль стажёров
 - Раздел "Стажёры" полностью переделан: фильтры + раскрытые карточки
 - Фильтры: Все / Ждут проверки / Ждут решения / Допущены / Проблемные
 - Каждая карточка стажёра: имя, бейдж статуса, прогресс наблюдений, МК-привязка

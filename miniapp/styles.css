@@ -7241,6 +7241,16 @@ input:disabled { animation: none !important; transform: none !important; }
   margin-top: 8px;
 }
 .pi-card-id { font-size: 10px; color: var(--muted); margin-top: 4px; }
+.pi-bepaid-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  background: rgba(155,89,182,.09);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-top: 6px;
+}
 .pi-empty { text-align: center; color: var(--muted); font-size: 13px; padding: 24px 0; }
 /* status chips for pi */
 .chip-pi-draft   { background: rgba(0,0,0,.07); color: var(--muted); }

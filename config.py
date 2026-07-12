@@ -118,6 +118,8 @@ class Settings:
     bepaid_acq_public_key: str
     bepaid_auto_post_to_moyklass: bool
     bepaid_webhook_path_secret: str
+    bepaid_public_base_url: str
+    bepaid_request_timeout: int
 
     @property
     def bepaid_erip_enabled(self) -> bool:
@@ -234,4 +236,6 @@ def load_settings() -> Settings:
         bepaid_acq_public_key=os.getenv("BEPAID_ACQ_PUBLIC_KEY", "").strip(),
         bepaid_auto_post_to_moyklass=_bool(os.getenv("BEPAID_AUTO_POST_TO_MOYKLASS", "false"), False),
         bepaid_webhook_path_secret=os.getenv("BEPAID_WEBHOOK_PATH_SECRET", "").strip(),
+        bepaid_public_base_url=os.getenv("BEPAID_PUBLIC_BASE_URL", "").strip().rstrip("/"),
+        bepaid_request_timeout=int(os.getenv("BEPAID_REQUEST_TIMEOUT", "30")),
     )
