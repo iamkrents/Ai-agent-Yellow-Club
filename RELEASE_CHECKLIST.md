@@ -1,9 +1,11 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.82** _(frontend не менялся в v7.0.82.1)_
+**Cache version: v7.0.84**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.84 | 2026-07-12 | Fix: фильтрация меню питания по смене/филиалу ребёнка. `_get_child_week_period`, `eligibleChildIds`, `menu_not_for_child`, 15 тестов. |
+| v7.0.83 | 2026-07-12 | UI/UX: animated modals (slide-up/fade), bottom sheet, safe-area, toast CSS class. |
 | v7.0.82.1 | 2026-07-12 | Hotfix: формат order_id — `1{row_id:011d}` вместо `{row_id:012d}`. Устраняет HTTP 422 "should not begin with 0" при малых pi_row_id. Счёт при 422 не создавался, черновик можно переотправить. |
 | v7.0.82 | 2026-07-12 | Укрепление идемпотентности bePaid: атомарный claim, правильный endpoint/response path, статусы bepaid_creating/bepaid_requires_check, валидация ответа, bepaid_qr_code_raw, 42 unit-теста |
 | v7.0.81 | 2026-07-12 | Выставление счёта bePaid ERIP из черновика (bepaid_client.py, endpoint create-bepaid, UI кнопка + модал, 24 unit-теста) |

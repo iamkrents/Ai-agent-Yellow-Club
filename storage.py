@@ -103,6 +103,61 @@ def _get_food_group_code(child: dict) -> str:
     return _get_food_group_info(child)["groupCode"]
 
 
+def _get_child_week_period(child: dict) -> tuple:
+    """Return (week_start_iso, week_end_iso, location_code) for a camp child.
+
+    Priority:
+    A. Parse DD.MM-DD.MM range from group_name or mk_class_name.
+       E.g. "Yellow Summer Week 3 (13.07-17.07), YC1" → ('2026-07-13', '2026-07-17', 'YC1').
+       Year is taken from camp_lesson_date; falls back to current UTC year.
+    B. If no parenthesised range found, compute Mon–Fri of the week that
+       contains camp_lesson_date.
+    C. If camp_lesson_date also absent, return (None, None, location_code).
+
+    location_code is YC1..YC5 derived from group_name / mk_class_name / raw_json,
+    or "" when it cannot be determined.
+    """
+    import re as _re
+    from datetime import date as _date, timedelta as _td, datetime as _dt
+
+    info = _get_food_group_info(child)
+    location_code = info["groupCode"] if info["groupCode"] != "unknown" else ""
+
+    lesson_date_str = str(child.get("camp_lesson_date") or "").strip()
+    year: int = _dt.now().year
+    if len(lesson_date_str) >= 4:
+        try:
+            year = int(lesson_date_str[:4])
+        except ValueError:
+            pass
+
+    # A: extract (DD.MM-DD.MM) from group_name or mk_class_name
+    for field in ("group_name", "mk_class_name"):
+        val = str(child.get(field) or "")
+        m = _re.search(r'\((\d{1,2})\.(\d{1,2})-(\d{1,2})\.(\d{1,2})\)', val)
+        if m:
+            try:
+                s_day, s_mon = int(m.group(1)), int(m.group(2))
+                e_day, e_mon = int(m.group(3)), int(m.group(4))
+                ws = _date(year, s_mon, s_day)
+                we = _date(year, e_mon, e_day)
+                return ws.isoformat(), we.isoformat(), location_code
+            except ValueError:
+                pass
+
+    # B: compute Mon–Fri from camp_lesson_date
+    if len(lesson_date_str) >= 10:
+        try:
+            d = _date.fromisoformat(lesson_date_str[:10])
+            monday = d - _td(days=d.weekday())
+            friday = monday + _td(days=4)
+            return monday.isoformat(), friday.isoformat(), location_code
+        except ValueError:
+            pass
+
+    return None, None, location_code
+
+
 def normalize_food_location(value: str) -> str:
     """Extract YC location code (YC1..YC5) from a string (group_name, menu title, etc.)."""
     if not value:

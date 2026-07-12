@@ -2344,6 +2344,21 @@ class MiniAppContext:
                     return "deadline_passed", None, None, None
             except Exception:
                 pass
+        # Server-side guard: verify menu date/location matches the child's camp week.
+        # Prevents submitting an order for a menu belonging to a different shift,
+        # even if the frontend sends an old menu_id.
+        child = next((c for c in children if c["mk_student_id"] == mk_student_id), None)
+        if child:
+            from storage import _get_child_week_period, normalize_food_location as _nfl
+            ws, we, ch_loc = _get_child_week_period(child)
+            menu_date = str(menu.get("menu_date") or "")
+            menu_loc = str(menu.get("location_code") or "").strip().upper()
+            if not menu_loc:
+                menu_loc = _nfl(str(menu.get("title") or ""))
+            if ws and we and menu_date and not (ws <= menu_date <= we):
+                return "menu_not_for_child", None, None, None
+            if ch_loc and menu_loc and ch_loc != menu_loc:
+                return "menu_not_for_child", None, None, None
         return None, menu_id, mk_student_id, menu
 
     def food_submit_order(self, auth: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -2558,12 +2573,89 @@ class MiniAppContext:
         children = self.storage.list_children_for_parent(str(user_id))
         if not children:
             return {"ok": True, "childrenRequired": True, "children": [], "menus": []}
-        menus = self.storage.list_published_food_menus_with_items()
-        for menu in menus:
-            for cat_items in (menu.get("itemsByCategory") or {}).values():
-                for item in cat_items:
-                    item.pop("price", None)
-        return {"ok": True, "childrenRequired": False, "children": children, "menus": menus}
+
+        from storage import _get_child_week_period, normalize_food_location as _nfl
+
+        # Resolve week period + location for each child (pure computation, no I/O)
+        periods: dict[str, tuple] = {}
+        for ch in children:
+            ws, we, loc = _get_child_week_period(ch)
+            periods[str(ch["mk_student_id"])] = (ws, we, loc)
+
+        all_menus = self.storage.list_published_food_menus_with_items()
+        warnings: list[str] = []
+        eligible_menus: list[dict] = []
+
+        for menu in all_menus:
+            menu_date = str(menu.get("menu_date") or "")
+            menu_loc = str(menu.get("location_code") or "").strip().upper()
+            if not menu_loc:
+                menu_loc = _nfl(str(menu.get("title") or ""))
+
+            eligible_ids: list[str] = []
+
+            for ch in children:
+                sid = str(ch["mk_student_id"])
+                ws, we, ch_loc = periods[sid]
+
+                if not ws or not we:
+                    # Cannot determine child's camp week — exclude from all menus
+                    wk = f"missing_child_period:{sid}"
+                    if wk not in warnings:
+                        warnings.append(wk)
+                    continue
+
+                if not (ws <= menu_date <= we):
+                    # Menu date outside child's camp week
+                    continue
+
+                if not ch_loc:
+                    # Child location unknown — cannot confirm correct menu
+                    wk = f"missing_child_location:{sid}"
+                    if wk not in warnings:
+                        warnings.append(wk)
+                    continue
+
+                if menu_loc and menu_loc != ch_loc:
+                    # Location mismatch (YC1 child must not see YC2 menu)
+                    continue
+
+                if not menu_loc:
+                    # Menu has no location_code — allow by date, emit one-time warning
+                    wk = f"missing_menu_location:{menu.get('id')}"
+                    if wk not in warnings:
+                        warnings.append(wk)
+
+                eligible_ids.append(sid)
+
+            menu["eligibleChildIds"] = eligible_ids
+
+            if eligible_ids:
+                for cat_items in (menu.get("itemsByCategory") or {}).values():
+                    for item in cat_items:
+                        item.pop("price", None)
+                eligible_menus.append(menu)
+
+        # Enrich children with resolved week info for frontend display
+        children_out: list[dict] = []
+        for ch in children:
+            sid = str(ch["mk_student_id"])
+            ws, we, loc = periods[sid]
+            ch_out = dict(ch)
+            ch_out["weekStart"] = ws
+            ch_out["weekEnd"] = we
+            ch_out["locationCode"] = loc
+            children_out.append(ch_out)
+
+        return {
+            "ok": True,
+            "childrenRequired": False,
+            "children": children_out,
+            "menus": eligible_menus,
+            "warnings": warnings,
+            "publishedMenusTotal": len(all_menus),
+            "eligibleMenusTotal": len(eligible_menus),
+        }
 
     def food_staff_active_menus(self, auth: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):

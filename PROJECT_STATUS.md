@@ -1,12 +1,49 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-12 (v7.0.82.1)_
+_Последнее обновление: 2026-07-12 (v7.0.84)_
 
 ---
 
 ## Что сделано
 
-### v7.0.82.1 — Hotfix: формат order_id для bePaid (текущая)
+### v7.0.84 — Fix: фильтрация меню питания по ребёнку, смене и филиалу (текущая)
+
+**Причина бага:** `food_active_menus()` возвращал ALL published меню без фильтрации по ребёнку, дате и локации. Родитель видел меню от 01.07 для ребёнка из смены 13.07–17.07.
+
+**Исправления:**
+- Новая функция `_get_child_week_period(child)` в `storage.py`:
+  - Приоритет A: парсит `(DD.MM-DD.MM)` из `group_name` / `mk_class_name` (напр. `"Yellow Summer Week 3 (13.07-17.07), YC1"`)
+  - Приоритет B: вычисляет понедельник–пятницу недели по `camp_lesson_date`
+  - Приоритет C: возвращает `(None, None, location_code)` — меню не показывается
+- `food_active_menus()` теперь:
+  - Для каждого меню вычисляет `eligibleChildIds` (список `mk_student_id`, которым оно подходит)
+  - Меню подходит ребёнку: дата в диапазоне смены + location_code совпадает
+  - YC1 ребёнок не видит YC2 меню (и наоборот)
+  - Меню без `location_code` — показывается по дате + warning `missing_menu_location`
+  - Ребёнок без известной локации — меню не показывается + warning `missing_child_location`
+  - Возвращает детям поля `weekStart`, `weekEnd`, `locationCode` для отображения в UI
+  - Диагностика: `publishedMenusTotal`, `eligibleMenusTotal`, `warnings[]`
+- `_check_order_preconditions()` теперь проверяет `menu_not_for_child`:
+  - Дата меню входит в неделю ребёнка
+  - Локация меню совпадает с локацией ребёнка
+  - Защита работает даже если frontend отправит старый `menu_id`
+- Frontend `renderParentFoodMenu()`:
+  - Фильтрует `menus` по `eligibleChildIds` для выбранного ребёнка
+  - Показывает контекст ребёнка: имя + смена + филиал
+  - При смене вкладки ребёнка — список меню меняется
+  - «Для смены этого ребёнка меню ещё не опубликовано.» — когда нет подходящих меню
+- Старые заказы (`food_orders`) не затрагиваются, не удаляются
+- 15 новых тестов в `tests/test_food_child_week.py` (все проходят)
+- Общий счёт тестов: 72 (все проходят)
+- Cache-bust: `v=7.0.84`
+
+**Что НЕ менялось:** bePaid, payment_intents, сверка, MoyKlass, отчёты, kitchen, teacher lunch, staff orders, food_orders в БД
+
+---
+
+### v7.0.83 — UI/UX: animated modals, bottom sheet, safe-area, toast
+
+### v7.0.82.1 — Hotfix: формат order_id для bePaid
 - **Причина:** bePaid возвращал HTTP 422 `order_id: ["should not begin with 0"]` при `pi_row_id` < 10
 - **Старый формат:** `f"{pi_row_id:012d}"` → `"000000000008"` для `pi_row_id=8` — отклонено bePaid
 - **Новый формат:** `f"1{pi_row_id:011d}"` → `"100000000008"` — ровно 12 цифр, первая всегда `1`

@@ -6228,9 +6228,11 @@ details > summary:focus {
 }
 
 /* v6.9.0 — parent food ordering */
-.food-child-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.food-child-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
 .food-child-tab { padding: 7px 14px; border-radius: 20px; border: 2px solid var(--border, #e0e0e0); background: var(--card-bg, #fff); font-size: 15px; font-weight: 600; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
 .food-child-tab.active { border-color: #111; background: #111; color: #FFD600; }
+.food-child-context { font-weight: 700; font-size: 14px; margin-bottom: 12px; line-height: 1.4; }
+.food-child-context-meta { font-weight: 400; font-size: 12px; color: var(--muted); margin-left: 4px; }
 .food-order-card { background: var(--card-bg, #fff); border: 1px solid var(--border, #e0e0e0); border-radius: 14px; padding: 16px; margin: 10px 0; }
 .food-order-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .food-order-status { display: inline-block; font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 10px; white-space: nowrap; }

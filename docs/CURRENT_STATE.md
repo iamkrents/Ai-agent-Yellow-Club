@@ -1,6 +1,6 @@
 # Yellow Club Agent — Current State
 
-> Последнее обновление: 2026-07-12  
+> Последнее обновление: 2026-07-12 (v7.0.84)  
 > Цель файла: позволить возобновить работу из любого нового чата без потери контекста.  
 > **Этот файл — только документация. Production-код не менять через этот файл.**
 
@@ -31,11 +31,22 @@ Claude Code (локально) → редактирование кода → git
 | Параметр | Значение |
 |---|---|
 | Последняя задеплоенная версия | **v7.0.81** (commit `db0f1e9`) — НЕ развёрнут, production-дата неизвестна |
-| Последний коммит в `main` | **см. git log** — `Fix bePaid ERIP order ID format` (v7.0.82.1 hotfix) |
-| Frontend cache-bust | **`v=7.0.82`** (в `index.html`: `styles.css?v=7.0.82`, `app.js?v=7.0.82`) |
-| `console.log` в app.js | `MiniApp version: v7.0.82` |
+| Последний коммит в `main` | **v7.0.84** — Fix parent food menus by child week and location |
+| Frontend cache-bust | **`v=7.0.84`** (в `index.html`: `styles.css?v=7.0.84`, `app.js?v=7.0.84`) |
+| `console.log` в app.js | `MiniApp version: v7.0.84` |
 
 > v7.0.82 и hotfix v7.0.82.1 запушены, но **НЕ деплоились** на production-сервер. Деплой — только по команде владельца.
+
+### v7.0.84 — Фильтрация меню питания по ребёнку, смене, филиалу
+
+**Причина бага:** `food_active_menus()` возвращал ВСЕ published меню без фильтрации по дате и локации. Родитель Фоменко Владислав (смена 13.07–17.07, YC1) видел меню от 01.07.
+
+**Исправление:**
+- `_get_child_week_period(child)` — новая функция в `storage.py`, парсит `(DD.MM-DD.MM)` из `group_name`
+- `food_active_menus()` — меню фильтруются по `child_week_start..child_week_end` и `location_code`
+- `_check_order_preconditions()` — новая проверка `menu_not_for_child` на бэкенде
+- Frontend: `eligibleChildIds`, контекст смены/филиала ребёнка, правильный "no menus" текст
+- Старые заказы НЕ удаляются
 
 ### Известный production-инцидент (v7.0.82.1 hotfix)
 - **Симптом:** bePaid HTTP 422 `order_id: ["should not begin with 0"]` при создании ERIP-счёта

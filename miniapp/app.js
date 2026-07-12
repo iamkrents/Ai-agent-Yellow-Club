@@ -66,7 +66,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.83");
+console.log("MiniApp version: v7.0.84");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -7248,19 +7248,46 @@ function renderParentFoodMenu() {
   }
   const childId = state.selectedChildId;
 
+  // Filter to menus eligible for the currently selected child
+  const childMenus = menus.filter(m =>
+    Array.isArray(m.eligibleChildIds) &&
+    m.eligibleChildIds.map(String).includes(String(childId))
+  );
+  const selectedChild = children.find(c => c.mk_student_id === childId);
+
+  // Build child context line: name, shift dates, location
+  function _fmtShiftDate(iso) {
+    if (!iso || iso.length < 10) return "";
+    const [, mm, dd] = iso.split("-");
+    return `${parseInt(dd, 10)}.${parseInt(mm, 10)}`;
+  }
+  let childContextHtml = "";
+  if (selectedChild) {
+    const ws = selectedChild.weekStart, we = selectedChild.weekEnd, loc = selectedChild.locationCode;
+    const shiftStr = (ws && we) ? `Смена: ${_fmtShiftDate(ws)}–${_fmtShiftDate(we)}` : "";
+    const locStr = loc && loc !== "unknown" ? `Филиал: ${escapeHtml(loc)}` : "";
+    const parts = [shiftStr, locStr].filter(Boolean).join(" · ");
+    childContextHtml = parts
+      ? `<div class="food-child-context">${escapeHtml(selectedChild.full_name || selectedChild.first_name || "")}${parts ? ` <span class="food-child-context-meta">${parts}</span>` : ""}</div>`
+      : "";
+  }
+
   const childTabsHtml = children.length > 1
     ? `<div class="food-child-tabs">${children.map(c => `<button class="food-child-tab${c.mk_student_id === childId ? " active" : ""}" data-child-id="${escapeHtml(c.mk_student_id)}">${escapeHtml(c.full_name || c.first_name || c.mk_student_id)}</button>`).join("")}</div>`
-    : (children.length === 1 ? `<div style="font-weight:700;margin-bottom:10px">${escapeHtml(children[0].full_name || children[0].first_name || "")}</div>` : "");
+    : "";
 
-  if (!menus.length) {
-    root.innerHTML = `<div class="food-debug-card"><div class="food-menu-panel-head"><h3>Меню питания</h3><button class="secondary" id="parentMenuRefresh">Обновить</button></div>${childTabsHtml}<div class="parent-food-soon"><p>Меню ещё не опубликовано.</p><p>Когда меню появится, здесь можно будет выбрать питание.</p></div></div>`;
+  if (!childMenus.length) {
+    const msg = menus.length > 0
+      ? "Для смены этого ребёнка меню ещё не опубликовано."
+      : "Меню ещё не опубликовано.";
+    root.innerHTML = `<div class="food-debug-card"><div class="food-menu-panel-head"><h3>Меню питания</h3><button class="secondary" id="parentMenuRefresh">Обновить</button></div>${childTabsHtml}${childContextHtml}<div class="parent-food-soon"><p>${escapeHtml(msg)}</p><p>Когда меню появится, здесь можно будет выбрать питание.</p></div></div>`;
     _wireParentRefreshAndTabs(root);
     return;
   }
 
   const catOrder = ["Супы", "Салаты", "Второе", "Гарниры", "Сладкое", "Напитки", "Другое"];
 
-  const menusHtml = menus.map(menu => {
+  const menusHtml = childMenus.map(menu => {
     const dateStr = _formatMenuDate(menu.menu_date);
     const deadlinePassed = _isDeadlinePassed(menu.deadline_at);
     const order = _getOrderForMenu(menu.id, childId);
@@ -7346,6 +7373,7 @@ function renderParentFoodMenu() {
         <button class="secondary" id="parentMenuRefresh">Обновить</button>
       </div>
       ${childTabsHtml}
+      ${childContextHtml}
       ${menusHtml}
     </div>`;
 
