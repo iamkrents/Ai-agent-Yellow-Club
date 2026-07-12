@@ -1,12 +1,31 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-12 (v7.0.87)_
+_Последнее обновление: 2026-07-12 (v7.0.88)_
 
 ---
 
 ## Что сделано
 
-### v7.0.87 — Fix: замена нативного month input на .yc-month-picker, устранение наложения фильтров (текущая)
+### v7.0.88 — Fix: белый month picker в тёмной модалке + единая система анимаций (текущая)
+
+**Баг: белый month picker в тёмной модалке:**
+- **Причина:** `.pi-modal-body .yc-month-picker { background: #f6f7fb }` имеет специфичность 0,2,0 — выше, чем `@media (prefers-color-scheme: dark) { .yc-month-picker { background: #263047 } }` (0,1,0). Результат: светлый фон отображался в тёмной модалке.
+- **Дополнительная причина:** `data-theme` никогда не устанавливался на `:root`, поэтому `:root[data-theme="dark"]` правила не срабатывали.
+- **Исправление:** добавлены `@media (prefers-color-scheme: dark) .pi-modal-body .yc-month-picker { background: #263047 }` и `:root[data-theme="dark"] .pi-modal-body .yc-month-picker { ... }` с нужной специфичностью. В app.js добавлено `document.documentElement.setAttribute("data-theme", tg.colorScheme)` при инициализации и при `themeChanged`.
+
+**Единая система анимаций (motion system v7.0.88):**
+- `:root` tokens: `--motion-fast: 140ms`, `--motion-normal: 200ms`, `--motion-slow: 280ms`, `--ease-standard`, `--ease-enter`, `--ease-exit`, `--motion-distance-sm/md`
+- Аккордеоны: стрелка вращается `90deg` с `transition`, контент появляется через `ycFadeIn`
+- Toast: появление `opacity 0→1 + translateY(8px→0)`, классовый подход (`pi-toast-visible`), анимация через `requestAnimationFrame`
+- Карточки PI: stagger `ycCardEnter` для первых 8 карточек (0–155ms delay)
+- `prefers-reduced-motion`: расширено до глобального `*, *::before, *::after` с `animation-iteration-count: 1`
+- Cache-bust: `v=7.0.88`
+
+**Что НЕ менялось:** бизнес-логика, API, backend, bePaid, food module, reports, webhook, storage
+
+---
+
+### v7.0.87 — Fix: замена нативного month input на .yc-month-picker, устранение наложения фильтров
 
 **Корневая причина v7.0.86 не решила проблемы:** iOS Safari рендерит нативный `input[type="month"]` с минимальной шириной ~220px, которая выходит за CSS layout box вне зависимости от `min-width:0`. CSS не может ограничить нативный control renderer — он рисует поверх CSS box.
 

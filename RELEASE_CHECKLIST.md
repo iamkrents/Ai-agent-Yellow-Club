@@ -1,9 +1,10 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.87**
+**Cache version: v7.0.88**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.88 | 2026-07-12 | Fix: белый month picker в тёмной модалке (специфичность CSS + data-theme от Telegram). Анимации: motion tokens, accordion arrow rotate, toast translateY + класс pi-toast-visible, PI cards stagger, global prefers-reduced-motion. |
 | v7.0.87 | 2026-07-12 | Fix: iOS month input overflow и наложение фильтров. Паттерн `.yc-month-picker` (нативный input opacity:0, видимый span), helpers `isValidMonthValue/formatMonthLabel/syncMonthPicker/initMonthPicker`, переписан toolbar HTML+CSS на `.pi-toolbar-field`. |
 | v7.0.86 | 2026-07-12 | Fix: month input overflow, toolbar grid layout, childrenReportMonth init. `min-width:0` на month inputs, CSS Grid toolbar, `ensureMonthInputValue` helper. |
 | v7.0.85 | 2026-07-12 | Fix: модальные окна в правильном месте viewport на iPhone/Telegram. DOM portal `#piModalRoot`, iOS scroll lock (`position:fixed; top:-scrollY`), backdrop = `.pi-modal`, sheet = `.pi-modal-sheet`, z-index 10000. |

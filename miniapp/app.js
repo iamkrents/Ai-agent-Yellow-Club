@@ -2,6 +2,19 @@ const tg = window.Telegram?.WebApp;
 if (tg) {
   tg.ready();
   tg.expand();
+  // Apply Telegram colour scheme as data-theme so CSS :root[data-theme="dark"] selectors fire
+  (function _applyTgTheme() {
+    const scheme = tg.colorScheme;
+    if (scheme === "dark" || scheme === "light") {
+      document.documentElement.setAttribute("data-theme", scheme);
+    }
+    if (typeof tg.onEvent === "function") {
+      tg.onEvent("themeChanged", () => {
+        const s = tg.colorScheme;
+        if (s === "dark" || s === "light") document.documentElement.setAttribute("data-theme", s);
+      });
+    }
+  })();
   try {
     if (typeof tg.setHeaderColor === "function") tg.setHeaderColor("#ffd84d");
     if (typeof tg.setBackgroundColor === "function") tg.setBackgroundColor("#f6f7fb");
@@ -66,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.87");
+console.log("MiniApp version: v7.0.88");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -11983,9 +11996,12 @@ function showToast(msg) {
     document.body.appendChild(t);
   }
   t.textContent = msg;
-  t.style.opacity = "1";
   clearTimeout(t._timeout);
-  t._timeout = setTimeout(() => { t.style.opacity = "0"; }, 3000);
+  // Use rAF so browser processes the initial opacity:0 state before adding visible class
+  requestAnimationFrame(() => {
+    t.classList.add("pi-toast-visible");
+    t._timeout = setTimeout(() => { t.classList.remove("pi-toast-visible"); }, 3000);
+  });
 }
 
 // ── Wire up event listeners ───────────────────────────────────────────────
