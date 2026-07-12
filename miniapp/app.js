@@ -66,7 +66,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.86");
+console.log("MiniApp version: v7.0.87");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -2348,11 +2348,36 @@ function currentMonthValue() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-function ensureMonthInputValue(input, preferred) {
-  if (!input) return currentMonthValue();
-  const valid = /^\d{4}-\d{2}$/.test(preferred) ? preferred : currentMonthValue();
-  if (!/^\d{4}-\d{2}$/.test(input.value || "")) input.value = valid;
-  return input.value;
+function isValidMonthValue(v) {
+  return /^\d{4}-(0[1-9]|1[0-2])$/.test(v);
+}
+
+function formatMonthLabel(value) {
+  if (!isValidMonthValue(value)) return "—";
+  const [y, m] = value.split("-");
+  const d = new Date(Number(y), Number(m) - 1, 1);
+  return d.toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
+}
+
+function syncMonthPicker(input) {
+  if (!input) return;
+  if (!isValidMonthValue(input.value)) input.value = currentMonthValue();
+  const wrap = input.closest(".yc-month-picker");
+  const span = wrap?.querySelector(".yc-month-picker__value");
+  if (span) span.textContent = formatMonthLabel(input.value);
+}
+
+function initMonthPicker(input, preferred) {
+  if (!input) return;
+  if (!isValidMonthValue(input.value)) {
+    input.value = isValidMonthValue(preferred) ? preferred : currentMonthValue();
+  }
+  syncMonthPicker(input);
+  if (!input.dataset.monthPickerBound) {
+    input.dataset.monthPickerBound = "1";
+    input.addEventListener("change", () => syncMonthPicker(input));
+    input.addEventListener("input", () => syncMonthPicker(input));
+  }
 }
 
 function renderReportsUnavailable() {
@@ -2413,7 +2438,7 @@ function renderReports() {
   if (!canUseReports()) return renderReportsUnavailable();
   const data = state.reportsData || {};
   const report = data.report || null;
-  if (monthInput && !monthInput.value) monthInput.value = state.reportsMonth || currentMonthValue();
+  initMonthPicker(monthInput, state.reportsMonth);
   if (state.reportsBusy) {
     summary.innerHTML = `<div class="reports-loading">Формирую отчёт из МойКласс...</div>`;
     if (details) details.innerHTML = "";
@@ -3536,14 +3561,14 @@ async function loadReports() {
   const monthInput = $("reportsMonth");
   const month = monthInput?.value || state.reportsMonth || currentMonthValue();
   state.reportsMonth = month;
-  if (monthInput) monthInput.value = month;
+  if (monthInput) { monthInput.value = month; syncMonthPicker(monthInput); }
   state.reportsBusy = true;
   renderReports();
   try {
     const data = await apiGet(`/api/reports/monthly?month=${encodeURIComponent(month)}`);
     state.reportsData = data;
     state.reportsMonth = data.month || month;
-    if (monthInput && /^\d{4}-\d{2}$/.test(state.reportsMonth)) monthInput.value = state.reportsMonth;
+    if (monthInput && isValidMonthValue(state.reportsMonth)) { monthInput.value = state.reportsMonth; syncMonthPicker(monthInput); }
     setNotice(`Отчёт за ${state.reportsMonth} сформирован`, "ok");
   } catch (e) {
     console.error("[loadReports]", e);
@@ -3600,7 +3625,7 @@ function renderChildrenReport() {
   const el = $("childrenReportResult");
   if (!el) return;
   if (!canUseChildrenReport()) { el.innerHTML = `<div class="empty">Отчёт по детям недоступен для вашей роли.</div>`; return; }
-  ensureMonthInputValue($("childrenReportMonth"), state.childrenReportMonth);
+  initMonthPicker($("childrenReportMonth"), state.childrenReportMonth);
   if (state.childrenReportBusy) {
     el.innerHTML = `<div class="reports-loading">Загружаю данные из МойКласс&hellip;</div>`;
     return;
@@ -4180,7 +4205,7 @@ async function loadChildrenReport() {
   const monthInput = $("childrenReportMonth");
   const month = monthInput?.value || state.childrenReportMonth || currentMonthValue();
   state.childrenReportMonth = month;
-  if (monthInput) monthInput.value = month;
+  if (monthInput) { monthInput.value = month; syncMonthPicker(monthInput); }
   state.childrenReportBusy = true;
   state.childrenReportData = null;
   renderChildrenReport();
@@ -4493,7 +4518,7 @@ function renderBepaid() {
   const controlsHtml = `
     ${importBanner}
     <div class="reports-controls" style="margin-bottom:12px;flex-wrap:wrap;gap:6px">
-      <label><span>Месяц</span><input id="bepaidMonth" type="month" value="${state.bepaidMonth || currentMonthValue()}" /></label>
+      <label><span>Месяц</span><div class="yc-month-picker"><span class="yc-month-picker__value">—</span><input class="yc-month-picker__native" id="bepaidMonth" type="month" value="${state.bepaidMonth || currentMonthValue()}" /></div></label>
       <select id="bepaidShopFilter" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text)">
         <option value="all">Все магазины</option>
         <option value="erip">ЕРИП</option>
@@ -4504,6 +4529,7 @@ function renderBepaid() {
     </div>`;
 
   const _bindBepaidControls = () => {
+    initMonthPicker($("bepaidMonth"), state.bepaidMonth);
     $("bepaidMonth")?.addEventListener("change", e => { state.bepaidMonth = e.target.value; });
     $("bepaidImportBtn")?.addEventListener("click", runBepaidImport);
     $("bepaidReconcileBtn")?.addEventListener("click", runBepaidReconcile);
@@ -4712,6 +4738,7 @@ function renderBepaid() {
 
   el.innerHTML = statusHtml + controlsHtml + tilesHtml + mkNote + copyBtnHtml + cardsHtml + diagHtml;
 
+  initMonthPicker($("bepaidMonth"), state.bepaidMonth);
   $("bepaidMonth")?.addEventListener("change", e => { state.bepaidMonth = e.target.value; });
   const sf = $("bepaidShopFilter");
   if (sf && bp?.shop_type) sf.value = bp.shop_type;
@@ -11742,6 +11769,7 @@ function openCreateIntentModal(prefill) {
   // Default period_month: use current filter month if set, else current month
   const filterMonth = $("piMonthFilter")?.value || "";
   $("piPeriodMonth").value = prefill?.period_month || filterMonth || currentMonthValue();
+  syncMonthPicker($("piPeriodMonth"));
   $("piPaymentMethod").value = prefill?.payment_method || "erip";
   $("piComment").value = prefill?.comment || "";
   $("piCreateError").classList.add("hidden");
@@ -11966,7 +11994,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Load intents when accordion opens
   $("paymentIntentsAccordion")?.addEventListener("toggle", e => {
     if (e.target.open && canUsePaymentIntents()) {
-      ensureMonthInputValue($("piMonthFilter"), "");
+      initMonthPicker($("piMonthFilter"), "");
       loadPaymentIntents();
     }
   });

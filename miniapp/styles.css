@@ -33,6 +33,66 @@ input[type="month"]::-webkit-date-and-time-value {
   min-inline-size: 0;
   text-align: center;
 }
+
+/* ── yc-month-picker — iOS-safe month selector ────────────────────────────────
+ *  The .yc-month-picker__native input is position:absolute;opacity:0 so its
+ *  intrinsic min-content width never affects layout. The visible span shows
+ *  the formatted month label and the wrapper div defines the visual size.
+ * ─────────────────────────────────────────────────────────────────────────── */
+.yc-month-picker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+}
+.yc-month-picker:focus-within {
+  border-color: #3498db;
+  box-shadow: 0 0 0 3px rgba(52,152,219,.18);
+  outline: none;
+}
+.yc-month-picker__value {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  pointer-events: none;
+  font-size: 13px;
+  padding: 0 8px;
+}
+.yc-month-picker__native {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  opacity: 0;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+@media (prefers-color-scheme: dark) {
+  .yc-month-picker { background: #263047; border-color: rgba(255,255,255,.14); color: #e8ecf4; }
+}
+:root[data-theme="dark"] .yc-month-picker { background: #263047; border-color: rgba(255,255,255,.14); color: #e8ecf4; }
+:root[data-theme="light"] .yc-month-picker { background: #fff; border-color: var(--line); color: var(--ink); }
+
 html, body { min-height: 100%; }
 body {
   margin: 0;
@@ -4155,6 +4215,18 @@ body {
   border-color: #ffd84d;
   box-shadow: 0 0 0 4px rgba(255,216,77,.18);
 }
+.reports-controls .yc-month-picker {
+  min-height: 58px;
+  border-radius: 18px;
+}
+.reports-controls .yc-month-picker__value {
+  font-size: 15px;
+  font-weight: 800;
+}
+.reports-controls .yc-month-picker:focus-within {
+  border-color: #ffd84d;
+  box-shadow: 0 0 0 4px rgba(255,216,77,.18);
+}
 .reports-summary {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -7194,60 +7266,77 @@ input:disabled { animation: none !important; transform: none !important; }
 :root[data-theme="dark"] .bepaid-card { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.09); }
 :root[data-theme="light"] .bepaid-card { background: rgba(0,0,0,.03); border-color: rgba(0,0,0,.10); }
 
-/* ── payment intents toolbar v7.0.86 — stable grid layout ─────────────────── */
+/* ── payment intents toolbar v7.0.87 ────────────────────────────────────────── */
 :root { --pi-control-h: 40px; }
 
 .pi-toolbar {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
   margin-bottom: 12px;
   width: 100%;
+  max-width: 100%;
   min-width: 0;
 }
 .pi-toolbar-filters {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
 }
-.pi-toolbar-actions {
-  display: grid;
-  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
-  gap: 8px;
-  min-width: 0;
-}
-@media (max-width: 360px) {
-  .pi-toolbar-filters,
-  .pi-toolbar-actions { grid-template-columns: 1fr; }
-}
-.pi-toolbar label {
+.pi-toolbar-field {
   display: flex;
   flex-direction: column;
   gap: 3px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+.pi-toolbar-field-label {
   font-size: 12px;
   color: var(--muted);
-  min-width: 0;
 }
-.pi-toolbar input, .pi-toolbar select {
+.pi-toolbar-field > select {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  height: var(--pi-control-h);
+  min-height: var(--pi-control-h);
   font-size: 13px;
   padding: 5px 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fff;
   color: #172033;
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
+}
+.pi-toolbar .yc-month-picker {
   height: var(--pi-control-h);
   min-height: var(--pi-control-h);
 }
-.pi-toolbar button {
+.pi-toolbar-actions {
+  display: grid;
+  grid-template-columns: minmax(110px, auto) minmax(0, 1fr);
+  gap: 10px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+.pi-toolbar-actions > button {
+  width: 100%;
+  min-width: 0;
   height: var(--pi-control-h);
   min-height: var(--pi-control-h);
-  min-width: 90px;
   white-space: nowrap;
   box-sizing: border-box;
+}
+@media (max-width: 340px) {
+  .pi-toolbar-filters,
+  .pi-toolbar-actions { grid-template-columns: 1fr; }
 }
 .pi-stats-row {
   display: flex;
@@ -7466,6 +7555,14 @@ body.pi-modal-open {
   background: #fff;
 }
 .pi-modal-body textarea { resize: vertical; min-height: 52px; }
+.pi-modal-body .yc-month-picker {
+  height: 40px;
+  min-height: 40px;
+  border: 1.5px solid #e0e4ef;
+  background: #f6f7fb;
+}
+.pi-modal-body .yc-month-picker__value { font-size: 14px; }
+.pi-modal-body .yc-month-picker:focus-within { border-color: #3498db; background: #fff; }
 
 /* footer — never scrolls, home-indicator safe */
 .pi-modal-footer {
@@ -7528,7 +7625,9 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
     border-color: #3498db; background: #172b40;
   }
   .pi-modal-footer { border-top-color: rgba(255,255,255,.10); }
-  .pi-toolbar input, .pi-toolbar select, .pi-toolbar button.secondary { background: #263047; border-color: rgba(255,255,255,.14); color: #e8ecf4; }
+  .pi-toolbar-field > select, .pi-toolbar .yc-month-picker { background: #263047; border-color: rgba(255,255,255,.14); color: #e8ecf4; }
+  .pi-toolbar .yc-month-picker__value { color: #e8ecf4; }
+  .pi-toolbar-actions > button.secondary { background: #263047; border-color: rgba(255,255,255,.14); color: #e8ecf4; }
   .chip-pi-draft { background: rgba(255,255,255,.08); }
   .chip-pi-cancel { background: rgba(255,255,255,.06); }
   .pi-toast { background: #e8ecf4; color: #172033; }
@@ -7547,14 +7646,15 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
 :root[data-theme="dark"] .pi-modal-body select:focus,
 :root[data-theme="dark"] .pi-modal-body textarea:focus { border-color: #3498db; background: #172b40; }
 :root[data-theme="dark"] .pi-modal-footer { border-top-color: rgba(255,255,255,.10); }
-:root[data-theme="dark"] .pi-toolbar input,
-:root[data-theme="dark"] .pi-toolbar select,
-:root[data-theme="dark"] .pi-toolbar button.secondary { background: #263047; border-color: rgba(255,255,255,.14); color: #e8ecf4; }
+:root[data-theme="dark"] .pi-toolbar-field > select,
+:root[data-theme="dark"] .pi-toolbar .yc-month-picker { background: #263047; border-color: rgba(255,255,255,.14); color: #e8ecf4; }
+:root[data-theme="dark"] .pi-toolbar .yc-month-picker__value { color: #e8ecf4; }
+:root[data-theme="dark"] .pi-toolbar-actions > button.secondary { background: #263047; border-color: rgba(255,255,255,.14); color: #e8ecf4; }
 :root[data-theme="dark"] .pi-toast { background: #e8ecf4; color: #172033; }
 :root[data-theme="light"] .pi-card { background: #fff; border-color: rgba(0,0,0,.10); }
 :root[data-theme="light"] .pi-modal-sheet { background: #fff; color: #172033; }
 :root[data-theme="light"] .pi-modal-body input,
 :root[data-theme="light"] .pi-modal-body select,
 :root[data-theme="light"] .pi-modal-body textarea { background: #f6f7fb; border-color: #e0e4ef; color: #172033; }
-:root[data-theme="light"] .pi-toolbar input,
-:root[data-theme="light"] .pi-toolbar select { background: #fff; border-color: #e8ecf4; color: #172033; }
+:root[data-theme="light"] .pi-toolbar-field > select,
+:root[data-theme="light"] .pi-toolbar .yc-month-picker { background: #fff; border-color: #e8ecf4; color: #172033; }

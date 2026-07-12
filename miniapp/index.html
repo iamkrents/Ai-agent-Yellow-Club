@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.0.86" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.0.87" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -276,7 +276,10 @@
         <div class="reports-controls">
           <label>
             <span>Месяц</span>
-            <input id="childrenReportMonth" type="month" />
+            <div class="yc-month-picker">
+              <span class="yc-month-picker__value">—</span>
+              <input class="yc-month-picker__native" id="childrenReportMonth" type="month" />
+            </div>
           </label>
           <button class="primary" id="loadChildrenReport" type="button">Показать отчёт</button>
         </div>
@@ -303,12 +306,15 @@
           <div class="rsm-content">
             <div class="pi-toolbar">
               <div class="pi-toolbar-filters">
-                <label>
-                  <span>Месяц</span>
-                  <input type="month" id="piMonthFilter" />
-                </label>
-                <label>
-                  <span>Статус</span>
+                <div class="pi-toolbar-field">
+                  <span class="pi-toolbar-field-label">Месяц</span>
+                  <div class="yc-month-picker">
+                    <span class="yc-month-picker__value">—</span>
+                    <input class="yc-month-picker__native" type="month" id="piMonthFilter" />
+                  </div>
+                </div>
+                <div class="pi-toolbar-field">
+                  <span class="pi-toolbar-field-label">Статус</span>
                   <select id="piStatusFilter">
                     <option value="all">Все</option>
                     <option value="draft">Черновик</option>
@@ -321,7 +327,7 @@
                     <option value="cancelled">Отменён</option>
                     <option value="error">Ошибка</option>
                   </select>
-                </label>
+                </div>
               </div>
               <div class="pi-toolbar-actions">
                 <button class="secondary" id="loadPaymentIntents" type="button">Обновить</button>
@@ -346,7 +352,10 @@
             <div class="reports-controls" style="margin-top:10px">
               <label>
                 <span>Месяц отчёта</span>
-                <input id="reportsMonth" type="month" />
+                <div class="yc-month-picker">
+                  <span class="yc-month-picker__value">—</span>
+                  <input class="yc-month-picker__native" id="reportsMonth" type="month" />
+                </div>
               </label>
               <button class="primary" id="loadReports" type="button">Сформировать отчёт</button>
             </div>
@@ -735,7 +744,10 @@
           </label>
           <label>
             <span>Период (YYYY-MM)</span>
-            <input type="month" id="piPeriodMonth" />
+            <div class="yc-month-picker">
+              <span class="yc-month-picker__value">—</span>
+              <input class="yc-month-picker__native" type="month" id="piPeriodMonth" />
+            </div>
           </label>
           <label>
             <span>Способ оплаты</span>
@@ -802,6 +814,6 @@
 
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.0.86"></script>
+  <script src="/static/app.js?v=7.0.87"></script>
 </body>
 </html>

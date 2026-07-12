@@ -1,12 +1,37 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-12 (v7.0.86)_
+_Последнее обновление: 2026-07-12 (v7.0.87)_
 
 ---
 
 ## Что сделано
 
-### v7.0.86 — Fix: адаптивность month input, стабильная сетка фильтров, инициализация месяца (текущая)
+### v7.0.87 — Fix: замена нативного month input на .yc-month-picker, устранение наложения фильтров (текущая)
+
+**Корневая причина v7.0.86 не решила проблемы:** iOS Safari рендерит нативный `input[type="month"]` с минимальной шириной ~220px, которая выходит за CSS layout box вне зависимости от `min-width:0`. CSS не может ограничить нативный control renderer — он рисует поверх CSS box.
+
+**Решение — `.yc-month-picker` паттерн:**
+- Обёртка `.yc-month-picker` определяет визуальный размер (участвует в layout)
+- `.yc-month-picker__native` (`position:absolute; inset:0; opacity:0`) — невидимый нативный input, получает клики и открывает picker, но НЕ участвует в layout
+- `.yc-month-picker__value` — видимый `<span>` отображает отформатированный месяц
+
+**JS helpers:**
+- `isValidMonthValue(v)` — regex `/^\d{4}-(0[1-9]|1[0-2])$/`
+- `formatMonthLabel(value)` — `toLocaleDateString("ru-RU", {month:"long", year:"numeric"})`
+- `syncMonthPicker(input)` — устанавливает значение по умолчанию + обновляет span
+- `initMonthPicker(input, preferred)` — инициализирует + bindит change/input события (один раз, через `dataset.monthPickerBound`)
+
+**HTML заменены:** `piMonthFilter`, `childrenReportMonth`, `reportsMonth`, `piPeriodMonth`, `bepaidMonth`
+
+**Toolbar:** `.pi-toolbar label` → `.pi-toolbar-field` div; CSS Grid переписан на `v7.0.87` блок с `.pi-toolbar-field`, `.pi-toolbar-field-label`, `.pi-toolbar-field > select`, `.pi-toolbar .yc-month-picker`
+
+- Cache-bust: `v=7.0.87`
+
+**Что НЕ менялось:** API, backend, bePaid, food module, reports, webhook, storage, бизнес-логика
+
+---
+
+### v7.0.86 — Fix: адаптивность month input, стабильная сетка фильтров, инициализация месяца
 
 **Баг 1 (month overflow):** `input[type="month"]` имеет нативную min-content ширину (~220px), которая в flex-контейнере без `min-width: 0` выходит за правую границу. Добавлены глобальное правило `input[type="month"] { min-width: 0; min-inline-size: 0; }` и те же свойства внутри `.pi-modal-body input` и `.reports-controls input`.
 
