@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.0.85" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.0.86" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -302,27 +302,31 @@
           </summary>
           <div class="rsm-content">
             <div class="pi-toolbar">
-              <label>
-                <span>Месяц</span>
-                <input type="month" id="piMonthFilter" />
-              </label>
-              <label>
-                <span>Статус</span>
-                <select id="piStatusFilter">
-                  <option value="all">Все</option>
-                  <option value="draft">Черновик</option>
-                  <option value="ready">Готов</option>
-                  <option value="bepaid_creating">Создаётся...</option>
-                  <option value="bepaid_created">В bePaid</option>
-                  <option value="bepaid_requires_check">Требует проверки</option>
-                  <option value="paid">Оплачен</option>
-                  <option value="posted_to_moyklass">В МойКласс</option>
-                  <option value="cancelled">Отменён</option>
-                  <option value="error">Ошибка</option>
-                </select>
-              </label>
-              <button class="secondary" id="loadPaymentIntents" type="button">Обновить</button>
-              <button class="primary" id="openCreateIntent" type="button">+ Создать черновик</button>
+              <div class="pi-toolbar-filters">
+                <label>
+                  <span>Месяц</span>
+                  <input type="month" id="piMonthFilter" />
+                </label>
+                <label>
+                  <span>Статус</span>
+                  <select id="piStatusFilter">
+                    <option value="all">Все</option>
+                    <option value="draft">Черновик</option>
+                    <option value="ready">Готов</option>
+                    <option value="bepaid_creating">Создаётся...</option>
+                    <option value="bepaid_created">В bePaid</option>
+                    <option value="bepaid_requires_check">Требует проверки</option>
+                    <option value="paid">Оплачен</option>
+                    <option value="posted_to_moyklass">В МойКласс</option>
+                    <option value="cancelled">Отменён</option>
+                    <option value="error">Ошибка</option>
+                  </select>
+                </label>
+              </div>
+              <div class="pi-toolbar-actions">
+                <button class="secondary" id="loadPaymentIntents" type="button">Обновить</button>
+                <button class="primary" id="openCreateIntent" type="button">+ Создать черновик</button>
+              </div>
             </div>
             <div id="piDebug" style="font-size:11px;color:var(--muted);padding:2px 0 4px;min-height:16px"></div>
             <div id="piStats" class="pi-stats-row"></div>
@@ -798,6 +802,6 @@
 
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.0.85"></script>
+  <script src="/static/app.js?v=7.0.86"></script>
 </body>
 </html>

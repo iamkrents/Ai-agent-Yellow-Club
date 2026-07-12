@@ -1,12 +1,30 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-12 (v7.0.85)_
+_Последнее обновление: 2026-07-12 (v7.0.86)_
 
 ---
 
 ## Что сделано
 
-### v7.0.85 — Fix: позиционирование модальных окон на iPhone (текущая)
+### v7.0.86 — Fix: адаптивность month input, стабильная сетка фильтров, инициализация месяца (текущая)
+
+**Баг 1 (month overflow):** `input[type="month"]` имеет нативную min-content ширину (~220px), которая в flex-контейнере без `min-width: 0` выходит за правую границу. Добавлены глобальное правило `input[type="month"] { min-width: 0; min-inline-size: 0; }` и те же свойства внутри `.pi-modal-body input` и `.reports-controls input`.
+
+**Баг 2 (toolbar jumps):** `.pi-toolbar` был `display: flex; flex-wrap: wrap` без фиксированных размеров. Переписан на 2-строчный CSS Grid (`pi-toolbar-filters` + `pi-toolbar-actions`), добавлена переменная `--pi-control-h: 40px` для единой высоты полей и кнопок, `min-width: 90px` на кнопки.
+
+**Баг 3 (childrenReportMonth empty):** `renderChildrenReport()` не инициализировала поле `#childrenReportMonth`. Добавлен вызов `ensureMonthInputValue($("childrenReportMonth"), state.childrenReportMonth)` в начале функции.
+
+**Дополнительно:**
+- `ensureMonthInputValue(input, preferred)` — единый helper вместо разрозненных реализаций
+- `piMonthFilter` инициализируется при открытии аккордеона (до `loadPaymentIntents()`)
+- `piPeriodMonth` использует `currentMonthValue()` вместо `toISOString()` (исправлен timezone bug)
+- Cache-bust: `v=7.0.86`
+
+**Что НЕ менялось:** API, backend, bePaid, food module, reports, webhook, storage
+
+---
+
+### v7.0.85 — Fix: позиционирование модальных окон на iPhone
 
 **Причина бага:** модалки платёжных черновиков были вложены в section отчётов с CSS-анимациями. `position: fixed` в iOS Telegram WebApp фиксировалось к анимированному ancestor, а не к viewport → форма уходила за экран, overlay не покрывал экран полностью.
 

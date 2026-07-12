@@ -18,6 +18,21 @@
   --yc-slow: 240ms;
 }
 * { box-sizing: border-box; }
+
+/* prevent input[type=month] intrinsic min-width from escaping flex/grid containers */
+input[type="month"] {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-inline-size: 0;
+  box-sizing: border-box;
+}
+input[type="month"]::-webkit-date-and-time-value {
+  min-width: 0;
+  min-inline-size: 0;
+  text-align: center;
+}
 html, body { min-height: 100%; }
 body {
   margin: 0;
@@ -4107,6 +4122,9 @@ body {
 }
 .reports-controls input {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   min-height: 58px;
   border: 1px solid var(--line);
   background: #fff;
@@ -4125,10 +4143,9 @@ body {
 
 .reports-controls input::-webkit-date-and-time-value {
   text-align: center;
+  min-width: 0;
+  min-inline-size: 0;
   min-height: 58px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 .reports-controls input::-webkit-calendar-picker-indicator {
   margin-left: 0;
@@ -7177,15 +7194,41 @@ input:disabled { animation: none !important; transform: none !important; }
 :root[data-theme="dark"] .bepaid-card { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.09); }
 :root[data-theme="light"] .bepaid-card { background: rgba(0,0,0,.03); border-color: rgba(0,0,0,.10); }
 
-/* ── payment intents v7.0.78 ─────────────────────────────────────────────── */
+/* ── payment intents toolbar v7.0.86 — stable grid layout ─────────────────── */
+:root { --pi-control-h: 40px; }
+
 .pi-toolbar {
   display: flex;
+  flex-direction: column;
   gap: 8px;
-  align-items: flex-end;
-  flex-wrap: wrap;
   margin-bottom: 12px;
+  width: 100%;
+  min-width: 0;
 }
-.pi-toolbar label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.pi-toolbar-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+.pi-toolbar-actions {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+@media (max-width: 360px) {
+  .pi-toolbar-filters,
+  .pi-toolbar-actions { grid-template-columns: 1fr; }
+}
+.pi-toolbar label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+}
 .pi-toolbar input, .pi-toolbar select {
   font-size: 13px;
   padding: 5px 8px;
@@ -7193,6 +7236,18 @@ input:disabled { animation: none !important; transform: none !important; }
   border-radius: 8px;
   background: #fff;
   color: #172033;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  height: var(--pi-control-h);
+  min-height: var(--pi-control-h);
+}
+.pi-toolbar button {
+  height: var(--pi-control-h);
+  min-height: var(--pi-control-h);
+  min-width: 90px;
+  white-space: nowrap;
+  box-sizing: border-box;
 }
 .pi-stats-row {
   display: flex;
@@ -7399,6 +7454,9 @@ body.pi-modal-open {
   color: #172033;
   font-family: inherit;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-inline-size: 0;
   box-sizing: border-box;
   outline: none;
   transition: border-color 140ms;
@@ -7470,7 +7528,7 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
     border-color: #3498db; background: #172b40;
   }
   .pi-modal-footer { border-top-color: rgba(255,255,255,.10); }
-  .pi-toolbar input, .pi-toolbar select { background: #263047; border-color: rgba(255,255,255,.14); color: #e8ecf4; }
+  .pi-toolbar input, .pi-toolbar select, .pi-toolbar button.secondary { background: #263047; border-color: rgba(255,255,255,.14); color: #e8ecf4; }
   .chip-pi-draft { background: rgba(255,255,255,.08); }
   .chip-pi-cancel { background: rgba(255,255,255,.06); }
   .pi-toast { background: #e8ecf4; color: #172033; }
@@ -7490,7 +7548,8 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
 :root[data-theme="dark"] .pi-modal-body textarea:focus { border-color: #3498db; background: #172b40; }
 :root[data-theme="dark"] .pi-modal-footer { border-top-color: rgba(255,255,255,.10); }
 :root[data-theme="dark"] .pi-toolbar input,
-:root[data-theme="dark"] .pi-toolbar select { background: #263047; border-color: rgba(255,255,255,.14); color: #e8ecf4; }
+:root[data-theme="dark"] .pi-toolbar select,
+:root[data-theme="dark"] .pi-toolbar button.secondary { background: #263047; border-color: rgba(255,255,255,.14); color: #e8ecf4; }
 :root[data-theme="dark"] .pi-toast { background: #e8ecf4; color: #172033; }
 :root[data-theme="light"] .pi-card { background: #fff; border-color: rgba(0,0,0,.10); }
 :root[data-theme="light"] .pi-modal-sheet { background: #fff; color: #172033; }

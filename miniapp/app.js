@@ -66,7 +66,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.85");
+console.log("MiniApp version: v7.0.86");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -2348,6 +2348,13 @@ function currentMonthValue() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+function ensureMonthInputValue(input, preferred) {
+  if (!input) return currentMonthValue();
+  const valid = /^\d{4}-\d{2}$/.test(preferred) ? preferred : currentMonthValue();
+  if (!/^\d{4}-\d{2}$/.test(input.value || "")) input.value = valid;
+  return input.value;
+}
+
 function renderReportsUnavailable() {
   const summary = $("reportsSummary");
   const details = $("reportsDetailCards");
@@ -3593,6 +3600,7 @@ function renderChildrenReport() {
   const el = $("childrenReportResult");
   if (!el) return;
   if (!canUseChildrenReport()) { el.innerHTML = `<div class="empty">Отчёт по детям недоступен для вашей роли.</div>`; return; }
+  ensureMonthInputValue($("childrenReportMonth"), state.childrenReportMonth);
   if (state.childrenReportBusy) {
     el.innerHTML = `<div class="reports-loading">Загружаю данные из МойКласс&hellip;</div>`;
     return;
@@ -11733,7 +11741,7 @@ function openCreateIntentModal(prefill) {
   $("piPurpose").value = prefill?.purpose || "current_month";
   // Default period_month: use current filter month if set, else current month
   const filterMonth = $("piMonthFilter")?.value || "";
-  $("piPeriodMonth").value = prefill?.period_month || filterMonth || new Date().toISOString().slice(0,7);
+  $("piPeriodMonth").value = prefill?.period_month || filterMonth || currentMonthValue();
   $("piPaymentMethod").value = prefill?.payment_method || "erip";
   $("piComment").value = prefill?.comment || "";
   $("piCreateError").classList.add("hidden");
@@ -11957,7 +11965,10 @@ function showToast(msg) {
 document.addEventListener("DOMContentLoaded", () => {
   // Load intents when accordion opens
   $("paymentIntentsAccordion")?.addEventListener("toggle", e => {
-    if (e.target.open && canUsePaymentIntents()) loadPaymentIntents();
+    if (e.target.open && canUsePaymentIntents()) {
+      ensureMonthInputValue($("piMonthFilter"), "");
+      loadPaymentIntents();
+    }
   });
 
   $("loadPaymentIntents")?.addEventListener("click", loadPaymentIntents);

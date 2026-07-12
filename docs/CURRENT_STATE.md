@@ -1,6 +1,6 @@
 # Yellow Club Agent — Current State
 
-> Последнее обновление: 2026-07-12 (v7.0.85)  
+> Последнее обновление: 2026-07-12 (v7.0.86)  
 > Цель файла: позволить возобновить работу из любого нового чата без потери контекста.  
 > **Этот файл — только документация. Production-код не менять через этот файл.**
 
@@ -31,11 +31,21 @@ Claude Code (локально) → редактирование кода → git
 | Параметр | Значение |
 |---|---|
 | Последняя задеплоенная версия | **v7.0.81** (commit `db0f1e9`) — НЕ развёрнут, production-дата неизвестна |
-| Последний коммит в `main` | **v7.0.85** — Fix payment modal viewport positioning on iOS |
-| Frontend cache-bust | **`v=7.0.85`** (в `index.html`: `styles.css?v=7.0.85`, `app.js?v=7.0.85`) |
-| `console.log` в app.js | `MiniApp version: v7.0.85` |
+| Последний коммит в `main` | **v7.0.86** — Fix mobile month inputs and payment toolbar layout |
+| Frontend cache-bust | **`v=7.0.86`** (в `index.html`: `styles.css?v=7.0.86`, `app.js?v=7.0.86`) |
+| `console.log` в app.js | `MiniApp version: v7.0.86` |
 
 > v7.0.82 и hotfix v7.0.82.1 запушены, но **НЕ деплоились** на production-сервер. Деплой — только по команде владельца.
+
+### v7.0.86 — Fix: month input overflow, toolbar grid, childrenReportMonth init
+
+**Баг 1 (поле периода выходит вправо):** Причина — `input[type="month"]` имеет нативную min-content ширину (~220px на iOS), которая в flex-контейнере без `min-width: 0` переполняет родителя. Исправление: глобальное `input[type="month"] { min-width: 0; min-inline-size: 0; max-width: 100%; }` + те же свойства в `.pi-modal-body input` и `.reports-controls input`. Pseudo-element `::webkit-date-and-time-value { display: flex }` убран (нестандартный).
+
+**Баг 2 (фильтры прыгают):** `.pi-toolbar` был `flex; flex-wrap: wrap` — элементы меняли размеры при изменении текста и данных. Переписан на CSS Grid: `pi-toolbar-filters` (2 колонки `minmax(0,1fr)`) + `pi-toolbar-actions` (2 колонки `auto / 1fr`). Переменная `--pi-control-h: 40px` для единой высоты. `.pi-toolbar button { min-width: 90px; white-space: nowrap; }` — кнопки не прыгают.
+
+**Баг 3 (childrenReportMonth пусто):** `renderChildrenReport()` не инициализировала `#childrenReportMonth`. Добавлен `ensureMonthInputValue($("childrenReportMonth"), state.childrenReportMonth)` в начало функции. Поле показывает текущий месяц при первом открытии раздела.
+
+**Дополнительно:** `ensureMonthInputValue` — единый helper; `piMonthFilter` инициализируется при открытии аккордеона; `piPeriodMonth` использует `currentMonthValue()` (timezone-safe).
 
 ### v7.0.85 — Fix: модальные окна в правильном месте viewport на iPhone
 
