@@ -8922,6 +8922,7 @@ class MiniAppContext:
                     } if sub_d else None,
                     "active_intent_id": active_d["public_id"] if active_d else None,
                     "active_intent_status": active_d["status"] if active_d else None,
+                    "active_intent_period_month": active_d.get("period_month") if active_d else None,
                     "active_bepaid_uid": active_d.get("bepaid_uid") if active_d else None,
                     "active_bepaid_account": active_d.get("bepaid_account_number") if active_d else None,
                 }
@@ -9048,6 +9049,7 @@ class MiniAppContext:
                 } if sub else None,
                 "active_intent_id": active["public_id"] if active else None,
                 "active_intent_status": active["status"] if active else None,
+                "active_intent_period_month": active.get("period_month") if active else None,
                 "active_bepaid_uid": active.get("bepaid_uid") if active else None,
                 "active_bepaid_account": active.get("bepaid_account_number") if active else None,
             })

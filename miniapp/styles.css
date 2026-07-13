@@ -7387,6 +7387,8 @@ input:disabled { animation: none !important; transform: none !important; }
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 12px 14px;
+  scroll-margin-top: 72px;
+  scroll-margin-bottom: 24px;
 }
 .pi-card-cancelled { opacity: .6; }
 .pi-card-posted { border-left: 3px solid var(--green, #1fa56b); }
@@ -7549,13 +7551,13 @@ input:disabled { animation: none !important; transform: none !important; }
   border-radius: 8px;
   font-size: 12px;
 }
-/* intent card highlight after scroll */
-@keyframes piCardPulse {
-  0%   { box-shadow: 0 0 0 0 rgba(50,103,255,.4); }
-  70%  { box-shadow: 0 0 0 8px rgba(50,103,255,0); }
-  100% { box-shadow: none; }
+/* intent card highlight after scroll — yellow pulse */
+@keyframes piIntentHighlight {
+  0%   { box-shadow: 0 0 0 0 rgba(255,204,0,.7); outline: 2px solid rgba(255,204,0,.9); }
+  60%  { box-shadow: 0 0 0 10px rgba(255,204,0,0); outline: 2px solid rgba(255,204,0,.2); }
+  100% { box-shadow: none; outline: 2px solid transparent; }
 }
-.pi-card-highlight { animation: piCardPulse 1.2s ease-out both; }
+.pi-card-highlight { animation: piIntentHighlight 1.7s ease-out both; }
 /* source badge on intent cards */
 .pi-source-badge {
   display: inline-flex;

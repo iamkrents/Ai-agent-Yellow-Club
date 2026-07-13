@@ -637,18 +637,18 @@ class TestV90904UIFix(unittest.TestCase):
         self.assertIn('try { showToast(', src,
                       "showToast after POST must be wrapped in try/catch")
 
-    def test_scrollToIntent_function_exists(self):
+    def test_showPaymentIntent_function_exists(self):
         src = self._read_app_js()
-        self.assertIn("function scrollToIntent(", src, "scrollToIntent helper must be defined")
+        self.assertIn("async function showPaymentIntent(", src, "showPaymentIntent must be defined")
 
     def test_payment_intent_card_has_id_attribute(self):
         """renderPaymentIntentCard must embed id= so scrollToIntent can find the card."""
         src = self._read_app_js()
         self.assertIn("payment-intent-", src, "payment-intent- id prefix must appear in card HTML")
 
-    def test_version_bumped_to_90_4(self):
+    def test_version_bumped_to_90_5(self):
         src = self._read_app_js()
-        self.assertIn("v7.0.90.4", src, "Version must be bumped to v7.0.90.4")
+        self.assertIn("v7.0.90.5", src, "Version must be bumped to v7.0.90.5")
 
     def test_student_name_field_in_invoice_card_html(self):
         """renderMkInvoiceCard must reference inv.student_name."""
@@ -727,6 +727,131 @@ class TestFindActiveIntentBePaidFields(unittest.TestCase):
         found = self.storage.find_active_intent_by_invoice("inv_can")
         self.assertIsNotNone(found)
         self.assertIn(found["status"], ["bepaid_created", "bepaid_creating", "draft", "ready"])
+
+
+class TestV90905ShowPaymentIntent(unittest.TestCase):
+    """Static checks for v7.0.90.5: showPaymentIntent navigation fix."""
+
+    _APP_JS = ROOT / "miniapp" / "app.js"
+    _CSS = ROOT / "miniapp" / "styles.css"
+    _HTML = ROOT / "miniapp" / "index.html"
+
+    @classmethod
+    def _read(cls, path) -> str:
+        return path.read_text(encoding="utf-8")
+
+    def _app(self):
+        return self._read(self._APP_JS)
+
+    def _css(self):
+        return self._read(self._CSS)
+
+    def _html(self):
+        return self._read(self._HTML)
+
+    def test_paymentIntentDomId_helper_exists(self):
+        src = self._app()
+        self.assertIn("function paymentIntentDomId(", src,
+                      "paymentIntentDomId helper must be defined")
+
+    def test_showPaymentIntent_is_async(self):
+        src = self._app()
+        self.assertIn("async function showPaymentIntent(", src,
+                      "showPaymentIntent must be async")
+
+    def test_showPaymentIntent_opens_accordion(self):
+        src = self._app()
+        idx = src.find("async function showPaymentIntent(")
+        self.assertGreater(idx, 0)
+        fn_body = src[idx:idx + 4000]
+        self.assertIn("paymentIntentsAccordion", fn_body,
+                      "showPaymentIntent must open paymentIntentsAccordion")
+
+    def test_showPaymentIntent_sets_status_all(self):
+        src = self._app()
+        idx = src.find("async function showPaymentIntent(")
+        fn_body = src[idx:idx + 4000]
+        self.assertIn('"all"', fn_body,
+                      "showPaymentIntent must set piStatusFilter to 'all'")
+
+    def test_showPaymentIntent_calls_loadPaymentIntents(self):
+        src = self._app()
+        idx = src.find("async function showPaymentIntent(")
+        fn_body = src[idx:idx + 4000]
+        self.assertIn("await loadPaymentIntents()", fn_body,
+                      "showPaymentIntent must await loadPaymentIntents()")
+
+    def test_showPaymentIntent_uses_double_raf(self):
+        src = self._app()
+        idx = src.find("async function showPaymentIntent(")
+        fn_body = src[idx:idx + 4000]
+        self.assertIn("requestAnimationFrame(() => requestAnimationFrame(", fn_body,
+                      "showPaymentIntent must use double rAF for layout commit")
+
+    def test_showPaymentIntent_scrolls_into_view(self):
+        src = self._app()
+        idx = src.find("async function showPaymentIntent(")
+        fn_body = src[idx:idx + 4000]
+        self.assertIn("scrollIntoView", fn_body,
+                      "showPaymentIntent must call scrollIntoView on the found card")
+
+    def test_event_delegation_for_show_payment_intent(self):
+        src = self._app()
+        self.assertIn("data-action='show-payment-intent'", src,
+                      "Event delegation must use data-action='show-payment-intent'")
+        self.assertIn("intentPublicId", src,
+                      "Delegation handler must read dataset.intentPublicId")
+
+    def test_button_uses_data_action_not_onclick(self):
+        src = self._app()
+        idx = src.find("function renderMkInvoiceCard(")
+        self.assertGreater(idx, 0)
+        fn_end = src.find("\nfunction ", idx + 1)
+        fn_body = src[idx:fn_end] if fn_end > idx else src[idx:idx + 5000]
+        self.assertIn('data-action="show-payment-intent"', fn_body,
+                      "Invoice card button must use data-action for event delegation")
+        self.assertNotIn("onclick=\"scrollToIntent", fn_body,
+                         "scrollToIntent must not be called from onclick in invoice cards")
+
+    def test_button_label_by_status(self):
+        src = self._app()
+        self.assertIn("Открыть платёж", src,
+                      "Button must say 'Открыть платёж' for bepaid_created/paid status")
+        self.assertIn("Показать черновик", src,
+                      "Button must say 'Показать черновик' for draft/ready status")
+
+    def test_pi_card_has_scroll_margin(self):
+        css = self._css()
+        # scroll-margin must appear somewhere in the file (it belongs to .pi-card block)
+        self.assertIn("scroll-margin", css,
+                      ".pi-card must have scroll-margin so scrollIntoView clears the sticky header")
+
+    def test_highlight_animation_is_yellow(self):
+        css = self._css()
+        self.assertIn("piIntentHighlight", css,
+                      "Highlight animation must be named piIntentHighlight")
+        idx = css.find("piIntentHighlight")
+        block = css[idx:idx + 300]
+        self.assertIn("255,204,0", block,
+                      "piIntentHighlight animation must use yellow color rgba(255,204,0,...)")
+
+    def test_cache_bust_v90905_in_html(self):
+        html = self._html()
+        self.assertIn("v=7.0.90.5", html,
+                      "index.html must cache-bust to v=7.0.90.5")
+
+    def test_data_intent_public_id_on_pi_card(self):
+        src = self._app()
+        self.assertIn('data-intent-public-id=', src,
+                      "renderPaymentIntentCard must add data-intent-public-id attribute")
+
+    def test_period_month_passed_to_show_intent(self):
+        src = self._app()
+        idx = src.find("function renderMkInvoiceCard(")
+        fn_end = src.find("\nfunction ", idx + 1)
+        fn_body = src[idx:fn_end] if fn_end > idx else src[idx:idx + 5000]
+        self.assertIn("active_intent_period_month", fn_body,
+                      "Invoice card must pass active_intent_period_month to show-payment-intent button")
 
 
 if __name__ == "__main__":

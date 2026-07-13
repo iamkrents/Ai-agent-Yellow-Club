@@ -1,9 +1,10 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.90.4**
+**Cache version: v7.0.90.5**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.90.5 | 2026-07-13 | Fix: кнопка «Показать черновик» — showPaymentIntent async (открывает аккордеон, фильтры, await loadPaymentIntents, double rAF, жёлтый highlight). paymentIntentDomId helper. Event delegation. period_month из backend. 15 новых тестов. |
 | v7.0.90.4 | 2026-07-13 | Hotfix: piShowToast→showToast (ReferenceError), toast в отдельном try/catch, 3 отдельных поиска (по счёту/userId/все), карточки с именем ученика и разбивкой сумм, student_name enrichment на backend, bePaid ERIP в карточке, плавный scroll к intent, 15 новых тестов. |
 | v7.0.90.3 | 2026-07-13 | Hotfix: BrokenPipeError handling в _send_json/do_GET/do_POST, 5-мин кеш счетов МК с single-flight lock, прямой invoiceId поиск для всех ролей, AbortController 120 с на фронте, strip query из access-логов, 12 новых тестов. |
 | v7.0.90.2 | 2026-07-13 | Hotfix: пагинация invoices (_mk_fetch_invoices_paginated + _mk_invoice_by_id). result_limit отделён от page_limit. Сортировка date desc. Preflight и create intent через direct lookup. 9 новых тестов. |

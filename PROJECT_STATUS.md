@@ -1,12 +1,31 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-13 (v7.0.90.4)_
+_Последнее обновление: 2026-07-13 (v7.0.90.5)_
 
 ---
 
 ## Что сделано
 
-### v7.0.90.4 — Hotfix: UI ошибка после создания черновика + информативные карточки счетов (текущая)
+### v7.0.90.5 — Fix: кнопка «Показать черновик» в карточке счёта МойКласс (текущая)
+
+**Причина:** При нажатии «Показать черновик» визуально ничего не происходило — `scrollToIntent` не открывала аккордеон, не устанавливала фильтры, использовала ненадёжный `setTimeout(300ms)` вместо ожидания рендера DOM.
+
+**Ключевые изменения:**
+- `miniapp/app.js`: Новый helper `paymentIntentDomId(publicId)` — единственное место генерации DOM id карточки (символ `-` вместо `_` в замене).
+- `miniapp/app.js`: Новая async функция `showPaymentIntent(publicId, periodMonth)` — открывает аккордеон, устанавливает фильтры (month + status=all), awaits `loadPaymentIntents()`, double rAF, scroll + жёлтый highlight. При ненахождении карточки — toast с диагностикой.
+- `miniapp/app.js`: `renderPaymentIntentCard` — использует `paymentIntentDomId`, добавлен атрибут `data-intent-public-id`.
+- `miniapp/app.js`: `renderMkInvoiceCard` — кнопка переписана с `onclick="scrollToIntent(...)"` на event delegation (`data-action="show-payment-intent"`, `data-intent-public-id`, `data-period-month`). Label: "Показать черновик" (draft/ready) / "Открыть платёж" (bepaid_created/paid/...).
+- `miniapp/app.js`: `openMkInvoiceCreate` — после создания вызывает `showPaymentIntent(publicId, "")` вместо `scrollToIntent`.
+- `miniapp/app.js`: Удалена `scrollToIntent`. Event delegation на `document` для `[data-action='show-payment-intent']`.
+- `miniapp/styles.css`: Анимация переименована в `piIntentHighlight` (жёлтый: `rgba(255,204,0,...)`). `.pi-card` получил `scroll-margin-top: 72px`.
+- `web_app_server.py`: Поле `active_intent_period_month` добавлено в оба пути ответа (direct lookup + paginated scan).
+- `tests/test_mk_invoice_intent.py`: +15 тестов `TestV90905ShowPaymentIntent`.
+
+**Cache-bust:** v=7.0.90.5
+
+---
+
+### v7.0.90.4 — Hotfix: UI ошибка после создания черновика + информативные карточки счетов
 
 **Причина:** После успешного создания payment_intent из счёта МойКласс frontend вызывал `piShowToast(...)` — функция не существует (есть `showToast`). Это вызывало `ReferenceError` в iOS/Safari, который выглядел как провал операции, хотя backend уже создал черновик. Дополнительно: карточки показывали только userId, без имени ученика и разбивки по суммам.
 

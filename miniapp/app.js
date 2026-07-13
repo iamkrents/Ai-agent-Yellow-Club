@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.90.4");
+console.log("MiniApp version: v7.0.90.5");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -11693,8 +11693,8 @@ function renderPaymentIntentCard(pi) {
     ? `<span class="pi-source-badge pi-source-badge-mk">Данные проверены в МойКласс</span>`
     : `<span class="pi-source-badge pi-source-badge-manual">Ручной ввод</span>`;
 
-  const safeId = pi.public_id ? `payment-intent-${pi.public_id.replace(/[^a-zA-Z0-9_-]/g, "_")}` : "";
-  return `<div class="pi-card${extraCls}"${safeId ? ` id="${escapeHtml(safeId)}"` : ""}>
+  const safeId = pi.public_id ? paymentIntentDomId(pi.public_id) : "";
+  return `<div class="pi-card${extraCls}"${safeId ? ` id="${escapeHtml(safeId)}" data-intent-public-id="${escapeHtml(pi.public_id)}"` : ""}>
     <div class="pi-card-head">
       <div class="pi-card-name">${name}</div>
       <div class="pi-card-amount">${amount}</div>
@@ -12191,7 +12191,11 @@ function renderMkInvoiceCard(inv) {
         <span class="chip chip-pi-bepaid" style="font-size:10px">Черновик создан</span>
         <strong>${escapeHtml(inv.active_intent_id)}</strong>
         <span class="mk-invoice-intent-status">(${escapeHtml(inv.active_intent_status || "")})</span>
-        <button class="secondary" style="font-size:11px;padding:3px 9px" onclick="scrollToIntent(${JSON.stringify(String(inv.active_intent_id))})">Показать черновик</button>
+        <button class="secondary" style="font-size:11px;padding:3px 9px"
+          data-action="show-payment-intent"
+          data-intent-public-id="${escapeHtml(String(inv.active_intent_id))}"
+          data-period-month="${escapeHtml(String(inv.active_intent_period_month || ""))}"
+        >${["bepaid_created","paid","posted_to_moyklass","bepaid_requires_check","bepaid_creating"].includes(inv.active_intent_status) ? "Открыть платёж" : "Показать черновик"}</button>
       </div>${bePaidRow}`
     : "";
 
@@ -12230,22 +12234,78 @@ function renderMkInvoiceCard(inv) {
   </div>`;
 }
 
-function scrollToIntent(publicId) {
-  if (!publicId) return;
-  const safeId = `payment-intent-${String(publicId).replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-  const el = document.getElementById(safeId);
-  if (el) {
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
-    el.classList.add("pi-card-highlight");
-    setTimeout(() => el.classList.remove("pi-card-highlight"), 1500);
+// ── Canonical DOM id for payment-intent cards ────────────────────────────
+
+function paymentIntentDomId(publicId) {
+  return "payment-intent-" + String(publicId || "").trim().replace(/[^a-zA-Z0-9_-]/g, "-");
+}
+
+// ── Navigate to an existing payment intent ────────────────────────────────
+// Opens the accordion, sets month+status filters, loads the list, then
+// scrolls to the target card.  No payment operations are performed.
+
+async function showPaymentIntent(publicId, periodMonth) {
+  const normalizedId = String(publicId || "").trim();
+  if (!normalizedId) {
+    try { showToast("Не удалось определить черновик."); } catch (_) {}
+    return;
+  }
+
+  // 1. Ensure reports tab is visible
+  const reportsPanel = $("tab-reports");
+  if (reportsPanel && !reportsPanel.classList.contains("active")) {
+    if (typeof activateTab === "function") activateTab("reports");
+    await new Promise(r => requestAnimationFrame(r));
+  }
+
+  // 2. Open accordion if closed
+  const acc = $("paymentIntentsAccordion");
+  if (acc && !acc.open) {
+    acc.open = true;
+    // Tiny delay so toggle-listener fires (it also calls loadPaymentIntents,
+    // but we will call it ourselves below with the correct filters)
+    await new Promise(r => setTimeout(r, 30));
+  }
+
+  // 3. Set filters: target month + status=all
+  //    Do this AFTER opening the accordion so initMonthPicker in toggle handler
+  //    does not overwrite our value (initMonthPicker only sets value when it's empty/invalid)
+  const monthInput = $("piMonthFilter");
+  const statusInput = $("piStatusFilter");
+  const targetMonth = (periodMonth && periodMonth.match(/^\d{4}-\d{2}$/))
+    ? periodMonth
+    : (typeof currentMonthValue === "function" ? currentMonthValue() : "");
+  if (monthInput && targetMonth) {
+    monthInput.value = targetMonth;
+    if (typeof syncMonthPicker === "function") syncMonthPicker(monthInput);
+  }
+  if (statusInput) statusInput.value = "all";
+
+  // 4. Reload with the correct filters (awaited — list is ready when resolved)
+  await loadPaymentIntents();
+
+  // 5. Two rAF frames so the browser commits the new innerHTML to layout
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+  // 6. Find the card and scroll
+  const domId = paymentIntentDomId(normalizedId);
+  const target = document.getElementById(domId);
+  if (target) {
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.classList.remove("pi-card-highlight");
+    // Force reflow so the animation restarts if called twice
+    void target.offsetWidth;
+    target.classList.add("pi-card-highlight");
+    setTimeout(() => target.classList.remove("pi-card-highlight"), 1700);
   } else {
-    // Card not yet rendered — try after loadPaymentIntents refreshes
-    loadPaymentIntents().then(() => {
-      setTimeout(() => {
-        const el2 = document.getElementById(safeId);
-        if (el2) el2.scrollIntoView({ behavior: "smooth", block: "center" });
-      }, 300);
-    }).catch(() => {});
+    // Not found after correct filters — show diagnostic
+    const listEl = $("piList");
+    const loadedCount = listEl ? listEl.querySelectorAll(".pi-card").length : 0;
+    const msg = `Черновик ${normalizedId} существует, но не попал в текущий список (загружено: ${loadedCount}).`;
+    try { showToast(msg); } catch (_) {}
+    console.warn("showPaymentIntent: target not found", {
+      publicId: normalizedId, domId, month: targetMonth, loadedCount,
+    });
   }
 }
 
@@ -12291,12 +12351,10 @@ async function openMkInvoiceCreate(inv) {
     console.warn("Toast failed after intent creation", _toastErr);
   }
 
-  // Refresh both lists; then scroll to the new intent
+  // Refresh invoice list; navigate to the new intent
   loadMkInvoices();
   if (publicId) {
-    loadPaymentIntents().then(() => {
-      setTimeout(() => scrollToIntent(publicId), 300);
-    }).catch(() => {});
+    showPaymentIntent(publicId, "").catch(e => console.warn("showPaymentIntent after create failed", e));
   } else {
     loadPaymentIntents();
   }
@@ -12339,4 +12397,13 @@ document.addEventListener("DOMContentLoaded", () => {
   $("piBePaidModalBack")?.addEventListener("click", closeBePaidModal);
   $("piBePaidModalClose")?.addEventListener("click", closeBePaidModal);
   $("piBePaidModal")?.addEventListener("click", e => { if (e.target === $("piBePaidModal")) closeBePaidModal(); });
+
+  // Event delegation for dynamically rendered invoice-card buttons
+  document.addEventListener("click", e => {
+    const btn = e.target.closest("[data-action='show-payment-intent']");
+    if (!btn) return;
+    const intentId = btn.dataset.intentPublicId || "";
+    const periodMonth = btn.dataset.periodMonth || "";
+    if (intentId) showPaymentIntent(intentId, periodMonth);
+  });
 });
