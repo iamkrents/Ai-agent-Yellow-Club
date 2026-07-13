@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.90.2");
+console.log("MiniApp version: v7.0.90.3");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12017,6 +12017,7 @@ async function loadMkInvoices() {
   if (!canUsePaymentIntents()) return;
   if (_mkInvoicesLoading) return;
   _mkInvoicesLoading = true;
+
   const listEl = $("mkInvoicesList");
   const debugEl = $("mkInvoicesDebug");
   const diagEl = $("mkInvoicesDiag");
@@ -12025,63 +12026,98 @@ async function loadMkInvoices() {
   if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--muted)">Загрузка счетов МойКласс…</div>`;
   if (debugEl) debugEl.textContent = "";
   if (diagEl) diagEl.innerHTML = "";
+
+  // Build URL: invoiceId → userId → general cached scan
+  const invoiceId = ($("mkInvoiceSearchId")?.value || "").trim();
+  const userId = ($("mkInvoiceSearchUserId")?.value || "").trim();
+  let url = "/api/payments/moyklass/invoices?status=unpaid_partial&limit=50";
+  if (invoiceId) url += "&invoiceId=" + encodeURIComponent(invoiceId);
+  else if (userId) url += "&userId=" + encodeURIComponent(userId);
+
+  // 120-second timeout — long enough for 83-page scans; still finite
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+  let data;
   try {
-    const data = await apiGet("/api/payments/moyklass/invoices?status=unpaid_partial&limit=50");
-    if (listEl) listEl.innerHTML = "";
+    const res = await fetch(apiUrl(url), { cache: "no-store", signal: controller.signal });
+    clearTimeout(timeoutId);
+    try {
+      data = await res.json();
+    } catch (_parseErr) {
+      if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">Сервер вернул некорректный ответ.</div>`;
+      return;
+    }
     if (!data.ok) {
       if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">${escapeHtml(data.error || "Ошибка загрузки счетов")}</div>`;
       return;
     }
-    const invoices = data.invoices || [];
-    const diag = data.diagnostics;
-    const debtWarn = data.subscription_debt_warning;
-
-    // Diagnostics block (admin/owner only — server controls who gets this field)
-    if (diag && diagEl) {
-      const stoppedNote = diag.stopped_reason && diag.stopped_reason !== "total_reached"
-        ? `<span style="color:var(--muted)">стоп: ${escapeHtml(diag.stopped_reason)}</span>` : "";
-      diagEl.innerHTML = `<div class="mk-invoices-diag">
-        <span>Всего в МК: ${diag.total_items_reported ?? "?"}</span>
-        <span>Просмотрено: ${diag.raw_invoices_scanned ?? diag.normalised_count ?? "?"}</span>
-        <span>Страниц: ${diag.pages_loaded ?? 1}</span>
-        <span>Неоплаченных: ${diag.returned_count}</span>
-        ${(diag.filtered_paid_count || 0) > 0 ? `<span>Оплаченных скрыто: ${diag.filtered_paid_count}</span>` : ""}
-        ${(diag.filtered_invalid_count || 0) > 0 ? `<span class="mk-diag-warn">Невалидных: ${diag.filtered_invalid_count}</span>` : ""}
-        ${stoppedNote}
-      </div>`;
-    }
-
-    if (debugEl) {
-      debugEl.textContent = invoices.length > 0
-        ? `Найдено неоплаченных счетов: ${invoices.length}`
-        : "";
-    }
-
-    if (!invoices.length) {
-      let emptyHtml;
-      if (debtWarn && debtWarn.warning === "subscription_debt_without_invoice") {
-        const debtByn = Number(debtWarn.total_debt_byn || 0).toFixed(2);
-        const subCount = debtWarn.subscriptions_with_debt || 0;
-        emptyHtml = `<div class="pi-empty mk-empty-debt-warn">
-          В МойКласс нет отдельных счетов, но найден долг по абонементу ${escapeHtml(debtByn)} BYN
-          (${subCount} аб.). Отдельный счёт не создан — обратитесь к администратору.
-        </div>`;
-      } else if (diag && (diag.raw_invoices_scanned || 0) > 0 &&
-          ["total_reached", "empty_page", "partial_page"].includes(diag.stopped_reason)) {
-        // Scanned all pages, no unpaid found
-        emptyHtml = `<div class="pi-empty">В МойКласс нет неоплаченных счетов (просмотрено ${diag.raw_invoices_scanned})</div>`;
-      } else {
-        emptyHtml = `<div class="pi-empty">В МойКласс нет неоплаченных счетов</div>`;
-      }
-      if (listEl) listEl.innerHTML = emptyHtml;
-      return;
-    }
-    if (listEl) listEl.innerHTML = invoices.map(renderMkInvoiceCard).join("");
   } catch (err) {
-    if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">Ошибка загрузки: ${escapeHtml(String(err))}</div>`;
+    clearTimeout(timeoutId);
+    const isAbort = err && err.name === "AbortError";
+    if (isAbort) {
+      if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">Загрузка счетов заняла слишком много времени. Повторите попытку или выполните поиск по ученику/счёту.</div>`;
+    } else {
+      if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">Сервер не смог загрузить счета МойКласс.</div>`;
+    }
+    return;
   } finally {
     _mkInvoicesLoading = false;
     if (btn) { btn.disabled = false; btn.textContent = "Загрузить счета"; }
+  }
+
+  // ── Response received ─────────────────────────────────────────────────────
+  const invoices = data.invoices || [];
+  const diag = data.diagnostics;
+  const debtWarn = data.subscription_debt_warning;
+
+  console.info("MK invoices received", {
+    count: invoices.length,
+    diagnostics: { cacheHit: diag?.cache_hit, pages: diag?.pages_loaded }
+  });
+
+  // Diagnostics block (admin/owner/operations only — server controls who gets this field)
+  if (diag && diagEl) {
+    const stoppedNote = diag.stopped_reason && diag.stopped_reason !== "total_reached" && diag.stopped_reason !== "direct_lookup"
+      ? `<span style="color:var(--muted)">стоп: ${escapeHtml(diag.stopped_reason)}</span>` : "";
+    const cacheNote = diag.cache_hit
+      ? `<span style="color:var(--green,#1fa56b)">кеш ${diag.cache_age_seconds ?? ""}с</span>`
+      : (diag.scan_duration_ms != null ? `<span>скан ${diag.scan_duration_ms}мс</span>` : "");
+    diagEl.innerHTML = `<div class="mk-invoices-diag">
+      <span>Всего в МК: ${diag.total_items_reported ?? "?"}</span>
+      <span>Просмотрено: ${diag.raw_invoices_scanned ?? diag.normalised_count ?? "?"}</span>
+      <span>Страниц: ${diag.pages_loaded ?? 1}</span>
+      <span>Неоплаченных: ${diag.returned_count}</span>
+      ${(diag.filtered_paid_count || 0) > 0 ? `<span>Оплаченных скрыто: ${diag.filtered_paid_count}</span>` : ""}
+      ${(diag.filtered_invalid_count || 0) > 0 ? `<span class="mk-diag-warn">Невалидных: ${diag.filtered_invalid_count}</span>` : ""}
+      ${stoppedNote}${cacheNote}
+    </div>`;
+  }
+
+  if (debugEl) {
+    debugEl.textContent = invoices.length > 0 ? `Найдено неоплаченных счетов: ${invoices.length}` : "";
+  }
+
+  if (!invoices.length) {
+    let emptyHtml;
+    if (debtWarn && debtWarn.warning === "subscription_debt_without_invoice") {
+      const debtByn = Number(debtWarn.total_debt_byn || 0).toFixed(2);
+      const subCount = debtWarn.subscriptions_with_debt || 0;
+      emptyHtml = `<div class="pi-empty mk-empty-debt-warn">В МойКласс нет отдельных счетов, но найден долг по абонементу ${escapeHtml(debtByn)} BYN (${subCount} аб.). Отдельный счёт не создан — обратитесь к администратору.</div>`;
+    } else if (diag && (diag.raw_invoices_scanned || 0) > 0 &&
+        ["total_reached", "empty_page", "partial_page"].includes(diag.stopped_reason)) {
+      emptyHtml = `<div class="pi-empty">В МойКласс нет неоплаченных счетов (просмотрено ${diag.raw_invoices_scanned})</div>`;
+    } else {
+      emptyHtml = `<div class="pi-empty">В МойКласс нет неоплаченных счетов</div>`;
+    }
+    if (listEl) listEl.innerHTML = emptyHtml;
+    return;
+  }
+
+  try {
+    if (listEl) listEl.innerHTML = invoices.map(renderMkInvoiceCard).join("");
+  } catch (_renderErr) {
+    if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">Счета получены, но не удалось показать список.</div>`;
   }
 }
 

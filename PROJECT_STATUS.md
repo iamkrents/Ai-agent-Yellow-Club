@@ -1,12 +1,33 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-13 (v7.0.90.2)_
+_Последнее обновление: 2026-07-13 (v7.0.90.3)_
 
 ---
 
 ## Что сделано
 
-### v7.0.90.2 — Hotfix: пагинация счетов МойКласс (текущая)
+### v7.0.90.3 — Hotfix: BrokenPipeError + кеш счетов МойКласс (текущая)
+
+**Причина:** При скане 83 страниц МойКласс (8278 счетов) iOS/Safari отключался (~60 с), backend получал `BrokenPipeError` при записи ответа, затем `do_GET` повторно вызывал `_send_json(500)` → второй `BrokenPipeError`. Фронтенд получал пустой/оборванный JSON → `SyntaxError`.
+
+**Ключевые изменения:**
+- `web_app_server.py`: `_send_json` теперь возвращает `bool`; перехватывает `BrokenPipeError`/`ConnectionResetError` внутри `end_headers`/`wfile.write`, логирует путь без query-параметров, возвращает `False`.
+- `web_app_server.py`: `do_GET`/`do_POST` — добавлен `except (BrokenPipeError, ConnectionResetError): return` до общего `Exception`; fallback `_send_json(500)` обёрнут в `try/except`.
+- `web_app_server.py`: `log_message` переопределён — URL в access-логах обрезается до `?`, `initData`/токены не попадают в journalctl.
+- `web_app_server.py`: модульный 5-минутный кеш (`_mk_invoices_cache`, `_mk_invoices_scan_lock`, TTL 300 с) с паттерном single-flight; для глобальных запросов (без `userId`) избегает повторных 83 вызовов МК API. Ошибки не кешируются.
+- `web_app_server.py`: прямой поиск по `invoiceId` (`GET /v1/company/invoices/{id}`) открыт для всех `PAYMENT_INTENT_ROLES` (не только admin). Поиск по `userId` обходит кеш, передаёт `userId` напрямую в МК API (1–2 страницы).
+- `miniapp/app.js`: `loadMkInvoices` — `AbortController` 120 с для запроса счетов; поля `mkInvoiceSearchId` / `mkInvoiceSearchUserId`; раздельная обработка timeout/HTTP/JSON/render ошибок; `console.info` с диагностикой после получения ответа.
+- `miniapp/index.html`: поля поиска по `№ счёта` и `userId МойКласс`; cache-bust `v=7.0.90.3`.
+- `miniapp/styles.css`: `.mk-invoices-search-row` — flex-строка для полей поиска, light/dark.
+- `tests/test_mk_invoice_intent.py`: +12 тестов (`TestBrokenPipeHandling` × 5, `TestMkInvoicesCache` × 7).
+
+**Что НЕ менялось:** создание bePaid, webhook, Food Module, отчёты, роли, .env.
+
+**Cache-bust:** v=7.0.90.3
+
+---
+
+### v7.0.90.2 — Hotfix: пагинация счетов МойКласс
 
 **Причина:** `moyklass_invoices_list` делал один запрос с `limit=50` (из фронтенда) и получал только первую страницу. Все 50 счетов первой страницы оказались оплачены; неоплаченный счёт #19060579 находился на странице 2.
 

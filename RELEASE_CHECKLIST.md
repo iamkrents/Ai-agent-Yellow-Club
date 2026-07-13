@@ -1,9 +1,10 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.90.2**
+**Cache version: v7.0.90.3**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.90.3 | 2026-07-13 | Hotfix: BrokenPipeError handling в _send_json/do_GET/do_POST, 5-мин кеш счетов МК с single-flight lock, прямой invoiceId поиск для всех ролей, AbortController 120 с на фронте, strip query из access-логов, 12 новых тестов. |
 | v7.0.90.2 | 2026-07-13 | Hotfix: пагинация invoices (_mk_fetch_invoices_paginated + _mk_invoice_by_id). result_limit отделён от page_limit. Сортировка date desc. Preflight и create intent через direct lookup. 9 новых тестов. |
 | v7.0.90.1 | 2026-07-13 | Hotfix: _extract_mk_invoices (приоритет ключу invoices), диагностика response keys/counts, subscription_debt_warning, UI 3 пустых состояния, 15 новых тестов. |
 | v7.0.90 | 2026-07-12 | Feature: создание черновиков bePaid из счетов МойКласс. GET /api/payments/moyklass/invoices, POST /api/payments/intents/from-moyklass-invoice, preflight-проверка перед bePaid, source badge на карточках, UI блок «Счета МойКласс», 14 unit-тестов. |

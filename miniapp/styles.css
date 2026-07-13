@@ -7527,6 +7527,27 @@ input:disabled { animation: none !important; transform: none !important; }
   border: 1px solid rgba(230,126,34,.18);
   border-radius: 8px;
 }
+/* search fields row — v7.0.90.3 */
+.mk-invoices-search-row {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0 4px;
+  flex-wrap: wrap;
+}
+.mk-invoices-search-row input {
+  flex: 1 1 140px;
+  min-width: 0;
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+}
+@media (prefers-color-scheme: dark) {
+  .mk-invoices-search-row input { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.12); color: #e8ecf4; }
+}
+:root[data-theme="dark"] .mk-invoices-search-row input { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.12); color: #e8ecf4; }
 /* diagnostics block (owner/admin only) — v7.0.90.1 */
 .mk-invoices-diag {
   display: flex;

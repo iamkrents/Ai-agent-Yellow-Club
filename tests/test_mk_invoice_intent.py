@@ -24,7 +24,15 @@ sys.path.insert(0, str(ROOT))
 # Storage is importable standalone (only needs sqlite3 + utils)
 from storage import Storage
 # Pure helpers from web_app_server (no network/env required)
-from web_app_server import _extract_mk_invoices, _mk_fetch_invoices_paginated, _mk_invoice_by_id
+from web_app_server import (
+    _extract_mk_invoices,
+    _mk_fetch_invoices_paginated,
+    _mk_invoice_by_id,
+    _mk_invoices_get_cached,
+    _mk_invoices_cache,
+    _MK_INVOICES_CACHE_TTL,
+    MiniAppHandler,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +452,149 @@ class TestMkInvoicePagination(unittest.TestCase):
         unpaid = [inv for inv in items if float(inv.get("payed", 0)) < float(inv.get("price", 1))]
         self.assertEqual(len(unpaid), 1)
         self.assertEqual(unpaid[0]["id"], 19060579)
+
+
+# ---------------------------------------------------------------------------
+# BrokenPipe / ConnectionReset handling (v7.0.90.3)
+# ---------------------------------------------------------------------------
+
+class TestBrokenPipeHandling(unittest.TestCase):
+    """_send_json must absorb client disconnects without raising."""
+
+    def _make_handler(self, write_exc=None):
+        from unittest.mock import MagicMock
+        h = MiniAppHandler.__new__(MiniAppHandler)
+        h.path = "/api/payments/moyklass/invoices?initData=SECRET&hash=abc123"
+        h.wfile = MagicMock()
+        if write_exc is not None:
+            h.wfile.write.side_effect = write_exc
+        h.send_response = MagicMock()
+        h.send_header = MagicMock()
+        h.end_headers = MagicMock()
+        h.address_string = MagicMock(return_value="127.0.0.1")
+        return h
+
+    def test_broken_pipe_returns_false(self):
+        h = self._make_handler(write_exc=BrokenPipeError("pipe"))
+        result = h._send_json({"ok": True})
+        self.assertFalse(result, "_send_json must return False on BrokenPipeError")
+
+    def test_connection_reset_returns_false(self):
+        h = self._make_handler(write_exc=ConnectionResetError("reset"))
+        result = h._send_json({"ok": True})
+        self.assertFalse(result, "_send_json must return False on ConnectionResetError")
+
+    def test_success_returns_true(self):
+        h = self._make_handler()
+        result = h._send_json({"ok": True, "data": "hello"})
+        self.assertTrue(result, "_send_json must return True on success")
+
+    def test_broken_pipe_log_excludes_query_params(self):
+        from unittest.mock import patch
+        h = self._make_handler(write_exc=BrokenPipeError("pipe"))
+        with patch("web_app_server.log") as mock_log:
+            h._send_json({"ok": True})
+        self.assertTrue(mock_log.info.called, "log.info must be called on BrokenPipe")
+        call_args_str = str(mock_log.info.call_args)
+        self.assertNotIn("initData", call_args_str, "Log must not contain initData")
+        self.assertNotIn("SECRET", call_args_str, "Log must not contain initData value")
+        self.assertNotIn("hash=abc", call_args_str, "Log must not contain hash param")
+        self.assertIn("/api/payments/moyklass/invoices", call_args_str, "Log must contain safe path")
+
+    def test_end_headers_broken_pipe_also_returns_false(self):
+        from unittest.mock import MagicMock
+        h = self._make_handler()
+        h.end_headers.side_effect = BrokenPipeError("headers pipe")
+        result = h._send_json({"ok": True})
+        self.assertFalse(result)
+
+
+# ---------------------------------------------------------------------------
+# In-memory invoice cache (v7.0.90.3)
+# ---------------------------------------------------------------------------
+
+class TestMkInvoicesCache(unittest.TestCase):
+    """Cache avoids repeated 83-page scans within the TTL window."""
+
+    def setUp(self):
+        _mk_invoices_cache.clear()
+
+    def tearDown(self):
+        _mk_invoices_cache.clear()
+
+    def test_first_call_scans_mk_api(self):
+        page = {"invoices": [_unpaid_inv_19060579()], "stats": {"totalItems": 1}}
+        client = _MockMKClient([{"data": page}])
+        items, diag, cache_hit, _ = _mk_invoices_get_cached(client, {})
+        self.assertFalse(cache_hit, "First call must be a cache miss")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(len(client.calls), 1)
+
+    def test_second_call_within_ttl_uses_cache(self):
+        page = {"invoices": [_unpaid_inv_19060579()], "stats": {"totalItems": 1}}
+        client1 = _MockMKClient([{"data": page}])
+        _mk_invoices_get_cached(client1, {})   # prime cache
+        client2 = _MockMKClient([])             # empty — must not be called
+        items, diag, cache_hit, cache_age = _mk_invoices_get_cached(client2, {})
+        self.assertTrue(cache_hit, "Second call within TTL must be a cache hit")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(len(client2.calls), 0, "Cache hit must not call MK API")
+        self.assertGreaterEqual(cache_age, 0.0)
+
+    def test_mk_error_is_not_cached(self):
+        error_client = _MockMKClient([{"ok": False, "data": None, "error": "MK down"}])
+        items, diag, cache_hit, _ = _mk_invoices_get_cached(error_client, {})
+        self.assertEqual(diag.get("stopped_reason"), "mk_error")
+        self.assertFalse(cache_hit)
+        self.assertNotIn("global", _mk_invoices_cache, "Errors must not be cached")
+
+    def test_single_flight_returns_same_data(self):
+        import threading as _threading
+        page = {"invoices": [_unpaid_inv_19060579()], "stats": {"totalItems": 1}}
+        client = _MockMKClient([{"data": page}])
+        results = []
+
+        def _run():
+            items, diag, hit, _ = _mk_invoices_get_cached(client, {})
+            results.append((len(items), hit))
+
+        t1 = _threading.Thread(target=_run)
+        t1.start()
+        t1.join(timeout=5)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0][0], 1)
+
+    def test_direct_lookup_does_not_populate_global_cache(self):
+        _mk_invoices_cache.clear()
+        client = _MockMKClient([{"data": {"id": 19060579, "userId": 9748998, "price": 229, "payed": 0}}])
+        result = _mk_invoice_by_id(client, "19060579")
+        self.assertIsNotNone(result)
+        self.assertNotIn("global", _mk_invoices_cache, "Direct lookup must not write to global cache")
+
+    def test_userid_scan_bypasses_global_cache(self):
+        # Populate global cache with wrong data
+        _mk_invoices_cache["global"] = {
+            "loaded_at": __import__("time").monotonic(),
+            "raw_items": [_paid_inv(999)],
+            "page_diag": {"pages_loaded": 1, "page_limit": 100, "total_items_reported": 1,
+                          "raw_invoices_scanned": 1, "stopped_reason": "total_reached"},
+        }
+        # userId-specific scan must call MK API directly, ignoring the cache
+        page = {"invoices": [_unpaid_inv_19060579()], "stats": {"totalItems": 1}}
+        client = _MockMKClient([{"data": page}])
+        # This bypasses the cache by using base_params with userId — caller's responsibility
+        items, diag = _mk_fetch_invoices_paginated(client, {"userId": 9748998}, page_limit=100)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["id"], 19060579)
+        for _, path, params in client.calls:
+            self.assertEqual(params.get("userId"), 9748998)
+
+    def test_scan_duration_ms_in_diag(self):
+        page = {"invoices": [_paid_inv(1)], "stats": {"totalItems": 1}}
+        client = _MockMKClient([{"data": page}])
+        _, diag, _, _ = _mk_invoices_get_cached(client, {})
+        self.assertIn("scan_duration_ms", diag)
+        self.assertGreaterEqual(diag["scan_duration_ms"], 0)
 
 
 if __name__ == "__main__":

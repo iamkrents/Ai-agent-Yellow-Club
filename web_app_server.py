@@ -142,6 +142,11 @@ def _extract_mk_invoices(payload: Any) -> list:
 _MK_INVOICE_PAGE_LIMIT: int = 100   # items per MK API request
 _MK_INVOICE_MAX_PAGES: int = 100    # hard cap against infinite loops
 
+# ── MoyKlass invoice list cache (single-flight, 5-min TTL) ──────────────────
+_MK_INVOICES_CACHE_TTL: float = 300.0   # seconds
+_mk_invoices_cache: "dict[str, Any]" = {}
+_mk_invoices_scan_lock = threading.Lock()
+
 
 def _mk_invoice_by_id(mk_client: Any, invoice_id: str) -> "dict | None":
     """Fetch a single invoice via GET /v1/company/invoices/{invoiceId}.
@@ -233,6 +238,43 @@ def _mk_fetch_invoices_paginated(
         "stopped_reason": stopped_reason,
     }
     return all_items, diag
+
+
+def _mk_invoices_get_cached(
+    mk_client: Any,
+    base_params: "dict[str, Any]",
+) -> "tuple[list[dict], dict[str, Any], bool, float]":
+    """Return (raw_items, page_diag, cache_hit, cache_age_seconds).
+
+    Only for the global (no userId) scan.
+    Single-flight: at most one concurrent MK scan runs at a time via _mk_invoices_scan_lock.
+    API errors are never cached so the next request retries the scan.
+    """
+    cache_key = "global"
+    now = time.monotonic()
+    cached = _mk_invoices_cache.get(cache_key)
+    if cached and (now - cached["loaded_at"]) < _MK_INVOICES_CACHE_TTL:
+        return cached["raw_items"], dict(cached["page_diag"]), True, now - cached["loaded_at"]
+
+    with _mk_invoices_scan_lock:
+        # Double-check: another thread may have refreshed the cache while we waited for the lock
+        now = time.monotonic()
+        cached = _mk_invoices_cache.get(cache_key)
+        if cached and (now - cached["loaded_at"]) < _MK_INVOICES_CACHE_TTL:
+            return cached["raw_items"], dict(cached["page_diag"]), True, now - cached["loaded_at"]
+
+        t0 = time.monotonic()
+        raw_items, page_diag = _mk_fetch_invoices_paginated(mk_client, base_params)
+        page_diag["scan_duration_ms"] = int((time.monotonic() - t0) * 1000)
+
+        if page_diag.get("stopped_reason") != "mk_error":
+            _mk_invoices_cache[cache_key] = {
+                "loaded_at": time.monotonic(),
+                "raw_items": raw_items,
+                "page_diag": dict(page_diag),
+            }
+
+        return raw_items, page_diag, False, 0.0
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -8829,8 +8871,8 @@ class MiniAppContext:
         user_role = self._role_for_user(int(auth["user_id"]))
         include_diagnostics = user_role in FULL_ADMIN_ROLES
 
-        # Direct invoice lookup: owner/admin may request a specific invoiceId for diagnostics
-        if invoice_id_raw and include_diagnostics:
+        # Direct invoice lookup: fast path for any user with payment intent access
+        if invoice_id_raw:
             direct = _mk_invoice_by_id(self.moyklass, invoice_id_raw)
             if direct is not None:
                 price_d = float(direct.get("price") or 0)
@@ -8873,11 +8915,9 @@ class MiniAppContext:
                     "active_intent_id": active_d["public_id"] if active_d else None,
                     "active_intent_status": active_d["status"] if active_d else None,
                 }
-                return {
-                    "ok": True,
-                    "invoices": [inv_card],
-                    "count": 1,
-                    "diagnostics": {
+                resp: dict[str, Any] = {"ok": True, "invoices": [inv_card], "count": 1}
+                if include_diagnostics:
+                    resp["diagnostics"] = {
                         "lookup_mode": "direct_by_id",
                         "invoice_id": invoice_id_raw,
                         "target_invoice_found": True,
@@ -8888,8 +8928,12 @@ class MiniAppContext:
                         "page_limit": 1,
                         "total_items_reported": 1,
                         "stopped_reason": "direct_lookup",
-                    },
-                }
+                        "cache_hit": False,
+                        "cache_age_seconds": None,
+                        "cache_ttl_seconds": _MK_INVOICES_CACHE_TTL,
+                        "scan_duration_ms": 0,
+                    }
+                return resp
             # Direct lookup returned None — fall through to paginated scan
 
         # Base MK params; pagination adds limit + offset
@@ -8897,12 +8941,27 @@ class MiniAppContext:
         if mk_user_id is not None:
             mk_base_params["userId"] = mk_user_id
 
-        # Paginated scan of MK invoices
-        try:
-            raw_list, page_diag = _mk_fetch_invoices_paginated(self.moyklass, mk_base_params)
-        except Exception as exc:
-            log.exception("moyklass_invoices_list paginated fetch error")
-            return {"ok": False, "error": f"Ошибка запроса к МойКласс: {exc}"}
+        # Paginated scan: use 5-min cache for global (no userId) queries; bypass for userId-specific
+        cache_hit = False
+        cache_age = 0.0
+        if mk_user_id is None:
+            # Global scan — use in-memory cache (single-flight, 5-min TTL)
+            try:
+                raw_list, page_diag, cache_hit, cache_age = _mk_invoices_get_cached(
+                    self.moyklass, mk_base_params
+                )
+            except Exception as exc:
+                log.exception("moyklass_invoices_list global fetch error")
+                return {"ok": False, "error": f"Ошибка запроса к МойКласс: {exc}"}
+        else:
+            # User-specific scan — always fresh, typically 1-2 pages
+            t0_scan = time.monotonic()
+            try:
+                raw_list, page_diag = _mk_fetch_invoices_paginated(self.moyklass, mk_base_params)
+            except Exception as exc:
+                log.exception("moyklass_invoices_list user scan error")
+                return {"ok": False, "error": f"Ошибка запроса к МойКласс: {exc}"}
+            page_diag["scan_duration_ms"] = int((time.monotonic() - t0_scan) * 1000)
 
         if page_diag.get("stopped_reason") == "mk_error":
             return {"ok": False, "error": "МойКласс вернул ошибку при загрузке счетов"}
@@ -9031,6 +9090,10 @@ class MiniAppContext:
                 "missing_price_count": missing_price_count,
                 "missing_user_id_count": missing_user_id_count,
                 "stopped_reason": page_diag.get("stopped_reason"),
+                "cache_hit": cache_hit,
+                "cache_age_seconds": round(cache_age, 1) if cache_hit else None,
+                "cache_ttl_seconds": _MK_INVOICES_CACHE_TTL,
+                "scan_duration_ms": page_diag.get("scan_duration_ms"),
             }
             if target_found is not None:
                 diag_out["target_invoice_found"] = target_found
@@ -9563,16 +9626,29 @@ class MiniAppHandler(BaseHTTPRequestHandler):
     server_version = "YellowClubMiniApp/0.1"
 
     def log_message(self, fmt: str, *args: Any) -> None:
+        # Strip query string so initData/signature/hash never appear in journalctl
+        if args:
+            first = str(args[0])
+            parts = first.split(" ", 2)
+            if len(parts) >= 2:
+                safe_url = parts[1].split("?", 1)[0]
+                safe_first = parts[0] + " " + safe_url + (" " + parts[2] if len(parts) > 2 else "")
+                args = (safe_first,) + args[1:]
         log.info("%s - %s", self.address_string(), fmt % args)
 
-    def _send_json(self, data: dict[str, Any], status: int = 200) -> None:
+    def _send_json(self, data: dict[str, Any], status: int = 200) -> bool:
         body = json.dumps(data, ensure_ascii=False, default=_json_default).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            log.info("Client disconnected before response: path=%s", self.path.split("?", 1)[0])
+            return False
+        return True
 
     def _send_file(self, path: Path) -> None:
         if not path.exists() or not path.is_file():
@@ -9766,9 +9842,15 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                         return self._send_json(CTX.food_admin_persons_for_menu(auth, _menu_parts[0]))
                 return self._send_json({"ok": False, "error": "Unknown API route"}, status=404)
             self.send_error(404, "Not found")
+        except (BrokenPipeError, ConnectionResetError):
+            log.info("Client disconnected: path=%s", self.path.split("?", 1)[0])
+            return
         except Exception as exc:
             log.exception("Mini app GET error")
-            self._send_json({"ok": False, "error": str(exc)}, status=500)
+            try:
+                self._send_json({"ok": False, "error": str(exc)}, status=500)
+            except (BrokenPipeError, ConnectionResetError):
+                return
 
     def _read_body_raw(self) -> bytes:
         length = _safe_int(self.headers.get("Content-Length"), 0)
@@ -9975,9 +10057,15 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 if len(_iparts) == 2 and _iparts[1] == "restore":
                     return self._send_json(CTX.food_restore_item(auth, _iparts[0]))
             return self._send_json({"ok": False, "error": "Unknown API route"}, status=404)
+        except (BrokenPipeError, ConnectionResetError):
+            log.info("Client disconnected: path=%s", self.path.split("?", 1)[0])
+            return
         except Exception as exc:
             log.exception("Mini app POST error")
-            self._send_json({"ok": False, "error": str(exc)}, status=500)
+            try:
+                self._send_json({"ok": False, "error": str(exc)}, status=500)
+            except (BrokenPipeError, ConnectionResetError):
+                return
 
 
 def run_server() -> None:

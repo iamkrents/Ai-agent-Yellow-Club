@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.0.90.2" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.0.90.3" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -344,6 +344,10 @@
                 <span class="mk-invoices-title">Счета МойКласс</span>
                 <span class="mk-invoices-subtitle">неоплаченные и частично оплаченные</span>
                 <button class="secondary" id="loadMkInvoices" type="button" style="margin-left:auto">Загрузить счета</button>
+              </div>
+              <div class="mk-invoices-search-row">
+                <input id="mkInvoiceSearchId" type="text" inputmode="numeric" placeholder="№ счёта (19060579)" />
+                <input id="mkInvoiceSearchUserId" type="text" inputmode="numeric" placeholder="userId МойКласс (9748998)" />
               </div>
               <div id="mkInvoicesDebug" style="font-size:11px;color:var(--muted);min-height:14px"></div>
               <div id="mkInvoicesDiag"></div>
@@ -831,6 +835,6 @@
 
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.0.90.2"></script>
+  <script src="/static/app.js?v=7.0.90.3"></script>
 </body>
 </html>
