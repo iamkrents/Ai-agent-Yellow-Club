@@ -4884,23 +4884,25 @@ class Storage:
             )
             return cursor.rowcount == 1
 
-    def payment_intent_mark_requires_check(self, public_id: str, error: str) -> None:
-        """Transition to bepaid_requires_check after an ambiguous bePaid result.
+    def payment_intent_mark_requires_check(self, public_id: str, error: str = "", *, reason: str = "") -> None:
+        """Transition to bepaid_requires_check after an ambiguous bePaid result or webhook validation failure.
 
-        Used after: timeout, ConnectionError, HTTP 5xx, or HTTP 2xx without UID.
-        Blocks further creation attempts until manually resolved.
+        `error` — bePaid API error string (timeout, HTTP 5xx, etc.)
+        `reason` — webhook validation failure reason (amount_mismatch, currency_mismatch, etc.)
         """
         from utils import now_iso
+        now = now_iso()
         with self._connect() as conn:
             conn.execute(
-                """
-                UPDATE payment_intents
-                SET status      = 'bepaid_requires_check',
-                    bepaid_error = ?,
-                    updated_at  = ?
-                WHERE public_id = ?
-                """,
-                (str(error)[:500], now_iso(), public_id),
+                """UPDATE payment_intents
+                   SET status = 'bepaid_requires_check',
+                       bepaid_error = CASE WHEN ? != '' THEN ? ELSE bepaid_error END,
+                       payment_state_reason = CASE WHEN ? != '' THEN ? ELSE payment_state_reason END,
+                       last_webhook_at = CASE WHEN ? != '' THEN ? ELSE last_webhook_at END,
+                       updated_at = ?
+                   WHERE public_id = ?""",
+                (str(error)[:500], str(error)[:500], reason, reason,
+                 reason, now if reason else None, now, public_id),
             )
 
     def payment_intent_release_claim(

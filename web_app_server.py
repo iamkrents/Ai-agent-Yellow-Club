@@ -8031,7 +8031,7 @@ class MiniAppContext:
             "payment_method_type": str(tx.get("payment_method_type") or "").strip() or None,
             "amount_minor": amount_minor,
             "amount_byn": amount_byn,
-            "currency": str(tx.get("currency") or "").strip() or None,
+            "currency": str(tx.get("currency") or "").strip().upper() or None,
             "paid_at": str(tx.get("paid_at") or "").strip() or None,
             "created_at_provider": str(tx.get("created_at") or "").strip() or None,
             "test": bool(tx.get("test")),
@@ -8113,8 +8113,39 @@ class MiniAppContext:
                 reason=sig_reason,
             )
 
-            # Only process "successful" payments (status == "successful")
+            if sig_verified:
+                self.storage.log_payment_webhook_audit(
+                    "webhook_signature_verified",
+                    bepaid_tx_id=tx_id,
+                    transaction_uid=tx_uid or None,
+                    shop_type=shop_type,
+                    status=tx_status or None,
+                    reason="rsa_pkcs1v15_ok",
+                )
+
+            # Only process "successful" payments; flag refunds/chargebacks for review
             if tx_status != "successful":
+                if tx_status in ("refund", "chargeback"):
+                    refund_match = self.storage.match_bepaid_transaction_to_intent(extracted)
+                    if refund_match.get("matched") and refund_match.get("confidence") == "strong":
+                        r_pid = refund_match["intent_public_id"]
+                        r_iid = refund_match["intent_id"]
+                        self.storage.payment_intent_mark_requires_check(
+                            r_pid,
+                            reason=f"refund_webhook:status={tx_status}:tx_uid={tx_uid}",
+                        )
+                        self.storage.log_payment_webhook_audit(
+                            "refund_requires_check",
+                            bepaid_tx_id=tx_id,
+                            payment_intent_id=r_iid,
+                            intent_public_id=r_pid,
+                            transaction_uid=tx_uid or None,
+                            shop_type=shop_type,
+                            status=tx_status,
+                            amount_minor=amount_minor,
+                            currency=currency or None,
+                            reason=f"refund_received:status={tx_status}",
+                        )
                 return {
                     "ok": True, "saved_id": tx_id, "is_new": is_new,
                     "signature": sig_reason, "processed": False,
@@ -8201,36 +8232,127 @@ class MiniAppContext:
                 reason=match_reason,
             )
 
-            # Validate payment conditions before marking paid
-            skip_reasons: list[str] = []
+            # Skip test transactions
             if is_test:
-                skip_reasons.append("test_transaction")
-            if currency and currency != "BYN":
-                skip_reasons.append(f"currency={currency}")
-            if amount_minor is None:
-                skip_reasons.append("missing_amount")
-
-            if skip_reasons:
-                log.warning(
-                    "bePaid webhook skipping mark_paid: tx_id=%s intent=%s reasons=%s",
-                    tx_id, intent_public_id, skip_reasons,
+                log.warning("bePaid webhook test_ignored: tx_id=%s intent=%s", tx_id, intent_public_id)
+                self.storage.log_payment_webhook_audit(
+                    "webhook_test_ignored",
+                    bepaid_tx_id=tx_id,
+                    payment_intent_id=intent_id,
+                    intent_public_id=intent_public_id,
+                    transaction_uid=tx_uid or None,
+                    shop_type=shop_type,
+                    amount_minor=amount_minor,
+                    currency=currency or None,
+                    match_method=match_method,
+                    reason="test_transaction",
                 )
+                return {
+                    "ok": True, "saved_id": tx_id, "is_new": is_new,
+                    "signature": sig_reason, "processed": False,
+                    "matched_intent": intent_public_id,
+                    "skip_reason": "test_transaction",
+                }, 200
+
+            # Require explicit BYN; non-empty wrong currency → requires_check
+            if currency and currency != "BYN":
+                log.warning("bePaid webhook currency_mismatch: tx_id=%s currency=%s", tx_id, currency)
+                self.storage.log_payment_webhook_audit(
+                    "webhook_currency_mismatch",
+                    bepaid_tx_id=tx_id,
+                    payment_intent_id=intent_id,
+                    intent_public_id=intent_public_id,
+                    transaction_uid=tx_uid or None,
+                    shop_type=shop_type,
+                    amount_minor=amount_minor,
+                    currency=currency or None,
+                    match_method=match_method,
+                    reason=f"currency={currency!r} != BYN",
+                )
+                self.storage.payment_intent_mark_requires_check(
+                    intent_public_id,
+                    reason=f"currency_mismatch:{currency}",
+                )
+                return {
+                    "ok": True, "saved_id": tx_id, "is_new": is_new,
+                    "signature": sig_reason, "processed": False,
+                    "matched_intent": intent_public_id,
+                    "skip_reason": f"currency={currency}",
+                }, 200
+
+            # Missing currency → skip without marking paid (not enough info to flag requires_check)
+            if not currency:
+                log.warning("bePaid webhook missing_currency: tx_id=%s", tx_id)
                 self.storage.log_payment_webhook_audit(
                     "webhook_mark_paid_skipped",
                     bepaid_tx_id=tx_id,
                     payment_intent_id=intent_id,
                     intent_public_id=intent_public_id,
                     transaction_uid=tx_uid or None,
+                    shop_type=shop_type,
                     amount_minor=amount_minor,
-                    currency=currency or None,
                     match_method=match_method,
-                    reason="; ".join(skip_reasons),
+                    reason="missing_currency",
                 )
                 return {
                     "ok": True, "saved_id": tx_id, "is_new": is_new,
                     "signature": sig_reason, "processed": False,
                     "matched_intent": intent_public_id,
-                    "skip_reason": "; ".join(skip_reasons),
+                    "skip_reason": "missing_currency",
+                }, 200
+
+            # Missing amount → skip
+            if amount_minor is None:
+                log.warning("bePaid webhook missing_amount: tx_id=%s", tx_id)
+                self.storage.log_payment_webhook_audit(
+                    "webhook_mark_paid_skipped",
+                    bepaid_tx_id=tx_id,
+                    payment_intent_id=intent_id,
+                    intent_public_id=intent_public_id,
+                    transaction_uid=tx_uid or None,
+                    shop_type=shop_type,
+                    currency=currency or None,
+                    match_method=match_method,
+                    reason="missing_amount",
+                )
+                return {
+                    "ok": True, "saved_id": tx_id, "is_new": is_new,
+                    "signature": sig_reason, "processed": False,
+                    "matched_intent": intent_public_id,
+                    "skip_reason": "missing_amount",
+                }, 200
+
+            # Verify webhook amount matches intent exactly — prevents partial payment acceptance
+            pi_obj = self.storage.get_payment_intent(intent_public_id)
+            expected_minor = int(pi_obj.get("amount_minor") or -1) if pi_obj else -1
+            actual_minor = int(amount_minor)
+            if actual_minor != expected_minor:
+                log.warning(
+                    "bePaid webhook amount_mismatch: tx_id=%s intent=%s expected=%s got=%s",
+                    tx_id, intent_public_id, expected_minor, actual_minor,
+                )
+                self.storage.log_payment_webhook_audit(
+                    "webhook_amount_mismatch",
+                    bepaid_tx_id=tx_id,
+                    payment_intent_id=intent_id,
+                    intent_public_id=intent_public_id,
+                    transaction_uid=tx_uid or None,
+                    shop_type=shop_type,
+                    amount_minor=amount_minor,
+                    currency=currency or None,
+                    match_method=match_method,
+                    match_confidence=match_confidence,
+                    reason=f"expected={expected_minor} got={actual_minor}",
+                )
+                self.storage.payment_intent_mark_requires_check(
+                    intent_public_id,
+                    reason=f"amount_mismatch:expected={expected_minor}_got={actual_minor}",
+                )
+                return {
+                    "ok": True, "saved_id": tx_id, "is_new": is_new,
+                    "signature": sig_reason, "processed": False,
+                    "matched_intent": intent_public_id,
+                    "skip_reason": "amount_mismatch",
                 }, 200
 
             # Mark the intent as paid
@@ -8973,6 +9095,19 @@ class MiniAppContext:
         _check("not_already_paid",
                intent.get("status") != "paid",
                f"status={intent.get('status')}")
+        _check("has_amount_minor",
+               bool(intent.get("amount_minor")),
+               f"amount_minor={intent.get('amount_minor')}")
+        _check("auto_post_to_moyklass_disabled",
+               not getattr(cfg, "bepaid_auto_post_to_moyklass", True),
+               "disabled" if not getattr(cfg, "bepaid_auto_post_to_moyklass", True) else "WARNING:enabled")
+        if intent.get("source") == "moyklass_invoice":
+            _check("has_mk_user_id",
+                   bool(intent.get("mk_user_id")),
+                   f"mk_user_id={intent.get('mk_user_id')}")
+            _check("has_mk_invoice_id",
+                   bool(intent.get("mk_invoice_id")),
+                   f"mk_invoice_id={intent.get('mk_invoice_id')}")
 
         all_ok = all(c["ok"] for c in checks)
         audit = self.storage.list_payment_webhook_audit(intent_public_id=public_id, limit=20)

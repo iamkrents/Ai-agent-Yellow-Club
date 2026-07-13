@@ -1,12 +1,33 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-13 (v7.0.90.6)_
+_Последнее обновление: 2026-07-13 (v7.0.91.1)_
 
 ---
 
 ## Что сделано
 
-### v7.0.90.6 — Fix: список счетов МойКласс / highlight / контраст (текущая)
+### v7.0.91.1 — Security: hardening bePaid webhook validation (текущая)
+
+**Причина:** Security-аудит v7.0.91 выявил критические уязвимости в обработке webhook:
+
+**Исправления (storage.py, web_app_server.py, tests/test_bepaid_webhook.py):**
+- **CRITICAL**: Добавлена проверка суммы — webhook `amount_minor` сравнивается с `payment_intent.amount_minor`; несовпадение → `bepaid_requires_check` + аудит `webhook_amount_mismatch`
+- **HIGH**: Исправлена проверка валюты: `if currency and currency != "BYN"` → пустая currency теперь не пропускается; пустая → skip без paid; ненулевая != BYN → `bepaid_requires_check` + `webhook_currency_mismatch`
+- Нормализация currency в uppercase в `_bepaid_extract_payload` (byn → BYN)
+- Новые audit-события: `webhook_signature_verified`, `webhook_test_ignored`, `webhook_currency_mismatch`, `webhook_amount_mismatch`, `refund_requires_check`
+- Обработка refund/chargeback статусов → матч + `bepaid_requires_check` + `refund_requires_check` аудит
+- `payment_intent_mark_requires_check` расширен: поддерживает `reason=` для webhook-контекста (обновляет `payment_state_reason`, `last_webhook_at`)
+- Readiness endpoint: +2 обязательные проверки (`has_amount_minor`, `auto_post_to_moyklass_disabled`), +2 условные для `moyklass_invoice` источника (`has_mk_user_id`, `has_mk_invoice_id`)
+- +30 тестов в `tests/test_bepaid_webhook.py` (18 security-сценариев + TestMarkRequiresCheck + расширение TestWebhookReadinessEndpoint)
+- **Итого тестов: 266/266 OK**
+
+---
+
+### v7.0.91 — Feature: bePaid webhook processing and payment intent reconciliation
+
+**Причина:** После создания платёжного намерения и отправки в bePaid — webhook принимался, транзакция сохранялась, но статус intent никогда не обновлялся до «paid». Не было audit-trail, нет защиты от дублей.
+
+### v7.0.90.6 — Fix: список счетов МойКласс / highlight / контраст
 
 **Причина:** После v7.0.90.5 проверено на реальном iPhone. Найдены три проблемы: (1) «Показать все неоплаченные» иногда падало с «Сервер вернул некорректный ответ» — python `json.dumps` без `allow_nan=False` мог сериализовать `NaN`/`Infinity` в тело ответа, что браузер отклонял; (2) жёлтая highlight-анимация не была видна — `animation:` на `.pi-card-highlight` перебивалась более специфичным правилом `.pi-list > .pi-card { animation: ycCardEnter }` (specificity 0,2,0 > 0,1,0); (3) финансовые значения в invoice card плохо читались — вся строка была бледно-серой (color: var(--muted) на контейнере), структура не давала явного контраста.
 

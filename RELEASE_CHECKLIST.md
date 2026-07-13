@@ -1,9 +1,11 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.90.6**
+**Cache version: v7.0.91** (frontend не менялся в v7.0.91.1)
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.91.1 | 2026-07-13 | Security: webhook amount check, currency fix (пустая больше не пропускается), 5 новых audit-событий, refund_requires_check, readiness +4 проверки, +30 тестов. 266/266 OK. |
+| v7.0.91 | 2026-07-13 | Feature: bePaid webhook reconciliation (match_bepaid_transaction_to_intent, payment_intent_mark_paid, audit table, 50 тестов). |
 | v7.0.90.6 | 2026-07-13 | Fix: список счетов стабилизирован (allow_nan=False, per-card catch, dual-key invoices/items, stage диагностика). Highlight через ::after, не конфликтует с ycCardEnter. Finance grid с явными цветами. 20 новых тестов. |
 | v7.0.90.5 | 2026-07-13 | Fix: кнопка «Показать черновик» — showPaymentIntent async (открывает аккордеон, фильтры, await loadPaymentIntents, double rAF, жёлтый highlight). paymentIntentDomId helper. Event delegation. period_month из backend. 15 новых тестов. |
 | v7.0.90.4 | 2026-07-13 | Hotfix: piShowToast→showToast (ReferenceError), toast в отдельном try/catch, 3 отдельных поиска (по счёту/userId/все), карточки с именем ученика и разбивкой сумм, student_name enrichment на backend, bePaid ERIP в карточке, плавный scroll к intent, 15 новых тестов. |

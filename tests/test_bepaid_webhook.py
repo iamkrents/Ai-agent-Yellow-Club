@@ -701,6 +701,332 @@ class TestWebhookReadinessEndpoint(unittest.TestCase):
         self.assertIn("def payment_intent_mark_paid(", storage_src,
                       "Storage.payment_intent_mark_paid must exist")
 
+    def test_payment_intent_mark_requires_check_method_exists(self):
+        storage_src = (ROOT / "storage.py").read_text(encoding="utf-8")
+        self.assertIn("def payment_intent_mark_requires_check(", storage_src,
+                      "Storage.payment_intent_mark_requires_check must exist")
+
+    def test_amount_mismatch_event_in_webhook_handler(self):
+        src = self._src()
+        self.assertIn("webhook_amount_mismatch", src,
+                      "webhook handler must log webhook_amount_mismatch event")
+
+    def test_webhook_signature_verified_event_in_handler(self):
+        src = self._src()
+        self.assertIn("webhook_signature_verified", src,
+                      "webhook handler must log webhook_signature_verified event")
+
+    def test_webhook_test_ignored_event_in_handler(self):
+        src = self._src()
+        self.assertIn("webhook_test_ignored", src,
+                      "webhook handler must log webhook_test_ignored event")
+
+    def test_webhook_currency_mismatch_event_in_handler(self):
+        src = self._src()
+        self.assertIn("webhook_currency_mismatch", src,
+                      "webhook handler must log webhook_currency_mismatch event")
+
+    def test_refund_requires_check_event_in_handler(self):
+        src = self._src()
+        self.assertIn("refund_requires_check", src,
+                      "webhook handler must log refund_requires_check event")
+
+    def test_auto_post_readiness_check(self):
+        src = self._src()
+        self.assertIn("auto_post_to_moyklass_disabled", src,
+                      "readiness endpoint must check auto_post_to_moyklass_disabled")
+
+    def test_amount_minor_readiness_check(self):
+        src = self._src()
+        self.assertIn("has_amount_minor", src,
+                      "readiness endpoint must check has_amount_minor")
+
+
+# ── Storage: payment_intent_mark_requires_check ───────────────────────────────
+
+class TestMarkRequiresCheck(unittest.TestCase):
+    """payment_intent_mark_requires_check sets status and blocks non-allowed transitions."""
+
+    def setUp(self):
+        self.storage = _make_storage()
+        self.pi = _make_intent(self.storage)
+
+    def test_mark_requires_check_from_bepaid_created(self):
+        self.storage.payment_intent_mark_requires_check(
+            self.pi["public_id"], reason="test_amount_mismatch"
+        )
+        pi = self.storage.get_payment_intent(self.pi["public_id"])
+        self.assertEqual(pi["status"], "bepaid_requires_check")
+        self.assertEqual(pi["payment_state_reason"], "test_amount_mismatch")
+
+    def test_mark_requires_check_from_paid(self):
+        self.storage.payment_intent_mark_paid(
+            self.pi["public_id"],
+            tx_uid="uid-rc1", amount_minor=22900, currency="BYN",
+            paid_at="2026-07-13T10:00:00",
+        )
+        self.storage.payment_intent_mark_requires_check(
+            self.pi["public_id"], reason="refund_received"
+        )
+        pi = self.storage.get_payment_intent(self.pi["public_id"])
+        self.assertEqual(pi["status"], "bepaid_requires_check")
+
+    def test_mark_requires_check_is_idempotent(self):
+        self.storage.payment_intent_mark_requires_check(self.pi["public_id"], reason="first")
+        self.storage.payment_intent_mark_requires_check(self.pi["public_id"], reason="second")
+        pi = self.storage.get_payment_intent(self.pi["public_id"])
+        self.assertEqual(pi["status"], "bepaid_requires_check")
+
+
+# ── Helpers for integration tests ─────────────────────────────────────────────
+
+import types as _types
+
+
+def _make_ctx(storage: Storage, **settings_overrides):
+    """Create a minimal MiniAppContext stub without loading real config."""
+    from web_app_server import MiniAppContext
+    ctx = object.__new__(MiniAppContext)
+    ctx.storage = storage
+    defaults = dict(
+        bepaid_webhook_path_secret="",
+        bepaid_erip_shop_id="test-shop",
+        bepaid_erip_public_key="",
+        bepaid_acq_shop_id="",
+        bepaid_acq_public_key="",
+        bepaid_auto_post_to_moyklass=False,
+    )
+    defaults.update(settings_overrides)
+    ctx.settings = _types.SimpleNamespace(**defaults)
+    return ctx
+
+
+def _make_webhook_body(
+    *,
+    status: str = "successful",
+    amount: int = 22900,
+    currency: str = "BYN",
+    tracking_id: Optional[str] = None,
+    order_id: Optional[str] = None,
+    uid: str = "test-tx-uid",
+    is_test: bool = False,
+) -> bytes:
+    return json.dumps({
+        "transaction": {
+            "uid": uid,
+            "status": status,
+            "amount": amount,
+            "currency": currency,
+            "tracking_id": tracking_id,
+            "order": {"id": order_id},
+            "test": is_test,
+            "paid_at": "2026-07-13T10:00:00Z",
+        }
+    }).encode("utf-8")
+
+
+# ── Security audit: 18 required scenario tests ────────────────────────────────
+
+class TestSecurity(unittest.TestCase):
+    """v7.0.91.1 security hardening: webhook validation scenarios (18 required tests)."""
+
+    def setUp(self):
+        self.storage = _make_storage()
+        self.pi = _make_intent(self.storage)
+        self.ctx = _make_ctx(self.storage)
+
+    def _call(self, body: bytes, *, sig: str = "", path_secret: str = "") -> tuple:
+        return self.ctx.bepaid_handle_webhook(
+            shop_type="erip", raw_body=body,
+            content_signature=sig, path_secret=path_secret,
+        )
+
+    def _body(self, **kw) -> bytes:
+        kw.setdefault("tracking_id", self.pi["bepaid_tracking_id"])
+        kw.setdefault("order_id", self.pi["bepaid_order_id"])
+        return _make_webhook_body(**kw)
+
+    # 1 — pending + correct identifiers + correct amount → NOT paid
+    def test_01_pending_not_paid(self):
+        resp, code = self._call(self._body(status="pending", amount=22900, uid="tx-pend"))
+        self.assertEqual(code, 200)
+        pi = self.storage.get_payment_intent(self.pi["public_id"])
+        self.assertEqual(pi["status"], "bepaid_created")
+        self.assertIn("status=pending", resp.get("skip_reason", ""))
+
+    # 2 — failed → NOT paid
+    def test_02_failed_not_paid(self):
+        resp, code = self._call(self._body(status="failed", amount=22900, uid="tx-fail"))
+        self.assertEqual(code, 200)
+        pi = self.storage.get_payment_intent(self.pi["public_id"])
+        self.assertEqual(pi["status"], "bepaid_created")
+
+    # 3 — expired → NOT paid
+    def test_03_expired_not_paid(self):
+        self._call(self._body(status="expired", amount=22900, uid="tx-exp"))
+        pi = self.storage.get_payment_intent(self.pi["public_id"])
+        self.assertEqual(pi["status"], "bepaid_created")
+
+    # 4 — unknown status → NOT paid
+    def test_04_unknown_status_not_paid(self):
+        self._call(self._body(status="unknown_xyz", amount=22900, uid="tx-unk"))
+        pi = self.storage.get_payment_intent(self.pi["public_id"])
+        self.assertEqual(pi["status"], "bepaid_created")
+
+    # 5 — successful exact amount → paid
+    def test_05_successful_exact_amount_paid(self):
+        resp, code = self._call(self._body(status="successful", amount=22900, uid="tx-exact"))
+        self.assertEqual(code, 200)
+        pi = self.storage.get_payment_intent(self.pi["public_id"])
+        self.assertEqual(pi["status"], "paid")
+        self.assertEqual(pi["paid_transaction_uid"], "tx-exact")
+
+    # 6 — successful amount −1 minor → requires_check
+    def test_06_amount_minus_one_requires_check(self):
+        resp, code = self._call(self._body(status="successful", amount=22899, uid="tx-m1"))
+        self.assertEqual(code, 200)
+        self.assertEqual(resp.get("skip_reason"), "amount_mismatch")
+        pi = self.storage.get_payment_intent(self.pi["public_id"])
+        self.assertEqual(pi["status"], "bepaid_requires_check")
+
+    # 7 — successful amount +1 minor → requires_check
+    def test_07_amount_plus_one_requires_check(self):
+        resp, code = self._call(self._body(status="successful", amount=22901, uid="tx-p1"))
+        self.assertEqual(code, 200)
+        self.assertEqual(resp.get("skip_reason"), "amount_mismatch")
+        pi = self.storage.get_payment_intent(self.pi["public_id"])
+        self.assertEqual(pi["status"], "bepaid_requires_check")
+
+    # 8 — wrong currency → requires_check; empty currency → not paid (still bepaid_created)
+    def test_08_wrong_currency_requires_check(self):
+        resp, code = self._call(self._body(status="successful", amount=22900,
+                                           currency="USD", uid="tx-usd"))
+        self.assertEqual(code, 200)
+        self.assertIn("USD", resp.get("skip_reason", ""))
+        pi = self.storage.get_payment_intent(self.pi["public_id"])
+        self.assertEqual(pi["status"], "bepaid_requires_check")
+
+    def test_08b_empty_currency_not_paid(self):
+        resp, code = self._call(self._body(status="successful", amount=22900,
+                                           currency="", uid="tx-nocur"))
+        self.assertEqual(code, 200)
+        pi = self.storage.get_payment_intent(self.pi["public_id"])
+        self.assertNotEqual(pi["status"], "paid")
+
+    # 9 — invalid Content-Signature → 401, intent unchanged (requires cryptography package)
+    def test_09_invalid_signature_returns_401(self):
+        try:
+            from cryptography.hazmat.primitives import hashes  # noqa: F401
+        except ImportError:
+            self.skipTest("cryptography not installed — signature verification not active")
+        ctx2 = _make_ctx(self.storage, bepaid_erip_public_key="NOT_A_PEM")
+        body = self._body(status="successful", amount=22900, uid="tx-badsig")
+        resp, code = ctx2.bepaid_handle_webhook(
+            shop_type="erip", raw_body=body,
+            content_signature="sha256=deadbeef00", path_secret="",
+        )
+        self.assertEqual(code, 401)
+        pi = self.storage.get_payment_intent(self.pi["public_id"])
+        self.assertEqual(pi["status"], "bepaid_created")
+
+    # 10 — missing signature with key configured → 401, intent unchanged (requires cryptography)
+    def test_10_missing_signature_returns_401(self):
+        try:
+            from cryptography.hazmat.primitives import hashes  # noqa: F401
+        except ImportError:
+            self.skipTest("cryptography not installed — signature verification not active")
+        ctx2 = _make_ctx(self.storage, bepaid_erip_public_key="NOT_A_PEM")
+        body = self._body(status="successful", amount=22900, uid="tx-nosig")
+        resp, code = ctx2.bepaid_handle_webhook(
+            shop_type="erip", raw_body=body,
+            content_signature="", path_secret="",
+        )
+        self.assertEqual(code, 401)
+        pi = self.storage.get_payment_intent(self.pi["public_id"])
+        self.assertEqual(pi["status"], "bepaid_created")
+
+    # 11 — conflict identifiers (two intents matched) → neither gets marked paid
+    def test_11_conflict_no_mark_paid(self):
+        pi2 = _make_intent(self.storage)
+        body = json.dumps({"transaction": {
+            "uid": "tx-conflict-11",
+            "status": "successful",
+            "amount": 22900,
+            "currency": "BYN",
+            "tracking_id": self.pi["bepaid_tracking_id"],
+            "order": {"id": pi2["bepaid_order_id"]},
+            "test": False,
+            "paid_at": "2026-07-13T10:00:00Z",
+        }}).encode()
+        resp, code = self._call(body)
+        self.assertEqual(code, 200)
+        self.assertEqual(resp.get("skip_reason"), "match_conflict")
+        self.assertEqual(self.storage.get_payment_intent(self.pi["public_id"])["status"], "bepaid_created")
+        self.assertEqual(self.storage.get_payment_intent(pi2["public_id"])["status"], "bepaid_created")
+
+    # 12 — cancelled intent + successful webhook → NOT paid
+    def test_12_cancelled_intent_not_paid(self):
+        with self.storage._connect() as conn:
+            conn.execute("UPDATE payment_intents SET status='cancelled' WHERE public_id=?",
+                         (self.pi["public_id"],))
+        resp, code = self._call(self._body(status="successful", amount=22900, uid="tx-cancel"))
+        self.assertEqual(code, 200)
+        pi = self.storage.get_payment_intent(self.pi["public_id"])
+        self.assertNotEqual(pi["status"], "paid")
+
+    # 13 — duplicate tx_uid → exactly one intent_marked_paid audit event
+    def test_13_duplicate_uid_one_audit(self):
+        body = self._body(status="successful", amount=22900, uid="tx-dup13")
+        self._call(body)
+        self._call(body)
+        audits = self.storage.list_payment_webhook_audit(intent_public_id=self.pi["public_id"])
+        paid_events = [a for a in audits if a["event_type"] == "intent_marked_paid"]
+        self.assertEqual(len(paid_events), 1)
+
+    # 14 — successful → paid; then pending → still paid
+    def test_14_successful_then_pending_stays_paid(self):
+        self._call(self._body(status="successful", amount=22900, uid="tx-ok14"))
+        self._call(self._body(status="pending", amount=22900, uid="tx-pend14"))
+        pi = self.storage.get_payment_intent(self.pi["public_id"])
+        self.assertEqual(pi["status"], "paid")
+
+    # 15 — webhook handler does not call MoyKlass
+    def test_15_no_moyklass_call(self):
+        src = (ROOT / "web_app_server.py").read_text(encoding="utf-8")
+        idx = src.find("def bepaid_handle_webhook(")
+        fn_body = src[idx: src.find("\n    def ", idx + 1)]
+        self.assertNotIn("moyklass", fn_body.lower())
+        self.assertNotIn("post_payment", fn_body)
+        self.assertNotIn("create_invoice", fn_body)
+
+    # 16 — webhook handler does not call Telegram
+    def test_16_no_telegram_call(self):
+        src = (ROOT / "web_app_server.py").read_text(encoding="utf-8")
+        idx = src.find("def bepaid_handle_webhook(")
+        fn_body = src[idx: src.find("\n    def ", idx + 1)]
+        self.assertNotIn("send_message", fn_body)
+        self.assertNotIn("bot.send", fn_body)
+        self.assertNotIn("telegram", fn_body.lower())
+
+    # 17 — readiness endpoint is read-only (no DB writes)
+    def test_17_readiness_read_only(self):
+        src = (ROOT / "web_app_server.py").read_text(encoding="utf-8")
+        idx = src.find("def payment_intent_webhook_readiness(")
+        fn_body = src[idx: src.find("\n    def ", idx + 1)]
+        for op in ("mark_paid", "mark_requires_check", "upsert_", "log_payment", "INSERT", "UPDATE"):
+            self.assertNotIn(op, fn_body, f"readiness must be read-only (found {op!r})")
+
+    # 18 — BEPAID_AUTO_POST_TO_MOYKLASS=false cannot be overridden in webhook handler
+    def test_18_auto_post_stays_false(self):
+        src = (ROOT / "web_app_server.py").read_text(encoding="utf-8")
+        idx = src.find("def bepaid_handle_webhook(")
+        fn_body = src[idx: src.find("\n    def ", idx + 1)]
+        self.assertNotIn("bepaid_auto_post_to_moyklass = True", fn_body)
+        self.assertNotIn("auto_post_to_moyklass=True", fn_body)
+        # Confirm the config flag is defined and defaults to False
+        cfg_src = (ROOT / "config.py").read_text(encoding="utf-8")
+        self.assertIn("bepaid_auto_post_to_moyklass", cfg_src)
+
 
 if __name__ == "__main__":
     unittest.main()
