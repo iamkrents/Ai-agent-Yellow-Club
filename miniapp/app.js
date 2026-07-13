@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.92");
+console.log("MiniApp version: v7.0.92.1");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12035,6 +12035,86 @@ function showToast(msg) {
   });
 }
 
+// ── MoyKlass Payment Type Discovery (v7.0.92.1) ──────────────────────────
+
+let _mkPaymentTypesData = null;
+
+function loadMkPaymentTypes() {
+  const section = $("mkPaymentTypeSection");
+  const statusEl = $("mkPaymentTypeStatus");
+  const listEl = $("mkPaymentTypeList");
+  if (!section) return;
+  if (!canPostToMoyklass()) { section.style.display = "none"; return; }
+  section.style.display = "";
+  if (statusEl) statusEl.textContent = "Загрузка…";
+  if (listEl) listEl.innerHTML = "";
+  apiFetch("/api/payments/moyklass/payment-types")
+    .then(r => r.json())
+    .then(data => {
+      _mkPaymentTypesData = data;
+      renderMkPaymentTypes(data);
+    })
+    .catch(err => {
+      if (statusEl) statusEl.textContent = "Ошибка загрузки: " + (err.message || err);
+    });
+}
+
+function renderMkPaymentTypes(data) {
+  const statusEl = $("mkPaymentTypeStatus");
+  const listEl = $("mkPaymentTypeList");
+  if (!statusEl || !listEl) return;
+
+  if (!data.ok) {
+    statusEl.innerHTML = `<span class="mk-pt-error">Ошибка: ${escHtml(data.error || "")}</span>`;
+    return;
+  }
+
+  const pt = data.configured_payment_type || {};
+  const configuredId = data.configured_payment_type_id;
+  const found = data.configured_payment_type_found;
+  const valid = pt.valid;
+  const diag = data.diagnostics || {};
+
+  let statusHtml = "";
+  if (!configuredId) {
+    statusHtml = `<div class="mk-pt-warn">MOYKLASS_ERIP_PAYMENT_TYPE_ID не задан. Публикация платежей заблокирована.</div>`;
+  } else if (!found) {
+    statusHtml = `<div class="mk-pt-warn">ID ${configuredId} не найден в МойКласс. Проверьте конфигурацию.</div>`;
+  } else if (!valid) {
+    const reason = (pt.blocking_reasons || []).join(", ") || "тип недоступен";
+    statusHtml = `<div class="mk-pt-warn">Тип ${configuredId} (${escHtml(pt.payment_type_name || "")}) недоступен: ${escHtml(reason)}</div>`;
+  } else {
+    statusHtml = `<div class="mk-pt-ok">Тип оплаты настроен: ID ${configuredId} — <strong>${escHtml(pt.payment_type_name || "")}</strong></div>`;
+  }
+  statusEl.innerHTML = statusHtml;
+
+  const items = data.items || [];
+  const candidates = diag.erip_candidates || [];
+  let html = `<div class="mk-pt-diag">Всего типов: ${diag.total || 0} · Активных: ${diag.active || 0} · Кандидатов ЕРИП: ${diag.possible_erip_matches || 0}</div>`;
+
+  if (candidates.length === 1) {
+    html += `<div class="mk-pt-hint"><span class="mk-pt-badge-likely">Вероятный тип ЕРИП</span> ID ${candidates[0].id} — ${escHtml(candidates[0].name)}<br>` +
+      `<code class="mk-pt-env-hint">MOYKLASS_ERIP_PAYMENT_TYPE_ID=${candidates[0].id}</code></div>`;
+  } else if (candidates.length > 1) {
+    html += `<div class="mk-pt-hint"><span class="mk-pt-badge-multi">Несколько кандидатов ЕРИП — требуется ручной выбор:</span><ul>` +
+      candidates.map(c => `<li>ID ${c.id} — ${escHtml(c.name)}</li>`).join("") + `</ul></div>`;
+  }
+
+  if (items.length) {
+    html += `<div class="mk-pt-list-title">Все типы оплаты:</div><ul class="mk-pt-list">`;
+    for (const item of items) {
+      const isConfigured = item.id === configuredId;
+      const isCandidate = candidates.some(c => c.id === item.id);
+      const badge = isConfigured ? ` <span class="mk-pt-badge-active">настроен</span>` :
+        isCandidate ? ` <span class="mk-pt-badge-likely">ЕРИП?</span>` : "";
+      html += `<li class="mk-pt-item${isConfigured ? " mk-pt-item-configured" : ""}">` +
+        `<span class="mk-pt-id">ID ${item.id}</span> ${escHtml(item.name)}${badge}</li>`;
+    }
+    html += `</ul>`;
+  }
+  listEl.innerHTML = html;
+}
+
 // ── MoyKlass Manual Payment Posting (v7.0.92) ────────────────────────────
 
 function canPostToMoyklass() {
@@ -12668,6 +12748,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.target.open && canUsePaymentIntents()) {
       initMonthPicker($("piMonthFilter"), "");
       loadPaymentIntents();
+      if (canPostToMoyklass()) loadMkPaymentTypes();
     }
   });
 
@@ -12697,6 +12778,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("piBePaidModalBack")?.addEventListener("click", closeBePaidModal);
   $("piBePaidModalClose")?.addEventListener("click", closeBePaidModal);
   $("piBePaidModal")?.addEventListener("click", e => { if (e.target === $("piBePaidModal")) closeBePaidModal(); });
+
+  // Payment type discovery (v7.0.92.1)
+  $("refreshMkPaymentTypes")?.addEventListener("click", loadMkPaymentTypes);
 
   // MoyKlass post modal (v7.0.92)
   $("piMkPostModalBack")?.addEventListener("click", closeMkPostModal);

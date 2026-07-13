@@ -1,6 +1,6 @@
 # Yellow Club Agent — Current State
 
-> Последнее обновление: 2026-07-13 (v7.0.92)  
+> Последнее обновление: 2026-07-13 (v7.0.92.1)  
 > Цель файла: позволить возобновить работу из любого нового чата без потери контекста.  
 > **Этот файл — только документация. Production-код не менять через этот файл.**
 
@@ -31,11 +31,25 @@ Claude Code (локально) → редактирование кода → git
 | Параметр | Значение |
 |---|---|
 | Последняя задеплоенная версия | **v7.0.81** (commit `db0f1e9`) — НЕ развёрнут, production-дата неизвестна |
-| Последний коммит в `main` | **v7.0.92** — Add safe manual posting of payments to MoyKlass |
-| Frontend cache-bust | **`v=7.0.92`** (в `index.html`: `styles.css?v=7.0.92`, `app.js?v=7.0.92`) |
-| `console.log` в app.js | `MiniApp version: v7.0.92` |
+| Последний коммит в `main` | **v7.0.92.1** — Add MoyKlass payment type discovery |
+| Frontend cache-bust | **`v=7.0.92.1`** (в `index.html`: `styles.css?v=7.0.92.1`, `app.js?v=7.0.92.1`) |
+| `console.log` в app.js | `MiniApp version: v7.0.92.1` |
 
 > Все версии начиная с v7.0.82 запушены, но **НЕ деплоились** на production-сервер. Деплой — только по команде владельца.
+
+### v7.0.92.1 — Feature: определение типа оплаты ЕРИП в МойКласс
+
+**Причина:** Owner/admin должны уметь проверить, что `MOYKLASS_ERIP_PAYMENT_TYPE_ID` указан правильно, и найти правильный ID без изменения `.env` вручную.
+
+**Новый endpoint:** GET `/api/payments/moyklass/payment-types` (owner/admin только). Возвращает: полный список типов оплаты (нормализованный), ERIP-кандидаты (по ключевым словам), статус настроенного ID, `env_hint` при единственном кандидате.
+
+**ERIP-кандидаты:** Поиск по ключевым словам `ЕРИП/ERIP/BEPAID/БЕЗНАЛИЧНЫЙ/ОНЛАЙН-ОПЛАТА`. Никогда не сохраняются автоматически — admin копирует `env_hint` вручную.
+
+**Readiness:** `payment_intent_moyklass_readiness` теперь делает live-проверку `paymentTypeId` через `get_payment_type_by_id` перед проверкой счёта.
+
+**UI:** Блок «Тип оплаты МойКласс» в разделе payment intents. Cache-bust: `v=7.0.92.1`.
+
+**`BEPAID_AUTO_POST_TO_MOYKLASS` остался `false` — не трогать.**
 
 ### v7.0.92 — Feature: ручное внесение bePaid оплаты в МойКласс
 

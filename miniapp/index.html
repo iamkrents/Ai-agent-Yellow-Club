@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.0.92" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.0.92.1" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -337,6 +337,16 @@
             <div id="piDebug" style="font-size:11px;color:var(--muted);padding:2px 0 4px;min-height:16px"></div>
             <div id="piStats" class="pi-stats-row"></div>
             <div id="piList" class="pi-list"></div>
+
+            <!-- Тип оплаты МойКласс — v7.0.92.1 -->
+            <div class="mk-payment-type-section" id="mkPaymentTypeSection" style="display:none">
+              <div class="mk-payment-type-header">
+                <span class="mk-payment-type-title">Тип оплаты МойКласс (ЕРИП)</span>
+                <button class="secondary small" id="refreshMkPaymentTypes" type="button">Обновить список</button>
+              </div>
+              <div id="mkPaymentTypeStatus" class="mk-payment-type-status"></div>
+              <div id="mkPaymentTypeList" class="mk-payment-type-list"></div>
+            </div>
 
             <!-- Счета МойКласс — v7.0.90.4 -->
             <div class="mk-invoices-section" id="mkInvoicesSection">
@@ -872,6 +882,6 @@
 
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.0.92"></script>
+  <script src="/static/app.js?v=7.0.92.1"></script>
 </body>
 </html>

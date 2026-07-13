@@ -208,6 +208,34 @@ class MoyKlassClient:
         """GET /v1/company/payments/{paymentId} — fetch a single MoyKlass payment."""
         return self.request("GET", f"/v1/company/payments/{int(payment_id)}")
 
+    # ── v7.0.92.1: payment type discovery ────────────────────────────────────
+
+    def get_payment_types(self) -> MoyKlassResult:
+        """GET /v1/company/paymentTypes — list all payment types.
+
+        Returns MoyKlassResult with data=list of PaymentType dicts.
+        Per OpenAPI schema each item has: id (int), name (str).
+        Real API may return additional undocumented fields (active, deleted, etc.).
+        Read-only, no POST, no side effects.
+        """
+        return self.request("GET", "/v1/company/paymentTypes")
+
+    def get_payment_type_by_id(self, payment_type_id: int) -> MoyKlassResult:
+        """Return a single payment type by ID, fetched from the full list.
+
+        OpenAPI defines no /v1/company/paymentTypes/{id} endpoint, so we
+        fetch all types and filter. Returns status=404 if ID not found.
+        """
+        result = self.request("GET", "/v1/company/paymentTypes")
+        if not result.ok:
+            return result
+        items = result.data if isinstance(result.data, list) else []
+        target = int(payment_type_id)
+        for item in items:
+            if isinstance(item, dict) and int(item.get("id") or 0) == target:
+                return MoyKlassResult(True, data=item, status=200)
+        return MoyKlassResult(False, data=None, status=404, error=f"payment_type {payment_type_id} not found")
+
     # ── end v7.0.92 ──────────────────────────────────────────────────────────
 
     def get_lessons(self, raw_args: str = "") -> MoyKlassResult:

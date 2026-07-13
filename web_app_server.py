@@ -131,6 +131,59 @@ def _compute_moyklass_post_fingerprint(intent: dict, invoice: dict) -> str:
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
 
 
+_ERIP_KEYWORDS = ("ЕРИП", "ERIP", "BEPAID", "БЕЗНАЛИЧНЫЙ", "ОНЛАЙН-ОПЛАТА", "ОНЛАЙН ОПЛАТА")
+
+
+def _is_erip_candidate(name: str) -> bool:
+    """Return True if the payment type name suggests bePaid ERIP."""
+    upper = (name or "").upper()
+    return any(kw in upper for kw in _ERIP_KEYWORDS)
+
+
+def _normalize_payment_type(raw: dict) -> dict:
+    """Normalize a raw PaymentType from MoyKlass API.
+
+    OpenAPI guarantees only 'id' and 'name'. Extra fields (active, deleted,
+    legalEntityId, etc.) may be present in actual responses and are passed through.
+    """
+    raw_active = raw.get("active")
+    raw_deleted = raw.get("deleted")
+    return {
+        "id": int(raw.get("id") or 0),
+        "name": str(raw.get("name") or ""),
+        "active": bool(raw_active) if raw_active is not None else True,
+        "deleted": bool(raw_deleted) if raw_deleted is not None else False,
+        "legal_entity_id": raw.get("legalEntityId"),
+        "raw_requirements": raw.get("requirements") or [],
+    }
+
+
+def _build_payment_type_readiness(configured_id: int, pt: dict | None) -> dict:
+    """Build a normalized readiness object for a configured payment type."""
+    blocking_reasons: list[str] = []
+    valid = False
+    if configured_id <= 0:
+        blocking_reasons.append("payment_type_not_configured")
+    elif pt is None:
+        blocking_reasons.append("payment_type_not_found")
+    else:
+        if pt.get("deleted", False):
+            blocking_reasons.append("payment_type_deleted")
+        elif not pt.get("active", True):
+            blocking_reasons.append("payment_type_inactive")
+        else:
+            valid = True
+    return {
+        "configured": configured_id > 0,
+        "valid": valid,
+        "payment_type_id": configured_id if configured_id > 0 else None,
+        "payment_type_name": pt.get("name") if pt else None,
+        "active": pt.get("active", True) if pt else None,
+        "blocking_reasons": blocking_reasons,
+        "warnings": [],
+    }
+
+
 def _parse_query(path: str) -> tuple[str, dict[str, str]]:
     parsed = urllib.parse.urlparse(path)
     params = {k: v[-1] if v else "" for k, v in urllib.parse.parse_qs(parsed.query).items()}
@@ -9143,6 +9196,71 @@ class MiniAppContext:
 
     # ── v7.0.92: MoyKlass manual payment posting ──────────────────────────────
 
+    # ── v7.0.92.1: MoyKlass payment type discovery ───────────────────────────
+
+    def moyklass_payment_types(self, auth: dict[str, Any]) -> dict[str, Any]:
+        """GET /api/payments/moyklass/payment-types — list payment types, validate configured ID.
+
+        Read-only. No POST to MoyKlass. No .env modification.
+        Owner/admin only. Returns normalized type list + candidate ERIP detection.
+        """
+        denied = self._require_moyklass_post_access(auth)
+        if denied:
+            return denied
+
+        if not self.moyklass.is_configured:
+            return {"ok": False, "error": "МойКласс API не настроен (MOYKLASS_API_KEY)"}
+
+        result = self.moyklass.get_payment_types()
+        if not result.ok:
+            return {
+                "ok": False,
+                "error": f"Ошибка получения типов оплаты из МойКласс: HTTP {result.status}",
+                "mk_status": result.status,
+                "mk_error": (result.error or "")[:200],
+            }
+
+        raw_items = result.data if isinstance(result.data, list) else []
+        items = [_normalize_payment_type(r) for r in raw_items if isinstance(r, dict)]
+
+        cfg = self.settings
+        configured_id = int(getattr(cfg, "moyklass_erip_payment_type_id", 0) or 0)
+
+        configured_type: dict | None = None
+        for item in items:
+            if item["id"] == configured_id:
+                configured_type = item
+                break
+
+        erip_candidates = [
+            {"id": item["id"], "name": item["name"]}
+            for item in items
+            if _is_erip_candidate(item["name"])
+        ]
+        auto_select = False  # Never auto-select; admin must set .env manually
+
+        pt_readiness = _build_payment_type_readiness(configured_id, configured_type)
+
+        return {
+            "ok": True,
+            "configured_payment_type_id": configured_id if configured_id > 0 else None,
+            "configured_payment_type_found": configured_type is not None,
+            "configured_payment_type": pt_readiness,
+            "items": items,
+            "diagnostics": {
+                "total": len(items),
+                "active": sum(1 for i in items if i.get("active", True) and not i.get("deleted", False)),
+                "possible_erip_matches": len(erip_candidates),
+                "erip_candidates": erip_candidates,
+                "auto_select": auto_select,
+                "env_hint": (
+                    f"MOYKLASS_ERIP_PAYMENT_TYPE_ID={erip_candidates[0]['id']}"
+                    if len(erip_candidates) == 1 else None
+                ),
+                "manual_selection_required": len(erip_candidates) != 1,
+            },
+        }
+
     def _require_moyklass_post_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
         role = self._role_for_user(int(auth["user_id"]))
         if role not in PAYMENT_MK_POST_ROLES:
@@ -9233,53 +9351,82 @@ class MiniAppContext:
         mk_invoice_id_str = str(intent.get("mk_invoice_id") or "")
         mk_user_id = int(intent.get("mk_user_id") or 0)
 
-        if not local_failed and mk_invoice_id_str and mk_user_id and self.moyklass.is_configured:
-            try:
-                inv_result = self.moyklass.get_invoice_by_id(int(mk_invoice_id_str))
-                if inv_result.ok and isinstance(inv_result.data, dict):
-                    invoice = inv_result.data
-                    inv_user_id = int(invoice.get("userId") or 0)
-                    _check("invoice_belongs_to_user", inv_user_id == mk_user_id,
-                           "Счёт принадлежит ученику",
-                           f"invoice.userId={inv_user_id}_expected={mk_user_id}")
-                    inv_sub_id = invoice.get("userSubscriptionId")
-                    if mk_sub_id:
-                        sub_match = (inv_sub_id is None or int(inv_sub_id or 0) == int(mk_sub_id or 0))
-                        _check("invoice_subscription_matches", sub_match,
-                               "Абонемент счёта совпадает",
-                               f"invoice.userSubscriptionId={inv_sub_id}_expected={mk_sub_id}")
-                    price_dec = Decimal(str(invoice.get("price") or 0))
-                    payed_dec = Decimal(str(invoice.get("payed") or 0))
-                    remaining_dec = (price_dec - payed_dec).quantize(
-                        Decimal("0.01"), rounding=ROUND_HALF_UP
-                    )
-                    invoice_remaining_minor = int(
-                        (remaining_dec * 100).to_integral_value(rounding=ROUND_HALF_UP)
-                    )
-                    _check("invoice_remaining_positive", invoice_remaining_minor > 0,
-                           "Остаток счёта > 0", f"remaining_minor={invoice_remaining_minor}")
-                    _check("invoice_remaining_matches_paid",
-                           invoice_remaining_minor == paid_amount_minor,
-                           "Остаток счёта = сумме оплаты",
-                           f"remaining={invoice_remaining_minor}_paid={paid_amount_minor}")
-                    if invoice_remaining_minor != paid_amount_minor:
+        if not local_failed and self.moyklass.is_configured:
+            # — Live payment type check (v7.0.92.1) —
+            if payment_type_id > 0:
+                try:
+                    pt_result = self.moyklass.get_payment_type_by_id(payment_type_id)
+                    if pt_result.ok and isinstance(pt_result.data, dict):
+                        pt = pt_result.data
+                        pt_deleted = bool(pt.get("deleted", False))
+                        pt_active = bool(pt.get("active", True))
+                        if pt_deleted:
+                            _check("payment_type_valid", False, "Тип оплаты не удалён",
+                                   f"paymentTypeId={payment_type_id} deleted=true")
+                        elif not pt_active:
+                            _check("payment_type_valid", False, "Тип оплаты активен",
+                                   f"paymentTypeId={payment_type_id} active=false")
+                        else:
+                            _check("payment_type_valid", True, "Тип оплаты существует и активен",
+                                   f"paymentTypeId={payment_type_id} name={str(pt.get('name') or '')[:40]}")
+                    elif pt_result.status == 404:
+                        _check("payment_type_valid", False, "Тип оплаты найден в МойКласс",
+                               f"paymentTypeId={payment_type_id} → 404 Not Found")
+                    else:
                         warnings.append(
-                            f"Остаток счёта {invoice_remaining_minor} коп. ≠ оплачено {paid_amount_minor} коп. "
-                            f"Частичный платёж не поддерживается в v7.0.92."
+                            f"Не удалось проверить тип оплаты: HTTP {pt_result.status}"
                         )
-                elif inv_result.status == 404:
-                    _check("invoice_exists", False,
-                           "Счёт МойКласс найден", f"invoice_id={mk_invoice_id_str} → 404 Not Found")
-                    invoice_error = f"Счёт {mk_invoice_id_str} не найден в МойКласс"
-                else:
-                    _check("invoice_fetch_ok", False,
-                           "Счёт МойКласс доступен",
-                           f"status={inv_result.status} error={inv_result.error[:100]}")
-                    invoice_error = f"Ошибка получения счёта: HTTP {inv_result.status}"
-            except Exception as e:
-                _check("invoice_fetch_ok", False, "Счёт МойКласс доступен",
-                       f"exception={str(e)[:100]}")
-                invoice_error = f"Исключение при получении счёта: {str(e)[:200]}"
+                except Exception as e:
+                    warnings.append(f"Ошибка проверки типа оплаты: {str(e)[:100]}")
+
+            # — Live invoice check —
+            if mk_invoice_id_str and mk_user_id:
+                try:
+                    inv_result = self.moyklass.get_invoice_by_id(int(mk_invoice_id_str))
+                    if inv_result.ok and isinstance(inv_result.data, dict):
+                        invoice = inv_result.data
+                        inv_user_id = int(invoice.get("userId") or 0)
+                        _check("invoice_belongs_to_user", inv_user_id == mk_user_id,
+                               "Счёт принадлежит ученику",
+                               f"invoice.userId={inv_user_id}_expected={mk_user_id}")
+                        inv_sub_id = invoice.get("userSubscriptionId")
+                        if mk_sub_id:
+                            sub_match = (inv_sub_id is None or int(inv_sub_id or 0) == int(mk_sub_id or 0))
+                            _check("invoice_subscription_matches", sub_match,
+                                   "Абонемент счёта совпадает",
+                                   f"invoice.userSubscriptionId={inv_sub_id}_expected={mk_sub_id}")
+                        price_dec = Decimal(str(invoice.get("price") or 0))
+                        payed_dec = Decimal(str(invoice.get("payed") or 0))
+                        remaining_dec = (price_dec - payed_dec).quantize(
+                            Decimal("0.01"), rounding=ROUND_HALF_UP
+                        )
+                        invoice_remaining_minor = int(
+                            (remaining_dec * 100).to_integral_value(rounding=ROUND_HALF_UP)
+                        )
+                        _check("invoice_remaining_positive", invoice_remaining_minor > 0,
+                               "Остаток счёта > 0", f"remaining_minor={invoice_remaining_minor}")
+                        _check("invoice_remaining_matches_paid",
+                               invoice_remaining_minor == paid_amount_minor,
+                               "Остаток счёта = сумме оплаты",
+                               f"remaining={invoice_remaining_minor}_paid={paid_amount_minor}")
+                        if invoice_remaining_minor != paid_amount_minor:
+                            warnings.append(
+                                f"Остаток счёта {invoice_remaining_minor} коп. ≠ оплачено {paid_amount_minor} коп. "
+                                f"Частичный платёж не поддерживается в v7.0.92."
+                            )
+                    elif inv_result.status == 404:
+                        _check("invoice_exists", False,
+                               "Счёт МойКласс найден", f"invoice_id={mk_invoice_id_str} → 404 Not Found")
+                        invoice_error = f"Счёт {mk_invoice_id_str} не найден в МойКласс"
+                    else:
+                        _check("invoice_fetch_ok", False,
+                               "Счёт МойКласс доступен",
+                               f"status={inv_result.status} error={inv_result.error[:100]}")
+                        invoice_error = f"Ошибка получения счёта: HTTP {inv_result.status}"
+                except Exception as e:
+                    _check("invoice_fetch_ok", False, "Счёт МойКласс доступен",
+                           f"exception={str(e)[:100]}")
+                    invoice_error = f"Исключение при получении счёта: {str(e)[:200]}"
         elif not self.moyklass.is_configured:
             _check("moyklass_configured", False, "МойКласс API настроен", "MOYKLASS_API_KEY не задан")
 
@@ -11024,6 +11171,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.payment_intents_list(auth, params))
                 if path == "/api/payments/moyklass/invoices":
                     return self._send_json(CTX.moyklass_invoices_list(auth, params))
+                if path == "/api/payments/moyklass/payment-types":
+                    return self._send_json(CTX.moyklass_payment_types(auth))
                 if path.startswith("/api/payments/intents/"):
                     _pi_rest = path[len("/api/payments/intents/"):]
                     _pi_parts = _pi_rest.split("/")
