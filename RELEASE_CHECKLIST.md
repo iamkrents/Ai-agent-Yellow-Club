@@ -1,9 +1,10 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.92.1**
+**Cache version: v7.0.92.1.1**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.92.1.1 | 2026-07-13 | Hotfix: loadMkPaymentTypes — apiFetch→apiGet, async/await, try/catch/finally, button guard, no double-click. 11 regression tests. 365/365 OK. |
 | v7.0.92.1 | 2026-07-13 | Feature: определение типа оплаты ЕРИП в МойКласс. get_payment_types/get_payment_type_by_id, ERIP-кандидаты (без авто-выбора), live проверка paymentTypeId в readiness, UI блок. 21 новый тест. 354/354 OK. |
 | v7.0.92 | 2026-07-13 | Feature: ручное внесение bePaid→МойКласс (owner/admin). Новый статус posted_to_moyklass, atomic claim, fingerprint, ambiguous state, reconciliation, 16 audit events, MK post modal в UI. 67 новых тестов. 333/333 OK. |
 | v7.0.91.1 | 2026-07-13 | Security: webhook amount check, currency fix (пустая больше не пропускается), 5 новых audit-событий, refund_requires_check, readiness +4 проверки, +30 тестов. 266/266 OK. |

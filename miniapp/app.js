@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.92.1");
+console.log("MiniApp version: v7.0.92.1.1");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12039,24 +12039,44 @@ function showToast(msg) {
 
 let _mkPaymentTypesData = null;
 
-function loadMkPaymentTypes() {
+async function loadMkPaymentTypes() {
   const section = $("mkPaymentTypeSection");
   const statusEl = $("mkPaymentTypeStatus");
   const listEl = $("mkPaymentTypeList");
+  const refreshBtn = $("refreshMkPaymentTypes");
+
   if (!section) return;
-  if (!canPostToMoyklass()) { section.style.display = "none"; return; }
+
+  if (!canPostToMoyklass()) {
+    section.style.display = "none";
+    return;
+  }
+
   section.style.display = "";
+
+  // Double-click guard: bail out if a request is already in flight
+  if (refreshBtn?.disabled) return;
+
   if (statusEl) statusEl.textContent = "Загрузка…";
   if (listEl) listEl.innerHTML = "";
-  apiFetch("/api/payments/moyklass/payment-types")
-    .then(r => r.json())
-    .then(data => {
-      _mkPaymentTypesData = data;
-      renderMkPaymentTypes(data);
-    })
-    .catch(err => {
-      if (statusEl) statusEl.textContent = "Ошибка загрузки: " + (err.message || err);
+  if (refreshBtn) refreshBtn.disabled = true;
+
+  try {
+    // apiGet (line ~568) fetches, parses JSON, and throws if data.ok===false
+    const data = await apiGet("/api/payments/moyklass/payment-types");
+    _mkPaymentTypesData = data;
+    renderMkPaymentTypes(data);
+  } catch (err) {
+    console.error("MoyKlass payment types load failed", {
+      name: err?.name || "",
+      message: err?.message || String(err),
     });
+    if (statusEl) {
+      statusEl.textContent = "Ошибка загрузки: " + (err?.message || String(err));
+    }
+  } finally {
+    if (refreshBtn) refreshBtn.disabled = false;
+  }
 }
 
 function renderMkPaymentTypes(data) {
