@@ -646,9 +646,9 @@ class TestV90904UIFix(unittest.TestCase):
         src = self._read_app_js()
         self.assertIn("payment-intent-", src, "payment-intent- id prefix must appear in card HTML")
 
-    def test_version_bumped_to_90_5(self):
+    def test_version_bumped_to_90_6(self):
         src = self._read_app_js()
-        self.assertIn("v7.0.90.5", src, "Version must be bumped to v7.0.90.5")
+        self.assertIn("v7.0.90.6", src, "Version must be bumped to v7.0.90.6")
 
     def test_student_name_field_in_invoice_card_html(self):
         """renderMkInvoiceCard must reference inv.student_name."""
@@ -828,17 +828,16 @@ class TestV90905ShowPaymentIntent(unittest.TestCase):
 
     def test_highlight_animation_is_yellow(self):
         css = self._css()
-        self.assertIn("piIntentHighlight", css,
-                      "Highlight animation must be named piIntentHighlight")
-        idx = css.find("piIntentHighlight")
-        block = css[idx:idx + 300]
-        self.assertIn("255,204,0", block,
-                      "piIntentHighlight animation must use yellow color rgba(255,204,0,...)")
+        self.assertIn("piIntentHighlightRing", css,
+                      "Highlight animation must be named piIntentHighlightRing")
+        # Border/ring color should be in rgba(255, 196, 0, ...) family (yellow)
+        self.assertIn("255, 196, 0", css,
+                      "piIntentHighlightRing must use yellow border color")
 
-    def test_cache_bust_v90905_in_html(self):
+    def test_cache_bust_v90906_in_html(self):
         html = self._html()
-        self.assertIn("v=7.0.90.5", html,
-                      "index.html must cache-bust to v=7.0.90.5")
+        self.assertIn("v=7.0.90.6", html,
+                      "index.html must cache-bust to v=7.0.90.6")
 
     def test_data_intent_public_id_on_pi_card(self):
         src = self._app()
@@ -852,6 +851,197 @@ class TestV90905ShowPaymentIntent(unittest.TestCase):
         fn_body = src[idx:fn_end] if fn_end > idx else src[idx:idx + 5000]
         self.assertIn("active_intent_period_month", fn_body,
                       "Invoice card must pass active_intent_period_month to show-payment-intent button")
+
+
+class TestV90906InvoiceListFixes(unittest.TestCase):
+    """Static and unit checks for v7.0.90.6: invoice list stability + highlight + contrast."""
+
+    _APP_JS = ROOT / "miniapp" / "app.js"
+    _CSS = ROOT / "miniapp" / "styles.css"
+    _HTML = ROOT / "miniapp" / "index.html"
+    _SERVER = ROOT / "web_app_server.py"
+
+    def _app(self): return self._APP_JS.read_text(encoding="utf-8")
+    def _css(self): return self._CSS.read_text(encoding="utf-8")
+    def _html(self): return self._HTML.read_text(encoding="utf-8")
+    def _server(self): return self._SERVER.read_text(encoding="utf-8")
+
+    # ── Backend: JSON serialization ──────────────────────────────────────────
+
+    def test_send_json_uses_allow_nan_false(self):
+        src = self._server()
+        idx = src.find("def _send_json(")
+        self.assertGreater(idx, 0)
+        fn_body = src[idx:idx + 800]
+        self.assertIn("allow_nan=False", fn_body,
+                      "_send_json must use allow_nan=False to reject NaN/Infinity values")
+
+    def test_send_json_catches_serialization_error(self):
+        src = self._server()
+        idx = src.find("def _send_json(")
+        fn_body = src[idx:idx + 800]
+        self.assertIn("json_encode", fn_body,
+                      "_send_json must handle serialization failure with stage=json_encode")
+
+    def test_nan_not_serialized_to_browser(self):
+        """Verify that float('nan') in payload raises ValueError with allow_nan=False."""
+        import json
+        with self.assertRaises(ValueError):
+            json.dumps({"value": float("nan")}, allow_nan=False)
+
+    def test_infinity_not_serialized_to_browser(self):
+        """Verify that float('inf') in payload raises ValueError with allow_nan=False."""
+        import json
+        with self.assertRaises(ValueError):
+            json.dumps({"value": float("inf")}, allow_nan=False)
+
+    # ── Frontend: error handling ─────────────────────────────────────────────
+
+    def test_json_parse_error_shows_stage_info(self):
+        src = self._app()
+        idx = src.find("async function loadMkInvoices(")
+        fn_end = src.find("\nasync function ", idx + 1)
+        fn_body = src[idx:fn_end] if fn_end > idx else src[idx:idx + 8000]
+        self.assertIn("stage=json_parse", fn_body,
+                      "JSON parse error must show stage=json_parse diagnostic for admins")
+
+    def test_abort_error_not_shown_as_json_error(self):
+        src = self._app()
+        idx = src.find("async function loadMkInvoices(")
+        fn_end = src.find("\nasync function ", idx + 1)
+        fn_body = src[idx:fn_end] if fn_end > idx else src[idx:idx + 8000]
+        # AbortError must be checked separately before JSON parse error message
+        abort_pos = fn_body.find("AbortError")
+        json_err_pos = fn_body.find("stage=json_parse")
+        self.assertGreater(abort_pos, 0, "AbortError must be handled")
+        # AbortError handler should appear in catch block (separate path from JSON parse)
+        self.assertNotEqual(abort_pos, json_err_pos)
+
+    def test_dual_key_invoices_items(self):
+        src = self._app()
+        self.assertIn("data.invoices", src, "Frontend must read data.invoices")
+        self.assertIn("data.items", src, "Frontend must support legacy data.items key")
+        # Both should appear near each other in loadMkInvoices
+        idx = src.find("async function loadMkInvoices(")
+        fn_end = src.find("\nasync function ", idx + 1)
+        fn_body = src[idx:fn_end] if fn_end > idx else src[idx:idx + 8000]
+        self.assertIn("data.invoices", fn_body)
+        self.assertIn("data.items", fn_body)
+
+    def test_payload_validation_stage(self):
+        src = self._app()
+        self.assertIn("payload_validation", src,
+                      "Frontend must detect missing invoices/items array with payload_validation stage")
+
+    def test_per_card_render_catch(self):
+        src = self._app()
+        idx = src.find("async function loadMkInvoices(")
+        fn_end = src.find("\nasync function ", idx + 1)
+        fn_body = src[idx:fn_end] if fn_end > idx else src[idx:idx + 8000]
+        self.assertIn("renderMkInvoiceCard(inv)", fn_body,
+                      "loadMkInvoices must call renderMkInvoiceCard per-card")
+        self.assertIn("ошибка отображения", fn_body,
+                      "Per-card error must show inline error, not break the list")
+
+    # ── CSS: highlight ───────────────────────────────────────────────────────
+
+    def test_highlight_uses_after_pseudo(self):
+        css = self._css()
+        self.assertIn(".pi-card-highlight::after", css,
+                      "Highlight must use ::after pseudo-element to avoid animation conflict")
+
+    def test_highlight_ring_keyframe_exists(self):
+        css = self._css()
+        self.assertIn("piIntentHighlightRing", css,
+                      "piIntentHighlightRing keyframe must be defined for ::after ring animation")
+
+    def test_pi_card_is_position_relative(self):
+        css = self._css()
+        # Find standalone .pi-card block (preceded by newline or brace)
+        idx = css.find("\n.pi-card {")
+        self.assertGreater(idx, 0, "Standalone .pi-card { rule must exist at line start")
+        block = css[idx:idx + 300]
+        self.assertIn("position: relative", block,
+                      ".pi-card must have position:relative so ::after can be positioned")
+
+    def test_highlight_does_not_use_animation_on_card_itself(self):
+        """The .pi-card-highlight rule must not set 'animation:' (that would conflict with ycCardEnter)."""
+        css = self._css()
+        idx = css.find(".pi-card-highlight {")
+        self.assertGreater(idx, 0, ".pi-card-highlight { rule must exist")
+        block = css[idx:idx + 200]
+        # The card class itself should NOT set animation: (only ::after should)
+        self.assertNotIn("animation:", block,
+                         ".pi-card-highlight must not set animation: — use ::after for ring")
+
+    def test_reduced_motion_highlight_static_outline(self):
+        css = self._css()
+        self.assertIn("prefers-reduced-motion: reduce", css,
+                      "Must handle prefers-reduced-motion")
+        # Search all prefers-reduced-motion blocks for pi-card-highlight handling
+        found = False
+        search_from = 0
+        while True:
+            rm_idx = css.find("prefers-reduced-motion: reduce", search_from)
+            if rm_idx < 0:
+                break
+            block = css[rm_idx:rm_idx + 600]
+            if "pi-card-highlight" in block:
+                found = True
+                break
+            search_from = rm_idx + 1
+        self.assertTrue(found,
+                        "A prefers-reduced-motion block must include .pi-card-highlight handling")
+
+    # ── CSS: finance contrast ────────────────────────────────────────────────
+
+    def test_finance_uses_grid_layout(self):
+        css = self._css()
+        idx = css.find(".mk-invoice-finance {")
+        self.assertGreater(idx, 0)
+        block = css[idx:idx + 200]
+        self.assertIn("grid", block,
+                      ".mk-invoice-finance must use CSS grid layout for iPhone layout")
+
+    def test_finance_value_class_exists(self):
+        css = self._css()
+        self.assertIn(".mk-invoice-finance__value", css,
+                      "Finance value must have dedicated class for explicit color control")
+
+    def test_finance_label_class_exists(self):
+        css = self._css()
+        self.assertIn(".mk-invoice-finance__label", css,
+                      "Finance label must have dedicated class")
+
+    def test_finance_value_dark_mode(self):
+        css = self._css()
+        self.assertIn("#f4f7fb", css,
+                      "Finance value must have explicit light color for dark mode")
+
+    def test_finance_remaining_green(self):
+        css = self._css()
+        self.assertIn("mk-invoice-finance__value--remaining", css,
+                      "Remaining value must have a modifier class with green color")
+
+    def test_finance_html_uses_new_structure(self):
+        src = self._app()
+        idx = src.find("function renderMkInvoiceCard(")
+        fn_end = src.find("\nfunction ", idx + 1)
+        fn_body = src[idx:fn_end] if fn_end > idx else src[idx:idx + 5000]
+        self.assertIn("mk-invoice-finance__item", fn_body,
+                      "renderMkInvoiceCard must use new finance structure with __item class")
+        self.assertIn("mk-invoice-finance__value", fn_body,
+                      "renderMkInvoiceCard must use __value class for explicit color")
+
+    # ── Version ──────────────────────────────────────────────────────────────
+
+    def test_version_90906_in_app_js(self):
+        src = self._app()
+        self.assertIn("v7.0.90.6", src, "app.js version must be v7.0.90.6")
+
+    def test_cache_bust_90906_in_html(self):
+        html = self._html()
+        self.assertIn("v=7.0.90.6", html, "index.html cache-bust must be v=7.0.90.6")
 
 
 if __name__ == "__main__":

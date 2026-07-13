@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.90.5");
+console.log("MiniApp version: v7.0.90.6");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12050,27 +12050,45 @@ async function loadMkInvoices(mode) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 120000);
 
+  const _isAdminDiag = () => {
+    const r = state?.me?.role || "";
+    return ["owner", "admin", "operations"].includes(r);
+  };
+
   let data;
   try {
     const res = await fetch(apiUrl(url), { cache: "no-store", signal: controller.signal });
     clearTimeout(timeoutId);
+
+    // ── JSON parse with diagnostic fallback ────────────────────────────────
+    let rawText = "";
+    let contentType = "";
     try {
-      data = await res.json();
+      contentType = res.headers?.get("Content-Type") || "";
+      rawText = await res.text();
+      data = JSON.parse(rawText);
     } catch (_parseErr) {
-      if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">Сервер вернул некорректный ответ.</div>`;
+      const adminLines = _isAdminDiag()
+        ? `\nstage=json_parse | HTTP ${res.status} | ${contentType} | length=${rawText.length}\nerror=${_parseErr?.name}: ${String(_parseErr?.message||"").slice(0,120)}\npreview=${rawText.slice(0,200)}`
+        : "";
+      if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red);white-space:pre-wrap">${escapeHtml("Сервер вернул некорректный ответ." + adminLines)}</div>`;
       return;
     }
+
     if (!data.ok) {
-      if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">${escapeHtml(data.error || "Ошибка загрузки счетов")}</div>`;
+      const stageHint = data.stage ? ` [${data.stage}]` : "";
+      if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">${escapeHtml((data.error || "Ошибка загрузки счетов") + stageHint)}</div>`;
       return;
     }
   } catch (err) {
     clearTimeout(timeoutId);
-    const isAbort = err && err.name === "AbortError";
-    if (isAbort) {
+    if (err && err.name === "AbortError") {
       if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">Загрузка счетов заняла слишком много времени. Повторите попытку или выполните поиск по ученику/счёту.</div>`;
     } else {
-      if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">Сервер не смог загрузить счета МойКласс.</div>`;
+      const errName = err?.name || "Error";
+      const errMsg = String(err?.message || err || "").slice(0, 120);
+      const detail = _isAdminDiag() ? `\nstage=fetch | ${errName}: ${errMsg}` : "";
+      if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red);white-space:pre-wrap">${escapeHtml("Сервер не смог загрузить счета МойКласс." + detail)}</div>`;
     }
     return;
   } finally {
@@ -12081,7 +12099,19 @@ async function loadMkInvoices(mode) {
   }
 
   // ── Response received ─────────────────────────────────────────────────────
-  const invoices = data.invoices || [];
+  // Support both "invoices" and legacy "items" key (cache-hit/cache-miss parity)
+  const invoices = Array.isArray(data.invoices) ? data.invoices
+    : Array.isArray(data.items) ? data.items
+    : null;
+
+  if (invoices === null) {
+    const diagMsg = _isAdminDiag()
+      ? `stage=payload_validation: response ok=true but no invoices/items array. keys=${Object.keys(data).join(",")}`
+      : "Сервер вернул неожиданный формат ответа.";
+    if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">${escapeHtml(diagMsg)}</div>`;
+    return;
+  }
+
   const diag = data.diagnostics;
   const debtWarn = data.subscription_debt_warning;
 
@@ -12128,11 +12158,20 @@ async function loadMkInvoices(mode) {
     return;
   }
 
-  try {
-    if (listEl) listEl.innerHTML = invoices.map(renderMkInvoiceCard).join("");
-  } catch (_renderErr) {
-    if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">Счета получены, но не удалось показать список.</div>`;
-  }
+  // Per-card safe rendering — one broken card doesn't break the list
+  const cardHtmls = invoices.map((inv, _idx) => {
+    try {
+      return renderMkInvoiceCard(inv);
+    } catch (_cardErr) {
+      console.error("MK invoice card render failed", {
+        invoiceId: inv?.invoice_id ?? null,
+        errorName: _cardErr?.name || "",
+        errorMessage: String(_cardErr?.message || _cardErr).slice(0, 200),
+      });
+      return `<div class="mk-invoice-card" style="border-left:3px solid var(--red);opacity:.7"><span style="font-size:12px;color:var(--muted)">Счёт #${escapeHtml(String(inv?.invoice_id || _idx + 1))}: ошибка отображения</span></div>`;
+    }
+  });
+  if (listEl) listEl.innerHTML = cardHtmls.join("");
 }
 
 function _fmtDate(dateStr) {
@@ -12220,9 +12259,18 @@ function renderMkInvoiceCard(inv) {
       <div class="mk-invoice-card-amount">${fmtByn(remaining)}</div>
     </div>
     <div class="mk-invoice-finance">
-      <span>Выставлено: <strong>${fmtByn(price)}</strong></span>
-      <span>Оплачено: <strong>${fmtByn(payed)}</strong></span>
-      <span>Остаток: <strong>${fmtByn(remaining)}</strong></span>
+      <div class="mk-invoice-finance__item">
+        <span class="mk-invoice-finance__label">Выставлено</span>
+        <strong class="mk-invoice-finance__value">${fmtByn(price)}</strong>
+      </div>
+      <div class="mk-invoice-finance__item">
+        <span class="mk-invoice-finance__label">Оплачено</span>
+        <strong class="mk-invoice-finance__value">${fmtByn(payed)}</strong>
+      </div>
+      <div class="mk-invoice-finance__item">
+        <span class="mk-invoice-finance__label">Остаток</span>
+        <strong class="mk-invoice-finance__value mk-invoice-finance__value--remaining">${fmtByn(remaining)}</strong>
+      </div>
     </div>
     ${subLine}
     ${dateCreatedFmt ? `<div class="mk-invoice-detail-row" style="color:var(--muted)">Создан: ${escapeHtml(dateCreatedFmt)}</div>` : ""}
@@ -12292,11 +12340,11 @@ async function showPaymentIntent(publicId, periodMonth) {
   const target = document.getElementById(domId);
   if (target) {
     target.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Remove first so the ::after animation restarts even if called twice
     target.classList.remove("pi-card-highlight");
-    // Force reflow so the animation restarts if called twice
-    void target.offsetWidth;
+    void target.offsetWidth;  // force reflow
     target.classList.add("pi-card-highlight");
-    setTimeout(() => target.classList.remove("pi-card-highlight"), 1700);
+    setTimeout(() => target.classList.remove("pi-card-highlight"), 2000);
   } else {
     // Not found after correct filters — show diagnostic
     const listEl = $("piList");

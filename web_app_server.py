@@ -9669,7 +9669,17 @@ class MiniAppHandler(BaseHTTPRequestHandler):
         log.info("%s - %s", self.address_string(), fmt % args)
 
     def _send_json(self, data: dict[str, Any], status: int = 200) -> bool:
-        body = json.dumps(data, ensure_ascii=False, default=_json_default).encode("utf-8")
+        try:
+            # allow_nan=False raises ValueError if data contains NaN/Infinity,
+            # which are serialized by default but rejected by browsers' JSON.parse.
+            body = json.dumps(data, ensure_ascii=False, default=_json_default, allow_nan=False).encode("utf-8")
+        except (ValueError, TypeError) as _ser_exc:
+            log.error("JSON serialization error stage=json_encode: %s", _ser_exc)
+            body = json.dumps(
+                {"ok": False, "error": "Response serialization failed", "stage": "json_encode"},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            status = 500
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")

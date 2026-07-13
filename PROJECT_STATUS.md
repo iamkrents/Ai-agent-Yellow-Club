@@ -1,12 +1,29 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-13 (v7.0.90.5)_
+_Последнее обновление: 2026-07-13 (v7.0.90.6)_
 
 ---
 
 ## Что сделано
 
-### v7.0.90.5 — Fix: кнопка «Показать черновик» в карточке счёта МойКласс (текущая)
+### v7.0.90.6 — Fix: список счетов МойКласс / highlight / контраст (текущая)
+
+**Причина:** После v7.0.90.5 проверено на реальном iPhone. Найдены три проблемы: (1) «Показать все неоплаченные» иногда падало с «Сервер вернул некорректный ответ» — python `json.dumps` без `allow_nan=False` мог сериализовать `NaN`/`Infinity` в тело ответа, что браузер отклонял; (2) жёлтая highlight-анимация не была видна — `animation:` на `.pi-card-highlight` перебивалась более специфичным правилом `.pi-list > .pi-card { animation: ycCardEnter }` (specificity 0,2,0 > 0,1,0); (3) финансовые значения в invoice card плохо читались — вся строка была бледно-серой (color: var(--muted) на контейнере), структура не давала явного контраста.
+
+**Ключевые изменения:**
+- `web_app_server.py`: `_send_json` добавлен `allow_nan=False` — `ValueError` при `NaN`/`Infinity` перехватывается, возвращается `{"ok": false, "stage": "json_encode"}` со статусом 500 вместо невалидного JSON.
+- `miniapp/app.js`: `loadMkInvoices` — JSON parse error показывает stage=json_parse + диагностику (HTTP status, Content-Type, length, preview) для owner/admin/operations. Fetch error показывает stage=fetch + тип ошибки. Поддержка dual-key `data.invoices || data.items`. Проверка payload на null с `stage=payload_validation`. Per-card safe rendering — одна сломанная карточка показывает inline error, остальные рендерятся нормально.
+- `miniapp/app.js`: `renderMkInvoiceCard` — новая структура финансовой секции с `.mk-invoice-finance__item`, `.mk-invoice-finance__label`, `.mk-invoice-finance__value`, `.mk-invoice-finance__value--remaining`.
+- `miniapp/app.js`: `showPaymentIntent` — timeout увеличен до 2000ms для совместимости с новой 1900ms анимацией.
+- `miniapp/styles.css`: Highlight переделан через `::after` pseudo-element (`piIntentHighlightRing` keyframe) — не конфликтует с `animation` на самой карточке. `.pi-card-highlight` только меняет `background-color`. `.pi-card` получил `position: relative`. `prefers-reduced-motion` показывает статическую жёлтую рамку.
+- `miniapp/styles.css`: `.mk-invoice-finance` переделан на CSS grid (3 колонки). Явные цвета: label `#687083`, value `#172033` (light) / `#f4f7fb` (dark), remaining `#15996f` / `#5ad8a6`.
+- `tests/test_mk_invoice_intent.py`: +20 тестов `TestV90906InvoiceListFixes`.
+
+**Cache-bust:** v=7.0.90.6
+
+---
+
+### v7.0.90.5 — Fix: кнопка «Показать черновик» в карточке счёта МойКласс
 
 **Причина:** При нажатии «Показать черновик» визуально ничего не происходило — `scrollToIntent` не открывала аккордеон, не устанавливала фильтры, использовала ненадёжный `setTimeout(300ms)` вместо ожидания рендера DOM.
 
