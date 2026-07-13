@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.90.6");
+console.log("MiniApp version: v7.0.91");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -11525,15 +11525,15 @@ const PI_PURPOSE_LABELS = {
 const PI_METHOD_LABELS = { erip: "ЕРИП", acquiring: "Эквайринг", manual: "Ручной" };
 
 const PI_STATUS_LABELS = {
-  draft:                  { label: "Черновик",           cls: "chip-pi-draft" },
-  ready:                  { label: "Готов",               cls: "chip-pi-ready" },
-  bepaid_creating:        { label: "Создаётся...",        cls: "chip-pi-creating" },
-  bepaid_created:         { label: "В bePaid",            cls: "chip-pi-bepaid" },
-  bepaid_requires_check:  { label: "Требует проверки",    cls: "chip-pi-requires-check" },
-  paid:                   { label: "Оплачен",             cls: "chip-pi-paid" },
-  posted_to_moyklass:     { label: "В МойКласс",         cls: "chip-pi-posted" },
-  cancelled:              { label: "Отменён",             cls: "chip-pi-cancel" },
-  error:                  { label: "Ошибка",              cls: "chip-pi-error" },
+  draft:                  { label: "Черновик",              cls: "chip-pi-draft" },
+  ready:                  { label: "Готов",                  cls: "chip-pi-ready" },
+  bepaid_creating:        { label: "Создаётся...",           cls: "chip-pi-creating" },
+  bepaid_created:         { label: "Ожидает оплаты",        cls: "chip-pi-bepaid" },
+  bepaid_requires_check:  { label: "Требует проверки",       cls: "chip-pi-requires-check" },
+  paid:                   { label: "Оплачено bePaid",        cls: "chip-pi-paid" },
+  posted_to_moyklass:     { label: "Внесено в МойКласс",    cls: "chip-pi-posted" },
+  cancelled:              { label: "Отменён",                cls: "chip-pi-cancel" },
+  error:                  { label: "Ошибка",                 cls: "chip-pi-error" },
 };
 
 const PI_PURPOSE_CLS = {
@@ -11596,10 +11596,10 @@ function renderPaymentIntentStats(el, stats) {
     { key: "draft",                 label: "Черновик" },
     { key: "ready",                 label: "Готово" },
     { key: "bepaid_creating",       label: "Создаётся" },
-    { key: "bepaid_created",        label: "В bePaid" },
+    { key: "bepaid_created",        label: "Ожидает оплаты" },
     { key: "bepaid_requires_check", label: "Проверка" },
-    { key: "paid",                  label: "Оплачено" },
-    { key: "posted_to_moyklass",    label: "В МК" },
+    { key: "paid",                  label: "Оплачено bePaid" },
+    { key: "posted_to_moyklass",    label: "В МойКласс" },
     { key: "cancelled",             label: "Отменено" },
     { key: "error",                 label: "Ошибка" },
   ];
@@ -11685,8 +11685,18 @@ function renderPaymentIntentCard(pi) {
     ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">Причина: ${escapeHtml(pi.cancel_reason)}</div>`
     : "";
 
+  const bePaidPaidBlock = pi.status === "paid"
+    ? `<div class="pi-bepaid-paid">
+        <strong>Оплачено в bePaid</strong>
+        ${pi.paid_at ? `<div style="font-size:11px;margin-top:4px">Дата: ${escapeHtml(String(pi.paid_at).slice(0, 19))}</div>` : ""}
+        ${(pi.paid_amount_byn != null) ? `<div style="font-size:11px">Сумма: ${fmtByn(pi.paid_amount_byn)}</div>` : ""}
+        ${pi.paid_transaction_uid ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">UID: ${escapeHtml(pi.paid_transaction_uid)}</div>` : ""}
+       </div>`
+    : "";
+
   const extraCls = pi.status === "cancelled" ? " pi-card-cancelled"
     : pi.status === "posted_to_moyklass" ? " pi-card-posted"
+    : pi.status === "paid" ? " pi-card-paid"
     : pi.status === "error" ? " pi-card-error" : "";
 
   const sourceBadge = pi.source === "moyklass_invoice"
@@ -11703,7 +11713,7 @@ function renderPaymentIntentCard(pi) {
       ${statusChip}${purposeChip}${period}${method}
     </div>
     ${sourceBadge}
-    ${comment}${cancelInfo}${bePaidCreatingBlock}${bePaidRequiresCheckBlock}${bePaidInfo}
+    ${comment}${cancelInfo}${bePaidCreatingBlock}${bePaidRequiresCheckBlock}${bePaidInfo}${bePaidPaidBlock}
     <div class="pi-card-footer">${bePaidBtn}${cancelBtn}</div>
     <div class="pi-card-id">${escapeHtml(pi.public_id)} · mk_user_id: ${pi.mk_user_id} · ${createdAt} ${createdBy}</div>
   </div>`;

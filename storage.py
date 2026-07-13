@@ -656,6 +656,41 @@ class Storage:
         self._ensure_column(conn, "payment_intents", "verified_mk_user_at", "verified_mk_user_at TEXT")
         self._ensure_column(conn, "payment_intents", "verified_invoice_at", "verified_invoice_at TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pi_mk_invoice ON payment_intents(mk_invoice_id)")
+        # v7.0.91 — webhook payment reconciliation
+        self._ensure_column(conn, "payment_intents", "paid_amount_minor", "paid_amount_minor INTEGER")
+        self._ensure_column(conn, "payment_intents", "paid_currency", "paid_currency TEXT")
+        self._ensure_column(conn, "payment_intents", "paid_transaction_uid", "paid_transaction_uid TEXT")
+        self._ensure_column(conn, "payment_intents", "paid_tracking_id", "paid_tracking_id TEXT")
+        self._ensure_column(conn, "payment_intents", "paid_order_id", "paid_order_id TEXT")
+        self._ensure_column(conn, "payment_intents", "paid_account_number", "paid_account_number TEXT")
+        self._ensure_column(conn, "payment_intents", "last_webhook_at", "last_webhook_at TEXT")
+        self._ensure_column(conn, "payment_intents", "payment_state_reason", "payment_state_reason TEXT")
+        self._ensure_column(conn, "payment_intents", "webhook_match_method", "webhook_match_method TEXT")
+        self._ensure_column(conn, "payment_intents", "webhook_verified", "webhook_verified INTEGER DEFAULT 0")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pi_paid_tx_uid ON payment_intents(paid_transaction_uid)")
+        # v7.0.91 — webhook audit log
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payment_webhook_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                bepaid_tx_id INTEGER,
+                payment_intent_id INTEGER,
+                intent_public_id TEXT,
+                transaction_uid TEXT,
+                shop_type TEXT,
+                status TEXT,
+                amount_minor INTEGER,
+                currency TEXT,
+                match_method TEXT,
+                match_confidence TEXT,
+                reason TEXT,
+                details_json TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pwha_intent ON payment_webhook_audit(intent_public_id, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pwha_tx ON payment_webhook_audit(bepaid_tx_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pwha_event ON payment_webhook_audit(event_type, created_at)")
 
     def _init_bepaid_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -712,6 +747,14 @@ class Storage:
                 conn.execute(_col_sql)
             except Exception:
                 pass
+        # v7.0.91 — link bePaid transactions to payment intents
+        self._ensure_column(conn, "bepaid_transactions", "payment_intent_id", "payment_intent_id INTEGER")
+        self._ensure_column(conn, "bepaid_transactions", "intent_public_id", "intent_public_id TEXT")
+        self._ensure_column(conn, "bepaid_transactions", "webhook_verified", "webhook_verified INTEGER DEFAULT 0")
+        self._ensure_column(conn, "bepaid_transactions", "webhook_match_method", "webhook_match_method TEXT")
+        self._ensure_column(conn, "bepaid_transactions", "match_confidence", "match_confidence TEXT")
+        self._ensure_column(conn, "bepaid_transactions", "processed_at", "processed_at TEXT")
+        self._ensure_column(conn, "bepaid_transactions", "erip_account_number", "erip_account_number TEXT")
 
     def _init_food_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -4552,6 +4595,7 @@ class Storage:
             "mk_user_name": str(data.get("mk_user_name") or "").strip() or None,
             "mk_filial_id": str(data.get("mk_filial_id") or "").strip() or None,
             "description": str(data.get("description") or "").strip() or None,
+            "erip_account_number": str(data.get("erip_account_number") or "").strip() or None,
             "raw_json": raw_str,
         }
 
@@ -4916,3 +4960,264 @@ class Storage:
                 "SELECT * FROM payment_intents WHERE public_id = ?", (public_id,)
             ).fetchone()
         return dict(row) if row else None
+
+    # ── v7.0.91: webhook reconciliation ──────────────────────────────────────
+
+    def match_bepaid_transaction_to_intent(self, transaction: dict) -> dict:
+        """Try to link a bePaid transaction to a payment_intent.
+
+        Priority: tracking_id > order_id > transaction_uid > erip_account_number
+        Returns {matched, intent_id, intent_public_id, method, confidence, reason, conflicts}.
+        confidence: 'strong' | 'conflict' | 'none'
+        """
+        tracking_id = str(transaction.get("tracking_id") or "").strip()
+        order_id = str(transaction.get("order_id") or "").strip()
+        tx_uid = str(transaction.get("transaction_uid") or "").strip()
+        erip_account = str(transaction.get("erip_account_number") or "").strip()
+
+        matches: dict[str, dict] = {}
+        with self._connect() as conn:
+            if tracking_id:
+                row = conn.execute(
+                    "SELECT * FROM payment_intents WHERE bepaid_tracking_id=? LIMIT 1",
+                    (tracking_id,),
+                ).fetchone()
+                if row:
+                    matches["tracking_id"] = dict(row)
+            if order_id:
+                row = conn.execute(
+                    "SELECT * FROM payment_intents WHERE bepaid_order_id=? LIMIT 1",
+                    (order_id,),
+                ).fetchone()
+                if row:
+                    matches["order_id"] = dict(row)
+            if tx_uid:
+                row = conn.execute(
+                    "SELECT * FROM payment_intents WHERE bepaid_uid=? LIMIT 1",
+                    (tx_uid,),
+                ).fetchone()
+                if row:
+                    matches["transaction_uid"] = dict(row)
+            if erip_account:
+                row = conn.execute(
+                    "SELECT * FROM payment_intents WHERE bepaid_account_number=? LIMIT 1",
+                    (erip_account,),
+                ).fetchone()
+                if row:
+                    matches["account_number"] = dict(row)
+
+        if not matches:
+            return {
+                "matched": False, "intent_id": None, "intent_public_id": None,
+                "method": None, "confidence": "none",
+                "reason": "no_identifier_matched", "conflicts": [],
+            }
+
+        matched_ids = {r["id"] for r in matches.values()}
+        if len(matched_ids) > 1:
+            conflicts = [
+                {"method": m, "intent_id": r["id"], "intent_public_id": r["public_id"]}
+                for m, r in matches.items()
+            ]
+            return {
+                "matched": True, "intent_id": None, "intent_public_id": None,
+                "method": "conflict", "confidence": "conflict",
+                "reason": "identifiers_point_to_different_intents",
+                "conflicts": conflicts,
+            }
+
+        for method in ("tracking_id", "order_id", "transaction_uid", "account_number"):
+            if method in matches:
+                intent = matches[method]
+                return {
+                    "matched": True,
+                    "intent_id": intent["id"],
+                    "intent_public_id": intent["public_id"],
+                    "method": method,
+                    "confidence": "strong",
+                    "reason": f"matched_by_{method}",
+                    "conflicts": [],
+                }
+
+        return {
+            "matched": False, "intent_id": None, "intent_public_id": None,
+            "method": None, "confidence": "none", "reason": "no_match", "conflicts": [],
+        }
+
+    def payment_intent_mark_paid(
+        self,
+        public_id: str,
+        *,
+        tx_uid: str,
+        amount_minor: int,
+        currency: str,
+        paid_at: str,
+        tracking_id: Optional[str] = None,
+        order_id: Optional[str] = None,
+        account_number: Optional[str] = None,
+        verified: bool = False,
+        match_method: str = "",
+    ) -> dict:
+        """Mark a payment_intent as paid. State machine: bepaid_created → paid only.
+
+        Returns:
+          {ok: True, marked_paid: True, intent: {...}}  — success
+          {ok: True, idempotent: True, intent: {...}}   — duplicate tx_uid
+          {ok: False, conflict: True, reason: ..., intent: {...}} — already paid differently
+          {ok: False, wrong_state: True, reason: ..., intent: {...}} — wrong source status
+        """
+        now = now_iso()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM payment_intents WHERE public_id=?", (public_id,)
+            ).fetchone()
+            if not row:
+                return {"ok": False, "error": "intent_not_found"}
+            pi = dict(row)
+
+            if pi["status"] == "paid":
+                existing_uid = str(pi.get("paid_transaction_uid") or "").strip()
+                if existing_uid == tx_uid:
+                    return {"ok": True, "idempotent": True, "intent": pi}
+                return {
+                    "ok": False, "conflict": True,
+                    "reason": f"already_paid_with_uid:{existing_uid}",
+                    "intent": pi,
+                }
+
+            if pi["status"] != "bepaid_created":
+                return {
+                    "ok": False, "wrong_state": True,
+                    "reason": f"cannot_mark_paid_from_status:{pi['status']}",
+                    "intent": pi,
+                }
+
+            conn.execute(
+                """
+                UPDATE payment_intents SET
+                    status               = 'paid',
+                    paid_at              = ?,
+                    paid_amount_minor    = ?,
+                    paid_currency        = ?,
+                    paid_transaction_uid = ?,
+                    paid_tracking_id     = ?,
+                    paid_order_id        = ?,
+                    paid_account_number  = ?,
+                    webhook_verified     = ?,
+                    webhook_match_method = ?,
+                    payment_state_reason = 'paid_via_bepaid_webhook',
+                    last_webhook_at      = ?,
+                    updated_at           = ?
+                WHERE public_id = ? AND status = 'bepaid_created'
+                """,
+                (
+                    paid_at, int(amount_minor), str(currency or "BYN"),
+                    tx_uid, tracking_id, order_id, account_number,
+                    1 if verified else 0, match_method, now, now, public_id,
+                ),
+            )
+            changes = conn.execute("SELECT changes()").fetchone()[0]
+            if changes == 0:
+                row2 = conn.execute(
+                    "SELECT * FROM payment_intents WHERE public_id=?", (public_id,)
+                ).fetchone()
+                pi2 = dict(row2) if row2 else {}
+                if pi2.get("status") == "paid" and str(pi2.get("paid_transaction_uid") or "") == tx_uid:
+                    return {"ok": True, "idempotent": True, "intent": pi2}
+                return {"ok": False, "conflict": True, "reason": "concurrent_update", "intent": pi2}
+            row_after = conn.execute(
+                "SELECT * FROM payment_intents WHERE public_id=?", (public_id,)
+            ).fetchone()
+        return {"ok": True, "marked_paid": True, "intent": dict(row_after) if row_after else {}}
+
+    def payment_intent_update_last_webhook_at(self, public_id: str) -> None:
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE payment_intents SET last_webhook_at=?, updated_at=? WHERE public_id=?",
+                (now, now, public_id),
+            )
+
+    def bepaid_transaction_link_intent(
+        self,
+        tx_id: int,
+        *,
+        intent_id: int,
+        intent_public_id: str,
+        match_method: str,
+        confidence: str,
+        reason: str,
+        verified: bool,
+        now: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE bepaid_transactions SET
+                    payment_intent_id    = ?,
+                    intent_public_id     = ?,
+                    webhook_match_method = ?,
+                    match_confidence     = ?,
+                    match_reason         = ?,
+                    webhook_verified     = ?,
+                    processed_at         = ?,
+                    updated_at           = ?
+                WHERE id = ?
+                """,
+                (
+                    intent_id, intent_public_id, match_method, confidence,
+                    reason, 1 if verified else 0, now, now, tx_id,
+                ),
+            )
+
+    def log_payment_webhook_audit(
+        self,
+        event_type: str,
+        *,
+        bepaid_tx_id: Optional[int] = None,
+        payment_intent_id: Optional[int] = None,
+        intent_public_id: Optional[str] = None,
+        transaction_uid: Optional[str] = None,
+        shop_type: Optional[str] = None,
+        status: Optional[str] = None,
+        amount_minor: Optional[int] = None,
+        currency: Optional[str] = None,
+        match_method: Optional[str] = None,
+        match_confidence: Optional[str] = None,
+        reason: Optional[str] = None,
+        details: Optional[dict] = None,
+    ) -> None:
+        import json as _json
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO payment_webhook_audit
+                    (created_at, event_type, bepaid_tx_id, payment_intent_id, intent_public_id,
+                     transaction_uid, shop_type, status, amount_minor, currency,
+                     match_method, match_confidence, reason, details_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    now, event_type, bepaid_tx_id, payment_intent_id, intent_public_id,
+                    transaction_uid, shop_type, status, amount_minor, currency,
+                    match_method, match_confidence, reason,
+                    _json.dumps(details, ensure_ascii=False) if details is not None else None,
+                ),
+            )
+
+    def list_payment_webhook_audit(
+        self, intent_public_id: Optional[str] = None, limit: int = 100
+    ) -> list[dict]:
+        params: list = []
+        where = ""
+        if intent_public_id:
+            where = "WHERE intent_public_id=?"
+            params.append(intent_public_id)
+        params.append(max(1, min(int(limit), 500)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM payment_webhook_audit {where} ORDER BY id DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [dict(r) for r in rows]

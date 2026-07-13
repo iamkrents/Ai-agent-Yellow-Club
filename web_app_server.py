@@ -8014,6 +8014,11 @@ class MiniAppContext:
                         mk_user_id = _m2.group(1)
                         mk_user_id_source = _src_name
 
+        erip_section = tx.get("erip") or {}
+        if not isinstance(erip_section, dict):
+            erip_section = {}
+        erip_account_number = str(erip_section.get("account_number") or "").strip() or None
+
         return {
             "provider": "bepaid",
             "shop_type": shop_type,
@@ -8038,6 +8043,7 @@ class MiniAppContext:
             "description": str(tx.get("description") or "").strip() or None,
             "mk_user_id": mk_user_id,
             "mk_user_id_source": mk_user_id_source,
+            "erip_account_number": erip_account_number,
             "raw_json": raw_json,
         }
 
@@ -8079,11 +8085,236 @@ class MiniAppContext:
         try:
             extracted = self._bepaid_extract_payload(payload, shop_type, shop_id)
             saved, is_new = self.storage.upsert_bepaid_transaction(extracted)
-            log.info("bePaid webhook %s: id=%s shop=%s status=%s amount_byn=%s sig=%s",
-                     "inserted" if is_new else "updated",
-                     saved.get("id"), shop_type, extracted.get("status"),
-                     extracted.get("amount_byn"), sig_reason)
-            return {"ok": True, "saved_id": saved.get("id"), "is_new": is_new, "signature": sig_reason}, 200
+            tx_id = saved.get("id")
+            tx_uid = extracted.get("transaction_uid") or ""
+            tx_status = extracted.get("status") or ""
+            amount_minor = extracted.get("amount_minor")
+            currency = str(extracted.get("currency") or "").strip()
+            is_test = bool(extracted.get("test"))
+            paid_at = extracted.get("paid_at") or ""
+            sig_verified = sig_reason == "verified"
+
+            log.info(
+                "bePaid webhook %s: id=%s shop=%s status=%s amount_byn=%s sig=%s test=%s",
+                "inserted" if is_new else "updated",
+                tx_id, shop_type, tx_status,
+                extracted.get("amount_byn"), sig_reason, is_test,
+            )
+
+            # Audit: received
+            self.storage.log_payment_webhook_audit(
+                "webhook_received",
+                bepaid_tx_id=tx_id,
+                transaction_uid=tx_uid or None,
+                shop_type=shop_type,
+                status=tx_status or None,
+                amount_minor=amount_minor,
+                currency=currency or None,
+                reason=sig_reason,
+            )
+
+            # Only process "successful" payments (status == "successful")
+            if tx_status != "successful":
+                return {
+                    "ok": True, "saved_id": tx_id, "is_new": is_new,
+                    "signature": sig_reason, "processed": False,
+                    "skip_reason": f"status={tx_status}",
+                }, 200
+
+            # Attempt to match transaction to a payment intent
+            match = self.storage.match_bepaid_transaction_to_intent(extracted)
+            match_method = match.get("method") or ""
+            match_confidence = match.get("confidence") or "none"
+            match_reason = match.get("reason") or ""
+
+            if match_confidence == "conflict":
+                log.warning(
+                    "bePaid webhook conflict: tx_id=%s uid=%s conflicts=%s",
+                    tx_id, tx_uid, match.get("conflicts"),
+                )
+                self.storage.log_payment_webhook_audit(
+                    "webhook_match_conflict",
+                    bepaid_tx_id=tx_id,
+                    transaction_uid=tx_uid or None,
+                    shop_type=shop_type,
+                    amount_minor=amount_minor,
+                    currency=currency or None,
+                    match_confidence="conflict",
+                    reason=match_reason,
+                    details={"conflicts": match.get("conflicts", [])},
+                )
+                return {
+                    "ok": True, "saved_id": tx_id, "is_new": is_new,
+                    "signature": sig_reason, "processed": False,
+                    "skip_reason": "match_conflict",
+                }, 200
+
+            if not match.get("matched") or match_confidence != "strong":
+                log.info(
+                    "bePaid webhook no_match: tx_id=%s uid=%s tracking_id=%s",
+                    tx_id, tx_uid, extracted.get("tracking_id"),
+                )
+                self.storage.log_payment_webhook_audit(
+                    "webhook_no_match",
+                    bepaid_tx_id=tx_id,
+                    transaction_uid=tx_uid or None,
+                    shop_type=shop_type,
+                    amount_minor=amount_minor,
+                    currency=currency or None,
+                    match_confidence="none",
+                    reason=match_reason,
+                )
+                return {
+                    "ok": True, "saved_id": tx_id, "is_new": is_new,
+                    "signature": sig_reason, "processed": False,
+                    "skip_reason": "no_match",
+                }, 200
+
+            intent_id = match["intent_id"]
+            intent_public_id = match["intent_public_id"]
+
+            # Link the transaction record to the intent
+            from utils import now_iso as _now_iso
+            _now = _now_iso()
+            self.storage.bepaid_transaction_link_intent(
+                tx_id,
+                intent_id=intent_id,
+                intent_public_id=intent_public_id,
+                match_method=match_method,
+                confidence=match_confidence,
+                reason=match_reason,
+                verified=sig_verified,
+                now=_now,
+            )
+
+            self.storage.log_payment_webhook_audit(
+                "webhook_matched",
+                bepaid_tx_id=tx_id,
+                payment_intent_id=intent_id,
+                intent_public_id=intent_public_id,
+                transaction_uid=tx_uid or None,
+                shop_type=shop_type,
+                amount_minor=amount_minor,
+                currency=currency or None,
+                match_method=match_method,
+                match_confidence=match_confidence,
+                reason=match_reason,
+            )
+
+            # Validate payment conditions before marking paid
+            skip_reasons: list[str] = []
+            if is_test:
+                skip_reasons.append("test_transaction")
+            if currency and currency != "BYN":
+                skip_reasons.append(f"currency={currency}")
+            if amount_minor is None:
+                skip_reasons.append("missing_amount")
+
+            if skip_reasons:
+                log.warning(
+                    "bePaid webhook skipping mark_paid: tx_id=%s intent=%s reasons=%s",
+                    tx_id, intent_public_id, skip_reasons,
+                )
+                self.storage.log_payment_webhook_audit(
+                    "webhook_mark_paid_skipped",
+                    bepaid_tx_id=tx_id,
+                    payment_intent_id=intent_id,
+                    intent_public_id=intent_public_id,
+                    transaction_uid=tx_uid or None,
+                    amount_minor=amount_minor,
+                    currency=currency or None,
+                    match_method=match_method,
+                    reason="; ".join(skip_reasons),
+                )
+                return {
+                    "ok": True, "saved_id": tx_id, "is_new": is_new,
+                    "signature": sig_reason, "processed": False,
+                    "matched_intent": intent_public_id,
+                    "skip_reason": "; ".join(skip_reasons),
+                }, 200
+
+            # Mark the intent as paid
+            mark_result = self.storage.payment_intent_mark_paid(
+                intent_public_id,
+                tx_uid=tx_uid,
+                amount_minor=int(amount_minor),
+                currency=currency,
+                paid_at=paid_at or _now,
+                tracking_id=extracted.get("tracking_id"),
+                order_id=extracted.get("order_id"),
+                account_number=extracted.get("erip_account_number"),
+                verified=sig_verified,
+                match_method=match_method,
+            )
+
+            if mark_result.get("idempotent"):
+                log.info(
+                    "bePaid webhook duplicate_ignored: tx_id=%s intent=%s uid=%s",
+                    tx_id, intent_public_id, tx_uid,
+                )
+                self.storage.log_payment_webhook_audit(
+                    "duplicate_webhook_ignored",
+                    bepaid_tx_id=tx_id,
+                    payment_intent_id=intent_id,
+                    intent_public_id=intent_public_id,
+                    transaction_uid=tx_uid or None,
+                    amount_minor=amount_minor,
+                    match_method=match_method,
+                    reason="duplicate_tx_uid",
+                )
+                return {
+                    "ok": True, "saved_id": tx_id, "is_new": is_new,
+                    "signature": sig_reason, "processed": True, "idempotent": True,
+                    "matched_intent": intent_public_id,
+                }, 200
+
+            if mark_result.get("ok") and mark_result.get("marked_paid"):
+                log.info(
+                    "bePaid webhook intent_marked_paid: tx_id=%s intent=%s uid=%s amount=%s",
+                    tx_id, intent_public_id, tx_uid, amount_minor,
+                )
+                self.storage.log_payment_webhook_audit(
+                    "intent_marked_paid",
+                    bepaid_tx_id=tx_id,
+                    payment_intent_id=intent_id,
+                    intent_public_id=intent_public_id,
+                    transaction_uid=tx_uid or None,
+                    shop_type=shop_type,
+                    status="paid",
+                    amount_minor=amount_minor,
+                    currency=currency or None,
+                    match_method=match_method,
+                    match_confidence=match_confidence,
+                    reason="payment_confirmed",
+                )
+                return {
+                    "ok": True, "saved_id": tx_id, "is_new": is_new,
+                    "signature": sig_reason, "processed": True,
+                    "matched_intent": intent_public_id, "marked_paid": True,
+                }, 200
+
+            # mark_paid failed for another reason (conflict, wrong_state)
+            log.warning(
+                "bePaid webhook mark_paid_failed: tx_id=%s intent=%s result=%s",
+                tx_id, intent_public_id, mark_result,
+            )
+            self.storage.log_payment_webhook_audit(
+                "webhook_mark_paid_failed",
+                bepaid_tx_id=tx_id,
+                payment_intent_id=intent_id,
+                intent_public_id=intent_public_id,
+                transaction_uid=tx_uid or None,
+                amount_minor=amount_minor,
+                match_method=match_method,
+                reason=str(mark_result.get("reason") or mark_result.get("error") or "unknown"),
+            )
+            return {
+                "ok": True, "saved_id": tx_id, "is_new": is_new,
+                "signature": sig_reason, "processed": False,
+                "matched_intent": intent_public_id,
+                "skip_reason": str(mark_result.get("reason") or "mark_paid_failed"),
+            }, 200
+
         except Exception as e:
             log.exception("bePaid webhook: save error")
             return {"ok": False, "error": str(e)}, 500
@@ -8667,6 +8898,7 @@ class MiniAppContext:
             month=month or None,
             status=status if status != "all" else None,
         )
+        intents = [self._normalize_payment_intent(pi) for pi in intents]
         pi_stats = self.storage.payment_intents_stats(month=month or None)
         return {
             "ok": True,
@@ -8692,7 +8924,66 @@ class MiniAppContext:
         intent = self.storage.get_payment_intent(public_id)
         if not intent:
             return {"ok": False, "error": "Черновик платежа не найден", "public_id": public_id}
+        intent = self._normalize_payment_intent(intent)
         return {"ok": True, "intent": intent}
+
+    @staticmethod
+    def _normalize_payment_intent(pi: dict) -> dict:
+        """Add derived frontend-friendly fields to a payment_intent row."""
+        status = str(pi.get("status") or "")
+        paid_minor = pi.get("paid_amount_minor")
+        pi["paid_amount_byn"] = round(int(paid_minor) / 100.0, 2) if paid_minor is not None else None
+        pi["payment_status"] = status
+        pi["can_pay"] = status in ("draft", "ready")
+        return pi
+
+    def payment_intent_webhook_readiness(self, auth: dict[str, Any], public_id: str) -> dict[str, Any]:
+        """GET /api/payments/intents/{id}/webhook-readiness — read-only pre-flight check."""
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+        intent = self.storage.get_payment_intent(public_id)
+        if not intent:
+            return {"ok": False, "error": "Черновик платежа не найден", "public_id": public_id}
+
+        cfg = self.settings
+        checks: list[dict] = []
+
+        def _check(name: str, ok: bool, detail: str = "") -> None:
+            checks.append({"name": name, "ok": ok, "detail": detail})
+
+        _check("status_is_bepaid_created",
+               intent.get("status") == "bepaid_created",
+               f"status={intent.get('status')}")
+        _check("has_bepaid_uid",
+               bool(intent.get("bepaid_uid")),
+               f"bepaid_uid={'set' if intent.get('bepaid_uid') else 'missing'}")
+        _check("has_tracking_id",
+               bool(intent.get("bepaid_tracking_id")),
+               f"tracking_id={'set' if intent.get('bepaid_tracking_id') else 'missing'}")
+        _check("has_order_id",
+               bool(intent.get("bepaid_order_id")),
+               f"order_id={'set' if intent.get('bepaid_order_id') else 'missing'}")
+        _check("signature_verification_configured",
+               bool(getattr(cfg, "bepaid_erip_public_key", "")),
+               "erip_public_key configured" if getattr(cfg, "bepaid_erip_public_key", "") else "no public key")
+        _check("webhook_path_secret_configured",
+               bool(getattr(cfg, "bepaid_webhook_path_secret", "")),
+               "configured" if getattr(cfg, "bepaid_webhook_path_secret", "") else "missing")
+        _check("not_already_paid",
+               intent.get("status") != "paid",
+               f"status={intent.get('status')}")
+
+        all_ok = all(c["ok"] for c in checks)
+        audit = self.storage.list_payment_webhook_audit(intent_public_id=public_id, limit=20)
+        return {
+            "ok": True,
+            "public_id": public_id,
+            "ready": all_ok,
+            "checks": checks,
+            "intent_status": intent.get("status"),
+            "webhook_audit": audit,
+        }
 
     def payment_intent_create(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         denied = self._require_payment_intent_access(auth)
@@ -9866,6 +10157,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     _pi_parts = _pi_rest.split("/")
                     if len(_pi_parts) == 1 and _pi_parts[0]:
                         return self._send_json(CTX.payment_intent_get(auth, _pi_parts[0]))
+                    if len(_pi_parts) == 2 and _pi_parts[1] == "webhook-readiness":
+                        return self._send_json(CTX.payment_intent_webhook_readiness(auth, _pi_parts[0]))
                 if path.startswith("/api/food/kitchen/menus/"):
                     _krest = path[len("/api/food/kitchen/menus/"):]
                     _kparts = _krest.split("/")

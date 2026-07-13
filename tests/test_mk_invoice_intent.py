@@ -646,9 +646,9 @@ class TestV90904UIFix(unittest.TestCase):
         src = self._read_app_js()
         self.assertIn("payment-intent-", src, "payment-intent- id prefix must appear in card HTML")
 
-    def test_version_bumped_to_90_6(self):
+    def test_version_bumped_to_91(self):
         src = self._read_app_js()
-        self.assertIn("v7.0.90.6", src, "Version must be bumped to v7.0.90.6")
+        self.assertIn("v7.0.91", src, "Version must be bumped to v7.0.91")
 
     def test_student_name_field_in_invoice_card_html(self):
         """renderMkInvoiceCard must reference inv.student_name."""
@@ -834,10 +834,10 @@ class TestV90905ShowPaymentIntent(unittest.TestCase):
         self.assertIn("255, 196, 0", css,
                       "piIntentHighlightRing must use yellow border color")
 
-    def test_cache_bust_v90906_in_html(self):
+    def test_cache_bust_v7091_in_html(self):
         html = self._html()
-        self.assertIn("v=7.0.90.6", html,
-                      "index.html must cache-bust to v=7.0.90.6")
+        self.assertIn("v=7.0.91", html,
+                      "index.html must cache-bust to v=7.0.91")
 
     def test_data_intent_public_id_on_pi_card(self):
         src = self._app()
@@ -1035,13 +1035,13 @@ class TestV90906InvoiceListFixes(unittest.TestCase):
 
     # ── Version ──────────────────────────────────────────────────────────────
 
-    def test_version_90906_in_app_js(self):
+    def test_version_7091_in_app_js(self):
         src = self._app()
-        self.assertIn("v7.0.90.6", src, "app.js version must be v7.0.90.6")
+        self.assertIn("v7.0.91", src, "app.js version must be v7.0.91")
 
-    def test_cache_bust_90906_in_html(self):
+    def test_cache_bust_7091_in_html(self):
         html = self._html()
-        self.assertIn("v=7.0.90.6", html, "index.html cache-bust must be v=7.0.90.6")
+        self.assertIn("v=7.0.91", html, "index.html cache-bust must be v=7.0.91")
 
 
 if __name__ == "__main__":

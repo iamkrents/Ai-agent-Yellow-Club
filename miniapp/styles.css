@@ -7456,6 +7456,28 @@ input:disabled { animation: none !important; transform: none !important; }
   padding: 8px 10px;
   margin-top: 6px;
 }
+.pi-bepaid-paid {
+  font-size: 12px;
+  color: #15996f;
+  background: rgba(21,153,111,.08);
+  border: 1.5px solid rgba(21,153,111,.30);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-top: 6px;
+}
+.pi-card-paid { opacity: 0.92; }
+@media (prefers-color-scheme: dark) {
+  .pi-bepaid-paid {
+    color: #5ad8a6;
+    background: rgba(90,216,166,.09);
+    border-color: rgba(90,216,166,.28);
+  }
+}
+:root[data-theme="dark"] .pi-bepaid-paid {
+  color: #5ad8a6;
+  background: rgba(90,216,166,.09);
+  border-color: rgba(90,216,166,.28);
+}
 /* purpose chips */
 .chip-purpose-debt { background: rgba(230,126,34,.12); color: #a04000; }
 .chip-purpose-adv  { background: rgba(155,89,182,.12); color: #6c3483; }
