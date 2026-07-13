@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.90");
+console.log("MiniApp version: v7.0.90.1");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12019,25 +12019,56 @@ async function loadMkInvoices() {
   _mkInvoicesLoading = true;
   const listEl = $("mkInvoicesList");
   const debugEl = $("mkInvoicesDebug");
+  const diagEl = $("mkInvoicesDiag");
   const btn = $("loadMkInvoices");
   if (btn) { btn.disabled = true; btn.textContent = "Загрузка..."; }
   if (listEl) listEl.innerHTML = "";
   if (debugEl) debugEl.textContent = "";
+  if (diagEl) diagEl.innerHTML = "";
   try {
     const data = await apiGet("/api/payments/moyklass/invoices?status=unpaid_partial&limit=50");
     if (!data.ok) {
-      if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">${escapeHtml(data.error || "Ошибка")}</div>`;
+      if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">${escapeHtml(data.error || "Ошибка загрузки счетов")}</div>`;
       return;
     }
     const invoices = data.invoices || [];
+    const diag = data.diagnostics;
+    const debtWarn = data.subscription_debt_warning;
+
+    // Diagnostics block (admin/owner only — server controls who gets this field)
+    if (diag && diagEl) {
+      diagEl.innerHTML = `<div class="mk-invoices-diag">
+        <span>Из МК: ${diag.raw_invoices_count}</span>
+        <span>После фильтра: ${diag.returned_count}</span>
+        <span>Ключи ответа: ${escapeHtml((diag.mk_response_keys || []).join(", ") || "—")}</span>
+        ${diag.filtered_paid_count > 0 ? `<span>Оплаченных скрыто: ${diag.filtered_paid_count}</span>` : ""}
+        ${diag.filtered_invalid_count > 0 ? `<span class="mk-diag-warn">Невалидных: ${diag.filtered_invalid_count}</span>` : ""}
+        ${diag.missing_price_count > 0 ? `<span class="mk-diag-warn">Без цены: ${diag.missing_price_count}</span>` : ""}
+      </div>`;
+    }
+
     if (debugEl) debugEl.textContent = `Загружено: ${invoices.length} счетов`;
+
     if (!invoices.length) {
-      if (listEl) listEl.innerHTML = `<div class="pi-empty">Неоплаченных счетов нет</div>`;
+      let emptyHtml;
+      if (debtWarn && debtWarn.warning === "subscription_debt_without_invoice") {
+        const debtByn = Number(debtWarn.total_debt_byn || 0).toFixed(2);
+        const subCount = debtWarn.subscriptions_with_debt || 0;
+        emptyHtml = `<div class="pi-empty mk-empty-debt-warn">
+          В МойКласс нет отдельных счетов, но найден долг по абонементу ${escapeHtml(debtByn)} BYN
+          (${subCount} аб.). Отдельный счёт не создан — обратитесь к администратору.
+        </div>`;
+      } else if (diag && diag.raw_invoices_count > 0) {
+        emptyHtml = `<div class="pi-empty">Счета получены из МК (${diag.raw_invoices_count}), но все прошли фильтр «оплачено»</div>`;
+      } else {
+        emptyHtml = `<div class="pi-empty">В МойКласс нет неоплаченных счетов</div>`;
+      }
+      if (listEl) listEl.innerHTML = emptyHtml;
       return;
     }
     if (listEl) listEl.innerHTML = invoices.map(renderMkInvoiceCard).join("");
   } catch (err) {
-    if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">Ошибка: ${escapeHtml(String(err))}</div>`;
+    if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">Ошибка загрузки: ${escapeHtml(String(err))}</div>`;
   } finally {
     _mkInvoicesLoading = false;
     if (btn) { btn.disabled = false; btn.textContent = "Загрузить счета"; }

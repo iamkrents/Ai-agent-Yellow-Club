@@ -1,6 +1,6 @@
 # Yellow Club Agent — Current State
 
-> Последнее обновление: 2026-07-12 (v7.0.90)  
+> Последнее обновление: 2026-07-13 (v7.0.90.1)  
 > Цель файла: позволить возобновить работу из любого нового чата без потери контекста.  
 > **Этот файл — только документация. Production-код не менять через этот файл.**
 
@@ -31,9 +31,9 @@ Claude Code (локально) → редактирование кода → git
 | Параметр | Значение |
 |---|---|
 | Последняя задеплоенная версия | **v7.0.81** (commit `db0f1e9`) — НЕ развёрнут, production-дата неизвестна |
-| Последний коммит в `main` | **v7.0.90** — Create bePaid intents from MoyKlass invoices |
-| Frontend cache-bust | **`v=7.0.90`** (в `index.html`: `styles.css?v=7.0.90`, `app.js?v=7.0.90`) |
-| `console.log` в app.js | `MiniApp version: v7.0.90` |
+| Последний коммит в `main` | **v7.0.90.1** — Fix MoyKlass invoice response parsing |
+| Frontend cache-bust | **`v=7.0.90.1`** (в `index.html`: `styles.css?v=7.0.90.1`, `app.js?v=7.0.90.1`) |
+| `console.log` в app.js | `MiniApp version: v7.0.90.1` |
 
 > v7.0.82 и hotfix v7.0.82.1 запушены, но **НЕ деплоились** на production-сервер. Деплой — только по команде владельца.
 

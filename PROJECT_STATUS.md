@@ -1,12 +1,32 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-12 (v7.0.90)_
+_Последнее обновление: 2026-07-13 (v7.0.90.1)_
 
 ---
 
 ## Что сделано
 
-### v7.0.90 — Feature: создание черновиков bePaid из счетов МойКласс (текущая)
+### v7.0.90.1 — Hotfix: парсинг ответа МойКласс invoices + диагностика (текущая)
+
+**Цель:** исправить загрузку счетов МойКласс — 0 счетов отображалось несмотря на HTTP 200.
+
+**Ключевые изменения:**
+- `web_app_server.py`: добавлен `_extract_mk_invoices()` — новый module-level helper, приоритет ключу `"invoices"` (официальный ключ OpenAPI `GET /v1/company/invoices`). Ранее extractor проверял `"items"` раньше `"invoices"` — потенциальный источник ошибок при любом изменении ответа МК.
+- `web_app_server.py`: `moyklass_invoices_list` переведён на `_extract_mk_invoices`, добавлены счётчики диагностики (`raw_invoices_count`, `filtered_paid_count`, `filtered_invalid_count`, `missing_price_count`, `missing_user_id_count`), возвращает `diagnostics` для owner/admin/operations, безопасный log без персональных данных.
+- `web_app_server.py`: `_preflight_mk_invoice` тоже переведён на `_extract_mk_invoices`.
+- `web_app_server.py`: новый метод `_check_subscription_debt(mk_user_id)` — если для переданного `userId` нет счетов, проверяет долги по абонементам через `GET /v1/company/userSubscriptions`, возвращает `subscription_debt_warning` с суммой долга.
+- `miniapp/app.js`: `loadMkInvoices` отображает diagnostics-блок (owner/admin), 3 варианта пустого состояния: «нет счетов», «есть долг по абонементу без счёта», «счета есть но все оплачены».
+- `miniapp/styles.css`: `.mk-invoices-diag`, `.mk-diag-warn`, `.mk-empty-debt-warn`.
+- `miniapp/index.html`: добавлен `<div id="mkInvoicesDiag">`.
+- `tests/test_mk_invoice_intent.py`: 15 новых тестов — `TestExtractMkInvoices` (8 тестов) + `TestInvoiceFilterLogic` (7 тестов) с production-shaped payload `userId=9748998 price=229 payed=0`.
+
+**Что НЕ менялось:** создание bePaid, webhook, Food Module, отчёты, роли, .env.
+
+**Cache-bust:** v=7.0.90.1
+
+---
+
+### v7.0.90 — Feature: создание черновиков bePaid из счетов МойКласс
 
 **Цель:** связать первый контролируемый платёж bePaid с реальным учеником, абонементом и счётом МойКласс.
 

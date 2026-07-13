@@ -7527,10 +7527,34 @@ input:disabled { animation: none !important; transform: none !important; }
   border: 1px solid rgba(230,126,34,.18);
   border-radius: 8px;
 }
+/* diagnostics block (owner/admin only) — v7.0.90.1 */
+.mk-invoices-diag {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  font-size: 10px;
+  color: var(--muted);
+  padding: 6px 10px;
+  background: rgba(0,0,0,.04);
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+.mk-diag-warn { color: #c0392b; }
+/* subscription-debt-without-invoice empty state */
+.mk-empty-debt-warn {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 10px 14px;
+  background: rgba(230,126,34,.07);
+  border: 1px solid rgba(230,126,34,.18);
+  border-radius: 8px;
+}
 @media (prefers-color-scheme: dark) {
   .mk-invoice-card { background: rgba(255,255,255,.06); }
+  .mk-invoices-diag { background: rgba(255,255,255,.05); }
 }
 :root[data-theme="dark"] .mk-invoice-card { background: rgba(255,255,255,.06); }
+:root[data-theme="dark"] .mk-invoices-diag { background: rgba(255,255,255,.05); }
 /* ── PI Modal System v7.0.85 — portal-based, iOS-safe ─────────────────────── */
 
 /* scroll-lock state applied by JS piLockPageScroll() */

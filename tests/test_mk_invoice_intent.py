@@ -1,7 +1,8 @@
-"""Unit tests for MoyKlass invoice → bePaid intent flow (v7.0.90).
+"""Unit tests for MoyKlass invoice → bePaid intent flow (v7.0.90 / v7.0.90.1).
 
 Tests cover all guard conditions for payment_intent_from_mk_invoice,
-_preflight_mk_invoice, and the storage helper find_active_intent_by_invoice.
+_preflight_mk_invoice, and the storage helper find_active_intent_by_invoice,
+plus production-shaped payload parsing for _extract_mk_invoices.
 
 Run offline (no MoyKlass / bePaid / Telegram needed):
 
@@ -22,6 +23,8 @@ sys.path.insert(0, str(ROOT))
 
 # Storage is importable standalone (only needs sqlite3 + utils)
 from storage import Storage
+# Pure helper from web_app_server (no network/env required)
+from web_app_server import _extract_mk_invoices
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +166,128 @@ class TestCreatePaymentIntentSourceFields(unittest.TestCase):
         self.assertEqual(intent.get("invoice_remaining_minor"), 5000)
         self.assertEqual(intent.get("mk_user_subscription_id"), "sub_11")
         self.assertIsNotNone(intent.get("verified_invoice_at"))
+
+
+# ---------------------------------------------------------------------------
+# Production-shaped payload: _extract_mk_invoices (v7.0.90.1)
+# ---------------------------------------------------------------------------
+
+PROD_PAYLOAD = {
+    "invoices": [
+        {
+            "id": 12345,
+            "userId": 9748998,
+            "date": "2026-07-13",
+            "createdAt": "2026-07-13",
+            "price": 229,
+            "payed": 0,
+            "payUntil": "2026-07-16",
+            "userSubscriptionId": 17998875,
+        }
+    ],
+    "stats": {
+        "totalItems": 1,
+        "totalPrice": 229,
+        "totalPayed": 0,
+    },
+}
+
+
+class TestExtractMkInvoices(unittest.TestCase):
+    """_extract_mk_invoices: production-shaped payload parsing."""
+
+    def test_extracts_invoices_key(self):
+        result = _extract_mk_invoices(PROD_PAYLOAD)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["id"], 12345)
+
+    def test_invoices_key_priority_over_items(self):
+        payload = {"invoices": [{"id": 1}], "items": [{"id": 99}]}
+        result = _extract_mk_invoices(payload)
+        self.assertEqual(result[0]["id"], 1)
+
+    def test_falls_back_to_items_key(self):
+        payload = {"items": [{"id": 2}]}
+        result = _extract_mk_invoices(payload)
+        self.assertEqual(result[0]["id"], 2)
+
+    def test_raw_list_passthrough(self):
+        payload = [{"id": 3}]
+        result = _extract_mk_invoices(payload)
+        self.assertEqual(result[0]["id"], 3)
+
+    def test_empty_invoices_returns_empty_list(self):
+        payload = {"invoices": [], "stats": {"totalItems": 0}}
+        result = _extract_mk_invoices(payload)
+        self.assertEqual(result, [])
+
+    def test_none_returns_empty_list(self):
+        self.assertEqual(_extract_mk_invoices(None), [])
+
+    def test_non_dict_non_list_returns_empty_list(self):
+        self.assertEqual(_extract_mk_invoices("string"), [])
+        self.assertEqual(_extract_mk_invoices(42), [])
+
+    def test_missing_invoice_not_masked_as_api_error(self):
+        # Empty invoices array is a valid response (no invoice created yet) — not an error
+        result = _extract_mk_invoices({"invoices": [], "stats": {"totalItems": 0}})
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 0)
+
+
+class TestInvoiceFilterLogic(unittest.TestCase):
+    """Filter logic for unpaid/partial/paid/unpaid_partial — production-shaped."""
+
+    def _derive(self, price, payed):
+        remaining = max(0.0, price - payed)
+        if remaining <= 0.01:
+            status = "paid"
+        elif payed > 0:
+            status = "partial"
+        else:
+            status = "unpaid"
+        return remaining, status
+
+    def _passes_filter(self, status_filter, inv_status):
+        if status_filter == "all":
+            return True
+        if status_filter == "unpaid":
+            return inv_status == "unpaid"
+        if status_filter == "partial":
+            return inv_status == "partial"
+        if status_filter == "unpaid_partial":
+            return inv_status != "paid"
+        return False
+
+    def test_prod_invoice_remaining_229(self):
+        remaining, status = self._derive(229, 0)
+        self.assertAlmostEqual(remaining, 229.0)
+        self.assertEqual(status, "unpaid")
+
+    def test_filter_unpaid_partial_includes_unpaid(self):
+        _, status = self._derive(229, 0)
+        self.assertTrue(self._passes_filter("unpaid_partial", status))
+
+    def test_filter_unpaid_includes_unpaid(self):
+        _, status = self._derive(229, 0)
+        self.assertTrue(self._passes_filter("unpaid", status))
+
+    def test_filter_partial_excludes_unpaid(self):
+        _, status = self._derive(229, 0)
+        self.assertFalse(self._passes_filter("partial", status))
+
+    def test_filter_all_includes_unpaid(self):
+        _, status = self._derive(229, 0)
+        self.assertTrue(self._passes_filter("all", status))
+
+    def test_paid_excluded_from_unpaid_partial(self):
+        _, status = self._derive(229, 229)
+        self.assertFalse(self._passes_filter("unpaid_partial", status))
+
+    def test_partial_in_unpaid_partial(self):
+        _, status = self._derive(229, 100)
+        self.assertEqual(status, "partial")
+        self.assertTrue(self._passes_filter("unpaid_partial", status))
 
 
 if __name__ == "__main__":

@@ -116,6 +116,27 @@ def _parse_query(path: str) -> tuple[str, dict[str, str]]:
     return parsed.path, params
 
 
+def _extract_mk_invoices(payload: Any) -> list:
+    """Extract invoice list from a MoyKlass API response payload.
+
+    Priority: the official 'invoices' key per GET /v1/company/invoices OpenAPI schema
+    (response shape: {"invoices": [...], "stats": {...}}).
+    Falls back to 'items', 'data', 'results' for compatibility.
+    """
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    invoices = payload.get("invoices")
+    if isinstance(invoices, list):
+        return invoices
+    for key in ("items", "data", "results"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -8714,16 +8735,26 @@ class MiniAppContext:
         if not result.ok:
             return {"ok": False, "error": f"МойКласс вернул ошибку (статус {result.status})"}
 
-        raw = result.data
-        if isinstance(raw, dict):
-            raw = raw.get("items") or raw.get("invoices") or []
-        if not isinstance(raw, list):
-            raw = []
+        raw_payload = result.data
+        raw_list = _extract_mk_invoices(raw_payload)
+
+        # Diagnostics counters
+        raw_count = len(raw_list)
+        filtered_paid_count = 0
+        filtered_invalid_count = 0
+        missing_price_count = 0
+        missing_user_id_count = 0
 
         normalized: list[dict] = []
-        for inv in raw:
+        for inv in raw_list:
             if not isinstance(inv, dict):
+                filtered_invalid_count += 1
                 continue
+            if not inv.get("price") and inv.get("price") != 0:
+                missing_price_count += 1
+            if not inv.get("userId"):
+                missing_user_id_count += 1
+
             price = float(inv.get("price") or 0)
             payed = float(inv.get("payed") or 0)
             remaining = max(0.0, price - payed)
@@ -8737,10 +8768,15 @@ class MiniAppContext:
 
             if status_filter not in ("all",):
                 if status_filter == "unpaid" and inv_status != "unpaid":
+                    if inv_status == "paid":
+                        filtered_paid_count += 1
                     continue
                 if status_filter == "partial" and inv_status != "partial":
+                    if inv_status == "paid":
+                        filtered_paid_count += 1
                     continue
                 if status_filter == "unpaid_partial" and inv_status == "paid":
+                    filtered_paid_count += 1
                     continue
 
             sub = inv.get("userSubscription") if isinstance(inv.get("userSubscription"), dict) else None
@@ -8778,7 +8814,82 @@ class MiniAppContext:
                 "active_intent_status": active["status"] if active else None,
             })
 
-        return {"ok": True, "invoices": normalized, "count": len(normalized)}
+        returned_count = len(normalized)
+        log.info(
+            "MoyKlass invoices loaded raw=%d normalised=%d returned=%d filter=%s",
+            raw_count, raw_count - filtered_invalid_count, returned_count, status_filter,
+        )
+
+        # Include diagnostics for admin/owner roles (non-PII aggregates only)
+        user_role = self._role_for_user(int(auth["user_id"]))
+        include_diagnostics = user_role in FULL_ADMIN_ROLES
+
+        # Subscription debt check: if userId given and no invoices found, look for subscription debts
+        subscription_debt_warning = None
+        if mk_user_id_raw and returned_count == 0:
+            subscription_debt_warning = self._check_subscription_debt(int(mk_user_id_raw))
+
+        response: dict[str, Any] = {"ok": True, "invoices": normalized, "count": returned_count}
+        if subscription_debt_warning:
+            response["subscription_debt_warning"] = subscription_debt_warning
+        if include_diagnostics:
+            response["diagnostics"] = {
+                "mk_response_type": "list" if isinstance(raw_payload, list) else ("dict" if isinstance(raw_payload, dict) else "other"),
+                "mk_response_keys": list(raw_payload.keys()) if isinstance(raw_payload, dict) else [],
+                "raw_invoices_count": raw_count,
+                "normalised_count": raw_count - filtered_invalid_count,
+                "returned_count": returned_count,
+                "filter": status_filter,
+                "filtered_paid_count": filtered_paid_count,
+                "filtered_invalid_count": filtered_invalid_count,
+                "missing_price_count": missing_price_count,
+                "missing_user_id_count": missing_user_id_count,
+            }
+        return response
+
+    def _check_subscription_debt(self, mk_user_id: int) -> dict | None:
+        """Check if a user has subscription debt without a corresponding invoice.
+
+        Returns a dict with debt info if found, None otherwise.
+        Does not raise — any error is silently ignored (non-critical diagnostic).
+        """
+        try:
+            result = self.moyklass.request(
+                "GET", "/v1/company/userSubscriptions",
+                params={"userId": mk_user_id, "limit": 50},
+            )
+            if not result.ok or not result.data:
+                return None
+            from moyklass_client import extract_items
+            subs = extract_items(result.data)
+            total_debt_byn = 0.0
+            debt_subs: list[dict] = []
+            for sub in subs:
+                if not isinstance(sub, dict):
+                    continue
+                price = float(sub.get("price") or 0)
+                payed = float(sub.get("payed") or sub.get("paid") or 0)
+                remaining = max(0.0, price - payed)
+                if remaining > 0.01:
+                    total_debt_byn += remaining
+                    debt_subs.append({
+                        "subscription_id": sub.get("id"),
+                        "price": price,
+                        "payed": payed,
+                        "remaining": remaining,
+                        "status_id": sub.get("statusId"),
+                        "begin_date": sub.get("beginDate"),
+                    })
+            if not debt_subs:
+                return None
+            return {
+                "warning": "subscription_debt_without_invoice",
+                "total_debt_byn": round(total_debt_byn, 2),
+                "subscriptions_with_debt": len(debt_subs),
+                "subscriptions": debt_subs[:5],
+            }
+        except Exception:
+            return None
 
     def payment_intent_from_mk_invoice(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         denied = self._require_payment_intent_access(auth)
@@ -8939,11 +9050,7 @@ class MiniAppContext:
         if not result.ok:
             return {"ok": False, "error": f"МойКласс вернул ошибку при проверке счёта (статус {result.status})"}
 
-        raw = result.data
-        if isinstance(raw, dict):
-            raw = raw.get("items") or raw.get("invoices") or []
-        if not isinstance(raw, list):
-            raw = []
+        raw = _extract_mk_invoices(result.data)
 
         invoice = next((inv for inv in raw if str(inv.get("id") or "") == invoice_id), None)
         if not invoice:
