@@ -1,12 +1,32 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-13 (v7.0.90.1)_
+_Последнее обновление: 2026-07-13 (v7.0.90.2)_
 
 ---
 
 ## Что сделано
 
-### v7.0.90.1 — Hotfix: парсинг ответа МойКласс invoices + диагностика (текущая)
+### v7.0.90.2 — Hotfix: пагинация счетов МойКласс (текущая)
+
+**Причина:** `moyklass_invoices_list` делал один запрос с `limit=50` (из фронтенда) и получал только первую страницу. Все 50 счетов первой страницы оказались оплачены; неоплаченный счёт #19060579 находился на странице 2.
+
+**Ключевые изменения:**
+- `web_app_server.py`: добавлены `_MK_INVOICE_PAGE_LIMIT=100`, `_MK_INVOICE_MAX_PAGES=100`.
+- `web_app_server.py`: `_mk_fetch_invoices_paginated(mk_client, base_params, page_limit, max_pages)` — постраничная загрузка через `offset`; читает `stats.totalItems`; останавливается при `total_reached` / `empty_page` / `partial_page` / `mk_error` / `max_pages`.
+- `web_app_server.py`: `_mk_invoice_by_id(mk_client, invoice_id)` — прямой GET `/v1/company/invoices/{id}` без пагинации.
+- `web_app_server.py`: `moyklass_invoices_list` переписан: `result_limit` (из frontend) отделён от `page_limit` МК; пагинация сканирует все страницы; результаты сортируются по `date desc, payUntil desc, id desc`; в `diagnostics`: `pages_loaded`, `total_items_reported`, `raw_invoices_scanned`, `stopped_reason`.
+- `web_app_server.py`: `_preflight_mk_invoice` использует `_mk_invoice_by_id` с fallback на пагинацию.
+- `web_app_server.py`: `payment_intent_from_mk_invoice` использует `_mk_invoice_by_id` с fallback на пагинацию (исправлен также старый баг `raw.get("items") or raw.get("invoices")`).
+- `miniapp/app.js`: `loadMkInvoices` — состояние загрузки «Загрузка счетов МойКласс…»; диагностика показывает `pages_loaded`, `total_items_reported`, `raw_invoices_scanned`; пустые состояния корректно различают «всё просмотрено» vs «ещё не сканировалось».
+- `tests/test_mk_invoice_intent.py`: 9 новых тестов `TestMkInvoicePagination` (A–I) с `_MockMKClient`; тест A подтверждает нахождение invoice #19060579 на странице 2.
+
+**Что НЕ менялось:** создание bePaid, webhook, Food Module, отчёты, роли, .env.
+
+**Cache-bust:** v=7.0.90.2
+
+---
+
+### v7.0.90.1 — Hotfix: парсинг ответа МойКласс invoices + диагностика
 
 **Цель:** исправить загрузку счетов МойКласс — 0 счетов отображалось несмотря на HTTP 200.
 

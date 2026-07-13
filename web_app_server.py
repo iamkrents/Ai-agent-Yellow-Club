@@ -137,6 +137,104 @@ def _extract_mk_invoices(payload: Any) -> list:
     return []
 
 
+# ── MoyKlass invoice pagination constants ────────────────────────────────────
+
+_MK_INVOICE_PAGE_LIMIT: int = 100   # items per MK API request
+_MK_INVOICE_MAX_PAGES: int = 100    # hard cap against infinite loops
+
+
+def _mk_invoice_by_id(mk_client: Any, invoice_id: str) -> "dict | None":
+    """Fetch a single invoice via GET /v1/company/invoices/{invoiceId}.
+
+    Returns the raw invoice dict, or None on any error or 404.
+    Uses the direct MK endpoint — no pagination needed.
+    """
+    try:
+        result = mk_client.request("GET", f"/v1/company/invoices/{invoice_id}")
+        if not result.ok:
+            return None
+        data = result.data
+        if isinstance(data, dict) and data.get("id"):
+            return data
+        return None
+    except Exception:
+        return None
+
+
+def _mk_fetch_invoices_paginated(
+    mk_client: Any,
+    base_params: "dict[str, Any]",
+    page_limit: int = _MK_INVOICE_PAGE_LIMIT,
+    max_pages: int = _MK_INVOICE_MAX_PAGES,
+) -> "tuple[list[dict], dict[str, Any]]":
+    """Fetch ALL invoices from MoyKlass using offset-based pagination.
+
+    Returns (all_raw_invoice_dicts, pagination_diagnostics).
+
+    Stops when:
+    - offset >= stats.totalItems (total_reached)
+    - page returns fewer items than requested (partial_page)
+    - page returns 0 items (empty_page)
+    - MK returns an error (mk_error)
+    - max_pages exceeded (max_pages)
+
+    Does NOT filter — caller decides what to keep.
+    Does NOT apply result limits — pagination reads until exhaustion.
+    """
+    all_items: list[dict] = []
+    pages_loaded = 0
+    total_items_reported: "int | None" = None
+    stopped_reason = "max_pages"
+
+    for page in range(max_pages):
+        offset = page * page_limit
+        params = {**base_params, "limit": page_limit, "offset": offset}
+        result = mk_client.request("GET", "/v1/company/invoices", params=params)
+
+        if not result.ok:
+            stopped_reason = "mk_error"
+            break
+
+        payload = result.data
+        page_items = _extract_mk_invoices(payload)
+        pages_loaded += 1
+
+        # Read totalItems from stats (take from first page that provides it)
+        if isinstance(payload, dict) and total_items_reported is None:
+            try:
+                ti = (payload.get("stats") or {}).get("totalItems")
+                if ti is not None:
+                    total_items_reported = int(ti)
+            except (TypeError, ValueError):
+                pass
+
+        if not page_items:
+            stopped_reason = "empty_page"
+            break
+
+        all_items.extend(page_items)
+        current_scanned = len(all_items)
+
+        if total_items_reported is not None and current_scanned >= total_items_reported:
+            stopped_reason = "total_reached"
+            break
+
+        if len(page_items) < page_limit:
+            # Partial page — no more data follows
+            stopped_reason = "partial_page"
+            break
+    # else: loop exhausted max_pages — stopped_reason stays "max_pages"
+
+    diag: "dict[str, Any]" = {
+        "pages_loaded": pages_loaded,
+        "page_limit": page_limit,
+        "total_items_reported": total_items_reported,
+        "raw_invoices_scanned": len(all_items),
+        "stopped_reason": stopped_reason,
+    }
+    return all_items, diag
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -8711,41 +8809,111 @@ class MiniAppContext:
 
         status_filter = str(params.get("status") or "unpaid_partial").lower()
         mk_user_id_raw = params.get("userId") or params.get("user_id") or ""
-        try:
-            limit = min(int(params.get("limit") or 50), 100)
-        except (TypeError, ValueError):
-            limit = 50
+        invoice_id_raw = str(params.get("invoiceId") or params.get("invoice_id") or "").strip()
 
-        mk_params: dict[str, Any] = {
-            "includeUserSubscriptions": "true",
-            "limit": limit,
-        }
+        # result_limit caps how many filtered cards we return to the frontend.
+        # It does NOT limit how many raw invoices we scan from MK.
+        try:
+            result_limit = min(int(params.get("limit") or 50), 200)
+        except (TypeError, ValueError):
+            result_limit = 50
+
+        mk_user_id: "int | None" = None
         if mk_user_id_raw:
             try:
-                mk_params["userId"] = int(mk_user_id_raw)
+                mk_user_id = int(mk_user_id_raw)
             except (TypeError, ValueError):
                 return {"ok": False, "error": "userId должен быть числом"}
 
+        # Diagnostics visible to owner/admin/operations only
+        user_role = self._role_for_user(int(auth["user_id"]))
+        include_diagnostics = user_role in FULL_ADMIN_ROLES
+
+        # Direct invoice lookup: owner/admin may request a specific invoiceId for diagnostics
+        if invoice_id_raw and include_diagnostics:
+            direct = _mk_invoice_by_id(self.moyklass, invoice_id_raw)
+            if direct is not None:
+                price_d = float(direct.get("price") or 0)
+                payed_d = float(direct.get("payed") or 0)
+                remaining_d = max(0.0, price_d - payed_d)
+                if remaining_d <= 0.01:
+                    status_d = "paid"
+                elif payed_d > 0:
+                    status_d = "partial"
+                else:
+                    status_d = "unpaid"
+                sub_d = direct.get("userSubscription") if isinstance(direct.get("userSubscription"), dict) else None
+                inv_id_d = str(direct.get("id") or "")
+                active_d = self.storage.find_active_intent_by_invoice(inv_id_d)
+                inv_card = {
+                    "invoice_id": inv_id_d,
+                    "mk_user_id": direct.get("userId"),
+                    "price": price_d,
+                    "payed": payed_d,
+                    "payed_bonuses": float(direct.get("payedBonuses") or 0),
+                    "remaining": remaining_d,
+                    "remaining_minor": round(remaining_d * 100),
+                    "price_minor": round(price_d * 100),
+                    "invoice_status": status_d,
+                    "date": direct.get("date"),
+                    "pay_until": direct.get("payUntil"),
+                    "created_at": direct.get("createdAt"),
+                    "comment": direct.get("comment"),
+                    "user_subscription_id": direct.get("userSubscriptionId"),
+                    "join_id": direct.get("joinId"),
+                    "subscription": {
+                        "id": sub_d.get("id"),
+                        "subscription_id": sub_d.get("subscriptionId"),
+                        "begin_date": sub_d.get("beginDate"),
+                        "end_date": sub_d.get("endDate"),
+                        "sell_date": sub_d.get("sellDate"),
+                        "price": sub_d.get("price"),
+                        "status_id": sub_d.get("statusId"),
+                    } if sub_d else None,
+                    "active_intent_id": active_d["public_id"] if active_d else None,
+                    "active_intent_status": active_d["status"] if active_d else None,
+                }
+                return {
+                    "ok": True,
+                    "invoices": [inv_card],
+                    "count": 1,
+                    "diagnostics": {
+                        "lookup_mode": "direct_by_id",
+                        "invoice_id": invoice_id_raw,
+                        "target_invoice_found": True,
+                        "raw_invoices_scanned": 1,
+                        "returned_count": 1,
+                        "filter": "direct",
+                        "pages_loaded": 1,
+                        "page_limit": 1,
+                        "total_items_reported": 1,
+                        "stopped_reason": "direct_lookup",
+                    },
+                }
+            # Direct lookup returned None — fall through to paginated scan
+
+        # Base MK params; pagination adds limit + offset
+        mk_base_params: dict[str, Any] = {"includeUserSubscriptions": "true"}
+        if mk_user_id is not None:
+            mk_base_params["userId"] = mk_user_id
+
+        # Paginated scan of MK invoices
         try:
-            result = self.moyklass.request("GET", "/v1/company/invoices", params=mk_params)
+            raw_list, page_diag = _mk_fetch_invoices_paginated(self.moyklass, mk_base_params)
         except Exception as exc:
-            log.exception("moyklass_invoices_list error")
+            log.exception("moyklass_invoices_list paginated fetch error")
             return {"ok": False, "error": f"Ошибка запроса к МойКласс: {exc}"}
 
-        if not result.ok:
-            return {"ok": False, "error": f"МойКласс вернул ошибку (статус {result.status})"}
+        if page_diag.get("stopped_reason") == "mk_error":
+            return {"ok": False, "error": "МойКласс вернул ошибку при загрузке счетов"}
 
-        raw_payload = result.data
-        raw_list = _extract_mk_invoices(raw_payload)
-
-        # Diagnostics counters
-        raw_count = len(raw_list)
+        # Normalise and filter
         filtered_paid_count = 0
         filtered_invalid_count = 0
         missing_price_count = 0
         missing_user_id_count = 0
-
         normalized: list[dict] = []
+
         for inv in raw_list:
             if not isinstance(inv, dict):
                 filtered_invalid_count += 1
@@ -8781,8 +8949,6 @@ class MiniAppContext:
 
             sub = inv.get("userSubscription") if isinstance(inv.get("userSubscription"), dict) else None
             invoice_id = str(inv.get("id") or "")
-
-            # Check if an active intent already exists for this invoice
             active = self.storage.find_active_intent_by_invoice(invoice_id)
 
             normalized.append({
@@ -8814,37 +8980,61 @@ class MiniAppContext:
                 "active_intent_status": active["status"] if active else None,
             })
 
-        returned_count = len(normalized)
+        # Sort: newest date first, then payUntil desc, then invoice id desc
+        def _sort_key(n: dict) -> tuple:
+            date_str = str(n.get("date") or n.get("created_at") or "")
+            pay_until = str(n.get("pay_until") or "")
+            inv_id = int(n.get("invoice_id") or 0)
+            return (date_str, pay_until, inv_id)
+
+        normalized.sort(key=_sort_key, reverse=True)
+
+        # Apply result_limit AFTER pagination (not before)
+        result_invoices = normalized[:result_limit]
+        returned_count = len(result_invoices)
+        raw_scanned = page_diag["raw_invoices_scanned"]
+
         log.info(
-            "MoyKlass invoices loaded raw=%d normalised=%d returned=%d filter=%s",
-            raw_count, raw_count - filtered_invalid_count, returned_count, status_filter,
+            "MoyKlass invoices pages=%d total=%s scanned=%d unpaid=%d returned=%d filter=%s",
+            page_diag["pages_loaded"],
+            page_diag.get("total_items_reported", "?"),
+            raw_scanned,
+            len(normalized),
+            returned_count,
+            status_filter,
         )
 
-        # Include diagnostics for admin/owner roles (non-PII aggregates only)
-        user_role = self._role_for_user(int(auth["user_id"]))
-        include_diagnostics = user_role in FULL_ADMIN_ROLES
-
-        # Subscription debt check: if userId given and no invoices found, look for subscription debts
+        # Subscription debt check: if userId given and no invoices returned, check subscriptions
         subscription_debt_warning = None
-        if mk_user_id_raw and returned_count == 0:
-            subscription_debt_warning = self._check_subscription_debt(int(mk_user_id_raw))
+        if mk_user_id is not None and returned_count == 0:
+            subscription_debt_warning = self._check_subscription_debt(mk_user_id)
 
-        response: dict[str, Any] = {"ok": True, "invoices": normalized, "count": returned_count}
+        # target_invoice tracking for diagnostics
+        target_found: "bool | None" = None
+        if invoice_id_raw:
+            target_found = any(n["invoice_id"] == invoice_id_raw for n in normalized)
+
+        response: dict[str, Any] = {"ok": True, "invoices": result_invoices, "count": returned_count}
         if subscription_debt_warning:
             response["subscription_debt_warning"] = subscription_debt_warning
         if include_diagnostics:
-            response["diagnostics"] = {
-                "mk_response_type": "list" if isinstance(raw_payload, list) else ("dict" if isinstance(raw_payload, dict) else "other"),
-                "mk_response_keys": list(raw_payload.keys()) if isinstance(raw_payload, dict) else [],
-                "raw_invoices_count": raw_count,
-                "normalised_count": raw_count - filtered_invalid_count,
+            diag_out: dict[str, Any] = {
+                "pages_loaded": page_diag["pages_loaded"],
+                "page_limit": page_diag["page_limit"],
+                "total_items_reported": page_diag.get("total_items_reported"),
+                "raw_invoices_scanned": raw_scanned,
+                "normalised_count": raw_scanned - filtered_invalid_count,
                 "returned_count": returned_count,
                 "filter": status_filter,
                 "filtered_paid_count": filtered_paid_count,
                 "filtered_invalid_count": filtered_invalid_count,
                 "missing_price_count": missing_price_count,
                 "missing_user_id_count": missing_user_id_count,
+                "stopped_reason": page_diag.get("stopped_reason"),
             }
+            if target_found is not None:
+                diag_out["target_invoice_found"] = target_found
+            response["diagnostics"] = diag_out
         return response
 
     def _check_subscription_debt(self, mk_user_id: int) -> dict | None:
@@ -8927,27 +9117,22 @@ class MiniAppContext:
                 "duplicate_id": existing["public_id"],
             }
 
-        # Re-fetch invoice from MoyKlass — do not trust frontend amounts
-        try:
-            mk_result = self.moyklass.request("GET", "/v1/company/invoices", params={
-                "userId": mk_user_id,
-                "includeUserSubscriptions": "true",
-                "limit": 100,
-            })
-        except Exception as exc:
-            log.exception("payment_intent_from_mk_invoice: MK request error")
-            return {"ok": False, "error": f"Ошибка запроса к МойКласс: {exc}"}
+        # Re-fetch invoice from MoyKlass — do not trust frontend amounts.
+        # Try the direct endpoint first (fast, no pagination needed).
+        invoice: "dict | None" = _mk_invoice_by_id(self.moyklass, invoice_id)
 
-        if not mk_result.ok:
-            return {"ok": False, "error": f"Не удалось получить счета из МойКласс (статус {mk_result.status})"}
+        if invoice is None:
+            # Fall back to paginated user-scoped list (also includes userSubscription data)
+            try:
+                raw_list, _ = _mk_fetch_invoices_paginated(
+                    self.moyklass,
+                    {"userId": mk_user_id, "includeUserSubscriptions": "true"},
+                )
+            except Exception as exc:
+                log.exception("payment_intent_from_mk_invoice: MK request error")
+                return {"ok": False, "error": f"Ошибка запроса к МойКласс: {exc}"}
+            invoice = next((inv for inv in raw_list if str(inv.get("id") or "") == invoice_id), None)
 
-        raw = mk_result.data
-        if isinstance(raw, dict):
-            raw = raw.get("items") or raw.get("invoices") or []
-        if not isinstance(raw, list):
-            raw = []
-
-        invoice = next((inv for inv in raw if str(inv.get("id") or "") == invoice_id), None)
         if not invoice:
             return {"ok": False, "error": f"Счёт МойКласс #{invoice_id} не найден для пользователя {mk_user_id}"}
 
@@ -9037,22 +9222,22 @@ class MiniAppContext:
         invoice_id = str(pi.get("mk_invoice_id") or "").strip()
         mk_user_id = int(pi.get("mk_user_id") or 0)
 
-        try:
-            result = self.moyklass.request("GET", "/v1/company/invoices", params={
-                "userId": mk_user_id,
-                "includeUserSubscriptions": "false",
-                "limit": 100,
-            })
-        except Exception as exc:
-            log.warning("_preflight_mk_invoice MK request error: %s", exc)
-            return {"ok": False, "error": f"Не удалось проверить счёт МойКласс перед выставлением: {exc}"}
+        # Try direct endpoint first — fast and does not require pagination
+        invoice: "dict | None" = _mk_invoice_by_id(self.moyklass, invoice_id)
 
-        if not result.ok:
-            return {"ok": False, "error": f"МойКласс вернул ошибку при проверке счёта (статус {result.status})"}
+        if invoice is None:
+            # Fall back to paginated user-scoped list (handles any MK config)
+            log.info("_preflight_mk_invoice: direct lookup None for %s, falling back to list", invoice_id)
+            try:
+                raw_list, _ = _mk_fetch_invoices_paginated(
+                    self.moyklass,
+                    {"userId": mk_user_id, "includeUserSubscriptions": "false"},
+                )
+            except Exception as exc:
+                log.warning("_preflight_mk_invoice MK request error: %s", exc)
+                return {"ok": False, "error": f"Не удалось проверить счёт МойКласс перед выставлением: {exc}"}
+            invoice = next((inv for inv in raw_list if str(inv.get("id") or "") == invoice_id), None)
 
-        raw = _extract_mk_invoices(result.data)
-
-        invoice = next((inv for inv in raw if str(inv.get("id") or "") == invoice_id), None)
         if not invoice:
             return {
                 "ok": False,

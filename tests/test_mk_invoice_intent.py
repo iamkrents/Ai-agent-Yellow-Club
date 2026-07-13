@@ -1,4 +1,4 @@
-"""Unit tests for MoyKlass invoice → bePaid intent flow (v7.0.90 / v7.0.90.1).
+"""Unit tests for MoyKlass invoice → bePaid intent flow (v7.0.90 / v7.0.90.2).
 
 Tests cover all guard conditions for payment_intent_from_mk_invoice,
 _preflight_mk_invoice, and the storage helper find_active_intent_by_invoice,
@@ -23,8 +23,8 @@ sys.path.insert(0, str(ROOT))
 
 # Storage is importable standalone (only needs sqlite3 + utils)
 from storage import Storage
-# Pure helper from web_app_server (no network/env required)
-from web_app_server import _extract_mk_invoices
+# Pure helpers from web_app_server (no network/env required)
+from web_app_server import _extract_mk_invoices, _mk_fetch_invoices_paginated, _mk_invoice_by_id
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +288,162 @@ class TestInvoiceFilterLogic(unittest.TestCase):
         _, status = self._derive(229, 100)
         self.assertEqual(status, "partial")
         self.assertTrue(self._passes_filter("unpaid_partial", status))
+
+
+# ---------------------------------------------------------------------------
+# Mock MoyKlass client for pagination tests (offline, no network)
+# ---------------------------------------------------------------------------
+
+class _MockMKResult:
+    """Minimal stand-in for MoyKlassResult."""
+    def __init__(self, ok: bool, data=None, error: str = ""):
+        self.ok = ok
+        self.data = data
+        self.error = error
+
+
+class _MockMKClient:
+    """Feeds pre-baked page responses to _mk_fetch_invoices_paginated."""
+
+    def __init__(self, responses: list):
+        """responses: list of dicts — {ok, data} for each sequential request."""
+        self._responses = list(responses)
+        self._index = 0
+        self.calls: list[tuple[str, str, dict]] = []  # (method, path, params)
+
+    def request(self, method: str, path: str, params: dict | None = None) -> _MockMKResult:
+        self.calls.append((method, path, dict(params or {})))
+        if self._index >= len(self._responses):
+            return _MockMKResult(False, error="no more mock responses")
+        resp = self._responses[self._index]
+        self._index += 1
+        return _MockMKResult(bool(resp.get("ok", True)), data=resp.get("data"), error=resp.get("error", ""))
+
+
+def _paid_inv(i: int) -> dict:
+    return {"id": i, "userId": 1, "price": 100.0, "payed": 100.0, "date": f"2026-01-{(i % 28) + 1:02d}"}
+
+
+def _unpaid_inv_19060579() -> dict:
+    return {
+        "id": 19060579,
+        "userId": 9748998,
+        "price": 229.0,
+        "payed": 0.0,
+        "payUntil": "2026-07-16",
+        "date": "2026-07-13",
+        "userSubscriptionId": 17998775,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Pagination tests: _mk_fetch_invoices_paginated (v7.0.90.2)
+# ---------------------------------------------------------------------------
+
+class TestMkInvoicePagination(unittest.TestCase):
+    """Tests A–I from the v7.0.90.2 specification."""
+
+    # A — 50 paid on page1, 1 unpaid on page2: unpaid is found
+    def test_A_finds_invoice_on_page2(self):
+        page1 = {"invoices": [_paid_inv(i) for i in range(1, 51)], "stats": {"totalItems": 51}}
+        page2 = {"invoices": [_unpaid_inv_19060579()], "stats": {"totalItems": 51}}
+        client = _MockMKClient([{"data": page1}, {"data": page2}])
+        items, diag = _mk_fetch_invoices_paginated(client, {}, page_limit=50)
+        self.assertEqual(len(items), 51)
+        self.assertEqual(diag["pages_loaded"], 2)
+        found = next((inv for inv in items if inv.get("id") == 19060579), None)
+        self.assertIsNotNone(found, "invoice #19060579 must be in the collected items")
+        self.assertEqual(float(found["price"]), 229.0)
+        self.assertEqual(float(found["payed"]), 0.0)
+
+    # B — result_limit=50 does NOT stop raw scan after page1 when 0 unpaid found
+    def test_B_result_limit_not_used_in_pagination(self):
+        page1 = {"invoices": [_paid_inv(i) for i in range(1, 51)], "stats": {"totalItems": 51}}
+        page2 = {"invoices": [_unpaid_inv_19060579()], "stats": {"totalItems": 51}}
+        client = _MockMKClient([{"data": page1}, {"data": page2}])
+        # Pagination itself has no concept of result_limit
+        items, diag = _mk_fetch_invoices_paginated(client, {}, page_limit=50)
+        # Both pages loaded
+        self.assertEqual(diag["pages_loaded"], 2)
+        # All 51 raw items returned; caller applies result_limit afterwards
+        self.assertEqual(len(items), 51)
+
+    # C — stop when offset >= stats.totalItems
+    def test_C_stops_when_total_reached(self):
+        page1 = {"invoices": [_paid_inv(1)], "stats": {"totalItems": 1}}
+        client = _MockMKClient([{"data": page1}])
+        items, diag = _mk_fetch_invoices_paginated(client, {}, page_limit=100)
+        self.assertEqual(diag["stopped_reason"], "total_reached")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(diag["pages_loaded"], 1)
+
+    # D — stop on empty page
+    def test_D_stops_on_empty_page(self):
+        page1 = {"invoices": [_paid_inv(1)], "stats": {}}  # no totalItems
+        page2 = {"invoices": [], "stats": {}}
+        # page_limit=1 → page1 is "full" → request page2 → empty → stop
+        client = _MockMKClient([{"data": page1}, {"data": page2}])
+        items, diag = _mk_fetch_invoices_paginated(client, {}, page_limit=1)
+        self.assertEqual(diag["stopped_reason"], "empty_page")
+        self.assertEqual(len(items), 1)
+
+    # E — max_pages protects against infinite loops
+    def test_E_max_pages_protection(self):
+        # Each page returns exactly page_limit items (would loop forever without cap)
+        page = {"invoices": [_paid_inv(1), _paid_inv(2)], "stats": {}}
+        client = _MockMKClient([{"data": page}] * 10)
+        items, diag = _mk_fetch_invoices_paginated(client, {}, page_limit=2, max_pages=3)
+        self.assertEqual(diag["pages_loaded"], 3)
+        self.assertEqual(diag["stopped_reason"], "max_pages")
+        self.assertEqual(len(items), 6)  # 3 pages × 2 items
+
+    # F — userId transmitted to every page request
+    def test_F_user_id_in_each_request(self):
+        page1 = {"invoices": [_paid_inv(i) for i in range(1, 4)], "stats": {"totalItems": 4}}
+        page2 = {"invoices": [_paid_inv(4)], "stats": {"totalItems": 4}}
+        client = _MockMKClient([{"data": page1}, {"data": page2}])
+        _mk_fetch_invoices_paginated(client, {"userId": 9748998}, page_limit=3)
+        for method, path, params in client.calls:
+            self.assertEqual(params.get("userId"), 9748998,
+                             f"userId missing on request {path} {params}")
+
+    # G — direct invoice lookup calls /invoices/{id}
+    def test_G_direct_invoice_lookup_endpoint(self):
+        inv_data = {"id": 19060579, "userId": 9748998, "price": 229, "payed": 0}
+        client = _MockMKClient([{"data": inv_data}])
+        result = _mk_invoice_by_id(client, "19060579")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 19060579)
+        self.assertEqual(len(client.calls), 1)
+        _, path, _ = client.calls[0]
+        self.assertIn("19060579", path, f"expected invoiceId in path, got: {path}")
+
+    # H — invoice #19060579 normalizes correctly
+    def test_H_prod_invoice_19060579_normalised(self):
+        payload = {"invoices": [_unpaid_inv_19060579()], "stats": {"totalItems": 1}}
+        items = _extract_mk_invoices(payload)
+        self.assertEqual(len(items), 1)
+        inv = items[0]
+        self.assertEqual(inv["id"], 19060579)
+        self.assertEqual(inv["userId"], 9748998)
+        self.assertEqual(float(inv["price"]), 229.0)
+        self.assertEqual(float(inv["payed"]), 0.0)
+        self.assertEqual(inv["userSubscriptionId"], 17998775)
+        remaining = max(0.0, float(inv["price"]) - float(inv["payed"]))
+        self.assertAlmostEqual(remaining, 229.0)
+        status = "paid" if remaining <= 0.01 else ("partial" if float(inv["payed"]) > 0 else "unpaid")
+        self.assertEqual(status, "unpaid")
+
+    # I — 50 paid on page1 do NOT mask the unpaid invoice on page2
+    def test_I_paid_page1_does_not_mask_unpaid_page2(self):
+        page1 = {"invoices": [_paid_inv(i) for i in range(1, 51)], "stats": {"totalItems": 51}}
+        page2 = {"invoices": [_unpaid_inv_19060579()], "stats": {"totalItems": 51}}
+        client = _MockMKClient([{"data": page1}, {"data": page2}])
+        items, diag = _mk_fetch_invoices_paginated(client, {}, page_limit=50)
+        self.assertEqual(len(items), 51)
+        unpaid = [inv for inv in items if float(inv.get("payed", 0)) < float(inv.get("price", 1))]
+        self.assertEqual(len(unpaid), 1)
+        self.assertEqual(unpaid[0]["id"], 19060579)
 
 
 if __name__ == "__main__":

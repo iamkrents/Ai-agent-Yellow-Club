@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.90.1");
+console.log("MiniApp version: v7.0.90.2");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12021,12 +12021,13 @@ async function loadMkInvoices() {
   const debugEl = $("mkInvoicesDebug");
   const diagEl = $("mkInvoicesDiag");
   const btn = $("loadMkInvoices");
-  if (btn) { btn.disabled = true; btn.textContent = "Загрузка..."; }
-  if (listEl) listEl.innerHTML = "";
+  if (btn) { btn.disabled = true; btn.textContent = "Загрузка…"; }
+  if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--muted)">Загрузка счетов МойКласс…</div>`;
   if (debugEl) debugEl.textContent = "";
   if (diagEl) diagEl.innerHTML = "";
   try {
     const data = await apiGet("/api/payments/moyklass/invoices?status=unpaid_partial&limit=50");
+    if (listEl) listEl.innerHTML = "";
     if (!data.ok) {
       if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--red)">${escapeHtml(data.error || "Ошибка загрузки счетов")}</div>`;
       return;
@@ -12037,17 +12038,24 @@ async function loadMkInvoices() {
 
     // Diagnostics block (admin/owner only — server controls who gets this field)
     if (diag && diagEl) {
+      const stoppedNote = diag.stopped_reason && diag.stopped_reason !== "total_reached"
+        ? `<span style="color:var(--muted)">стоп: ${escapeHtml(diag.stopped_reason)}</span>` : "";
       diagEl.innerHTML = `<div class="mk-invoices-diag">
-        <span>Из МК: ${diag.raw_invoices_count}</span>
-        <span>После фильтра: ${diag.returned_count}</span>
-        <span>Ключи ответа: ${escapeHtml((diag.mk_response_keys || []).join(", ") || "—")}</span>
-        ${diag.filtered_paid_count > 0 ? `<span>Оплаченных скрыто: ${diag.filtered_paid_count}</span>` : ""}
-        ${diag.filtered_invalid_count > 0 ? `<span class="mk-diag-warn">Невалидных: ${diag.filtered_invalid_count}</span>` : ""}
-        ${diag.missing_price_count > 0 ? `<span class="mk-diag-warn">Без цены: ${diag.missing_price_count}</span>` : ""}
+        <span>Всего в МК: ${diag.total_items_reported ?? "?"}</span>
+        <span>Просмотрено: ${diag.raw_invoices_scanned ?? diag.normalised_count ?? "?"}</span>
+        <span>Страниц: ${diag.pages_loaded ?? 1}</span>
+        <span>Неоплаченных: ${diag.returned_count}</span>
+        ${(diag.filtered_paid_count || 0) > 0 ? `<span>Оплаченных скрыто: ${diag.filtered_paid_count}</span>` : ""}
+        ${(diag.filtered_invalid_count || 0) > 0 ? `<span class="mk-diag-warn">Невалидных: ${diag.filtered_invalid_count}</span>` : ""}
+        ${stoppedNote}
       </div>`;
     }
 
-    if (debugEl) debugEl.textContent = `Загружено: ${invoices.length} счетов`;
+    if (debugEl) {
+      debugEl.textContent = invoices.length > 0
+        ? `Найдено неоплаченных счетов: ${invoices.length}`
+        : "";
+    }
 
     if (!invoices.length) {
       let emptyHtml;
@@ -12058,8 +12066,10 @@ async function loadMkInvoices() {
           В МойКласс нет отдельных счетов, но найден долг по абонементу ${escapeHtml(debtByn)} BYN
           (${subCount} аб.). Отдельный счёт не создан — обратитесь к администратору.
         </div>`;
-      } else if (diag && diag.raw_invoices_count > 0) {
-        emptyHtml = `<div class="pi-empty">Счета получены из МК (${diag.raw_invoices_count}), но все прошли фильтр «оплачено»</div>`;
+      } else if (diag && (diag.raw_invoices_scanned || 0) > 0 &&
+          ["total_reached", "empty_page", "partial_page"].includes(diag.stopped_reason)) {
+        // Scanned all pages, no unpaid found
+        emptyHtml = `<div class="pi-empty">В МойКласс нет неоплаченных счетов (просмотрено ${diag.raw_invoices_scanned})</div>`;
       } else {
         emptyHtml = `<div class="pi-empty">В МойКласс нет неоплаченных счетов</div>`;
       }
