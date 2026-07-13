@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.91");
+console.log("MiniApp version: v7.0.92");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -11685,13 +11685,28 @@ function renderPaymentIntentCard(pi) {
     ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">Причина: ${escapeHtml(pi.cancel_reason)}</div>`
     : "";
 
-  const bePaidPaidBlock = pi.status === "paid"
+  const bePaidPaidBlock = (pi.status === "paid" || pi.status === "posted_to_moyklass")
     ? `<div class="pi-bepaid-paid">
         <strong>Оплачено в bePaid</strong>
         ${pi.paid_at ? `<div style="font-size:11px;margin-top:4px">Дата: ${escapeHtml(String(pi.paid_at).slice(0, 19))}</div>` : ""}
         ${(pi.paid_amount_byn != null) ? `<div style="font-size:11px">Сумма: ${fmtByn(pi.paid_amount_byn)}</div>` : ""}
         ${pi.paid_transaction_uid ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">UID: ${escapeHtml(pi.paid_transaction_uid)}</div>` : ""}
+        ${pi.status === "paid" ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">В МойКласс ещё не внесено</div>` : ""}
        </div>`
+    : "";
+
+  const mkPostedBlock = pi.status === "posted_to_moyklass"
+    ? `<div class="pi-mk-posted">
+        <strong>Внесено в МойКласс</strong>
+        ${pi.mk_payment_id ? `<div style="font-size:11px;margin-top:4px">MK payment ID: <strong>${escapeHtml(String(pi.mk_payment_id))}</strong></div>` : ""}
+        ${pi.mk_posted_at ? `<div style="font-size:11px">Дата внесения: ${escapeHtml(String(pi.mk_posted_at).slice(0,10))}</div>` : ""}
+        ${pi.mk_invoice_id ? `<div style="font-size:10px;color:var(--muted)">Счёт МК: ${escapeHtml(String(pi.mk_invoice_id))}</div>` : ""}
+       </div>`
+    : "";
+
+  const canMkPost = pi.status === "paid" && canPostToMoyklass();
+  const mkPostBtn = canMkPost
+    ? `<button class="primary" style="font-size:12px;padding:4px 10px" onclick="openMkPostModal('${escapeHtml(pi.public_id)}','${cancelSafeName}',${amountVal})">Внести в МойКласс</button>`
     : "";
 
   const extraCls = pi.status === "cancelled" ? " pi-card-cancelled"
@@ -11713,8 +11728,8 @@ function renderPaymentIntentCard(pi) {
       ${statusChip}${purposeChip}${period}${method}
     </div>
     ${sourceBadge}
-    ${comment}${cancelInfo}${bePaidCreatingBlock}${bePaidRequiresCheckBlock}${bePaidInfo}${bePaidPaidBlock}
-    <div class="pi-card-footer">${bePaidBtn}${cancelBtn}</div>
+    ${comment}${cancelInfo}${bePaidCreatingBlock}${bePaidRequiresCheckBlock}${bePaidInfo}${bePaidPaidBlock}${mkPostedBlock}
+    <div class="pi-card-footer">${bePaidBtn}${mkPostBtn}${cancelBtn}</div>
     <div class="pi-card-id">${escapeHtml(pi.public_id)} · mk_user_id: ${pi.mk_user_id} · ${createdAt} ${createdBy}</div>
   </div>`;
 }
@@ -12018,6 +12033,233 @@ function showToast(msg) {
     t.classList.add("pi-toast-visible");
     t._timeout = setTimeout(() => { t.classList.remove("pi-toast-visible"); }, 3000);
   });
+}
+
+// ── MoyKlass Manual Payment Posting (v7.0.92) ────────────────────────────
+
+function canPostToMoyklass() {
+  const r = state.me?.role || "";
+  return ["owner", "admin"].includes(r);
+}
+
+let _piMkPostTarget = null;  // { publicId, name, amountByn }
+let _piMkPostFingerprint = "";
+let _piMkPostPending = false;
+
+window.openMkPostModal = function(publicId, name, amountByn) {
+  if (!canPostToMoyklass()) return;
+  _piMkPostTarget = { publicId, name, amountByn };
+  _piMkPostFingerprint = "";
+  _piMkPostPending = false;
+
+  const readinessPanel = $("piMkPostReadinessPanel");
+  const confirmPanel = $("piMkPostConfirmPanel");
+  const successPanel = $("piMkPostSuccessPanel");
+  const errEl = $("piMkPostError");
+  const readinessBtn = $("piMkPostReadinessBtn");
+  const confirmBtn = $("piMkPostConfirmBtn");
+  const reconcileBtn = $("piMkReconcileBtn");
+
+  if (readinessPanel) { readinessPanel.innerHTML = ""; readinessPanel.classList.add("hidden"); }
+  if (confirmPanel) { confirmPanel.innerHTML = ""; confirmPanel.classList.add("hidden"); }
+  if (successPanel) { successPanel.innerHTML = ""; successPanel.classList.add("hidden"); }
+  if (errEl) { errEl.textContent = ""; errEl.classList.add("hidden"); }
+  if (readinessBtn) readinessBtn.classList.remove("hidden");
+  if (confirmBtn) confirmBtn.classList.add("hidden");
+  if (reconcileBtn) reconcileBtn.classList.add("hidden");
+
+  piModalOpen($("piMkPostModal"));
+};
+
+function closeMkPostModal() {
+  _piMkPostTarget = null;
+  _piMkPostFingerprint = "";
+  _piMkPostPending = false;
+  piModalClose($("piMkPostModal"), () => {});
+}
+
+async function loadMkPostReadiness() {
+  if (!_piMkPostTarget) return;
+  const { publicId } = _piMkPostTarget;
+  const readinessBtn = $("piMkPostReadinessBtn");
+  const readinessPanel = $("piMkPostReadinessPanel");
+  const errEl = $("piMkPostError");
+
+  if (readinessBtn) { readinessBtn.disabled = true; readinessBtn.textContent = "Проверяю..."; }
+  if (errEl) { errEl.textContent = ""; errEl.classList.add("hidden"); }
+
+  try {
+    const data = await apiGet(`/api/payments/intents/${encodeURIComponent(publicId)}/moyklass-post-readiness`);
+    if (readinessPanel) {
+      readinessPanel.classList.remove("hidden");
+      const checks = data.checks || [];
+      const warnings = data.warnings || [];
+      const preview = data.preview || {};
+      const allOk = data.ready === true;
+
+      const checksHtml = checks.map(c => `
+        <div class="mk-readiness-check ${c.ok ? "ok" : "fail"}">
+          <span class="mk-readiness-icon">${c.ok ? "✓" : "✗"}</span>
+          <span class="mk-readiness-label">${escapeHtml(c.label || c.code || "")}</span>
+          ${!c.ok ? `<span class="mk-readiness-detail">${escapeHtml(c.detail || "")}</span>` : ""}
+        </div>
+      `).join("");
+
+      const warningsHtml = warnings.length
+        ? `<div class="mk-readiness-warnings">${warnings.map(w => `<div class="mk-readiness-warning">⚠ ${escapeHtml(w)}</div>`).join("")}</div>`
+        : "";
+
+      let previewHtml = "";
+      if (allOk && preview) {
+        const paidByn = preview.paid_amount_byn != null
+          ? fmtByn(preview.paid_amount_byn)
+          : (preview.paid_amount_minor ? fmtByn(preview.paid_amount_minor / 100) : "—");
+        const remainByn = preview.invoice_remaining_minor != null
+          ? fmtByn(preview.invoice_remaining_minor / 100) : "—";
+        previewHtml = `
+          <div class="mk-post-preview">
+            <div class="mk-post-preview-row"><span>Ученик</span><strong>${escapeHtml(preview.student_name || String(preview.mk_user_id || "?"))}</strong></div>
+            <div class="mk-post-preview-row"><span>Счёт МК</span><strong>#${escapeHtml(String(preview.mk_invoice_id || "—"))}</strong></div>
+            ${preview.mk_user_subscription_id ? `<div class="mk-post-preview-row"><span>Абонемент</span><strong>#${escapeHtml(String(preview.mk_user_subscription_id))}</strong></div>` : ""}
+            <div class="mk-post-preview-row"><span>Остаток счёта</span><strong>${remainByn}</strong></div>
+            <div class="mk-post-preview-row"><span>Сумма bePaid</span><strong>${paidByn}</strong></div>
+            <div class="mk-post-preview-row"><span>Дата оплаты</span><strong>${escapeHtml((preview.paid_at || "").slice(0,10))}</strong></div>
+            <div class="mk-post-preview-row"><span>Transaction UID</span><code style="font-size:10px">${escapeHtml((preview.transaction_uid || "").slice(0,16))}...</code></div>
+            <div class="mk-post-preview-row"><span>Метод</span><strong>${escapeHtml(preview.payment_method_label || "bePaid ЕРИП")}</strong></div>
+          </div>
+          <div class="mk-post-warning-serious">
+            ⚠ Будет создана реальная оплата в МойКласс. Операцию нельзя повторять.
+          </div>
+        `;
+      }
+
+      readinessPanel.innerHTML = `
+        <div class="mk-readiness-checks">${checksHtml}</div>
+        ${warningsHtml}
+        ${previewHtml}
+        ${data.invoice_error ? `<div style="color:var(--red);font-size:12px;margin-top:6px">${escapeHtml(data.invoice_error)}</div>` : ""}
+      `;
+    }
+
+    if (data.ready) {
+      _piMkPostFingerprint = data.snapshot_fingerprint || "";
+      const confirmBtn = $("piMkPostConfirmBtn");
+      if (confirmBtn) {
+        const byn = _piMkPostTarget.amountByn;
+        confirmBtn.textContent = `Внести ${fmtByn(byn)}`;
+        confirmBtn.classList.remove("hidden");
+        confirmBtn.disabled = false;
+      }
+      if (readinessBtn) readinessBtn.classList.add("hidden");
+    } else {
+      if (readinessBtn) { readinessBtn.disabled = false; readinessBtn.textContent = "Проверить снова"; }
+    }
+  } catch (err) {
+    if (errEl) {
+      errEl.textContent = `Ошибка: ${err.message || String(err)}`;
+      errEl.classList.remove("hidden");
+    }
+    if (readinessBtn) { readinessBtn.disabled = false; readinessBtn.textContent = "Повторить проверку"; }
+  }
+}
+
+async function confirmPostToMoyklass() {
+  if (!_piMkPostTarget || !_piMkPostFingerprint) return;
+  if (_piMkPostPending) return;
+  const { publicId, amountByn } = _piMkPostTarget;
+  const confirmBtn = $("piMkPostConfirmBtn");
+  const errEl = $("piMkPostError");
+  const successPanel = $("piMkPostSuccessPanel");
+
+  _piMkPostPending = true;
+  if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = "Отправляю..."; }
+  if (errEl) { errEl.textContent = ""; errEl.classList.add("hidden"); }
+
+  try {
+    const data = await apiPost(`/api/payments/intents/${encodeURIComponent(publicId)}/post-to-moyklass`, {
+      confirm: true,
+      snapshot_fingerprint: _piMkPostFingerprint,
+    });
+
+    if (data.ok || data.idempotent) {
+      const mkId = data.mk_payment_id || data.mk_payment_id;
+      const postedAt = (data.posted_at || data.summary?.posted_at || "").slice(0, 10);
+      if (successPanel) {
+        successPanel.classList.remove("hidden");
+        successPanel.innerHTML = `
+          <div class="mk-post-success">
+            <div class="mk-post-success-icon">✓</div>
+            <div class="mk-post-success-title">Внесено в МойКласс</div>
+            ${mkId ? `<div style="font-size:13px;margin-top:6px">Payment ID: <strong>${escapeHtml(String(mkId))}</strong></div>` : ""}
+            ${postedAt ? `<div style="font-size:12px;color:var(--muted)">Дата: ${escapeHtml(postedAt)}</div>` : ""}
+          </div>
+        `;
+      }
+      if (confirmBtn) confirmBtn.classList.add("hidden");
+      if ($("piMkPostReadinessPanel")) $("piMkPostReadinessPanel").classList.add("hidden");
+      if ($("piMkPostConfirmPanel")) $("piMkPostConfirmPanel").classList.add("hidden");
+      loadPaymentIntents();  // refresh card list
+    } else {
+      _piMkPostPending = false;
+      if (errEl) {
+        errEl.textContent = data.error || "Ошибка внесения в МойКласс";
+        errEl.classList.remove("hidden");
+      }
+      if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = `Внести ${fmtByn(amountByn)}`; }
+      if (data.error_code === "ambiguous_requires_reconciliation" || data.block_reason === "ambiguous_requires_reconciliation") {
+        if ($("piMkReconcileBtn")) $("piMkReconcileBtn").classList.remove("hidden");
+        if (confirmBtn) confirmBtn.classList.add("hidden");
+      }
+    }
+  } catch (err) {
+    _piMkPostPending = false;
+    if (errEl) {
+      errEl.textContent = `Ошибка запроса: ${err.message || String(err)}`;
+      errEl.classList.remove("hidden");
+    }
+    if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = `Внести ${fmtByn(amountByn)}`; }
+  }
+}
+
+async function reconcileMkPayment() {
+  if (!_piMkPostTarget) return;
+  const { publicId } = _piMkPostTarget;
+  const errEl = $("piMkPostError");
+  const reconcileBtn = $("piMkReconcileBtn");
+  const successPanel = $("piMkPostSuccessPanel");
+
+  if (reconcileBtn) { reconcileBtn.disabled = true; reconcileBtn.textContent = "Ищу..."; }
+  if (errEl) { errEl.textContent = ""; errEl.classList.add("hidden"); }
+
+  try {
+    const data = await apiPost(`/api/payments/intents/${encodeURIComponent(publicId)}/reconcile-moyklass-payment`, {});
+    if (data.reconciled || data.already_posted) {
+      if (successPanel) {
+        successPanel.classList.remove("hidden");
+        successPanel.innerHTML = `
+          <div class="mk-post-success">
+            <div class="mk-post-success-icon">✓</div>
+            <div class="mk-post-success-title">Оплата найдена в МойКласс</div>
+            ${data.mk_payment_id ? `<div style="font-size:13px;margin-top:4px">Payment ID: <strong>${escapeHtml(String(data.mk_payment_id))}</strong></div>` : ""}
+          </div>
+        `;
+      }
+      if (reconcileBtn) reconcileBtn.classList.add("hidden");
+      loadPaymentIntents();
+    } else {
+      if (errEl) {
+        errEl.textContent = data.message || data.error || "Оплата в МойКласс не найдена.";
+        errEl.classList.remove("hidden");
+      }
+      if (reconcileBtn) { reconcileBtn.disabled = false; reconcileBtn.textContent = "Проверить в МойКласс"; }
+    }
+  } catch (err) {
+    if (errEl) {
+      errEl.textContent = `Ошибка: ${err.message || String(err)}`;
+      errEl.classList.remove("hidden");
+    }
+    if (reconcileBtn) { reconcileBtn.disabled = false; reconcileBtn.textContent = "Проверить в МойКласс"; }
+  }
 }
 
 // ── MK Invoices (v7.0.90) ────────────────────────────────────────────────
@@ -12455,6 +12697,14 @@ document.addEventListener("DOMContentLoaded", () => {
   $("piBePaidModalBack")?.addEventListener("click", closeBePaidModal);
   $("piBePaidModalClose")?.addEventListener("click", closeBePaidModal);
   $("piBePaidModal")?.addEventListener("click", e => { if (e.target === $("piBePaidModal")) closeBePaidModal(); });
+
+  // MoyKlass post modal (v7.0.92)
+  $("piMkPostModalBack")?.addEventListener("click", closeMkPostModal);
+  $("piMkPostModalClose")?.addEventListener("click", closeMkPostModal);
+  $("piMkPostModal")?.addEventListener("click", e => { if (e.target === $("piMkPostModal")) closeMkPostModal(); });
+  $("piMkPostReadinessBtn")?.addEventListener("click", loadMkPostReadiness);
+  $("piMkPostConfirmBtn")?.addEventListener("click", confirmPostToMoyklass);
+  $("piMkReconcileBtn")?.addEventListener("click", reconcileMkPayment);
 
   // Event delegation for dynamically rendered invoice-card buttons
   document.addEventListener("click", e => {

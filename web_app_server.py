@@ -89,6 +89,7 @@ FOOD_MENU_DELETE_ROLES = {"kitchen", "restaurant", "owner", "admin", "operations
 FOOD_ADMIN_EDIT_ROLES = {"owner", "admin", "operations"}
 BEPAID_RECONCILE_ROLES = {"owner", "admin", "director", "operations", "client_manager"}
 PAYMENT_INTENT_ROLES = {"owner", "admin", "director", "operations", "client_manager"}
+PAYMENT_MK_POST_ROLES = {"owner", "admin"}  # only senior roles may post to MoyKlass
 ADMIN_TABS_BY_ROLE = {
     "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
     "admin": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
@@ -108,6 +109,26 @@ def _json_default(value: Any) -> str:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     return str(value)
+
+
+def _compute_moyklass_post_fingerprint(intent: dict, invoice: dict) -> str:
+    """Compute a stable, secret-free fingerprint for a readiness snapshot.
+
+    Changes if the invoice amount/payed changes between preview and confirm.
+    Does not include timestamps or personal data.
+    """
+    parts = [
+        "v7.0.92",
+        str(intent.get("public_id") or ""),
+        str(intent.get("paid_transaction_uid") or ""),
+        str(intent.get("paid_amount_minor") or ""),
+        str(intent.get("paid_currency") or ""),
+        str(intent.get("mk_invoice_id") or ""),
+        f"{float(invoice.get('price') or 0):.2f}",
+        f"{float(invoice.get('payed') or 0):.2f}",
+        str(invoice.get("createdAt") or ""),
+    ]
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
 
 
 def _parse_query(path: str) -> tuple[str, dict[str, str]]:
@@ -9120,6 +9141,722 @@ class MiniAppContext:
             "webhook_audit": audit,
         }
 
+    # ── v7.0.92: MoyKlass manual payment posting ──────────────────────────────
+
+    def _require_moyklass_post_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in PAYMENT_MK_POST_ROLES:
+            return {"ok": False, "error": "Внесение оплаты в МойКласс доступно только owner и admin."}
+        return None
+
+    def payment_intent_moyklass_readiness(self, auth: dict[str, Any], public_id: str) -> dict[str, Any]:
+        """GET /api/payments/intents/{id}/moyklass-post-readiness — read-only pre-flight check.
+
+        Fetches the live invoice from MoyKlass and verifies all preconditions.
+        Does NOT modify any state.
+        """
+        from decimal import Decimal, ROUND_HALF_UP
+
+        denied = self._require_moyklass_post_access(auth)
+        if denied:
+            return denied
+
+        intent = self.storage.get_payment_intent(public_id)
+        if not intent:
+            return {"ok": False, "error": "Черновик платежа не найден", "public_id": public_id}
+
+        cfg = self.settings
+        checks: list[dict] = []
+        warnings: list[str] = []
+
+        def _check(code: str, ok: bool, label: str, detail: str = "") -> bool:
+            checks.append({"code": code, "ok": ok, "label": label, "detail": detail})
+            return ok
+
+        # — Local intent checks —
+        _check("intent_paid", intent.get("status") == "paid",
+               "Оплата подтверждена bePaid", f"status={intent.get('status')}")
+        _check("webhook_verified", bool(intent.get("webhook_verified")),
+               "Webhook верифицирован", f"verified={intent.get('webhook_verified')}")
+        _check("has_tx_uid", bool(intent.get("paid_transaction_uid")),
+               "Transaction UID присутствует", f"uid={str(intent.get('paid_transaction_uid') or '')[:8]}...")
+        _check("not_test_transaction", not bool(intent.get("is_test")),
+               "Не тестовая транзакция", f"is_test={intent.get('is_test')}")
+        _check("currency_byn", str(intent.get("paid_currency") or "").upper() == "BYN",
+               "Валюта BYN", f"currency={intent.get('paid_currency')}")
+        _check("paid_amount_positive", int(intent.get("paid_amount_minor") or 0) > 0,
+               "Сумма оплаты положительная", f"paid_amount_minor={intent.get('paid_amount_minor')}")
+        _check("amounts_match",
+               int(intent.get("paid_amount_minor") or 0) == int(intent.get("amount_minor") or -1),
+               "Сумма bePaid = сумме intent",
+               f"paid={intent.get('paid_amount_minor')}_expected={intent.get('amount_minor')}")
+        _check("source_is_invoice", intent.get("source") == "moyklass_invoice",
+               "Источник — счёт МойКласс", f"source={intent.get('source')}")
+        _check("has_mk_user_id", bool(intent.get("mk_user_id")),
+               "mk_user_id присутствует", f"mk_user_id={intent.get('mk_user_id')}")
+        _check("has_mk_invoice_id", bool(intent.get("mk_invoice_id")),
+               "mk_invoice_id присутствует", f"mk_invoice_id={intent.get('mk_invoice_id')}")
+        _check("not_cancelled", intent.get("status") not in ("cancelled", "error"),
+               "Intent не отменён", f"status={intent.get('status')}")
+        _check("not_requires_check", intent.get("status") != "bepaid_requires_check",
+               "Нет статуса requires_check", f"status={intent.get('status')}")
+        _check("not_already_posted", intent.get("status") != "posted_to_moyklass",
+               "Ещё не внесено в МойКласс", f"status={intent.get('status')}")
+        _check("no_mk_payment_id", not intent.get("mk_payment_id"),
+               "MK payment ID не сохранён", f"mk_payment_id={intent.get('mk_payment_id')}")
+        _check("no_active_claim",
+               intent.get("mk_posting_status") not in ("claiming", "ambiguous"),
+               "Нет активного claim", f"mk_posting_status={intent.get('mk_posting_status')}")
+        _check("auto_post_disabled",
+               not getattr(cfg, "bepaid_auto_post_to_moyklass", True),
+               "BEPAID_AUTO_POST_TO_MOYKLASS=false",
+               "disabled" if not getattr(cfg, "bepaid_auto_post_to_moyklass", True) else "WARNING:enabled")
+
+        # — Payment type config check —
+        payment_type_id = int(getattr(cfg, "moyklass_erip_payment_type_id", 0) or 0)
+        _check("payment_type_configured", payment_type_id > 0,
+               "Тип оплаты МойКласс настроен",
+               f"MOYKLASS_ERIP_PAYMENT_TYPE_ID={payment_type_id if payment_type_id > 0 else 'not set'}")
+
+        # — MK subscription check (if source is invoice) —
+        mk_sub_id = intent.get("mk_user_subscription_id")
+        if mk_sub_id and _check("has_mk_subscription_id", bool(mk_sub_id),
+                                "Абонемент присутствует", f"mk_user_subscription_id={mk_sub_id}"):
+            pass  # will be included in posting payload
+
+        # Short-circuit before MK invoice fetch if local checks already fail
+        local_failed = [c for c in checks if not c["ok"]]
+        invoice: dict = {}
+        invoice_remaining_minor: int = -1
+        invoice_error: str = ""
+        paid_amount_minor = int(intent.get("paid_amount_minor") or 0)
+        mk_invoice_id_str = str(intent.get("mk_invoice_id") or "")
+        mk_user_id = int(intent.get("mk_user_id") or 0)
+
+        if not local_failed and mk_invoice_id_str and mk_user_id and self.moyklass.is_configured:
+            try:
+                inv_result = self.moyklass.get_invoice_by_id(int(mk_invoice_id_str))
+                if inv_result.ok and isinstance(inv_result.data, dict):
+                    invoice = inv_result.data
+                    inv_user_id = int(invoice.get("userId") or 0)
+                    _check("invoice_belongs_to_user", inv_user_id == mk_user_id,
+                           "Счёт принадлежит ученику",
+                           f"invoice.userId={inv_user_id}_expected={mk_user_id}")
+                    inv_sub_id = invoice.get("userSubscriptionId")
+                    if mk_sub_id:
+                        sub_match = (inv_sub_id is None or int(inv_sub_id or 0) == int(mk_sub_id or 0))
+                        _check("invoice_subscription_matches", sub_match,
+                               "Абонемент счёта совпадает",
+                               f"invoice.userSubscriptionId={inv_sub_id}_expected={mk_sub_id}")
+                    price_dec = Decimal(str(invoice.get("price") or 0))
+                    payed_dec = Decimal(str(invoice.get("payed") or 0))
+                    remaining_dec = (price_dec - payed_dec).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+                    invoice_remaining_minor = int(
+                        (remaining_dec * 100).to_integral_value(rounding=ROUND_HALF_UP)
+                    )
+                    _check("invoice_remaining_positive", invoice_remaining_minor > 0,
+                           "Остаток счёта > 0", f"remaining_minor={invoice_remaining_minor}")
+                    _check("invoice_remaining_matches_paid",
+                           invoice_remaining_minor == paid_amount_minor,
+                           "Остаток счёта = сумме оплаты",
+                           f"remaining={invoice_remaining_minor}_paid={paid_amount_minor}")
+                    if invoice_remaining_minor != paid_amount_minor:
+                        warnings.append(
+                            f"Остаток счёта {invoice_remaining_minor} коп. ≠ оплачено {paid_amount_minor} коп. "
+                            f"Частичный платёж не поддерживается в v7.0.92."
+                        )
+                elif inv_result.status == 404:
+                    _check("invoice_exists", False,
+                           "Счёт МойКласс найден", f"invoice_id={mk_invoice_id_str} → 404 Not Found")
+                    invoice_error = f"Счёт {mk_invoice_id_str} не найден в МойКласс"
+                else:
+                    _check("invoice_fetch_ok", False,
+                           "Счёт МойКласс доступен",
+                           f"status={inv_result.status} error={inv_result.error[:100]}")
+                    invoice_error = f"Ошибка получения счёта: HTTP {inv_result.status}"
+            except Exception as e:
+                _check("invoice_fetch_ok", False, "Счёт МойКласс доступен",
+                       f"exception={str(e)[:100]}")
+                invoice_error = f"Исключение при получении счёта: {str(e)[:200]}"
+        elif not self.moyklass.is_configured:
+            _check("moyklass_configured", False, "МойКласс API настроен", "MOYKLASS_API_KEY не задан")
+
+        # Audit
+        self.storage.log_moyklass_post_audit(
+            "moyklass_post_readiness_checked",
+            intent_public_id=public_id,
+            payment_intent_id=int(intent.get("id") or 0) or None,
+            transaction_uid=str(intent.get("paid_transaction_uid") or "") or None,
+            mk_user_id=mk_user_id or None,
+            mk_invoice_id=mk_invoice_id_str or None,
+            mk_user_subscription_id=str(mk_sub_id or "") or None,
+            amount_minor=paid_amount_minor or None,
+            currency=str(intent.get("paid_currency") or "") or None,
+            invoice_remaining_minor=invoice_remaining_minor if invoice_remaining_minor >= 0 else None,
+            result="ready" if all(c["ok"] for c in checks) else "not_ready",
+        )
+
+        all_ok = all(c["ok"] for c in checks)
+        fingerprint = _compute_moyklass_post_fingerprint(intent, invoice) if (all_ok and invoice) else ""
+
+        paid_byn = float(Decimal(str(paid_amount_minor)) / Decimal("100")) if paid_amount_minor else None
+        preview: dict = {
+            "intent_public_id": public_id,
+            "student_name": intent.get("student_name"),
+            "mk_user_id": mk_user_id,
+            "mk_invoice_id": mk_invoice_id_str or None,
+            "mk_user_subscription_id": int(mk_sub_id) if mk_sub_id else None,
+            "invoice_total_minor": int(
+                (Decimal(str(invoice.get("price") or 0)) * 100).to_integral_value(rounding=ROUND_HALF_UP)
+            ) if invoice else None,
+            "invoice_paid_minor": int(
+                (Decimal(str(invoice.get("payed") or 0)) * 100).to_integral_value(rounding=ROUND_HALF_UP)
+            ) if invoice else None,
+            "invoice_remaining_minor": invoice_remaining_minor if invoice_remaining_minor >= 0 else None,
+            "paid_amount_minor": paid_amount_minor or None,
+            "paid_amount_byn": paid_byn,
+            "currency": str(intent.get("paid_currency") or "BYN"),
+            "paid_at": str(intent.get("paid_at") or "") or None,
+            "transaction_uid": str(intent.get("paid_transaction_uid") or "") or None,
+            "payment_method_label": "bePaid ЕРИП",
+            "payment_type_id": payment_type_id if payment_type_id > 0 else None,
+        }
+
+        return {
+            "ok": True,
+            "ready": all_ok,
+            "checks": checks,
+            "warnings": warnings,
+            "preview": preview,
+            "snapshot_fingerprint": fingerprint,
+            "invoice_error": invoice_error or None,
+        }
+
+    def payment_intent_post_to_moyklass(
+        self, auth: dict[str, Any], public_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """POST /api/payments/intents/{id}/post-to-moyklass — create payment in MoyKlass.
+
+        Requires: confirm=true, snapshot_fingerprint from readiness endpoint.
+        Atomic claim guards against double-click and concurrent requests.
+        """
+        from decimal import Decimal, ROUND_HALF_UP
+        import json as _json
+
+        denied = self._require_moyklass_post_access(auth)
+        if denied:
+            return denied
+
+        if not body.get("confirm"):
+            return {"ok": False, "error": "confirm=true обязателен"}
+
+        client_fingerprint = str(body.get("snapshot_fingerprint") or "").strip()
+        if not client_fingerprint:
+            return {"ok": False, "error": "snapshot_fingerprint обязателен"}
+
+        user_id_str = str(auth.get("user_id") or "")
+
+        # 1. Load intent
+        intent = self.storage.get_payment_intent(public_id)
+        if not intent:
+            return {"ok": False, "error": "Черновик не найден"}
+
+        # 2. Idempotency: already posted
+        if intent.get("status") == "posted_to_moyklass" and intent.get("mk_payment_id"):
+            self.storage.log_moyklass_post_audit(
+                "moyklass_post_already_done",
+                intent_public_id=public_id,
+                payment_intent_id=int(intent.get("id") or 0) or None,
+                mk_payment_id=int(intent.get("mk_payment_id") or 0) or None,
+            )
+            return {
+                "ok": True, "idempotent": True,
+                "mk_payment_id": intent.get("mk_payment_id"),
+                "intent_status": intent.get("status"),
+            }
+
+        # 3. Guard: ambiguous state blocks retry
+        if intent.get("mk_posting_status") == "ambiguous":
+            self.storage.log_moyklass_post_audit(
+                "moyklass_post_blocked",
+                intent_public_id=public_id,
+                reason="ambiguous_state_blocks_retry",
+            )
+            return {
+                "ok": False,
+                "error": "Не удалось определить, создалась ли оплата в МойКласс. "
+                         "Повторная отправка заблокирована до проверки. "
+                         "Используйте «Проверить в МойКласс».",
+                "block_reason": "ambiguous_requires_reconciliation",
+            }
+
+        # 4. Guard: wrong state
+        if intent.get("status") != "paid":
+            self.storage.log_moyklass_post_audit(
+                "moyklass_post_blocked",
+                intent_public_id=public_id,
+                reason=f"wrong_status:{intent.get('status')}",
+            )
+            return {"ok": False, "error": f"Оплата bePaid ещё не подтверждена (статус: {intent.get('status')})"}
+
+        cfg = self.settings
+        mk_user_id = int(intent.get("mk_user_id") or 0)
+        mk_invoice_id_str = str(intent.get("mk_invoice_id") or "")
+        mk_sub_id_str = str(intent.get("mk_user_subscription_id") or "")
+        paid_amount_minor = int(intent.get("paid_amount_minor") or 0)
+        payment_type_id = int(getattr(cfg, "moyklass_erip_payment_type_id", 0) or 0)
+
+        # 5. Quick sanity checks
+        if not mk_user_id:
+            return {"ok": False, "error": "mk_user_id отсутствует"}
+        if not mk_invoice_id_str:
+            return {"ok": False, "error": "mk_invoice_id отсутствует"}
+        if paid_amount_minor <= 0:
+            return {"ok": False, "error": "paid_amount_minor отсутствует или равен 0"}
+        if payment_type_id <= 0:
+            self.storage.log_moyklass_post_audit(
+                "moyklass_post_config_missing",
+                intent_public_id=public_id,
+                reason="moyklass_erip_payment_type_id_not_set",
+            )
+            return {"ok": False, "error": "Не настроен тип оплаты МойКласс (MOYKLASS_ERIP_PAYMENT_TYPE_ID)"}
+        if not self.moyklass.is_configured:
+            return {"ok": False, "error": "МойКласс API не настроен"}
+
+        # 6. Atomic claim
+        claimed = self.storage.payment_intent_claim_moyklass_post(public_id, user_id_str)
+        if not claimed:
+            self.storage.log_moyklass_post_audit(
+                "moyklass_post_duplicate_blocked",
+                intent_public_id=public_id,
+                reason="claim_already_held",
+            )
+            return {
+                "ok": False,
+                "error": "Операцию уже выполняет другой запрос. Подождите и проверьте статус.",
+                "block_reason": "claim_conflict",
+            }
+
+        self.storage.log_moyklass_post_audit(
+            "moyklass_post_claimed",
+            intent_public_id=public_id,
+            payment_intent_id=int(intent.get("id") or 0) or None,
+            transaction_uid=str(intent.get("paid_transaction_uid") or "") or None,
+            mk_user_id=mk_user_id,
+            mk_invoice_id=mk_invoice_id_str,
+            mk_user_subscription_id=mk_sub_id_str or None,
+            amount_minor=paid_amount_minor,
+            currency=str(intent.get("paid_currency") or "BYN"),
+        )
+
+        try:
+            # 7. Re-fetch intent to get latest state
+            intent = self.storage.get_payment_intent(public_id) or intent
+
+            # 8. Re-fetch live invoice from MoyKlass
+            inv_result = self.moyklass.get_invoice_by_id(int(mk_invoice_id_str))
+            if not inv_result.ok:
+                self.storage.payment_intent_release_moyklass_claim(
+                    public_id,
+                    error=f"invoice_fetch_failed:status={inv_result.status}:{inv_result.error[:200]}",
+                )
+                self.storage.log_moyklass_post_audit(
+                    "moyklass_post_blocked",
+                    intent_public_id=public_id,
+                    mk_invoice_id=mk_invoice_id_str,
+                    reason=f"invoice_fetch_failed:HTTP_{inv_result.status}",
+                )
+                return {
+                    "ok": False,
+                    "error": f"Не удалось получить счёт МойКласс: HTTP {inv_result.status}",
+                }
+            if not isinstance(inv_result.data, dict):
+                self.storage.payment_intent_release_moyklass_claim(
+                    public_id, error="invoice_fetch_bad_data"
+                )
+                return {"ok": False, "error": "МойКласс вернул некорректный ответ по счёту"}
+            invoice = inv_result.data
+
+            # 9. Verify invoice belongs to correct user
+            inv_user_id = int(invoice.get("userId") or 0)
+            if inv_user_id != mk_user_id:
+                self.storage.payment_intent_release_moyklass_claim(
+                    public_id, error=f"invoice_user_mismatch:{inv_user_id}!={mk_user_id}"
+                )
+                self.storage.log_moyklass_post_audit(
+                    "moyklass_post_invoice_mismatch",
+                    intent_public_id=public_id,
+                    mk_invoice_id=mk_invoice_id_str,
+                    reason=f"invoice_userId={inv_user_id}_expected={mk_user_id}",
+                )
+                return {
+                    "ok": False,
+                    "error": f"Счёт принадлежит другому ученику (userId={inv_user_id})",
+                }
+
+            # 10. Compute and verify fingerprint
+            new_fingerprint = _compute_moyklass_post_fingerprint(intent, invoice)
+            if new_fingerprint != client_fingerprint:
+                self.storage.payment_intent_release_moyklass_claim(
+                    public_id, error=f"fingerprint_mismatch"
+                )
+                self.storage.log_moyklass_post_audit(
+                    "moyklass_post_invoice_changed",
+                    intent_public_id=public_id,
+                    mk_invoice_id=mk_invoice_id_str,
+                    fingerprint=new_fingerprint,
+                    reason="fingerprint_mismatch_invoice_changed_after_preview",
+                )
+                return {
+                    "ok": False,
+                    "error": "Счёт изменился после предварительной проверки. Выполните проверку заново.",
+                    "error_code": "invoice_changed_after_preview",
+                    "http_status": 409,
+                }
+
+            # 11. Verify remaining amount
+            price_dec = Decimal(str(invoice.get("price") or 0))
+            payed_dec = Decimal(str(invoice.get("payed") or 0))
+            remaining_dec = (price_dec - payed_dec).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            invoice_remaining_minor = int(
+                (remaining_dec * 100).to_integral_value(rounding=ROUND_HALF_UP)
+            )
+            if invoice_remaining_minor != paid_amount_minor:
+                self.storage.payment_intent_release_moyklass_claim(
+                    public_id,
+                    error=f"remaining_mismatch:remaining={invoice_remaining_minor}_paid={paid_amount_minor}",
+                )
+                self.storage.log_moyklass_post_audit(
+                    "moyklass_post_invoice_mismatch",
+                    intent_public_id=public_id,
+                    mk_invoice_id=mk_invoice_id_str,
+                    amount_minor=paid_amount_minor,
+                    invoice_remaining_minor=invoice_remaining_minor,
+                    reason=f"amount_mismatch:expected={invoice_remaining_minor}_got={paid_amount_minor}",
+                )
+                return {
+                    "ok": False,
+                    "error": f"Сумма bePaid не совпадает с остатком счёта "
+                             f"({paid_amount_minor} коп. ≠ {invoice_remaining_minor} коп.)",
+                }
+
+            # 12. Build MoyKlass payment payload
+            summa_byn = float(Decimal(str(paid_amount_minor)) / Decimal("100"))
+            paid_date = str(intent.get("paid_at") or "")[:10]  # YYYY-MM-DD
+            if not paid_date:
+                paid_date = str(intent.get("updated_at") or "")[:10]
+            mk_sub_id_int = int(mk_sub_id_str) if mk_sub_id_str and mk_sub_id_str.isdigit() else None
+            mk_filial_id = int(intent.get("mk_filial_id") or 0) or None
+            comment_parts = [
+                f"Yellow Club bePaid intent={public_id}",
+                f"tx={str(intent.get('paid_transaction_uid') or '')[:12]}",
+                f"inv={mk_invoice_id_str}",
+            ]
+            comment = " ".join(comment_parts)[:500]
+
+            self.storage.log_moyklass_post_audit(
+                "moyklass_post_started",
+                intent_public_id=public_id,
+                payment_intent_id=int(intent.get("id") or 0) or None,
+                transaction_uid=str(intent.get("paid_transaction_uid") or "") or None,
+                mk_user_id=mk_user_id,
+                mk_invoice_id=mk_invoice_id_str,
+                mk_user_subscription_id=mk_sub_id_str or None,
+                amount_minor=paid_amount_minor,
+                currency=str(intent.get("paid_currency") or "BYN"),
+                invoice_remaining_minor=invoice_remaining_minor,
+                fingerprint=new_fingerprint,
+            )
+            log.info(
+                "MoyKlass payment post started intent=%s invoice=%s amount_minor=%s",
+                public_id, mk_invoice_id_str, paid_amount_minor,
+            )
+
+            # 13. POST to MoyKlass
+            mk_result = self.moyklass.create_payment(
+                user_id=mk_user_id,
+                date=paid_date,
+                summa=summa_byn,
+                payment_type_id=payment_type_id,
+                optype="income",
+                filial_id=mk_filial_id,
+                user_subscription_id=mk_sub_id_int,
+                comment=comment,
+            )
+
+        except Exception as exc:
+            reason = f"exception_before_mk_post:{str(exc)[:200]}"
+            self.storage.payment_intent_mark_moyklass_ambiguous(public_id, reason)
+            self.storage.log_moyklass_post_audit(
+                "moyklass_post_ambiguous",
+                intent_public_id=public_id,
+                reason=reason,
+            )
+            log.exception("MoyKlass payment post: pre-POST exception intent=%s", public_id)
+            return {"ok": False, "error": f"Ошибка до отправки: {str(exc)[:200]}"}
+
+        # — Handle MoyKlass response —
+        if mk_result.ok and isinstance(mk_result.data, dict):
+            mk_payment_id = int(mk_result.data.get("id") or 0)
+            if mk_payment_id <= 0:
+                # Unexpected but positive response without id → treat as ambiguous
+                reason = "mk_response_ok_but_no_id"
+                self.storage.payment_intent_mark_moyklass_ambiguous(public_id, reason)
+                self.storage.log_moyklass_post_audit(
+                    "moyklass_post_ambiguous", intent_public_id=public_id, reason=reason
+                )
+                log.warning("MoyKlass payment post: ok but no id intent=%s data=%s",
+                            public_id, str(mk_result.data)[:200])
+                return {
+                    "ok": False,
+                    "error": "МойКласс принял запрос, но не вернул payment ID. "
+                             "Проверьте вручную.",
+                }
+            from utils import now_iso
+            posted_at = now_iso()
+            invoice_snapshot_json = _json.dumps(invoice, ensure_ascii=False)
+            self.storage.payment_intent_mark_posted_to_moyklass(
+                public_id,
+                mk_payment_id=mk_payment_id,
+                posted_at=posted_at,
+                fingerprint=new_fingerprint,
+                invoice_snapshot_json=invoice_snapshot_json,
+            )
+            self.storage.log_moyklass_post_audit(
+                "moyklass_post_succeeded",
+                intent_public_id=public_id,
+                payment_intent_id=int(intent.get("id") or 0) or None,
+                transaction_uid=str(intent.get("paid_transaction_uid") or "") or None,
+                mk_user_id=mk_user_id,
+                mk_invoice_id=mk_invoice_id_str,
+                mk_user_subscription_id=mk_sub_id_str or None,
+                amount_minor=paid_amount_minor,
+                currency=str(intent.get("paid_currency") or "BYN"),
+                invoice_remaining_minor=invoice_remaining_minor,
+                mk_payment_id=mk_payment_id,
+                fingerprint=new_fingerprint,
+                result="success",
+            )
+            log.info(
+                "MoyKlass payment post succeeded intent=%s mk_payment_id=%s",
+                public_id, mk_payment_id,
+            )
+            intent_after = self.storage.get_payment_intent(public_id) or {}
+            return {
+                "ok": True,
+                "mk_payment_id": mk_payment_id,
+                "posted_at": posted_at,
+                "intent_status": "posted_to_moyklass",
+                "intent": intent_after,
+                "summary": {
+                    "student_name": intent.get("student_name"),
+                    "amount_byn": summa_byn,
+                    "paid_at": str(intent.get("paid_at") or "")[:10],
+                    "posted_at": posted_at[:10],
+                    "mk_payment_id": mk_payment_id,
+                    "mk_invoice_id": mk_invoice_id_str,
+                    "transaction_uid": str(intent.get("paid_transaction_uid") or ""),
+                },
+            }
+
+        # — Definite 4xx error —
+        if 400 <= mk_result.status < 500:
+            error_detail = str(mk_result.error or "")[:500]
+            self.storage.payment_intent_release_moyklass_claim(
+                public_id, error=f"mk_4xx:status={mk_result.status}:{error_detail[:200]}"
+            )
+            self.storage.log_moyklass_post_audit(
+                "moyklass_post_failed",
+                intent_public_id=public_id,
+                reason=f"mk_http_{mk_result.status}",
+                result=f"error:{error_detail[:100]}",
+            )
+            log.warning(
+                "MoyKlass payment post: 4xx intent=%s status=%s error=%s",
+                public_id, mk_result.status, error_detail[:200],
+            )
+            return {
+                "ok": False,
+                "error": f"МойКласс отклонил запрос (HTTP {mk_result.status}): {error_detail[:300]}",
+                "error_code": f"mk_{mk_result.status}",
+            }
+
+        # — Ambiguous: 5xx, timeout, connection error —
+        reason = f"mk_ambiguous:status={mk_result.status}:{str(mk_result.error or '')[:100]}"
+        self.storage.payment_intent_mark_moyklass_ambiguous(public_id, reason)
+        self.storage.log_moyklass_post_audit(
+            "moyklass_post_ambiguous",
+            intent_public_id=public_id,
+            reason=reason,
+        )
+        log.error(
+            "MoyKlass payment post: ambiguous intent=%s status=%s error=%s",
+            public_id, mk_result.status, str(mk_result.error or "")[:200],
+        )
+        return {
+            "ok": False,
+            "error": "Не удалось определить, создалась ли оплата в МойКласс. "
+                     "Повторная отправка заблокирована до проверки. "
+                     "Используйте «Проверить в МойКласс».",
+            "error_code": "ambiguous_requires_reconciliation",
+        }
+
+    def payment_intent_reconcile_moyklass(
+        self, auth: dict[str, Any], public_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """POST /api/payments/intents/{id}/reconcile-moyklass-payment
+
+        Does NOT create a new payment. Only searches for an existing one.
+        Used after ambiguous result to find if payment was actually created.
+        Requires exact match by mk_payment_id saved before ambiguity, or
+        by comment containing intent public_id + exact amount.
+        """
+        from decimal import Decimal, ROUND_HALF_UP
+
+        denied = self._require_moyklass_post_access(auth)
+        if denied:
+            return denied
+
+        intent = self.storage.get_payment_intent(public_id)
+        if not intent:
+            return {"ok": False, "error": "Черновик не найден"}
+
+        if intent.get("status") == "posted_to_moyklass":
+            return {
+                "ok": True,
+                "already_posted": True,
+                "mk_payment_id": intent.get("mk_payment_id"),
+            }
+
+        mk_user_id = int(intent.get("mk_user_id") or 0)
+        paid_amount_minor = int(intent.get("paid_amount_minor") or 0)
+        paid_at = str(intent.get("paid_at") or "")[:10]
+
+        if not mk_user_id or not paid_amount_minor or not paid_at:
+            return {"ok": False, "error": "Недостаточно данных для поиска (mk_user_id/paid_amount/paid_at)"}
+        if not self.moyklass.is_configured:
+            return {"ok": False, "error": "МойКласс API не настроен"}
+
+        self.storage.log_moyklass_post_audit(
+            "moyklass_post_reconcile_started",
+            intent_public_id=public_id,
+            mk_user_id=mk_user_id,
+            amount_minor=paid_amount_minor,
+        )
+
+        # If we have a previously saved mk_payment_id (from ambiguous state), check it first
+        saved_mk_payment_id = int(intent.get("mk_payment_id") or 0)
+        if saved_mk_payment_id > 0:
+            try:
+                pay_result = self.moyklass.get_payment_by_id(saved_mk_payment_id)
+                if pay_result.ok and isinstance(pay_result.data, dict):
+                    found_pay = pay_result.data
+                    found_user = int(found_pay.get("userId") or 0)
+                    found_summa_minor = int(
+                        (Decimal(str(found_pay.get("summa") or 0)) * 100).to_integral_value(rounding=ROUND_HALF_UP)
+                    )
+                    if found_user == mk_user_id and found_summa_minor == paid_amount_minor:
+                        self._reconcile_mark_found(
+                            public_id, intent, saved_mk_payment_id, found_pay, "by_saved_payment_id"
+                        )
+                        return {"ok": True, "reconciled": True, "mk_payment_id": saved_mk_payment_id,
+                                "method": "by_saved_payment_id"}
+            except Exception:
+                pass
+
+        # Search by userId + date window + exact amount
+        try:
+            # ±1 day window around paid_at
+            from datetime import date as _date, timedelta as _timedelta
+            paid_date_obj = _date.fromisoformat(paid_at)
+            date_from = (paid_date_obj - _timedelta(days=1)).isoformat()
+            date_to = (paid_date_obj + _timedelta(days=1)).isoformat()
+            search_result = self.moyklass.search_payments_by_user_date(
+                user_id=mk_user_id, date_from=date_from, date_to=date_to, limit=100
+            )
+            if search_result.ok:
+                from moyklass_client import extract_items
+                payments = [p for p in extract_items(search_result.data) if isinstance(p, dict)]
+                summa_byn = float(Decimal(str(paid_amount_minor)) / Decimal("100"))
+                matches = []
+                for p in payments:
+                    p_minor = int(
+                        (Decimal(str(p.get("summa") or 0)) * 100).to_integral_value(rounding=ROUND_HALF_UP)
+                    )
+                    p_comment = str(p.get("comment") or "")
+                    p_user = int(p.get("userId") or 0)
+                    if p_user == mk_user_id and p_minor == paid_amount_minor and public_id in p_comment:
+                        matches.append(p)
+                if len(matches) == 1:
+                    found_pay = matches[0]
+                    found_id = int(found_pay.get("id") or 0)
+                    self._reconcile_mark_found(
+                        public_id, intent, found_id, found_pay, "by_comment_and_amount"
+                    )
+                    return {"ok": True, "reconciled": True, "mk_payment_id": found_id,
+                            "method": "by_comment_and_amount"}
+                if len(matches) > 1:
+                    self.storage.log_moyklass_post_audit(
+                        "moyklass_post_reconcile_not_found",
+                        intent_public_id=public_id,
+                        mk_user_id=mk_user_id,
+                        reason="multiple_matches_ambiguous",
+                    )
+                    return {"ok": False,
+                            "error": "Найдено несколько совпадающих платежей — проверьте вручную",
+                            "match_count": len(matches)}
+        except Exception as e:
+            log.warning("MoyKlass reconcile search exception intent=%s: %s", public_id, str(e)[:200])
+
+        self.storage.log_moyklass_post_audit(
+            "moyklass_post_reconcile_not_found",
+            intent_public_id=public_id,
+            mk_user_id=mk_user_id,
+            reason="no_matching_payment_found",
+        )
+        return {
+            "ok": True,
+            "reconciled": False,
+            "message": "Оплата в МойКласс не найдена. Состояние остаётся requires_check.",
+        }
+
+    def _reconcile_mark_found(
+        self, public_id: str, intent: dict, mk_payment_id: int, payment: dict, method: str
+    ) -> None:
+        """Mark intent as posted_to_moyklass after reconciliation found the payment."""
+        from utils import now_iso
+        import json as _json
+        from decimal import Decimal, ROUND_HALF_UP
+        paid_amount_minor = int(intent.get("paid_amount_minor") or 0)
+        invoice_snap = str(intent.get("mk_posting_invoice_snapshot_json") or "")
+        try:
+            inv_dict = _json.loads(invoice_snap) if invoice_snap else {}
+        except Exception:
+            inv_dict = {}
+        fingerprint = _compute_moyklass_post_fingerprint(intent, inv_dict)
+        self.storage.payment_intent_mark_posted_to_moyklass(
+            public_id,
+            mk_payment_id=mk_payment_id,
+            posted_at=now_iso(),
+            fingerprint=fingerprint,
+            invoice_snapshot_json=invoice_snap,
+        )
+        self.storage.log_moyklass_post_audit(
+            "moyklass_post_reconciled",
+            intent_public_id=public_id,
+            mk_user_id=int(intent.get("mk_user_id") or 0) or None,
+            mk_invoice_id=str(intent.get("mk_invoice_id") or "") or None,
+            mk_payment_id=mk_payment_id,
+            amount_minor=paid_amount_minor,
+            result=method,
+        )
+        log.info("MoyKlass reconciled intent=%s mk_payment_id=%s method=%s",
+                 public_id, mk_payment_id, method)
+
+    # ── end v7.0.92 ──────────────────────────────────────────────────────────
+
     def payment_intent_create(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         denied = self._require_payment_intent_access(auth)
         if denied:
@@ -10294,6 +11031,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                         return self._send_json(CTX.payment_intent_get(auth, _pi_parts[0]))
                     if len(_pi_parts) == 2 and _pi_parts[1] == "webhook-readiness":
                         return self._send_json(CTX.payment_intent_webhook_readiness(auth, _pi_parts[0]))
+                    if len(_pi_parts) == 2 and _pi_parts[1] == "moyklass-post-readiness":
+                        return self._send_json(CTX.payment_intent_moyklass_readiness(auth, _pi_parts[0]))
                 if path.startswith("/api/food/kitchen/menus/"):
                     _krest = path[len("/api/food/kitchen/menus/"):]
                     _kparts = _krest.split("/")
@@ -10391,6 +11130,10 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.payment_intent_cancel(auth, _pi_parts[0], body))
                 if len(_pi_parts) == 2 and _pi_parts[1] == "create-bepaid":
                     return self._send_json(CTX.payment_intent_create_bepaid(auth, _pi_parts[0], body))
+                if len(_pi_parts) == 2 and _pi_parts[1] == "post-to-moyklass":
+                    return self._send_json(CTX.payment_intent_post_to_moyklass(auth, _pi_parts[0], body))
+                if len(_pi_parts) == 2 and _pi_parts[1] == "reconcile-moyklass-payment":
+                    return self._send_json(CTX.payment_intent_reconcile_moyklass(auth, _pi_parts[0], body))
             if path == "/api/integrations/bepaid/import-history":
                 return self._send_json(CTX.bepaid_import_history(auth, body))
             if path == "/api/action":
@@ -10561,3 +11304,4 @@ def run_server() -> None:
 
 if __name__ == "__main__":
     run_server()
+

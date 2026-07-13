@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.0.91" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.0.92" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -848,8 +848,30 @@
       </div>
     </div>
 
+    <!-- MoyKlass post confirm modal (v7.0.92) -->
+    <div id="piMkPostModal" class="pi-modal hidden">
+      <div class="pi-modal-sheet">
+        <div class="pi-modal-head">
+          <h3>Внести оплату в МойКласс</h3>
+          <button class="pi-modal-close" id="piMkPostModalClose" type="button">✕</button>
+        </div>
+        <div class="pi-modal-body">
+          <div id="piMkPostReadinessPanel" class="mk-post-readiness-panel hidden"></div>
+          <div id="piMkPostConfirmPanel" class="mk-post-confirm-panel hidden"></div>
+          <div id="piMkPostSuccessPanel" class="mk-post-success-panel hidden"></div>
+          <div id="piMkPostError" class="pi-form-error hidden"></div>
+        </div>
+        <div class="pi-modal-footer">
+          <button class="secondary" id="piMkPostModalBack" type="button">Закрыть</button>
+          <button class="primary hidden" id="piMkPostReadinessBtn" type="button">Проверить перед внесением</button>
+          <button class="primary hidden" id="piMkPostConfirmBtn" type="button">Внести оплату</button>
+          <button class="secondary hidden" id="piMkReconcileBtn" type="button">Проверить в МойКласс</button>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.0.91"></script>
+  <script src="/static/app.js?v=7.0.92"></script>
 </body>
 </html>

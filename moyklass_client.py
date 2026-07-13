@@ -136,6 +136,80 @@ class MoyKlassClient:
             return MoyKlassResult(True, data={"auth": "ok", "users_endpoint": "ok"}, status=users_result.status)
         return MoyKlassResult(True, data={"auth": "ok", "users_endpoint": f"error {users_result.status}: {users_result.error[:500]}"}, status=token_result.status)
 
+    # ── v7.0.92: invoice and payment creation ────────────────────────────────
+
+    def get_invoice_by_id(self, invoice_id: int) -> MoyKlassResult:
+        """GET /v1/company/invoices/{invoiceId} — fetch a single invoice by ID.
+
+        Returns MoyKlassResult with data=invoice dict on success.
+        status=404 if invoice not found.
+        Invoice fields: id, userId, date, createdAt, price, payed, payUntil, userSubscriptionId, comment.
+        remaining_byn must be computed as price - payed by the caller.
+        """
+        return self.request("GET", f"/v1/company/invoices/{int(invoice_id)}")
+
+    def create_payment(
+        self,
+        *,
+        user_id: int,
+        date: str,
+        summa: float,
+        payment_type_id: int,
+        optype: str = "income",
+        filial_id: Optional[int] = None,
+        user_subscription_id: Optional[int] = None,
+        comment: Optional[str] = None,
+    ) -> MoyKlassResult:
+        """POST /v1/company/payments — create a payment record in MoyKlass.
+
+        Required per OpenAPI IncomePayment schema:
+          userId, date (YYYY-MM-DD), summa (float BYN), optype, paymentTypeId
+        Optional: filialId, userSubscriptionId, comment.
+
+        summa must be in BYN (not kopeks). 229.0 BYN = 229.0.
+        Returns MoyKlassResult with data=created payment on success (id field = mk_payment_id).
+        """
+        payload: dict[str, Any] = {
+            "userId": int(user_id),
+            "date": str(date),
+            "summa": float(summa),
+            "optype": str(optype),
+            "paymentTypeId": int(payment_type_id),
+        }
+        if filial_id is not None:
+            payload["filialId"] = int(filial_id)
+        if user_subscription_id is not None:
+            payload["userSubscriptionId"] = int(user_subscription_id)
+        if comment is not None:
+            payload["comment"] = str(comment)[:500]
+        return self.request("POST", "/v1/company/payments", payload=payload)
+
+    def search_payments_by_user_date(
+        self,
+        *,
+        user_id: int,
+        date_from: str,
+        date_to: str,
+        limit: int = 50,
+    ) -> MoyKlassResult:
+        """GET /v1/company/payments filtered by userId and date range.
+
+        Used for reconciliation: find an existing payment by userId + date window.
+        """
+        params: dict[str, Any] = {
+            "userId": str(int(user_id)),
+            "date": f"{date_from},{date_to}",
+            "optype": "income",
+            "limit": str(min(int(limit), 500)),
+        }
+        return self.request("GET", "/v1/company/payments", params=params)
+
+    def get_payment_by_id(self, payment_id: int) -> MoyKlassResult:
+        """GET /v1/company/payments/{paymentId} — fetch a single MoyKlass payment."""
+        return self.request("GET", f"/v1/company/payments/{int(payment_id)}")
+
+    # ── end v7.0.92 ──────────────────────────────────────────────────────────
+
     def get_lessons(self, raw_args: str = "") -> MoyKlassResult:
         params = self._parse_params(raw_args, default_limit="10")
         return self._enrich_lesson_result(self.request("GET", "/v1/company/lessons", params=params))

@@ -1,9 +1,10 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.91** (frontend не менялся в v7.0.91.1)
+**Cache version: v7.0.92**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.92 | 2026-07-13 | Feature: ручное внесение bePaid→МойКласс (owner/admin). Новый статус posted_to_moyklass, atomic claim, fingerprint, ambiguous state, reconciliation, 16 audit events, MK post modal в UI. 67 новых тестов. 333/333 OK. |
 | v7.0.91.1 | 2026-07-13 | Security: webhook amount check, currency fix (пустая больше не пропускается), 5 новых audit-событий, refund_requires_check, readiness +4 проверки, +30 тестов. 266/266 OK. |
 | v7.0.91 | 2026-07-13 | Feature: bePaid webhook reconciliation (match_bepaid_transaction_to_intent, payment_intent_mark_paid, audit table, 50 тестов). |
 | v7.0.90.6 | 2026-07-13 | Fix: список счетов стабилизирован (allow_nan=False, per-card catch, dual-key invoices/items, stage диагностика). Highlight через ::after, не конфликтует с ycCardEnter. Finance grid с явными цветами. 20 новых тестов. |

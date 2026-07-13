@@ -624,13 +624,13 @@ class TestCacheBust(unittest.TestCase):
 
     def test_cache_bust_v7091(self):
         html = self._HTML.read_text(encoding="utf-8")
-        self.assertIn("v=7.0.91", html,
-                      "index.html must cache-bust to v=7.0.91")
+        self.assertIn("v=7.0.92", html,
+                      "index.html must cache-bust to v=7.0.92")
 
     def test_version_string_in_app_js(self):
         app = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v7.0.91", app,
-                      "app.js version string must be updated to v7.0.91")
+        self.assertIn("v7.0.92", app,
+                      "app.js version string must be updated to v7.0.92")
 
 
 # ── Webhook endpoint exists ───────────────────────────────────────────────────

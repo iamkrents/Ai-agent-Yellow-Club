@@ -1,12 +1,32 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-13 (v7.0.91.1)_
+_Последнее обновление: 2026-07-13 (v7.0.92)_
 
 ---
 
 ## Что сделано
 
-### v7.0.91.1 — Security: hardening bePaid webhook validation (текущая)
+### v7.0.92 — Feature: ручное внесение подтверждённой оплаты bePaid в МойКласс (текущая)
+
+**Причина:** После того как bePaid подтверждал платёж (`paid`), оплата нигде не фиксировалась в МойКласс — это нужно было делать вручную через другой интерфейс. v7.0.92 добавляет безопасный ручной flow «Внести в МойКласс» для owner/admin из карточки платёжного намерения.
+
+**Ключевые изменения:**
+
+- **Новый статус intent:** `posted_to_moyklass` (конечный, после `paid`)
+- **Новые поля в `payment_intents`:** `mk_posting_status`, `mk_posting_at`, `mk_posting_by`, `mk_posting_fingerprint`, `mk_posting_error`, `mk_posting_invoice_snapshot_json`
+- **Новая audit-таблица:** `payment_mk_post_audit` (16 типов событий)
+- **`config.py`:** `moyklass_erip_payment_type_id` (`MOYKLASS_ERIP_PAYMENT_TYPE_ID` env var)
+- **`moyklass_client.py`:** 4 новых метода: `get_invoice_by_id`, `create_payment`, `search_payments_by_user_date`, `get_payment_by_id`
+- **`storage.py`:** 6 новых методов: `payment_intent_claim_moyklass_post`, `payment_intent_release_moyklass_claim`, `payment_intent_mark_posted_to_moyklass`, `payment_intent_mark_moyklass_ambiguous`, `log_moyklass_post_audit`, `list_moyklass_post_audit`
+- **`web_app_server.py`:** `PAYMENT_MK_POST_ROLES={"owner","admin"}`, `_compute_moyklass_post_fingerprint()`, 3 новых endpoint-метода: `payment_intent_moyklass_readiness`, `payment_intent_post_to_moyklass`, `payment_intent_reconcile_moyklass`. Routing: GET `moyklass-post-readiness`, POST `post-to-moyklass`, POST `reconcile-moyklass-payment`
+- **UI** (`miniapp/`): MK post modal (`#piMkPostModal`), кнопка «Внести в МойКласс» в карточке `paid`, панели readiness/confirm/success, стили dark/light
+- **`tests/test_mk_post_payment.py`:** 67 тестов (49 spec + 18 дополнительных). Все OK.
+- **Безопасность:** atomic claim (`UPDATE WHERE mk_posting_status IS NULL AND status='paid'`), snapshot fingerprint (SHA256 из invoice price+payed+intent fields), idempotency guard, ambiguous state (timeout/5xx после отправки), reconciliation через поиск по comment+amount. `BEPAID_AUTO_POST_TO_MOYKLASS=false` не тронуто.
+- **Итого тестов:** 67 новых + 266 existing = **333/333 OK**
+
+---
+
+### v7.0.91.1 — Security: hardening bePaid webhook validation
 
 **Причина:** Security-аудит v7.0.91 выявил критические уязвимости в обработке webhook:
 

@@ -648,7 +648,7 @@ class TestV90904UIFix(unittest.TestCase):
 
     def test_version_bumped_to_91(self):
         src = self._read_app_js()
-        self.assertIn("v7.0.91", src, "Version must be bumped to v7.0.91")
+        self.assertIn("v7.0.92", src, "Version must be bumped to v7.0.92")
 
     def test_student_name_field_in_invoice_card_html(self):
         """renderMkInvoiceCard must reference inv.student_name."""
@@ -836,8 +836,8 @@ class TestV90905ShowPaymentIntent(unittest.TestCase):
 
     def test_cache_bust_v7091_in_html(self):
         html = self._html()
-        self.assertIn("v=7.0.91", html,
-                      "index.html must cache-bust to v=7.0.91")
+        self.assertIn("v=7.0.92", html,
+                      "index.html must cache-bust to v=7.0.92")
 
     def test_data_intent_public_id_on_pi_card(self):
         src = self._app()
@@ -1037,11 +1037,11 @@ class TestV90906InvoiceListFixes(unittest.TestCase):
 
     def test_version_7091_in_app_js(self):
         src = self._app()
-        self.assertIn("v7.0.91", src, "app.js version must be v7.0.91")
+        self.assertIn("v7.0.92", src, "app.js version must be v7.0.92")
 
     def test_cache_bust_7091_in_html(self):
         html = self._html()
-        self.assertIn("v=7.0.91", html, "index.html cache-bust must be v=7.0.91")
+        self.assertIn("v=7.0.92", html, "index.html cache-bust must be v=7.0.92")
 
 
 if __name__ == "__main__":

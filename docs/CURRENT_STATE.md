@@ -1,6 +1,6 @@
 # Yellow Club Agent — Current State
 
-> Последнее обновление: 2026-07-13 (v7.0.91.1)  
+> Последнее обновление: 2026-07-13 (v7.0.92)  
 > Цель файла: позволить возобновить работу из любого нового чата без потери контекста.  
 > **Этот файл — только документация. Production-код не менять через этот файл.**
 
@@ -31,11 +31,21 @@ Claude Code (локально) → редактирование кода → git
 | Параметр | Значение |
 |---|---|
 | Последняя задеплоенная версия | **v7.0.81** (commit `db0f1e9`) — НЕ развёрнут, production-дата неизвестна |
-| Последний коммит в `main` | **v7.0.90.6** — Fix invoice list response and improve payment highlights |
-| Frontend cache-bust | **`v=7.0.90.6`** (в `index.html`: `styles.css?v=7.0.90.6`, `app.js?v=7.0.90.6`) |
-| `console.log` в app.js | `MiniApp version: v7.0.90.6` |
+| Последний коммит в `main` | **v7.0.92** — Add safe manual posting of payments to MoyKlass |
+| Frontend cache-bust | **`v=7.0.92`** (в `index.html`: `styles.css?v=7.0.92`, `app.js?v=7.0.92`) |
+| `console.log` в app.js | `MiniApp version: v7.0.92` |
 
-> v7.0.82 и hotfix v7.0.82.1 запушены, но **НЕ деплоились** на production-сервер. Деплой — только по команде владельца.
+> Все версии начиная с v7.0.82 запушены, но **НЕ деплоились** на production-сервер. Деплой — только по команде владельца.
+
+### v7.0.92 — Feature: ручное внесение bePaid оплаты в МойКласс
+
+**Новый flow:** После bePaid webhook (`paid`) owner/admin видит кнопку «Внести в МойКласс» в карточке intent. Нажатие открывает модал с live pre-flight проверкой (GET readiness), показывает preview, ждёт подтверждения, затем POST в МойКласс.
+
+**Защиты:** atomic claim (только один POST одновременно), snapshot fingerprint (блокирует если счёт изменился между preview и confirm), idempotency (второй POST возвращает результат первого), ambiguous state (timeout/5xx после отправки → блокирует авто-retry), reconciliation.
+
+**Новые env vars:** `MOYKLASS_ERIP_PAYMENT_TYPE_ID` (обязателен для posting).
+
+**`BEPAID_AUTO_POST_TO_MOYKLASS` остался `false` — не трогать.**
 
 ### v7.0.86 — Fix: month input overflow, toolbar grid, childrenReportMonth init
 

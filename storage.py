@@ -691,6 +691,36 @@ class Storage:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pwha_intent ON payment_webhook_audit(intent_public_id, created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pwha_tx ON payment_webhook_audit(bepaid_tx_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pwha_event ON payment_webhook_audit(event_type, created_at)")
+        # v7.0.92 — MoyKlass manual payment posting
+        self._ensure_column(conn, "payment_intents", "mk_posting_status", "mk_posting_status TEXT")
+        self._ensure_column(conn, "payment_intents", "mk_posting_at", "mk_posting_at TEXT")
+        self._ensure_column(conn, "payment_intents", "mk_posting_by", "mk_posting_by TEXT")
+        self._ensure_column(conn, "payment_intents", "mk_posting_fingerprint", "mk_posting_fingerprint TEXT")
+        self._ensure_column(conn, "payment_intents", "mk_posting_error", "mk_posting_error TEXT")
+        self._ensure_column(conn, "payment_intents", "mk_posting_invoice_snapshot_json", "mk_posting_invoice_snapshot_json TEXT")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payment_mk_post_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                intent_public_id TEXT,
+                payment_intent_id INTEGER,
+                transaction_uid TEXT,
+                mk_user_id INTEGER,
+                mk_invoice_id TEXT,
+                mk_user_subscription_id TEXT,
+                amount_minor INTEGER,
+                currency TEXT,
+                invoice_remaining_minor INTEGER,
+                mk_payment_id INTEGER,
+                fingerprint TEXT,
+                result TEXT,
+                reason TEXT,
+                details_json TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pmkpa_intent ON payment_mk_post_audit(intent_public_id, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pmkpa_event ON payment_mk_post_audit(event_type, created_at)")
 
     def _init_bepaid_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -5220,6 +5250,147 @@ class Storage:
         with self._connect() as conn:
             rows = conn.execute(
                 f"SELECT * FROM payment_webhook_audit {where} ORDER BY id DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── v7.0.92: MoyKlass manual payment posting ──────────────────────────────
+
+    def payment_intent_claim_moyklass_post(self, public_id: str, by_user: str) -> bool:
+        """Atomically claim this intent for MoyKlass posting.
+
+        Sets mk_posting_status='claiming' only if status='paid' and mk_posting_status is NULL/empty.
+        Returns True if claim succeeded (rowcount==1). Concurrent callers get False.
+        """
+        from utils import now_iso
+        now = now_iso()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE payment_intents
+                SET mk_posting_status = 'claiming',
+                    mk_posting_at     = ?,
+                    mk_posting_by     = ?,
+                    updated_at        = ?
+                WHERE public_id = ?
+                  AND status = 'paid'
+                  AND (mk_posting_status IS NULL OR mk_posting_status = '')
+                """,
+                (now, str(by_user)[:200], now, public_id),
+            )
+            return cursor.rowcount == 1
+
+    def payment_intent_release_moyklass_claim(self, public_id: str, error: str = "") -> None:
+        """Release a 'claiming' mk_posting_status back to NULL after a definite 4xx failure."""
+        from utils import now_iso
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE payment_intents
+                SET mk_posting_status = 'failed',
+                    mk_posting_error  = ?,
+                    updated_at        = ?
+                WHERE public_id = ? AND mk_posting_status = 'claiming'
+                """,
+                (str(error)[:1000], now_iso(), public_id),
+            )
+
+    def payment_intent_mark_posted_to_moyklass(
+        self,
+        public_id: str,
+        *,
+        mk_payment_id: int,
+        posted_at: str,
+        fingerprint: str,
+        invoice_snapshot_json: str = "",
+    ) -> None:
+        """Transition intent to posted_to_moyklass after confirmed MoyKlass POST."""
+        from utils import now_iso
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE payment_intents
+                SET status                         = 'posted_to_moyklass',
+                    mk_payment_id                  = ?,
+                    mk_posted_at                   = ?,
+                    mk_posting_status              = 'posted',
+                    mk_posting_fingerprint         = ?,
+                    mk_posting_invoice_snapshot_json = ?,
+                    mk_posting_error               = NULL,
+                    updated_at                     = ?
+                WHERE public_id = ?
+                """,
+                (mk_payment_id, posted_at, fingerprint, invoice_snapshot_json, now, public_id),
+            )
+
+    def payment_intent_mark_moyklass_ambiguous(self, public_id: str, reason: str) -> None:
+        """Mark mk_posting as ambiguous (timeout/5xx after sending) — blocks retry."""
+        from utils import now_iso
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE payment_intents
+                SET mk_posting_status = 'ambiguous',
+                    mk_posting_error  = ?,
+                    updated_at        = ?
+                WHERE public_id = ?
+                """,
+                (str(reason)[:1000], now_iso(), public_id),
+            )
+
+    def log_moyklass_post_audit(
+        self,
+        event_type: str,
+        *,
+        intent_public_id: Optional[str] = None,
+        payment_intent_id: Optional[int] = None,
+        transaction_uid: Optional[str] = None,
+        mk_user_id: Optional[int] = None,
+        mk_invoice_id: Optional[str] = None,
+        mk_user_subscription_id: Optional[str] = None,
+        amount_minor: Optional[int] = None,
+        currency: Optional[str] = None,
+        invoice_remaining_minor: Optional[int] = None,
+        mk_payment_id: Optional[int] = None,
+        fingerprint: Optional[str] = None,
+        result: Optional[str] = None,
+        reason: Optional[str] = None,
+        details: Optional[dict] = None,
+    ) -> None:
+        import json as _json
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO payment_mk_post_audit
+                    (created_at, event_type, intent_public_id, payment_intent_id, transaction_uid,
+                     mk_user_id, mk_invoice_id, mk_user_subscription_id,
+                     amount_minor, currency, invoice_remaining_minor,
+                     mk_payment_id, fingerprint, result, reason, details_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    now, event_type, intent_public_id, payment_intent_id, transaction_uid,
+                    mk_user_id, mk_invoice_id, mk_user_subscription_id,
+                    amount_minor, currency, invoice_remaining_minor,
+                    mk_payment_id, fingerprint, result, reason,
+                    _json.dumps(details, ensure_ascii=False) if details is not None else None,
+                ),
+            )
+
+    def list_moyklass_post_audit(
+        self, intent_public_id: Optional[str] = None, limit: int = 50
+    ) -> list[dict]:
+        params: list = []
+        where = ""
+        if intent_public_id:
+            where = "WHERE intent_public_id=?"
+            params.append(intent_public_id)
+        params.append(max(1, min(int(limit), 200)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM payment_mk_post_audit {where} ORDER BY id DESC LIMIT ?",
                 params,
             ).fetchall()
         return [dict(r) for r in rows]

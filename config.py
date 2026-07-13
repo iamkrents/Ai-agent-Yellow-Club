@@ -121,6 +121,9 @@ class Settings:
     bepaid_public_base_url: str
     bepaid_request_timeout: int
 
+    # MoyKlass manual payment posting (v7.0.92)
+    moyklass_erip_payment_type_id: int   # paymentTypeId for ERIP income payments (0 = not configured)
+
     @property
     def bepaid_erip_enabled(self) -> bool:
         return bool(self.bepaid_erip_shop_id and self.bepaid_erip_secret_key)
@@ -238,4 +241,5 @@ def load_settings() -> Settings:
         bepaid_webhook_path_secret=os.getenv("BEPAID_WEBHOOK_PATH_SECRET", "").strip(),
         bepaid_public_base_url=os.getenv("BEPAID_PUBLIC_BASE_URL", "").strip().rstrip("/"),
         bepaid_request_timeout=int(os.getenv("BEPAID_REQUEST_TIMEOUT", "30")),
+        moyklass_erip_payment_type_id=int(os.getenv("MOYKLASS_ERIP_PAYMENT_TYPE_ID", "0")),
     )
