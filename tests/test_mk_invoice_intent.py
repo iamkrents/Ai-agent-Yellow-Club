@@ -597,5 +597,137 @@ class TestMkInvoicesCache(unittest.TestCase):
         self.assertGreaterEqual(diag["scan_duration_ms"], 0)
 
 
+# ---------------------------------------------------------------------------
+# v7.0.90.4: piShowToast fix + enrichment (static + storage checks)
+# ---------------------------------------------------------------------------
+
+class TestV90904UIFix(unittest.TestCase):
+    """Static and storage checks for v7.0.90.4 fixes."""
+
+    _APP_JS = ROOT / "miniapp" / "app.js"
+
+    @classmethod
+    def _read_app_js(cls) -> str:
+        return cls._APP_JS.read_text(encoding="utf-8")
+
+    def test_piShowToast_not_in_app_js(self):
+        """piShowToast was the undefined function causing ReferenceError — must not appear in app.js."""
+        src = self._read_app_js()
+        self.assertNotIn("piShowToast", src, "piShowToast must not exist — use showToast instead")
+
+    def test_showToast_defined_in_app_js(self):
+        src = self._read_app_js()
+        self.assertIn("function showToast(", src, "showToast helper must be defined")
+
+    def test_no_raw_alert_in_mk_invoice_create_flow(self):
+        """alert() must not be used in openMkInvoiceCreate — use showToast instead."""
+        src = self._read_app_js()
+        # Find the openMkInvoiceCreate function body
+        start = src.find("async function openMkInvoiceCreate(")
+        self.assertGreater(start, 0, "openMkInvoiceCreate must exist")
+        end = src.find("\nasync function ", start + 1)
+        if end < 0:
+            end = src.find("\nfunction ", start + 1)
+        fn_body = src[start:end] if end > start else src[start:start + 3000]
+        self.assertNotIn("alert(", fn_body, "alert() must not appear in openMkInvoiceCreate")
+
+    def test_showToast_wrapped_in_try_catch_after_post(self):
+        """showToast call must be inside its own try/catch to not break success path."""
+        src = self._read_app_js()
+        self.assertIn('try { showToast(', src,
+                      "showToast after POST must be wrapped in try/catch")
+
+    def test_scrollToIntent_function_exists(self):
+        src = self._read_app_js()
+        self.assertIn("function scrollToIntent(", src, "scrollToIntent helper must be defined")
+
+    def test_payment_intent_card_has_id_attribute(self):
+        """renderPaymentIntentCard must embed id= so scrollToIntent can find the card."""
+        src = self._read_app_js()
+        self.assertIn("payment-intent-", src, "payment-intent- id prefix must appear in card HTML")
+
+    def test_version_bumped_to_90_4(self):
+        src = self._read_app_js()
+        self.assertIn("v7.0.90.4", src, "Version must be bumped to v7.0.90.4")
+
+    def test_student_name_field_in_invoice_card_html(self):
+        """renderMkInvoiceCard must reference inv.student_name."""
+        src = self._read_app_js()
+        fn_start = src.find("function renderMkInvoiceCard(")
+        self.assertGreater(fn_start, 0)
+        fn_end = src.find("\nfunction ", fn_start + 1)
+        fn_body = src[fn_start:fn_end] if fn_end > fn_start else src[fn_start:fn_start + 5000]
+        self.assertIn("student_name", fn_body, "renderMkInvoiceCard must use inv.student_name")
+
+    def test_invoice_card_shows_payed_and_price(self):
+        """Finance breakdown must reference payed and price."""
+        src = self._read_app_js()
+        fn_start = src.find("function renderMkInvoiceCard(")
+        fn_end = src.find("\nfunction ", fn_start + 1)
+        fn_body = src[fn_start:fn_end] if fn_end > fn_start else src[fn_start:fn_start + 5000]
+        self.assertIn("inv.payed", fn_body, "renderMkInvoiceCard must show payed amount")
+        self.assertIn("inv.price", fn_body, "renderMkInvoiceCard must show total price")
+
+    def test_invoice_card_shows_subscription_id(self):
+        src = self._read_app_js()
+        fn_start = src.find("function renderMkInvoiceCard(")
+        fn_end = src.find("\nfunction ", fn_start + 1)
+        fn_body = src[fn_start:fn_end] if fn_end > fn_start else src[fn_start:fn_start + 5000]
+        self.assertIn("user_subscription_id", fn_body)
+
+    def test_invoice_card_shows_bepaid_uid(self):
+        src = self._read_app_js()
+        fn_start = src.find("function renderMkInvoiceCard(")
+        fn_end = src.find("\nfunction ", fn_start + 1)
+        fn_body = src[fn_start:fn_end] if fn_end > fn_start else src[fn_start:fn_start + 5000]
+        self.assertIn("active_bepaid_uid", fn_body, "Invoice card must show bePaid UID when present")
+
+
+class TestFindActiveIntentBePaidFields(unittest.TestCase):
+    """find_active_intent_by_invoice must return bepaid_uid and bepaid_account_number."""
+
+    def setUp(self):
+        self.storage = _memory_storage()
+
+    def test_returns_bepaid_uid_when_set(self):
+        intent = _seed_intent(self.storage, mk_invoice_id="inv_bp1", source="moyklass_invoice")
+        # Simulate bePaid record being set (update via storage method)
+        with self.storage._connect() as conn:
+            conn.execute(
+                "UPDATE payment_intents SET bepaid_uid=?, bepaid_account_number=?, status='bepaid_created' WHERE public_id=?",
+                ("test-uid-123", "97489982607900001", intent["public_id"]),
+            )
+        found = self.storage.find_active_intent_by_invoice("inv_bp1")
+        self.assertIsNotNone(found)
+        self.assertEqual(found.get("bepaid_uid"), "test-uid-123")
+        self.assertEqual(found.get("bepaid_account_number"), "97489982607900001")
+
+    def test_returns_none_bepaid_fields_when_not_set(self):
+        intent = _seed_intent(self.storage, mk_invoice_id="inv_bp2", source="moyklass_invoice")
+        found = self.storage.find_active_intent_by_invoice("inv_bp2")
+        self.assertIsNotNone(found)
+        # No bePaid created yet — fields should be None / absent
+        self.assertIsNone(found.get("bepaid_uid"))
+
+    def test_duplicate_detection_friendly_message(self):
+        """Backend returns ok=False with existing_intent_id when duplicate; frontend shows toast not alert."""
+        intent = _seed_intent(self.storage, mk_invoice_id="inv_dup", source="moyklass_invoice")
+        existing = self.storage.find_active_intent_by_invoice("inv_dup")
+        self.assertIsNotNone(existing, "Duplicate must be detected")
+        self.assertEqual(existing["public_id"], intent["public_id"])
+
+    def test_active_intent_does_not_disable_cancel(self):
+        """An active bepaid_created intent should not block cancellation flow in storage."""
+        intent = _seed_intent(self.storage, mk_invoice_id="inv_can", source="moyklass_invoice")
+        with self.storage._connect() as conn:
+            conn.execute(
+                "UPDATE payment_intents SET bepaid_uid=?, status='bepaid_created' WHERE public_id=?",
+                ("uid-789", intent["public_id"]),
+            )
+        found = self.storage.find_active_intent_by_invoice("inv_can")
+        self.assertIsNotNone(found)
+        self.assertIn(found["status"], ["bepaid_created", "bepaid_creating", "draft", "ready"])
+
+
 if __name__ == "__main__":
     unittest.main()

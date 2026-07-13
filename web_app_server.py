@@ -8887,9 +8887,17 @@ class MiniAppContext:
                 sub_d = direct.get("userSubscription") if isinstance(direct.get("userSubscription"), dict) else None
                 inv_id_d = str(direct.get("id") or "")
                 active_d = self.storage.find_active_intent_by_invoice(inv_id_d)
+                inv_user_id_str = str(direct.get("userId") or "")
+                direct_name_map: dict[str, str] = {}
+                if inv_user_id_str:
+                    try:
+                        direct_name_map = self._mk_student_names_by_ids({inv_user_id_str})
+                    except Exception:
+                        log.debug("Name lookup failed for invoice direct path", exc_info=True)
                 inv_card = {
                     "invoice_id": inv_id_d,
                     "mk_user_id": direct.get("userId"),
+                    "student_name": direct_name_map.get(inv_user_id_str) or None,
                     "price": price_d,
                     "payed": payed_d,
                     "payed_bonuses": float(direct.get("payedBonuses") or 0),
@@ -8914,6 +8922,8 @@ class MiniAppContext:
                     } if sub_d else None,
                     "active_intent_id": active_d["public_id"] if active_d else None,
                     "active_intent_status": active_d["status"] if active_d else None,
+                    "active_bepaid_uid": active_d.get("bepaid_uid") if active_d else None,
+                    "active_bepaid_account": active_d.get("bepaid_account_number") if active_d else None,
                 }
                 resp: dict[str, Any] = {"ok": True, "invoices": [inv_card], "count": 1}
                 if include_diagnostics:
@@ -9013,6 +9023,7 @@ class MiniAppContext:
             normalized.append({
                 "invoice_id": invoice_id,
                 "mk_user_id": inv.get("userId"),
+                "student_name": None,  # filled below after batch name lookup
                 "price": price,
                 "payed": payed,
                 "payed_bonuses": float(inv.get("payedBonuses") or 0),
@@ -9037,6 +9048,8 @@ class MiniAppContext:
                 } if sub else None,
                 "active_intent_id": active["public_id"] if active else None,
                 "active_intent_status": active["status"] if active else None,
+                "active_bepaid_uid": active.get("bepaid_uid") if active else None,
+                "active_bepaid_account": active.get("bepaid_account_number") if active else None,
             })
 
         # Sort: newest date first, then payUntil desc, then invoice id desc
@@ -9047,6 +9060,21 @@ class MiniAppContext:
             return (date_str, pay_until, inv_id)
 
         normalized.sort(key=_sort_key, reverse=True)
+
+        # Batch-resolve student names; result_limit applied after so names cover all returned cards
+        all_user_ids = {str(n["mk_user_id"]) for n in normalized if n.get("mk_user_id")}
+        names_resolved_count = 0
+        names_missing_count = 0
+        if all_user_ids:
+            try:
+                name_map = self._mk_student_names_by_ids(all_user_ids)
+                for n in normalized:
+                    uid_str = str(n.get("mk_user_id") or "")
+                    n["student_name"] = name_map.get(uid_str) or None
+                names_resolved_count = sum(1 for n in normalized if n.get("student_name"))
+                names_missing_count = len(normalized) - names_resolved_count
+            except Exception:
+                log.debug("Batch student name resolution failed", exc_info=True)
 
         # Apply result_limit AFTER pagination (not before)
         result_invoices = normalized[:result_limit]
@@ -9094,6 +9122,8 @@ class MiniAppContext:
                 "cache_age_seconds": round(cache_age, 1) if cache_hit else None,
                 "cache_ttl_seconds": _MK_INVOICES_CACHE_TTL,
                 "scan_duration_ms": page_diag.get("scan_duration_ms"),
+                "names_resolved_count": names_resolved_count,
+                "names_missing_count": names_missing_count,
             }
             if target_found is not None:
                 diag_out["target_invoice_found"] = target_found

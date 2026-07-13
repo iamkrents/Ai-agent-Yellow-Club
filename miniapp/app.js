@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.90.3");
+console.log("MiniApp version: v7.0.90.4");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -11693,7 +11693,8 @@ function renderPaymentIntentCard(pi) {
     ? `<span class="pi-source-badge pi-source-badge-mk">Данные проверены в МойКласс</span>`
     : `<span class="pi-source-badge pi-source-badge-manual">Ручной ввод</span>`;
 
-  return `<div class="pi-card${extraCls}">
+  const safeId = pi.public_id ? `payment-intent-${pi.public_id.replace(/[^a-zA-Z0-9_-]/g, "_")}` : "";
+  return `<div class="pi-card${extraCls}"${safeId ? ` id="${escapeHtml(safeId)}"` : ""}>
     <div class="pi-card-head">
       <div class="pi-card-name">${name}</div>
       <div class="pi-card-amount">${amount}</div>
@@ -12013,7 +12014,7 @@ function showToast(msg) {
 
 let _mkInvoicesLoading = false;
 
-async function loadMkInvoices() {
+async function loadMkInvoices(mode) {
   if (!canUsePaymentIntents()) return;
   if (_mkInvoicesLoading) return;
   _mkInvoicesLoading = true;
@@ -12021,8 +12022,14 @@ async function loadMkInvoices() {
   const listEl = $("mkInvoicesList");
   const debugEl = $("mkInvoicesDebug");
   const diagEl = $("mkInvoicesDiag");
-  const btn = $("loadMkInvoices");
-  if (btn) { btn.disabled = true; btn.textContent = "Загрузка…"; }
+  const btnAll = $("loadMkInvoices");
+  const btnById = $("loadMkInvoiceById");
+  const btnByUser = $("loadMkInvoiceByUser");
+  const activeBtn = mode === "byId" ? btnById : mode === "byUser" ? btnByUser : btnAll;
+  if (btnAll) { btnAll.disabled = true; }
+  if (btnById) { btnById.disabled = true; }
+  if (btnByUser) { btnByUser.disabled = true; }
+  if (activeBtn) { activeBtn.textContent = "Загрузка…"; }
   if (listEl) listEl.innerHTML = `<div class="pi-empty" style="color:var(--muted)">Загрузка счетов МойКласс…</div>`;
   if (debugEl) debugEl.textContent = "";
   if (diagEl) diagEl.innerHTML = "";
@@ -12031,8 +12038,13 @@ async function loadMkInvoices() {
   const invoiceId = ($("mkInvoiceSearchId")?.value || "").trim();
   const userId = ($("mkInvoiceSearchUserId")?.value || "").trim();
   let url = "/api/payments/moyklass/invoices?status=unpaid_partial&limit=50";
-  if (invoiceId) url += "&invoiceId=" + encodeURIComponent(invoiceId);
-  else if (userId) url += "&userId=" + encodeURIComponent(userId);
+  if (mode === "byId" && invoiceId) url += "&invoiceId=" + encodeURIComponent(invoiceId);
+  else if (mode === "byUser" && userId) url += "&userId=" + encodeURIComponent(userId);
+  else if (!mode) {
+    // legacy single-button path: read both fields
+    if (invoiceId) url += "&invoiceId=" + encodeURIComponent(invoiceId);
+    else if (userId) url += "&userId=" + encodeURIComponent(userId);
+  }
 
   // 120-second timeout — long enough for 83-page scans; still finite
   const controller = new AbortController();
@@ -12063,7 +12075,9 @@ async function loadMkInvoices() {
     return;
   } finally {
     _mkInvoicesLoading = false;
-    if (btn) { btn.disabled = false; btn.textContent = "Загрузить счета"; }
+    if (btnAll) { btnAll.disabled = false; btnAll.textContent = "Показать все неоплаченные"; }
+    if (btnById) { btnById.disabled = false; btnById.textContent = "Найти счёт"; }
+    if (btnByUser) { btnByUser.disabled = false; btnByUser.textContent = "Найти счета ученика"; }
   }
 
   // ── Response received ─────────────────────────────────────────────────────
@@ -12121,77 +12135,170 @@ async function loadMkInvoices() {
   }
 }
 
+function _fmtDate(dateStr) {
+  if (!dateStr) return "";
+  const s = String(dateStr).slice(0, 10);
+  if (!s.includes("-")) return s;
+  const parts = s.split("-");
+  if (parts.length !== 3) return s;
+  return `${parts[2]}.${parts[1]}.${parts[0]}`;
+}
+
 function renderMkInvoiceCard(inv) {
   const remaining = Number(inv.remaining || 0);
   const price = Number(inv.price || 0);
+  const payed = Number(inv.payed || 0);
   const userId = inv.mk_user_id || "?";
   const status = inv.invoice_status || "—";
-  const statusLabel = status === "unpaid" ? "Не оплачен" : status === "partial" ? "Частично оплачен" : status;
-  const statusCls = status === "partial" ? "chip-pi-bepaid" : "chip-pi-draft";
-  const payUntil = inv.pay_until ? `до ${escapeHtml(String(inv.pay_until).slice(0,10))}` : "";
-  const sub = inv.subscription;
-  const period = (sub?.begin_date || sub?.sell_date)
-    ? String(sub.begin_date || sub.sell_date).slice(0, 7)
-    : (inv.pay_until ? String(inv.pay_until).slice(0, 7) : "");
-  const periodChip = period ? `<span class="chip chip-info" style="font-size:10px">${escapeHtml(period)}</span>` : "";
-  const hasActive = !!inv.active_intent_id;
-  const blockedNote = hasActive
-    ? `<div class="mk-invoice-blocked-note">Черновик уже создан: <strong>${escapeHtml(inv.active_intent_id)}</strong> (${escapeHtml(inv.active_intent_status || "")}). Отмените его, чтобы создать новый.</div>`
+  const statusLabel = status === "unpaid" ? "Не оплачен"
+    : status === "partial" ? "Частично оплачен"
+    : status === "paid" ? "Оплачен" : status;
+  const statusCls = status === "unpaid" ? "chip-pi-draft"
+    : status === "partial" ? "chip-pi-bepaid"
+    : "chip-pi-paid";
+
+  // Student name — main heading
+  const studentName = inv.student_name
+    ? escapeHtml(inv.student_name)
+    : `<span style="color:var(--muted)">Ученик userId ${escapeHtml(String(userId))}</span>`;
+
+  // Dates
+  const payUntilFmt = inv.pay_until ? _fmtDate(inv.pay_until) : "";
+  const dateCreatedFmt = _fmtDate(inv.date || inv.created_at || "");
+
+  // Subscription
+  const subId = inv.user_subscription_id || inv.subscription?.id;
+  const subLine = subId
+    ? `<div class="mk-invoice-detail-row">Абонемент №<strong>${escapeHtml(String(subId))}</strong></div>`
     : "";
-  const createBtn = !hasActive
-    ? `<button class="primary" style="font-size:12px;padding:4px 12px" onclick="openMkInvoiceCreate(${escapeHtml(JSON.stringify({invoice_id: inv.invoice_id, mk_user_id: userId, remaining, price, period, pay_until: inv.pay_until, comment: inv.comment}))})">Подготовить черновик bePaid</button>`
-    : "";
+
   const comment = inv.comment ? `<div class="pi-card-comment">${escapeHtml(inv.comment)}</div>` : "";
-  const priceLine = price > remaining
-    ? `<span>Всего: ${fmtByn(price)}; оплачено: ${fmtByn(price - remaining)}</span>`
+
+  // Active intent state
+  const hasActive = !!inv.active_intent_id;
+  const hasBePaid = !!inv.active_bepaid_uid;
+
+  const bePaidRow = hasBePaid
+    ? `<div class="mk-invoice-bepaid-row">
+        <span class="chip chip-pi-paid" style="font-size:10px">В bePaid</span>
+        ${inv.active_bepaid_account ? `<span>ERIP: <strong>${escapeHtml(String(inv.active_bepaid_account))}</strong></span>` : ""}
+        <span style="font-size:10px;color:var(--muted)">UID: ${escapeHtml(inv.active_bepaid_uid)}</span>
+      </div>`
+    : "";
+
+  const activeIntentBadge = hasActive
+    ? `<div class="mk-invoice-intent-badge">
+        <span class="chip chip-pi-bepaid" style="font-size:10px">Черновик создан</span>
+        <strong>${escapeHtml(inv.active_intent_id)}</strong>
+        <span class="mk-invoice-intent-status">(${escapeHtml(inv.active_intent_status || "")})</span>
+        <button class="secondary" style="font-size:11px;padding:3px 9px" onclick="scrollToIntent(${JSON.stringify(String(inv.active_intent_id))})">Показать черновик</button>
+      </div>${bePaidRow}`
+    : "";
+
+  const blockedNote = hasActive && !hasBePaid
+    ? `<div class="mk-invoice-blocked-note">Для повторного создания черновика отмените существующий.</div>`
+    : "";
+
+  const createBtn = !hasActive
+    ? `<button class="primary" style="font-size:12px;padding:4px 12px" onclick="openMkInvoiceCreate(${escapeHtml(JSON.stringify({invoice_id: inv.invoice_id, mk_user_id: userId, remaining, price, pay_until: inv.pay_until, student_name: inv.student_name || ""}))})">Подготовить черновик bePaid</button>`
     : "";
 
   return `<div class="mk-invoice-card${hasActive ? " has-active-intent" : ""}">
+    <div class="mk-invoice-student-name">${studentName}</div>
     <div class="mk-invoice-card-head">
-      <div class="mk-invoice-card-user">userId: ${escapeHtml(String(userId))}</div>
+      <div>
+        <div class="mk-invoice-number">Счёт МойКласс №${escapeHtml(String(inv.invoice_id))}</div>
+        <div class="mk-invoice-status-row">
+          <span class="chip ${statusCls}" style="font-size:10px">${escapeHtml(statusLabel)}</span>
+          ${payUntilFmt ? `<span class="mk-invoice-pay-until">до ${escapeHtml(payUntilFmt)}</span>` : ""}
+        </div>
+      </div>
       <div class="mk-invoice-card-amount">${fmtByn(remaining)}</div>
     </div>
-    <div class="mk-invoice-card-meta">
-      <span class="chip ${escapeHtml(statusCls)}" style="font-size:10px">${escapeHtml(statusLabel)}</span>
-      ${periodChip}
-      ${payUntil ? `<span>${escapeHtml(payUntil)}</span>` : ""}
-      ${priceLine}
+    <div class="mk-invoice-finance">
+      <span>Выставлено: <strong>${fmtByn(price)}</strong></span>
+      <span>Оплачено: <strong>${fmtByn(payed)}</strong></span>
+      <span>Остаток: <strong>${fmtByn(remaining)}</strong></span>
     </div>
+    ${subLine}
+    ${dateCreatedFmt ? `<div class="mk-invoice-detail-row" style="color:var(--muted)">Создан: ${escapeHtml(dateCreatedFmt)}</div>` : ""}
     ${comment}
+    <div class="mk-invoice-user-id">userId: ${escapeHtml(String(userId))}</div>
+    ${activeIntentBadge}
     ${blockedNote}
     <div class="mk-invoice-card-footer">${createBtn}</div>
-    <div class="mk-invoice-card-id">invoice_id: ${escapeHtml(String(inv.invoice_id))}</div>
   </div>`;
+}
+
+function scrollToIntent(publicId) {
+  if (!publicId) return;
+  const safeId = `payment-intent-${String(publicId).replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  const el = document.getElementById(safeId);
+  if (el) {
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("pi-card-highlight");
+    setTimeout(() => el.classList.remove("pi-card-highlight"), 1500);
+  } else {
+    // Card not yet rendered — try after loadPaymentIntents refreshes
+    loadPaymentIntents().then(() => {
+      setTimeout(() => {
+        const el2 = document.getElementById(safeId);
+        if (el2) el2.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 300);
+    }).catch(() => {});
+  }
 }
 
 async function openMkInvoiceCreate(inv) {
   if (!canUsePaymentIntents()) return;
-  const confirmMsg = `Создать черновик bePaid для счёта МойКласс #${inv.invoice_id}?\n\nСумма: ${fmtByn(Number(inv.remaining))}\nПользователь: userId=${inv.mk_user_id}\nПериод: ${inv.period || "—"}\n\nДанные будут подтверждены в МойКласс.`;
+  const nameLabel = inv.student_name || `userId=${inv.mk_user_id}`;
+  const confirmMsg = `Создать черновик bePaid для счёта МойКласс #${inv.invoice_id}?\n\nУченик: ${nameLabel}\nСумма: ${fmtByn(Number(inv.remaining))}\n\nДанные будут подтверждены в МойКласс.`;
   if (!confirm(confirmMsg)) return;
 
-  const listEl = $("mkInvoicesList");
   const debugEl = $("mkInvoicesDebug");
   if (debugEl) debugEl.textContent = "Создание черновика...";
+
+  let data;
   try {
-    const data = await apiPost("/api/payments/intents/from-moyklass-invoice", {
+    data = await apiPost("/api/payments/intents/from-moyklass-invoice", {
       invoice_id: String(inv.invoice_id),
       mk_user_id: inv.mk_user_id,
       payment_method: "erip",
     });
-    if (!data.ok) {
-      if (debugEl) debugEl.textContent = "";
-      alert("Ошибка: " + (data.error || "Неизвестная ошибка"));
-      return;
-    }
-    const intent = data.intent;
-    if (debugEl) debugEl.textContent = `Черновик ${intent?.public_id || ""} создан.`;
-    piShowToast(data.message || "Черновик создан!");
-    // Refresh both lists
-    loadMkInvoices();
-    loadPaymentIntents();
   } catch (err) {
     if (debugEl) debugEl.textContent = "";
-    alert("Ошибка: " + String(err));
+    try { showToast("Ошибка связи с сервером"); } catch (_) {}
+    return;
+  }
+
+  if (!data.ok) {
+    if (debugEl) debugEl.textContent = "";
+    // Duplicate intent — friendly message, not system alert
+    const dupId = data.duplicate_intent_id || data.existing_intent_id;
+    if (dupId) {
+      try { showToast(`Черновик уже существует: ${dupId}`); } catch (_) {}
+    } else {
+      try { showToast("Ошибка: " + (data.error || "Неизвестная ошибка")); } catch (_) {}
+    }
+    return;
+  }
+
+  const intent = data.intent;
+  const publicId = intent?.public_id || data.public_id || "";
+  if (debugEl) debugEl.textContent = publicId ? `Черновик ${publicId} создан.` : "Черновик создан.";
+
+  try { showToast(data.message || "Черновик создан!"); } catch (_toastErr) {
+    console.warn("Toast failed after intent creation", _toastErr);
+  }
+
+  // Refresh both lists; then scroll to the new intent
+  loadMkInvoices();
+  if (publicId) {
+    loadPaymentIntents().then(() => {
+      setTimeout(() => scrollToIntent(publicId), 300);
+    }).catch(() => {});
+  } else {
+    loadPaymentIntents();
   }
 }
 
@@ -12210,7 +12317,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("openCreateIntent")?.addEventListener("click", () => openCreateIntentModal());
   $("piMonthFilter")?.addEventListener("change", loadPaymentIntents);
   $("piStatusFilter")?.addEventListener("change", loadPaymentIntents);
-  $("loadMkInvoices")?.addEventListener("click", loadMkInvoices);
+  $("loadMkInvoices")?.addEventListener("click", () => loadMkInvoices());
+  $("loadMkInvoiceById")?.addEventListener("click", () => loadMkInvoices("byId"));
+  $("loadMkInvoiceByUser")?.addEventListener("click", () => loadMkInvoices("byUser"));
 
   // Create modal
   $("piModalSubmit")?.addEventListener("click", submitCreateIntent);

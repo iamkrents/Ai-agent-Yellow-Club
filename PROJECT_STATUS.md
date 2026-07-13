@@ -1,12 +1,37 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-13 (v7.0.90.3)_
+_Последнее обновление: 2026-07-13 (v7.0.90.4)_
 
 ---
 
 ## Что сделано
 
-### v7.0.90.3 — Hotfix: BrokenPipeError + кеш счетов МойКласс (текущая)
+### v7.0.90.4 — Hotfix: UI ошибка после создания черновика + информативные карточки счетов (текущая)
+
+**Причина:** После успешного создания payment_intent из счёта МойКласс frontend вызывал `piShowToast(...)` — функция не существует (есть `showToast`). Это вызывало `ReferenceError` в iOS/Safari, который выглядел как провал операции, хотя backend уже создал черновик. Дополнительно: карточки показывали только userId, без имени ученика и разбивки по суммам.
+
+**Ключевые изменения:**
+- `miniapp/app.js`: `piShowToast` → `showToast` (правильная функция). Toast call обёрнут в отдельный `try/catch` — ошибка уведомления не попадает в catch API-запроса. `alert()` заменены на `showToast()`.
+- `miniapp/app.js`: `renderMkInvoiceCard` полностью переписан: имя ученика крупным заголовком, разбивка Выставлено/Оплачено/Остаток, статус, срок оплаты, абонемент №, userId вторичным текстом, badge «Черновик создан» с кнопкой «Показать черновик».
+- `miniapp/app.js`: `openMkInvoiceCreate` — confirm показывает имя ученика; success state показывает `public_id`; scroll к созданному intent после загрузки.
+- `miniapp/app.js`: `scrollToIntent(publicId)` — новая функция плавной прокрутки к карточке intent. `renderPaymentIntentCard` получает `id="payment-intent-{public_id}"` для точного позиционирования. Анимация highlight при прокрутке.
+- `miniapp/app.js`: `loadMkInvoices(mode)` — три отдельных режима: `"byId"`, `"byUser"`, `""` (все неоплаченные). Три кнопки.
+- `miniapp/index.html`: Три отдельных действия поиска с labels и кнопками «Найти счёт» / «Найти счета ученика» / «Показать все неоплаченные». Cache-bust `v=7.0.90.4`.
+- `miniapp/styles.css`: `.mk-search-grid` / `.mk-search-row` / `.mk-search-label` — контрастные поля ввода на iOS (белый фон, тёмный текст, правильный placeholder). Новые стили `.mk-invoice-student-name`, `.mk-invoice-finance`, `.mk-invoice-intent-badge`, `.mk-invoice-bepaid-row`, `.pi-card-highlight` (pulse animation).
+- `web_app_server.py`: `moyklass_invoices_list` теперь batch-resolves имена учеников через `_mk_student_names_by_ids()` — для всех returned карточек. Поле `student_name` добавлено к прямому lookup и paginated scan. В каждый invoice card добавлены `active_bepaid_uid` и `active_bepaid_account`. Diagnostics: `names_resolved_count` / `names_missing_count`.
+- `tests/test_mk_invoice_intent.py`: +15 тестов (`TestV90904UIFix` × 11, `TestFindActiveIntentBePaidFields` × 4).
+
+**Подтверждено в production:**
+- Цикл: счёт МойКласс #19060579 → intent `ycpi_202607_9` → bePaid ERIP 974899826079 (UID 779fe891-...) — всё работает.
+- После hotfix: toast показывается без ReferenceError, черновик не создаётся повторно.
+
+**Что НЕ менялось:** расчёт remaining, создание payment_intent, создание bePaid, webhook, Food Module, Reports, роли, .env.
+
+**Cache-bust:** v=7.0.90.4
+
+---
+
+### v7.0.90.3 — Hotfix: BrokenPipeError + кеш счетов МойКласс
 
 **Причина:** При скане 83 страниц МойКласс (8278 счетов) iOS/Safari отключался (~60 с), backend получал `BrokenPipeError` при записи ответа, затем `do_GET` повторно вызывал `_send_json(500)` → второй `BrokenPipeError`. Фронтенд получал пустой/оборванный JSON → `SyntaxError`.
 

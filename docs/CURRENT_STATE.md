@@ -1,6 +1,6 @@
 # Yellow Club Agent — Current State
 
-> Последнее обновление: 2026-07-13 (v7.0.90.3)  
+> Последнее обновление: 2026-07-13 (v7.0.90.4)  
 > Цель файла: позволить возобновить работу из любого нового чата без потери контекста.  
 > **Этот файл — только документация. Production-код не менять через этот файл.**
 
@@ -204,8 +204,15 @@ cp storage/messages.db backups/messages_$(date +%Y%m%d_%H%M%S).db
 | `bepaid_requires_check` при timeout/5xx/missing UID | ✅ Работает (v7.0.82) |
 | Валидация ответа bePaid (UID, amount, currency, tracking_id) | ✅ Работает (v7.0.82) |
 | Сохранение `bepaid_qr_code_raw` (Base64, из `transaction.erip`) | ✅ Работает (v7.0.82) |
+| Полный ручной цикл: МК invoice → intent → bePaid ERIP | ✅ **Подтверждено в production** (v7.0.90.4) |
 | Автоматическое создание payment в МойКласс после webhook | ❌ Не реализовано (`BEPAID_AUTO_POST_TO_MOYKLASS=false`) |
 | Billing Profile / Auto Renewal / цикл абонементов | ❌ Не реализовано |
+
+### Production verification (2026-07-13):
+- Ученик: Креньть Александр Александрович, mk_user_id=9748998
+- Счёт МойКласс: #19060579, сумма 229 BYN, абонемент #17998775
+- Payment intent: `ycpi_202607_9` успешно создан
+- bePaid ERIP: счёт 974899826079, UID `779fe891-1be7-4318-8490-9748428b2999`
 
 ### Ключевые технические детали (bePaid):
 - **Endpoint:** `POST https://api.bepaid.by/beyag/payments`

@@ -7490,21 +7490,72 @@ input:disabled { animation: none !important; transform: none !important; }
   animation: ycCardEnter var(--motion-normal, 260ms) var(--ease-enter, ease) both;
 }
 .mk-invoice-card.has-active-intent {
-  opacity: .65;
+  opacity: .75;
+}
+/* student name — main heading of invoice card */
+.mk-invoice-student-name {
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 6px;
+  line-height: 1.2;
 }
 .mk-invoice-card-head {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 8px;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
-.mk-invoice-card-user { font-weight: 600; font-size: 14px; }
-.mk-invoice-card-amount { font-weight: 700; font-size: 15px; color: var(--accent, #1fa56b); }
-.mk-invoice-card-meta { display: flex; gap: 6px; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-bottom: 6px; }
-.mk-invoice-card-footer { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-.mk-invoice-card-id { font-size: 10px; color: var(--muted); margin-top: 4px; }
+.mk-invoice-number { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.mk-invoice-status-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.mk-invoice-pay-until { font-size: 11px; color: var(--muted); }
+.mk-invoice-card-amount { font-weight: 700; font-size: 18px; color: var(--accent, #1fa56b); white-space: nowrap; }
+/* 3-column finance breakdown */
+.mk-invoice-finance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-size: 12px;
+  color: var(--muted);
+  margin: 6px 0;
+}
+.mk-invoice-finance strong { color: var(--ink); }
+.mk-invoice-detail-row { font-size: 12px; margin: 3px 0; }
+.mk-invoice-user-id { font-size: 10px; color: var(--muted); margin-top: 4px; }
+.mk-invoice-card-footer { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .mk-invoice-blocked-note { font-size: 11px; color: var(--muted); font-style: italic; margin-top: 4px; }
+/* intent badge inside invoice card */
+.mk-invoice-intent-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: rgba(50,103,255,.06);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.mk-invoice-intent-status { font-size: 10px; color: var(--muted); }
+/* bePaid row inside invoice card */
+.mk-invoice-bepaid-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: rgba(31,165,107,.06);
+  border-radius: 8px;
+  font-size: 12px;
+}
+/* intent card highlight after scroll */
+@keyframes piCardPulse {
+  0%   { box-shadow: 0 0 0 0 rgba(50,103,255,.4); }
+  70%  { box-shadow: 0 0 0 8px rgba(50,103,255,0); }
+  100% { box-shadow: none; }
+}
+.pi-card-highlight { animation: piCardPulse 1.2s ease-out both; }
 /* source badge on intent cards */
 .pi-source-badge {
   display: inline-flex;
@@ -7527,27 +7578,54 @@ input:disabled { animation: none !important; transform: none !important; }
   border: 1px solid rgba(230,126,34,.18);
   border-radius: 8px;
 }
-/* search fields row — v7.0.90.3 */
-.mk-invoices-search-row {
+/* search grid — v7.0.90.4 */
+.mk-search-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 8px 0 4px;
+}
+.mk-search-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mk-search-field-wide {}
+.mk-search-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.mk-search-row {
   display: flex;
   gap: 8px;
-  margin: 8px 0 4px;
-  flex-wrap: wrap;
+  align-items: center;
 }
-.mk-invoices-search-row input {
-  flex: 1 1 140px;
+.mk-search-row input {
+  flex: 1 1 0;
   min-width: 0;
   font-size: 13px;
-  padding: 6px 10px;
-  border: 1px solid var(--line);
+  padding: 8px 10px;
+  border: 1.5px solid var(--line);
   border-radius: 8px;
-  background: var(--bg);
-  color: var(--ink);
+  background: #fff;
+  color: #172033;
+  outline: none;
 }
+.mk-search-row input:focus {
+  border-color: var(--blue, #3267ff);
+  background: #fff;
+}
+.mk-search-row input::placeholder { color: #9aa3b5; }
+.mk-search-row input:disabled { opacity: .6; }
 @media (prefers-color-scheme: dark) {
-  .mk-invoices-search-row input { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.12); color: #e8ecf4; }
+  .mk-search-row input { background: #23293a; border-color: rgba(255,255,255,.15); color: #e8ecf4; }
+  .mk-search-row input:focus { border-color: #5e8aff; background: #23293a; }
+  .mk-search-row input::placeholder { color: #7a8499; }
 }
-:root[data-theme="dark"] .mk-invoices-search-row input { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.12); color: #e8ecf4; }
+:root[data-theme="dark"] .mk-search-row input { background: #23293a; border-color: rgba(255,255,255,.15); color: #e8ecf4; }
+:root[data-theme="dark"] .mk-search-row input:focus { border-color: #5e8aff; background: #23293a; }
+:root[data-theme="dark"] .mk-search-row input::placeholder { color: #7a8499; }
 /* diagnostics block (owner/admin only) — v7.0.90.1 */
 .mk-invoices-diag {
   display: flex;
@@ -7573,9 +7651,15 @@ input:disabled { animation: none !important; transform: none !important; }
 @media (prefers-color-scheme: dark) {
   .mk-invoice-card { background: rgba(255,255,255,.06); }
   .mk-invoices-diag { background: rgba(255,255,255,.05); }
+  .mk-invoice-finance strong { color: #e8ecf4; }
+  .mk-invoice-intent-badge { background: rgba(50,103,255,.10); }
+  .mk-invoice-bepaid-row { background: rgba(31,165,107,.10); }
 }
 :root[data-theme="dark"] .mk-invoice-card { background: rgba(255,255,255,.06); }
 :root[data-theme="dark"] .mk-invoices-diag { background: rgba(255,255,255,.05); }
+:root[data-theme="dark"] .mk-invoice-finance strong { color: #e8ecf4; }
+:root[data-theme="dark"] .mk-invoice-intent-badge { background: rgba(50,103,255,.10); }
+:root[data-theme="dark"] .mk-invoice-bepaid-row { background: rgba(31,165,107,.10); }
 /* ── PI Modal System v7.0.85 — portal-based, iOS-safe ─────────────────────── */
 
 /* scroll-lock state applied by JS piLockPageScroll() */
