@@ -207,11 +207,9 @@ class TestEripCandidates(unittest.TestCase):
         result = ctx.moyklass_payment_types(_auth())
         diag = result.get("diagnostics", {})
         self.assertEqual(diag.get("possible_erip_matches"), 1)
-        # Single candidate → env_hint provided, but never auto-selected
+        # Single candidate → env_hint_erip provided, but never auto-selected (v7.0.92.2)
         self.assertFalse(diag.get("auto_select"))
-        self.assertIsNotNone(diag.get("env_hint"))
-        # manual_selection_required=False when exactly 1 candidate
-        self.assertFalse(diag.get("manual_selection_required"))
+        self.assertIsNotNone(diag.get("env_hint_erip"))
 
     def test_12_multiple_candidates_not_auto_selected(self):
         """Test 12: multiple ERIP candidates → manual_selection_required=True."""

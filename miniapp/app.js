@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.92.1.2");
+console.log("MiniApp version: v7.0.92.2");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12079,56 +12079,70 @@ async function loadMkPaymentTypes() {
   }
 }
 
+function _renderPaymentTypeBlock(label, channelData, candidates, envKey) {
+  const pt = (channelData && channelData.payment_type) || {};
+  const configuredId = channelData && channelData.configured_payment_type_id;
+  const found = channelData && channelData.configured_payment_type_found;
+  const valid = pt.valid;
+  let html = `<div class="mk-pt-channel-block"><div class="mk-pt-channel-label">${escapeHtml(label)}</div>`;
+  if (!configuredId) {
+    html += `<div class="mk-pt-warn">${escapeHtml(envKey)} не задан.</div>`;
+  } else if (!found) {
+    html += `<div class="mk-pt-warn">ID ${configuredId} не найден в МойКласс.</div>`;
+  } else if (!valid) {
+    const reason = (pt.blocking_reasons || []).join(", ") || "тип недоступен";
+    html += `<div class="mk-pt-warn">ID ${configuredId} (${escapeHtml(pt.payment_type_name || "")}) — ${escapeHtml(reason)}</div>`;
+  } else {
+    html += `<div class="mk-pt-ok">ID ${configuredId} — <strong>${escapeHtml(pt.payment_type_name || "")}</strong></div>`;
+  }
+  if (candidates && candidates.length === 1 && candidates[0].id !== configuredId) {
+    html += `<div class="mk-pt-hint"><code class="mk-pt-env-hint">${escapeHtml(envKey)}=${candidates[0].id}</code> (${escapeHtml(candidates[0].name)})</div>`;
+  } else if (candidates && candidates.length > 1) {
+    html += `<div class="mk-pt-hint">Кандидаты: ` + candidates.map(c => `ID ${c.id} — ${escapeHtml(c.name)}`).join(", ") + `</div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
 function renderMkPaymentTypes(data) {
   const statusEl = $("mkPaymentTypeStatus");
   const listEl = $("mkPaymentTypeList");
   if (!statusEl || !listEl) return;
 
   if (!data.ok) {
-    statusEl.innerHTML = `<span class="mk-pt-error">Ошибка: ${escapeHtml(data.error || "")}</span>`;
+    statusEl.innerHTML = `<span class="mk-pt-error">Ошибка загрузки: ${escapeHtml(data.error || "")}</span>`;
     return;
   }
 
-  const pt = data.configured_payment_type || {};
-  const configuredId = data.configured_payment_type_id;
-  const found = data.configured_payment_type_found;
-  const valid = pt.valid;
   const diag = data.diagnostics || {};
+  const erip = data.erip || {};
+  const acquiring = data.acquiring || {};
 
-  let statusHtml = "";
-  if (!configuredId) {
-    statusHtml = `<div class="mk-pt-warn">MOYKLASS_ERIP_PAYMENT_TYPE_ID не задан. Публикация платежей заблокирована.</div>`;
-  } else if (!found) {
-    statusHtml = `<div class="mk-pt-warn">ID ${configuredId} не найден в МойКласс. Проверьте конфигурацию.</div>`;
-  } else if (!valid) {
-    const reason = (pt.blocking_reasons || []).join(", ") || "тип недоступен";
-    statusHtml = `<div class="mk-pt-warn">Тип ${configuredId} (${escapeHtml(pt.payment_type_name || "")}) недоступен: ${escapeHtml(reason)}</div>`;
-  } else {
-    statusHtml = `<div class="mk-pt-ok">Тип оплаты настроен: ID ${configuredId} — <strong>${escapeHtml(pt.payment_type_name || "")}</strong></div>`;
-  }
+  let statusHtml = `<div class="mk-pt-dual-channels">`;
+  statusHtml += _renderPaymentTypeBlock("bePaid ЕРИП", erip, diag.erip_candidates || [], "MOYKLASS_ERIP_PAYMENT_TYPE_ID");
+  statusHtml += _renderPaymentTypeBlock("bePaid Эквайринг", acquiring, diag.acquiring_candidates || [], "MOYKLASS_ACQUIRING_PAYMENT_TYPE_ID");
+  statusHtml += `</div>`;
   statusEl.innerHTML = statusHtml;
 
   const items = data.items || [];
-  const candidates = diag.erip_candidates || [];
-  let html = `<div class="mk-pt-diag">Всего типов: ${diag.total || 0} · Активных: ${diag.active || 0} · Кандидатов ЕРИП: ${diag.possible_erip_matches || 0}</div>`;
+  const eripCandidates = diag.erip_candidates || [];
+  const acqCandidates = diag.acquiring_candidates || [];
+  const erip_id = erip.configured_payment_type_id;
+  const acq_id = acquiring.configured_payment_type_id;
 
-  if (candidates.length === 1) {
-    html += `<div class="mk-pt-hint"><span class="mk-pt-badge-likely">Вероятный тип ЕРИП</span> ID ${candidates[0].id} — ${escapeHtml(candidates[0].name)}<br>` +
-      `<code class="mk-pt-env-hint">MOYKLASS_ERIP_PAYMENT_TYPE_ID=${candidates[0].id}</code></div>`;
-  } else if (candidates.length > 1) {
-    html += `<div class="mk-pt-hint"><span class="mk-pt-badge-multi">Несколько кандидатов ЕРИП — требуется ручной выбор:</span><ul>` +
-      candidates.map(c => `<li>ID ${c.id} — ${escapeHtml(c.name)}</li>`).join("") + `</ul></div>`;
-  }
+  let html = `<div class="mk-pt-diag">Всего типов: ${diag.total || 0} · Активных: ${diag.active || 0} · ЕРИП-кандидатов: ${diag.possible_erip_matches || 0} · Эквайринг-кандидатов: ${diag.possible_acquiring_matches || 0}</div>`;
 
   if (items.length) {
     html += `<div class="mk-pt-list-title">Все типы оплаты:</div><ul class="mk-pt-list">`;
     for (const item of items) {
-      const isConfigured = item.id === configuredId;
-      const isCandidate = candidates.some(c => c.id === item.id);
-      const badge = isConfigured ? ` <span class="mk-pt-badge-active">настроен</span>` :
-        isCandidate ? ` <span class="mk-pt-badge-likely">ЕРИП?</span>` : "";
-      html += `<li class="mk-pt-item${isConfigured ? " mk-pt-item-configured" : ""}">` +
-        `<span class="mk-pt-id">ID ${item.id}</span> ${escapeHtml(item.name)}${badge}</li>`;
+      const isErip = item.id === erip_id;
+      const isAcq = item.id === acq_id;
+      const isEripCand = eripCandidates.some(c => c.id === item.id);
+      const isAcqCand = acqCandidates.some(c => c.id === item.id);
+      const badges = (isErip ? ` <span class="mk-pt-badge-active">ЕРИП</span>` : isEripCand ? ` <span class="mk-pt-badge-likely">ЕРИП?</span>` : "") +
+        (isAcq ? ` <span class="mk-pt-badge-acq">Эквайринг</span>` : isAcqCand ? ` <span class="mk-pt-badge-likely">Эквайринг?</span>` : "");
+      const cls = isErip || isAcq ? " mk-pt-item-configured" : "";
+      html += `<li class="mk-pt-item${cls}"><span class="mk-pt-id">ID ${item.id}</span> ${escapeHtml(item.name)}${badges}</li>`;
     }
     html += `</ul>`;
   }

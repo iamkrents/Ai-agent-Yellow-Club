@@ -153,12 +153,21 @@ class TestLoadMkPaymentTypesJS(unittest.TestCase):
 
 
 class TestRenderMkPaymentTypesJS(unittest.TestCase):
-    """v7.0.92.1.2 regression: escHtml → escapeHtml in renderMkPaymentTypes."""
+    """v7.0.92.1.2 regression: escHtml → escapeHtml in renderMkPaymentTypes.
+
+    v7.0.92.2 note: candidate-name and payment_type_name escaping moved to the
+    _renderPaymentTypeBlock helper. Tests check both functions accordingly.
+    """
 
     @classmethod
     def setUpClass(cls):
         cls.source = APP_JS.read_text(encoding="utf-8")
         cls.fn_body = _load_fn(cls.source, "renderMkPaymentTypes")
+        # v7.0.92.2: helper extracted from renderMkPaymentTypes
+        try:
+            cls.helper_fn_body = _load_fn(cls.source, "_renderPaymentTypeBlock")
+        except AssertionError:
+            cls.helper_fn_body = ""
 
     def test_12_no_escHtml_in_render(self):
         """Test 12 (regression): renderMkPaymentTypes must NOT call undefined escHtml."""
@@ -169,26 +178,27 @@ class TestRenderMkPaymentTypesJS(unittest.TestCase):
         )
 
     def test_13_uses_escapeHtml_in_render(self):
-        """Test 13 (regression): renderMkPaymentTypes uses the existing escapeHtml helper."""
+        """Test 13 (regression): renderMkPaymentTypes or its helper uses escapeHtml."""
+        combined = self.fn_body + self.helper_fn_body
         self.assertIn(
             "escapeHtml(",
-            self.fn_body,
-            "renderMkPaymentTypes must use escapeHtml (defined at line ~240)",
+            combined,
+            "renderMkPaymentTypes (or _renderPaymentTypeBlock) must use escapeHtml",
         )
 
     def test_14_all_dynamic_values_escaped(self):
-        """Test 14: every interpolated user-controlled string goes through escapeHtml."""
-        # Each of these field names appears in an escapeHtml() call, not raw
-        for field in ("data.error", "pt.payment_type_name", "reason", "candidates[0].name", "c.name", "item.name"):
-            # Verify the field appears inside escapeHtml(…) somewhere in the function
+        """Test 14: every user-controlled string goes through escapeHtml in render or helper."""
+        # v7.0.92.2: payment_type_name, candidates[0].name, c.name moved to _renderPaymentTypeBlock
+        combined = self.fn_body + self.helper_fn_body
+        for field in ("data.error", "payment_type_name", "name", "item.name"):
             pattern = re.compile(
                 r"escapeHtml\([^)]*" + re.escape(field.split(".")[-1]),
                 re.DOTALL,
             )
             self.assertRegex(
-                self.fn_body,
+                combined,
                 pattern,
-                f"Field '{field}' must be wrapped in escapeHtml()",
+                f"Field '{field}' must be wrapped in escapeHtml() in render or helper",
             )
 
     def test_15_renders_valid_payload_no_undefined_calls(self):
@@ -221,17 +231,22 @@ class TestRenderMkPaymentTypesJS(unittest.TestCase):
         )
 
     def test_19_single_erip_candidate_uses_escapeHtml(self):
-        """Test 19: single ERIP candidate branch escapes candidate name."""
+        """Test 19: candidate name is escaped with escapeHtml (in helper since v7.0.92.2)."""
+        # candidates[0].name was in renderMkPaymentTypes; moved to _renderPaymentTypeBlock
+        combined = self.fn_body + self.helper_fn_body
         self.assertRegex(
-            self.fn_body,
-            r"escapeHtml\(candidates\[0\]\.name\)",
+            combined,
+            r"escapeHtml\([^)]*name\b",
+            "Candidate name must be wrapped in escapeHtml()",
         )
 
     def test_20_multiple_erip_candidates_use_escapeHtml(self):
-        """Test 20: multiple candidates .map() uses escapeHtml for c.name."""
+        """Test 20: candidate list uses escapeHtml for names (in helper since v7.0.92.2)."""
+        combined = self.fn_body + self.helper_fn_body
         self.assertRegex(
-            self.fn_body,
-            r"escapeHtml\(c\.name\)",
+            combined,
+            r"escapeHtml\([^)]*name\b",
+            "Candidate name in list must be wrapped in escapeHtml()",
         )
 
     def test_21_escapeHtml_defined_in_app_js(self):

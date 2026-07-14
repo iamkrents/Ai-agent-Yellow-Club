@@ -721,6 +721,42 @@ class Storage:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pmkpa_intent ON payment_mk_post_audit(intent_public_id, created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pmkpa_event ON payment_mk_post_audit(event_type, created_at)")
+        # v7.0.92.2 — dual-channel payment options
+        self._ensure_column(conn, "payment_intents", "paid_channel", "paid_channel TEXT")
+        self._ensure_column(conn, "payment_intents", "paid_option_id", "paid_option_id INTEGER")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payment_intent_options (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                payment_intent_id INTEGER NOT NULL,
+                intent_public_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                shop_type TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'created',
+                bepaid_order_id TEXT,
+                bepaid_tracking_id TEXT,
+                bepaid_uid TEXT,
+                bepaid_account_number TEXT,
+                payment_url TEXT,
+                qr_code_raw TEXT,
+                expires_at TEXT,
+                transaction_uid TEXT,
+                paid_at TEXT,
+                paid_amount_minor INTEGER,
+                paid_currency TEXT,
+                paid_tracking_id TEXT,
+                paid_order_id TEXT,
+                error_code TEXT,
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pio_intent ON payment_intent_options(payment_intent_id, channel)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pio_public_id ON payment_intent_options(intent_public_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pio_tracking ON payment_intent_options(bepaid_tracking_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pio_order ON payment_intent_options(bepaid_order_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pio_uid ON payment_intent_options(bepaid_uid)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pio_status ON payment_intent_options(status)")
 
     def _init_bepaid_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -5394,3 +5430,362 @@ class Storage:
                 params,
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ─── v7.0.92.2 dual-channel payment options ───────────────────────────────
+
+    def create_payment_intent_option(
+        self,
+        *,
+        payment_intent_id: int,
+        intent_public_id: str,
+        channel: str,
+        shop_type: str,
+        bepaid_order_id: Optional[str] = None,
+        bepaid_tracking_id: Optional[str] = None,
+        bepaid_uid: Optional[str] = None,
+        bepaid_account_number: Optional[str] = None,
+        payment_url: Optional[str] = None,
+        qr_code_raw: Optional[str] = None,
+        expires_at: Optional[str] = None,
+    ) -> dict:
+        """Create a new payment option row (one per channel: erip or acquiring)."""
+        now = now_iso()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO payment_intent_options
+                    (payment_intent_id, intent_public_id, channel, shop_type,
+                     bepaid_order_id, bepaid_tracking_id, bepaid_uid, bepaid_account_number,
+                     payment_url, qr_code_raw, expires_at, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    payment_intent_id, intent_public_id, channel, shop_type,
+                    bepaid_order_id, bepaid_tracking_id, bepaid_uid, bepaid_account_number,
+                    payment_url, qr_code_raw, expires_at, now, now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM payment_intent_options WHERE id=?", (cur.lastrowid,)
+            ).fetchone()
+        return dict(row) if row else {}
+
+    def get_options_for_intent(self, intent_public_id: str) -> list:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM payment_intent_options WHERE intent_public_id=? ORDER BY id",
+                (intent_public_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_option_by_channel(self, intent_public_id: str, channel: str) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM payment_intent_options WHERE intent_public_id=? AND channel=? ORDER BY id DESC LIMIT 1",
+                (intent_public_id, channel),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_option_by_provider_ref(
+        self,
+        *,
+        bepaid_tracking_id: Optional[str] = None,
+        bepaid_order_id: Optional[str] = None,
+        bepaid_uid: Optional[str] = None,
+        bepaid_account_number: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Find a payment_intent_option by any known bePaid provider reference."""
+        with self._connect() as conn:
+            for col, val in [
+                ("bepaid_tracking_id", bepaid_tracking_id),
+                ("bepaid_order_id", bepaid_order_id),
+                ("bepaid_uid", bepaid_uid),
+                ("bepaid_account_number", bepaid_account_number),
+            ]:
+                if not val:
+                    continue
+                row = conn.execute(
+                    f"SELECT * FROM payment_intent_options WHERE {col}=? ORDER BY id DESC LIMIT 1",
+                    (val,),
+                ).fetchone()
+                if row:
+                    return dict(row)
+        return None
+
+    def mark_option_paid(
+        self,
+        option_id: int,
+        *,
+        tx_uid: str,
+        paid_at: str,
+        amount_minor: int,
+        currency: str,
+        tracking_id: Optional[str] = None,
+        order_id: Optional[str] = None,
+        bepaid_uid: Optional[str] = None,
+    ) -> dict:
+        """Transition option status: created → paid. Idempotent on same tx_uid."""
+        now = now_iso()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM payment_intent_options WHERE id=?", (option_id,)
+            ).fetchone()
+            if not row:
+                return {"ok": False, "error": "option_not_found"}
+            opt = dict(row)
+            if opt["status"] == "paid":
+                if str(opt.get("transaction_uid") or "") == tx_uid:
+                    return {"ok": True, "idempotent": True, "option": opt}
+                return {"ok": False, "conflict": True, "reason": "already_paid_different_uid", "option": opt}
+            if opt["status"] not in ("created",):
+                return {
+                    "ok": False, "wrong_state": True,
+                    "reason": f"cannot_pay_from_status:{opt['status']}",
+                    "option": opt,
+                }
+            conn.execute(
+                """
+                UPDATE payment_intent_options SET
+                    status = 'paid',
+                    transaction_uid = ?,
+                    paid_at = ?,
+                    paid_amount_minor = ?,
+                    paid_currency = ?,
+                    paid_tracking_id = ?,
+                    paid_order_id = ?,
+                    bepaid_uid = COALESCE(?, bepaid_uid),
+                    updated_at = ?
+                WHERE id = ? AND status = 'created'
+                """,
+                (tx_uid, paid_at, int(amount_minor), str(currency or "BYN"),
+                 tracking_id, order_id, bepaid_uid, now, option_id),
+            )
+            changes = conn.execute("SELECT changes()").fetchone()[0]
+            if changes == 0:
+                row2 = conn.execute(
+                    "SELECT * FROM payment_intent_options WHERE id=?", (option_id,)
+                ).fetchone()
+                opt2 = dict(row2) if row2 else {}
+                if opt2.get("status") == "paid" and str(opt2.get("transaction_uid") or "") == tx_uid:
+                    return {"ok": True, "idempotent": True, "option": opt2}
+                return {"ok": False, "conflict": True, "reason": "concurrent_update", "option": opt2}
+            row_after = conn.execute(
+                "SELECT * FROM payment_intent_options WHERE id=?", (option_id,)
+            ).fetchone()
+        return {"ok": True, "marked_paid": True, "option": dict(row_after) if row_after else {}}
+
+    def mark_option_failed(
+        self,
+        option_id: int,
+        *,
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ) -> dict:
+        now = now_iso()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM payment_intent_options WHERE id=?", (option_id,)
+            ).fetchone()
+            if not row:
+                return {"ok": False, "error": "option_not_found"}
+            opt = dict(row)
+            if opt["status"] not in ("created",):
+                return {
+                    "ok": False, "wrong_state": True,
+                    "reason": f"cannot_fail_from_status:{opt['status']}",
+                    "option": opt,
+                }
+            conn.execute(
+                """
+                UPDATE payment_intent_options SET
+                    status = 'failed',
+                    error_code = ?,
+                    error_message = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (error_code, error_message, now, option_id),
+            )
+            row_after = conn.execute(
+                "SELECT * FROM payment_intent_options WHERE id=?", (option_id,)
+            ).fetchone()
+        return {"ok": True, "marked_failed": True, "option": dict(row_after) if row_after else {}}
+
+    def mark_option_expired(self, option_id: int) -> dict:
+        now = now_iso()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM payment_intent_options WHERE id=?", (option_id,)
+            ).fetchone()
+            if not row:
+                return {"ok": False, "error": "option_not_found"}
+            opt = dict(row)
+            if opt["status"] not in ("created",):
+                return {
+                    "ok": False, "wrong_state": True,
+                    "reason": f"cannot_expire_from_status:{opt['status']}",
+                    "option": opt,
+                }
+            conn.execute(
+                "UPDATE payment_intent_options SET status='expired', updated_at=? WHERE id=?",
+                (now, option_id),
+            )
+            row_after = conn.execute(
+                "SELECT * FROM payment_intent_options WHERE id=?", (option_id,)
+            ).fetchone()
+        return {"ok": True, "marked_expired": True, "option": dict(row_after) if row_after else {}}
+
+    def supersede_sibling_options(self, intent_public_id: str, winning_option_id: int) -> int:
+        """Mark all non-winning, non-paid options as 'superseded'. Returns row count changed."""
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE payment_intent_options SET
+                    status = 'superseded',
+                    updated_at = ?
+                WHERE intent_public_id = ?
+                  AND id != ?
+                  AND status NOT IN ('paid', 'superseded')
+                """,
+                (now, intent_public_id, winning_option_id),
+            )
+            changes = conn.execute("SELECT changes()").fetchone()[0]
+        return changes
+
+    def payment_intent_mark_paid_via_option(
+        self,
+        public_id: str,
+        *,
+        option_id: int,
+        channel: str,
+        tx_uid: str,
+        amount_minor: int,
+        currency: str,
+        paid_at: str,
+        tracking_id: Optional[str] = None,
+        order_id: Optional[str] = None,
+        account_number: Optional[str] = None,
+        verified: bool = False,
+        match_method: str = "",
+    ) -> dict:
+        """Atomic: mark option paid, supersede siblings, mark parent intent paid with paid_channel.
+
+        Returns:
+          {ok: True, marked_paid: True, intent: {...}, siblings_superseded: N}
+          {ok: True, idempotent: True, intent: {...}}     — same tx_uid already recorded
+          {ok: False, double_payment: True, ...}          — parent already paid via different tx
+          {ok: False, wrong_state: True, ...}             — parent not in bepaid_created
+          {ok: False, error: ..., ...}                    — other errors
+        """
+        now = now_iso()
+
+        with self._connect() as conn:
+            pi_row = conn.execute(
+                "SELECT * FROM payment_intents WHERE public_id=?", (public_id,)
+            ).fetchone()
+        if not pi_row:
+            return {"ok": False, "error": "intent_not_found"}
+        pi = dict(pi_row)
+
+        if pi["status"] == "paid":
+            existing_uid = str(pi.get("paid_transaction_uid") or "").strip()
+            if existing_uid == tx_uid:
+                return {"ok": True, "idempotent": True, "intent": pi}
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE payment_intents SET
+                        status = 'double_payment_requires_check',
+                        payment_state_reason = ?,
+                        last_webhook_at = ?,
+                        updated_at = ?
+                    WHERE public_id = ? AND status = 'paid'
+                    """,
+                    (
+                        f"double_payment:channel={channel}:tx_uid={tx_uid}",
+                        now, now, public_id,
+                    ),
+                )
+            return {
+                "ok": False, "double_payment": True,
+                "reason": f"already_paid_with_uid:{existing_uid}",
+                "intent": pi,
+            }
+
+        if pi["status"] == "double_payment_requires_check":
+            return {"ok": False, "double_payment": True, "reason": "already_flagged_double", "intent": pi}
+
+        if pi["status"] not in ("bepaid_created",):
+            return {
+                "ok": False, "wrong_state": True,
+                "reason": f"cannot_mark_paid_from_status:{pi['status']}",
+                "intent": pi,
+            }
+
+        opt_result = self.mark_option_paid(
+            option_id,
+            tx_uid=tx_uid,
+            paid_at=paid_at,
+            amount_minor=amount_minor,
+            currency=currency,
+            tracking_id=tracking_id,
+            order_id=order_id,
+        )
+        if not opt_result.get("ok"):
+            if opt_result.get("idempotent"):
+                with self._connect() as conn:
+                    row_after = conn.execute(
+                        "SELECT * FROM payment_intents WHERE public_id=?", (public_id,)
+                    ).fetchone()
+                return {"ok": True, "idempotent": True, "intent": dict(row_after) if row_after else {}}
+            return {"ok": False, "error": "option_mark_failed", "detail": opt_result}
+
+        siblings_updated = self.supersede_sibling_options(public_id, option_id)
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE payment_intents SET
+                    status               = 'paid',
+                    paid_at              = ?,
+                    paid_amount_minor    = ?,
+                    paid_currency        = ?,
+                    paid_transaction_uid = ?,
+                    paid_tracking_id     = ?,
+                    paid_order_id        = ?,
+                    paid_account_number  = ?,
+                    paid_channel         = ?,
+                    paid_option_id       = ?,
+                    webhook_verified     = ?,
+                    webhook_match_method = ?,
+                    payment_state_reason = 'paid_via_bepaid_webhook',
+                    last_webhook_at      = ?,
+                    updated_at           = ?
+                WHERE public_id = ? AND status = 'bepaid_created'
+                """,
+                (
+                    paid_at, int(amount_minor), str(currency or "BYN"),
+                    tx_uid, tracking_id, order_id, account_number,
+                    channel, option_id,
+                    1 if verified else 0, match_method, now, now,
+                    public_id,
+                ),
+            )
+            changes = conn.execute("SELECT changes()").fetchone()[0]
+            if changes == 0:
+                row2 = conn.execute(
+                    "SELECT * FROM payment_intents WHERE public_id=?", (public_id,)
+                ).fetchone()
+                pi2 = dict(row2) if row2 else {}
+                if pi2.get("status") == "paid" and str(pi2.get("paid_transaction_uid") or "") == tx_uid:
+                    return {"ok": True, "idempotent": True, "intent": pi2}
+                return {"ok": False, "conflict": True, "reason": "concurrent_update", "intent": pi2}
+            row_after = conn.execute(
+                "SELECT * FROM payment_intents WHERE public_id=?", (public_id,)
+            ).fetchone()
+        return {
+            "ok": True, "marked_paid": True,
+            "intent": dict(row_after) if row_after else {},
+            "siblings_superseded": siblings_updated,
+        }

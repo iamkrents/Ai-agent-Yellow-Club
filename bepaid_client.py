@@ -20,6 +20,11 @@ log = logging.getLogger(__name__)
 # Source: https://docs.bepaid.by/en/payment_methods/apms/erip/create_payment/
 BEPAID_ERIP_ENDPOINT = "https://api.bepaid.by/beyag/payments"
 
+# BLOCKER: bePaid acquiring (card) checkout endpoint is not confirmed from official docs.
+# This constant is a placeholder. Do NOT use in production until the exact endpoint
+# and payload format are verified with bePaid and tested in sandbox.
+BEPAID_ACQ_ENDPOINT_UNCONFIRMED = "https://checkout.bepaid.by/ctp/api/checkouts"
+
 _PURPOSE_MAP: dict[str, str] = {
     "current_month": "Текущий месяц",
     "previous_month_debt": "Долг за предыдущий месяц",
@@ -77,6 +82,22 @@ class BePaidClient:
     def create_erip_payment(self, payload: dict) -> BePaidResult:
         """POST a new ERIP payment invoice to bePaid."""
         return self._post(BEPAID_ERIP_ENDPOINT, payload)
+
+    def create_acquiring_checkout(self, payload: dict) -> BePaidResult:
+        """POST a new acquiring (card) checkout to bePaid.
+
+        BLOCKER: The bePaid acquiring API endpoint and payload format have not been
+        confirmed from official documentation or sandbox testing. This method returns
+        a not_implemented error and must not be called in production until the endpoint
+        is verified. See BEPAID_ACQ_ENDPOINT_UNCONFIRMED in this module.
+        """
+        log.error("create_acquiring_checkout called but acquiring endpoint is not confirmed")
+        return BePaidResult(
+            ok=False,
+            http_status=0,
+            error="acquiring_not_implemented:endpoint_unconfirmed",
+            requires_check=False,
+        )
 
     def _post(self, url: str, payload: dict) -> BePaidResult:
         try:

@@ -132,12 +132,19 @@ def _compute_moyklass_post_fingerprint(intent: dict, invoice: dict) -> str:
 
 
 _ERIP_KEYWORDS = ("ЕРИП", "ERIP", "BEPAID", "БЕЗНАЛИЧНЫЙ", "ОНЛАЙН-ОПЛАТА", "ОНЛАЙН ОПЛАТА")
+_ACQ_KEYWORDS = ("ЭКВАЙРИНГ", "ACQUIRING", "БАНКОВСКАЯ КАРТА", "CARD", "BEPAID CARD", "КАРТОЙ")
 
 
 def _is_erip_candidate(name: str) -> bool:
     """Return True if the payment type name suggests bePaid ERIP."""
     upper = (name or "").upper()
     return any(kw in upper for kw in _ERIP_KEYWORDS)
+
+
+def _is_acquiring_candidate(name: str) -> bool:
+    """Return True if the payment type name suggests bePaid acquiring (card)."""
+    upper = (name or "").upper()
+    return any(kw in upper for kw in _ACQ_KEYWORDS)
 
 
 def _normalize_payment_type(raw: dict) -> dict:
@@ -9199,10 +9206,10 @@ class MiniAppContext:
     # ── v7.0.92.1: MoyKlass payment type discovery ───────────────────────────
 
     def moyklass_payment_types(self, auth: dict[str, Any]) -> dict[str, Any]:
-        """GET /api/payments/moyklass/payment-types — list payment types, validate configured ID.
+        """GET /api/payments/moyklass/payment-types — list payment types + dual-channel readiness.
 
         Read-only. No POST to MoyKlass. No .env modification.
-        Owner/admin only. Returns normalized type list + candidate ERIP detection.
+        Owner/admin only. Returns normalized type list + ERIP and acquiring candidates.
         """
         denied = self._require_moyklass_post_access(auth)
         if denied:
@@ -9224,40 +9231,61 @@ class MiniAppContext:
         items = [_normalize_payment_type(r) for r in raw_items if isinstance(r, dict)]
 
         cfg = self.settings
-        configured_id = int(getattr(cfg, "moyklass_erip_payment_type_id", 0) or 0)
+        erip_id = int(getattr(cfg, "moyklass_erip_payment_type_id", 0) or 0)
+        acq_id = int(getattr(cfg, "moyklass_acquiring_payment_type_id", 0) or 0)
 
-        configured_type: dict | None = None
-        for item in items:
-            if item["id"] == configured_id:
-                configured_type = item
-                break
+        erip_type: dict | None = next((i for i in items if i["id"] == erip_id), None) if erip_id else None
+        acq_type: dict | None = next((i for i in items if i["id"] == acq_id), None) if acq_id else None
 
         erip_candidates = [
-            {"id": item["id"], "name": item["name"]}
-            for item in items
-            if _is_erip_candidate(item["name"])
+            {"id": i["id"], "name": i["name"]}
+            for i in items
+            if _is_erip_candidate(i["name"])
         ]
-        auto_select = False  # Never auto-select; admin must set .env manually
+        acq_candidates = [
+            {"id": i["id"], "name": i["name"]}
+            for i in items
+            if _is_acquiring_candidate(i["name"])
+        ]
 
-        pt_readiness = _build_payment_type_readiness(configured_id, configured_type)
+        erip_readiness = _build_payment_type_readiness(erip_id, erip_type)
+        acq_readiness = _build_payment_type_readiness(acq_id, acq_type)
 
         return {
             "ok": True,
-            "configured_payment_type_id": configured_id if configured_id > 0 else None,
-            "configured_payment_type_found": configured_type is not None,
-            "configured_payment_type": pt_readiness,
+            # Legacy single-channel fields (backward-compat)
+            "configured_payment_type_id": erip_id if erip_id > 0 else None,
+            "configured_payment_type_found": erip_type is not None,
+            "configured_payment_type": erip_readiness,
+            # Dual-channel readiness (v7.0.92.2)
+            "erip": {
+                "configured_payment_type_id": erip_id if erip_id > 0 else None,
+                "configured_payment_type_found": erip_type is not None,
+                "payment_type": erip_readiness,
+            },
+            "acquiring": {
+                "configured_payment_type_id": acq_id if acq_id > 0 else None,
+                "configured_payment_type_found": acq_type is not None,
+                "payment_type": acq_readiness,
+            },
             "items": items,
             "diagnostics": {
                 "total": len(items),
                 "active": sum(1 for i in items if i.get("active", True) and not i.get("deleted", False)),
                 "possible_erip_matches": len(erip_candidates),
                 "erip_candidates": erip_candidates,
-                "auto_select": auto_select,
-                "env_hint": (
+                "possible_acquiring_matches": len(acq_candidates),
+                "acquiring_candidates": acq_candidates,
+                "auto_select": False,
+                "env_hint_erip": (
                     f"MOYKLASS_ERIP_PAYMENT_TYPE_ID={erip_candidates[0]['id']}"
                     if len(erip_candidates) == 1 else None
                 ),
-                "manual_selection_required": len(erip_candidates) != 1,
+                "env_hint_acquiring": (
+                    f"MOYKLASS_ACQUIRING_PAYMENT_TYPE_ID={acq_candidates[0]['id']}"
+                    if len(acq_candidates) == 1 else None
+                ),
+                "manual_selection_required": len(erip_candidates) != 1 or len(acq_candidates) != 1,
             },
         }
 
@@ -9553,7 +9581,13 @@ class MiniAppContext:
         mk_invoice_id_str = str(intent.get("mk_invoice_id") or "")
         mk_sub_id_str = str(intent.get("mk_user_subscription_id") or "")
         paid_amount_minor = int(intent.get("paid_amount_minor") or 0)
-        payment_type_id = int(getattr(cfg, "moyklass_erip_payment_type_id", 0) or 0)
+        paid_channel = str(intent.get("paid_channel") or "erip").strip().lower() or "erip"
+        if paid_channel == "acquiring":
+            payment_type_id = int(getattr(cfg, "moyklass_acquiring_payment_type_id", 0) or 0)
+            _missing_env = "MOYKLASS_ACQUIRING_PAYMENT_TYPE_ID"
+        else:
+            payment_type_id = int(getattr(cfg, "moyklass_erip_payment_type_id", 0) or 0)
+            _missing_env = "MOYKLASS_ERIP_PAYMENT_TYPE_ID"
 
         # 5. Quick sanity checks
         if not mk_user_id:
@@ -9566,9 +9600,9 @@ class MiniAppContext:
             self.storage.log_moyklass_post_audit(
                 "moyklass_post_config_missing",
                 intent_public_id=public_id,
-                reason="moyklass_erip_payment_type_id_not_set",
+                reason=f"{_missing_env}_not_set",
             )
-            return {"ok": False, "error": "Не настроен тип оплаты МойКласс (MOYKLASS_ERIP_PAYMENT_TYPE_ID)"}
+            return {"ok": False, "error": f"Не настроен тип оплаты МойКласс ({_missing_env})"}
         if not self.moyklass.is_configured:
             return {"ok": False, "error": "МойКласс API не настроен"}
 
