@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.0.92.4" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.0.92.5" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -337,6 +337,16 @@
             <div id="piDebug" style="font-size:11px;color:var(--muted);padding:2px 0 4px;min-height:16px"></div>
             <div id="piStats" class="pi-stats-row"></div>
             <div id="piList" class="pi-list"></div>
+
+            <!-- Несопоставленные транзакции bePaid — v7.0.92.5 -->
+            <div id="unmatchedTxSection" style="display:none;margin-top:16px">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                <span style="font-weight:600;font-size:14px">Несопоставленные транзакции bePaid</span>
+                <button class="secondary small" id="refreshUnmatchedTx" type="button">Обновить</button>
+              </div>
+              <div id="unmatchedTxDebug" style="font-size:11px;color:var(--muted);min-height:14px"></div>
+              <div id="unmatchedTxList"></div>
+            </div>
 
             <!-- Тип оплаты МойКласс — v7.0.92.1 -->
             <div class="mk-payment-type-section" id="mkPaymentTypeSection" style="display:none">
@@ -882,6 +892,6 @@
 
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.0.92.4"></script>
+  <script src="/static/app.js?v=7.0.92.5"></script>
 </body>
 </html>

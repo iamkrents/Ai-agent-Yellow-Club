@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.92.4");
+console.log("MiniApp version: v7.0.92.5");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -11552,6 +11552,85 @@ function canUsePaymentIntents() {
   return ["owner", "admin", "director", "operations", "client_manager"].includes(r);
 }
 
+async function loadUnmatchedTransactions() {
+  const section = $("unmatchedTxSection");
+  const listEl = $("unmatchedTxList");
+  const debugEl = $("unmatchedTxDebug");
+  const refreshBtn = $("refreshUnmatchedTx");
+  if (!listEl) return;
+  if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.textContent = "Загрузка..."; }
+  if (listEl) listEl.innerHTML = `<div style="color:var(--muted);font-size:13px">Загрузка...</div>`;
+  if (debugEl) debugEl.textContent = "";
+  try {
+    const data = await apiGet("/api/payments/bepaid/unmatched");
+    const txs = data.transactions || [];
+    if (section) section.style.display = txs.length > 0 ? "" : "none";
+    if (debugEl) debugEl.textContent = `Найдено: ${txs.length}`;
+    if (refreshBtn) refreshBtn.textContent = `Обновить (${txs.length})`;
+    if (txs.length === 0) {
+      listEl.innerHTML = `<div style="color:var(--muted);font-size:13px">Несопоставленных транзакций нет</div>`;
+      return;
+    }
+    listEl.innerHTML = txs.map(tx => {
+      const channelLabel = tx.shop_type === "acquiring" ? "Эквайринг" : tx.shop_type === "erip" ? "ЕРИП" : escapeHtml(String(tx.shop_type || ""));
+      const amountByn = tx.amount_byn != null ? fmtByn(tx.amount_byn) : (tx.amount_minor != null ? fmtByn(tx.amount_minor / 100) : "—");
+      const verifiedBadge = tx.webhook_verified ? `<span style="color:var(--green);font-size:11px">✓ подпись проверена</span>` : `<span style="color:var(--red);font-size:11px">✗ подпись не проверена</span>`;
+      const receivedAt = tx.received_at ? String(tx.received_at).slice(0, 19) : "—";
+      return `<div class="pi-card" style="margin-bottom:10px;padding:12px;border:1px solid var(--border);border-radius:8px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:4px">
+          <div>
+            <span style="font-weight:600;font-size:13px">Транзакция #${escapeHtml(String(tx.id))}</span>
+            <span style="margin-left:8px;font-size:12px;color:var(--muted)">${escapeHtml(receivedAt)}</span>
+          </div>
+          <span style="font-size:12px;background:var(--yellow-soft,#fff3cd);color:#856404;border-radius:4px;padding:2px 7px">Не сопоставлена</span>
+        </div>
+        <div style="margin-top:6px;font-size:12px;display:grid;grid-template-columns:auto 1fr;gap:2px 10px">
+          <span style="color:var(--muted)">Канал:</span><span>${escapeHtml(channelLabel)}</span>
+          <span style="color:var(--muted)">Сумма:</span><span style="font-weight:600">${escapeHtml(amountByn)}</span>
+          <span style="color:var(--muted)">tracking_id:</span><span style="font-family:monospace">${escapeHtml(String(tx.tracking_id || "—"))}</span>
+          <span style="color:var(--muted)">UID:</span><span style="font-family:monospace;font-size:11px">${escapeHtml(String(tx.transaction_uid || "—"))}</span>
+          <span style="color:var(--muted)">Статус bePaid:</span><span style="color:var(--green);font-weight:600">${escapeHtml(String(tx.status || "—"))}</span>
+          <span style="color:var(--muted)">Причина:</span><span style="font-size:11px">payment option не найден прежним matcher</span>
+        </div>
+        <div style="margin-top:6px">${verifiedBadge}</div>
+        <div style="margin-top:10px">
+          <button class="primary small" onclick="reconcileTransaction(${Number(tx.id)})">Повторно сопоставить оплату</button>
+        </div>
+      </div>`;
+    }).join("");
+  } catch (e) {
+    if (section) section.style.display = "";
+    if (listEl) listEl.innerHTML = `<div style="color:var(--red);font-size:13px">Ошибка: ${escapeHtml(String(e))}</div>`;
+    if (debugEl) debugEl.textContent = `Ошибка: ${String(e)}`;
+    if (refreshBtn) refreshBtn.textContent = "Обновить";
+  } finally {
+    if (refreshBtn) { refreshBtn.disabled = false; if (refreshBtn.textContent === "Загрузка...") refreshBtn.textContent = "Обновить"; }
+  }
+}
+
+window.reconcileTransaction = async function reconcileTransaction(txId) {
+  if (!txId) return;
+  const btn = document.querySelector(`button[onclick="reconcileTransaction(${txId})"]`);
+  if (btn) { btn.disabled = true; btn.textContent = "Сопоставление..."; }
+  try {
+    const result = await apiFetch(`/api/payments/bepaid/transactions/${txId}/reconcile`, { method: "POST" });
+    if (result.ok || result.matched) {
+      const intentId = result.intent_public_id || result.parent_public_id || "";
+      const msg = intentId ? `Оплата сопоставлена: ${intentId}` : "Оплата успешно сопоставлена";
+      alert(msg);
+      await loadUnmatchedTransactions();
+      await loadPaymentIntents();
+    } else {
+      const reason = result.reason || result.error || "неизвестная ошибка";
+      alert(`Не удалось сопоставить: ${reason}`);
+      if (btn) { btn.disabled = false; btn.textContent = "Повторно сопоставить оплату"; }
+    }
+  } catch (e) {
+    alert(`Ошибка: ${String(e)}`);
+    if (btn) { btn.disabled = false; btn.textContent = "Повторно сопоставить оплату"; }
+  }
+};
+
 async function loadPaymentIntents() {
   if (!canUsePaymentIntents()) {
     const listEl = $("piList");
@@ -11702,9 +11781,12 @@ function renderPaymentIntentCard(pi) {
     ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">Причина: ${escapeHtml(pi.cancel_reason)}</div>`
     : "";
 
+  const _paidChannelLabel = pi.paid_channel === "acquiring" ? "Оплачено банковской картой (эквайринг)"
+    : pi.paid_channel === "erip" ? "Оплачено через ЕРИП"
+    : "Оплачено в bePaid";
   const bePaidPaidBlock = (pi.status === "paid" || pi.status === "posted_to_moyklass")
     ? `<div class="pi-bepaid-paid">
-        <strong>Оплачено в bePaid</strong>
+        <strong>${escapeHtml(_paidChannelLabel)}</strong>
         ${pi.paid_at ? `<div style="font-size:11px;margin-top:4px">Дата: ${escapeHtml(String(pi.paid_at).slice(0, 19))}</div>` : ""}
         ${(pi.paid_amount_byn != null) ? `<div style="font-size:11px">Сумма: ${fmtByn(pi.paid_amount_byn)}</div>` : ""}
         ${pi.paid_transaction_uid ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">UID: ${escapeHtml(pi.paid_transaction_uid)}</div>` : ""}
@@ -12854,11 +12936,12 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.target.open && canUsePaymentIntents()) {
       initMonthPicker($("piMonthFilter"), "");
       loadPaymentIntents();
-      if (canPostToMoyklass()) loadMkPaymentTypes();
+      if (canPostToMoyklass()) { loadMkPaymentTypes(); loadUnmatchedTransactions(); }
     }
   });
 
   $("loadPaymentIntents")?.addEventListener("click", loadPaymentIntents);
+  $("refreshUnmatchedTx")?.addEventListener("click", loadUnmatchedTransactions);
   $("openCreateIntent")?.addEventListener("click", () => openCreateIntentModal());
   $("piMonthFilter")?.addEventListener("change", loadPaymentIntents);
   $("piStatusFilter")?.addEventListener("change", loadPaymentIntents);

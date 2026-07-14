@@ -8280,8 +8280,9 @@ class MiniAppContext:
                     "skip_reason": f"status={tx_status}",
                 }, 200
 
-            # Attempt to match transaction to a payment intent
-            match = self.storage.match_bepaid_transaction_to_intent(extracted)
+            # Option-aware match: searches payment_intent_options first, then legacy intents
+            match = self.storage.match_bepaid_transaction_to_payment_target(extracted, shop_type)
+            target_type = match.get("target_type") or "none"
             match_method = match.get("method") or ""
             match_confidence = match.get("confidence") or "none"
             match_reason = match.get("reason") or ""
@@ -8329,8 +8330,15 @@ class MiniAppContext:
                     "skip_reason": "no_match",
                 }, 200
 
-            intent_id = match["intent_id"]
-            intent_public_id = match["intent_public_id"]
+            # Resolve intent_id and intent_public_id for both target types
+            if target_type == "payment_option":
+                option_id = match["option_id"]
+                intent_id = match["payment_intent_id"]
+                intent_public_id = match["parent_public_id"]
+            else:
+                option_id = None
+                intent_id = match["intent_id"]
+                intent_public_id = match["intent_public_id"]
 
             # Link the transaction record to the intent
             from utils import now_iso as _now_iso
@@ -8347,7 +8355,7 @@ class MiniAppContext:
             )
 
             self.storage.log_payment_webhook_audit(
-                "webhook_matched",
+                "payment_option_webhook_matched" if target_type == "payment_option" else "webhook_matched",
                 bepaid_tx_id=tx_id,
                 payment_intent_id=intent_id,
                 intent_public_id=intent_public_id,
@@ -8408,7 +8416,7 @@ class MiniAppContext:
                     "skip_reason": f"currency={currency}",
                 }, 200
 
-            # Missing currency → skip without marking paid (not enough info to flag requires_check)
+            # Missing currency → skip
             if not currency:
                 log.warning("bePaid webhook missing_currency: tx_id=%s", tx_id)
                 self.storage.log_payment_webhook_audit(
@@ -8450,7 +8458,7 @@ class MiniAppContext:
                     "skip_reason": "missing_amount",
                 }, 200
 
-            # Verify webhook amount matches intent exactly — prevents partial payment acceptance
+            # Verify webhook amount matches intent exactly
             pi_obj = self.storage.get_payment_intent(intent_public_id)
             expected_minor = int(pi_obj.get("amount_minor") or -1) if pi_obj else -1
             actual_minor = int(amount_minor)
@@ -8483,19 +8491,35 @@ class MiniAppContext:
                     "skip_reason": "amount_mismatch",
                 }, 200
 
-            # Mark the intent as paid
-            mark_result = self.storage.payment_intent_mark_paid(
-                intent_public_id,
-                tx_uid=tx_uid,
-                amount_minor=int(amount_minor),
-                currency=currency,
-                paid_at=paid_at or _now,
-                tracking_id=extracted.get("tracking_id"),
-                order_id=extracted.get("order_id"),
-                account_number=extracted.get("erip_account_number"),
-                verified=sig_verified,
-                match_method=match_method,
-            )
+            # Mark paid — option path or legacy intent path
+            if target_type == "payment_option" and option_id is not None:
+                mark_result = self.storage.payment_intent_mark_paid_via_option(
+                    intent_public_id,
+                    option_id=option_id,
+                    channel=shop_type,
+                    tx_uid=tx_uid,
+                    amount_minor=actual_minor,
+                    currency=currency,
+                    paid_at=paid_at or _now,
+                    tracking_id=extracted.get("tracking_id"),
+                    order_id=extracted.get("order_id"),
+                    account_number=extracted.get("erip_account_number"),
+                    verified=sig_verified,
+                    match_method=match_method,
+                )
+            else:
+                mark_result = self.storage.payment_intent_mark_paid(
+                    intent_public_id,
+                    tx_uid=tx_uid,
+                    amount_minor=actual_minor,
+                    currency=currency,
+                    paid_at=paid_at or _now,
+                    tracking_id=extracted.get("tracking_id"),
+                    order_id=extracted.get("order_id"),
+                    account_number=extracted.get("erip_account_number"),
+                    verified=sig_verified,
+                    match_method=match_method,
+                )
 
             if mark_result.get("idempotent"):
                 log.info(
@@ -8524,7 +8548,7 @@ class MiniAppContext:
                     tx_id, intent_public_id, tx_uid, amount_minor,
                 )
                 self.storage.log_payment_webhook_audit(
-                    "intent_marked_paid",
+                    "payment_option_marked_paid" if target_type == "payment_option" else "intent_marked_paid",
                     bepaid_tx_id=tx_id,
                     payment_intent_id=intent_id,
                     intent_public_id=intent_public_id,
@@ -8605,6 +8629,242 @@ class MiniAppContext:
         for r in rows:
             r.pop("raw_json", None)
         return {"ok": True, "transactions": rows, "count": len(rows)}
+
+    def bepaid_list_unmatched_transactions(self, auth: dict[str, Any]) -> dict[str, Any]:
+        """GET /api/payments/bepaid/unmatched — successful, verified, non-test transactions with no intent match."""
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in {"owner", "admin"}:
+            return {"ok": False, "error": "access_denied"}
+        rows = self.storage.list_unmatched_bepaid_transactions(limit=50)
+        safe = []
+        for r in rows:
+            safe.append({
+                "id": r.get("id"),
+                "shop_type": r.get("shop_type"),
+                "transaction_uid": r.get("transaction_uid"),
+                "tracking_id": r.get("tracking_id"),
+                "order_id": r.get("order_id"),
+                "status": r.get("status"),
+                "amount_minor": r.get("amount_minor"),
+                "amount_byn": r.get("amount_byn"),
+                "currency": r.get("currency"),
+                "paid_at": r.get("paid_at"),
+                "received_at": r.get("received_at"),
+                "webhook_verified": bool(r.get("webhook_verified")),
+                "test": bool(r.get("test")),
+            })
+        return {"ok": True, "transactions": safe, "count": len(safe)}
+
+    def bepaid_reconcile_stored_transaction(
+        self, auth: dict[str, Any], tx_id_str: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """POST /api/payments/bepaid/transactions/{id}/reconcile
+
+        Re-processes a stored verified-signature successful transaction that was previously
+        unmatched (no_match). Runs the option-aware matcher and atomically marks the intent paid.
+        No external API calls are made. Owner/admin only.
+        """
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in {"owner", "admin"}:
+            return {"ok": False, "error": "access_denied"}
+
+        try:
+            tx_id = int(tx_id_str)
+        except (ValueError, TypeError):
+            return {"ok": False, "error": "invalid_transaction_id"}
+
+        tx = self.storage.get_bepaid_transaction_by_id(tx_id)
+        if not tx:
+            return {"ok": False, "error": "transaction_not_found"}
+
+        if not tx.get("webhook_verified"):
+            return {"ok": False, "error": "transaction_not_verified",
+                    "reason": "signature_not_verified"}
+        if tx.get("status") != "successful":
+            return {"ok": False, "error": "not_successful",
+                    "reason": f"status={tx.get('status')}"}
+        if tx.get("test"):
+            return {"ok": False, "error": "test_transaction_ignored"}
+
+        shop_type = str(tx.get("shop_type") or "")
+        tx_uid = str(tx.get("transaction_uid") or "").strip()
+        amount_minor = tx.get("amount_minor")
+        currency = str(tx.get("currency") or "").strip()
+        tracking_id = str(tx.get("tracking_id") or "").strip() or None
+        order_id = str(tx.get("order_id") or "").strip() or None
+        paid_at = str(tx.get("paid_at") or "").strip() or None
+        erip_account = str(tx.get("erip_account_number") or "").strip() or None
+
+        from utils import now_iso as _now_iso
+        now_str = _now_iso()
+
+        self.storage.log_payment_webhook_audit(
+            "stored_transaction_reconcile_started",
+            bepaid_tx_id=tx_id,
+            transaction_uid=tx_uid or None,
+            shop_type=shop_type,
+            amount_minor=amount_minor,
+            currency=currency or None,
+        )
+
+        # Idempotency: already reconciled?
+        existing_pub_id = str(tx.get("intent_public_id") or "").strip()
+        if existing_pub_id:
+            existing_pi = self.storage.get_payment_intent(existing_pub_id)
+            if existing_pi and existing_pi.get("status") == "paid":
+                existing_uid = str(existing_pi.get("paid_transaction_uid") or "").strip()
+                if existing_uid == tx_uid:
+                    self.storage.log_payment_webhook_audit(
+                        "stored_transaction_reconciled",
+                        bepaid_tx_id=tx_id,
+                        intent_public_id=existing_pub_id,
+                        transaction_uid=tx_uid or None,
+                        reason="already_reconciled_idempotent",
+                    )
+                    return {
+                        "ok": True, "idempotent": True,
+                        "intent_public_id": existing_pub_id,
+                        "intent": self._normalize_payment_intent(existing_pi),
+                    }
+
+        extracted = {
+            "tracking_id": tracking_id,
+            "order_id": order_id,
+            "transaction_uid": tx_uid,
+            "erip_account_number": erip_account,
+        }
+        match = self.storage.match_bepaid_transaction_to_payment_target(extracted, shop_type)
+
+        if not match.get("matched") or match.get("confidence") != "strong":
+            self.storage.log_payment_webhook_audit(
+                "stored_transaction_reconcile_blocked",
+                bepaid_tx_id=tx_id,
+                transaction_uid=tx_uid or None,
+                shop_type=shop_type,
+                amount_minor=amount_minor,
+                reason=f"no_match:{match.get('reason')}",
+            )
+            return {
+                "ok": False, "error": "no_match_found",
+                "reason": match.get("reason"),
+            }
+
+        target_type = match.get("target_type") or "none"
+        if target_type == "payment_option":
+            option_id = match["option_id"]
+            intent_public_id = match["parent_public_id"]
+            intent_id = match["payment_intent_id"]
+        else:
+            option_id = None
+            intent_public_id = match.get("intent_public_id")
+            intent_id = match.get("intent_id")
+
+        if not currency or currency != "BYN":
+            self.storage.log_payment_webhook_audit(
+                "stored_transaction_reconcile_blocked",
+                bepaid_tx_id=tx_id,
+                intent_public_id=intent_public_id,
+                transaction_uid=tx_uid or None,
+                reason=f"currency_mismatch:{currency}",
+            )
+            return {"ok": False, "error": "currency_mismatch", "reason": f"currency={currency}"}
+        if amount_minor is None:
+            return {"ok": False, "error": "missing_amount"}
+
+        pi_obj = self.storage.get_payment_intent(intent_public_id)
+        if not pi_obj:
+            return {"ok": False, "error": "parent_intent_not_found"}
+        expected_minor = int(pi_obj.get("amount_minor") or -1)
+        actual_minor = int(amount_minor)
+        if actual_minor != expected_minor:
+            self.storage.log_payment_webhook_audit(
+                "stored_transaction_reconcile_blocked",
+                bepaid_tx_id=tx_id,
+                payment_intent_id=intent_id,
+                intent_public_id=intent_public_id,
+                transaction_uid=tx_uid or None,
+                reason=f"amount_mismatch:expected={expected_minor}_got={actual_minor}",
+            )
+            return {"ok": False, "error": "amount_mismatch",
+                    "expected": expected_minor, "actual": actual_minor}
+
+        match_method = match.get("method") or "reconcile"
+
+        if target_type == "payment_option" and option_id is not None:
+            mark_result = self.storage.payment_intent_mark_paid_via_option(
+                intent_public_id,
+                option_id=option_id,
+                channel=shop_type,
+                tx_uid=tx_uid,
+                amount_minor=actual_minor,
+                currency=currency,
+                paid_at=paid_at or now_str,
+                tracking_id=tracking_id,
+                order_id=order_id,
+                account_number=erip_account,
+                verified=True,
+                match_method=match_method,
+            )
+        else:
+            mark_result = self.storage.payment_intent_mark_paid(
+                intent_public_id,
+                tx_uid=tx_uid,
+                amount_minor=actual_minor,
+                currency=currency,
+                paid_at=paid_at or now_str,
+                tracking_id=tracking_id,
+                order_id=order_id,
+                account_number=erip_account,
+                verified=True,
+                match_method=match_method,
+            )
+
+        if mark_result.get("ok") and (mark_result.get("marked_paid") or mark_result.get("idempotent")):
+            self.storage.bepaid_transaction_link_intent(
+                tx_id,
+                intent_id=intent_id,
+                intent_public_id=intent_public_id,
+                match_method=match_method,
+                confidence="strong",
+                reason=f"reconciled:{match.get('reason')}",
+                verified=True,
+                now=now_str,
+            )
+            self.storage.log_payment_webhook_audit(
+                "stored_transaction_reconciled",
+                bepaid_tx_id=tx_id,
+                payment_intent_id=intent_id,
+                intent_public_id=intent_public_id,
+                transaction_uid=tx_uid or None,
+                shop_type=shop_type,
+                amount_minor=actual_minor,
+                currency=currency,
+                match_method=match_method,
+                reason="reconcile_successful",
+            )
+            updated_pi = self.storage.get_payment_intent(intent_public_id)
+            return {
+                "ok": True,
+                "reconciled": True,
+                "idempotent": bool(mark_result.get("idempotent")),
+                "intent_public_id": intent_public_id,
+                "intent": self._normalize_payment_intent(updated_pi) if updated_pi else {},
+                "channel": shop_type,
+                "match_method": match_method,
+            }
+
+        self.storage.log_payment_webhook_audit(
+            "stored_transaction_reconcile_blocked",
+            bepaid_tx_id=tx_id,
+            payment_intent_id=intent_id,
+            intent_public_id=intent_public_id,
+            transaction_uid=tx_uid or None,
+            reason=str(mark_result.get("reason") or mark_result.get("error") or "mark_paid_failed"),
+        )
+        return {
+            "ok": False, "error": "mark_paid_failed",
+            "reason": str(mark_result.get("reason") or mark_result.get("error") or "unknown"),
+        }
 
     def bepaid_reconcile(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
         """GET /api/integrations/bepaid/reconcile — match bePaid txns against MoyKlass payments."""
@@ -11604,6 +11864,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.bepaid_list_transactions(auth, params))
                 if path == "/api/integrations/bepaid/reconcile":
                     return self._send_json(CTX.bepaid_reconcile(auth, params))
+                if path == "/api/payments/bepaid/unmatched":
+                    return self._send_json(CTX.bepaid_list_unmatched_transactions(auth))
                 if path == "/api/payments/intents":
                     return self._send_json(CTX.payment_intents_list(auth, params))
                 if path == "/api/payments/moyklass/invoices":
@@ -11724,6 +11986,11 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.payment_intent_post_to_moyklass(auth, _pi_parts[0], body))
                 if len(_pi_parts) == 2 and _pi_parts[1] == "reconcile-moyklass-payment":
                     return self._send_json(CTX.payment_intent_reconcile_moyklass(auth, _pi_parts[0], body))
+            if path.startswith("/api/payments/bepaid/transactions/"):
+                _btx_rest = path[len("/api/payments/bepaid/transactions/"):]
+                _btx_parts = _btx_rest.split("/")
+                if len(_btx_parts) == 2 and _btx_parts[1] == "reconcile":
+                    return self._send_json(CTX.bepaid_reconcile_stored_transaction(auth, _btx_parts[0], body))
             if path == "/api/integrations/bepaid/import-history":
                 return self._send_json(CTX.bepaid_import_history(auth, body))
             if path == "/api/action":

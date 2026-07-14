@@ -5115,6 +5115,120 @@ class Storage:
             "method": None, "confidence": "none", "reason": "no_match", "conflicts": [],
         }
 
+    def match_bepaid_transaction_to_payment_target(
+        self, transaction: dict, channel: str
+    ) -> dict:
+        """Option-aware matcher. Searches payment_intent_options by channel first,
+        then falls back to legacy intent matching.
+
+        channel: 'acquiring' | 'erip' — from the webhook route, not the payload.
+
+        Returns target_type='payment_option' with option_id and parent_public_id,
+        or target_type='legacy_intent' with intent_id and intent_public_id,
+        or matched=False with target_type='none'.
+        """
+        tracking_id = str(transaction.get("tracking_id") or "").strip()
+        order_id = str(transaction.get("order_id") or "").strip()
+        tx_uid = str(transaction.get("transaction_uid") or "").strip()
+        erip_account = str(transaction.get("erip_account_number") or "").strip()
+
+        opt_matches: dict[str, dict] = {}
+        with self._connect() as conn:
+            if tracking_id:
+                row = conn.execute(
+                    "SELECT * FROM payment_intent_options WHERE channel=? AND bepaid_tracking_id=? LIMIT 1",
+                    (channel, tracking_id),
+                ).fetchone()
+                if row:
+                    opt_matches["tracking_id"] = dict(row)
+            if order_id:
+                row = conn.execute(
+                    "SELECT * FROM payment_intent_options WHERE channel=? AND bepaid_order_id=? LIMIT 1",
+                    (channel, order_id),
+                ).fetchone()
+                if row:
+                    opt_matches["order_id"] = dict(row)
+            if tx_uid:
+                row = conn.execute(
+                    "SELECT * FROM payment_intent_options WHERE channel=? AND (bepaid_uid=? OR transaction_uid=?) LIMIT 1",
+                    (channel, tx_uid, tx_uid),
+                ).fetchone()
+                if row:
+                    opt_matches["transaction_uid"] = dict(row)
+            if channel == "erip" and erip_account:
+                row = conn.execute(
+                    "SELECT * FROM payment_intent_options WHERE channel='erip' AND bepaid_account_number=? LIMIT 1",
+                    (erip_account,),
+                ).fetchone()
+                if row:
+                    opt_matches["account_number"] = dict(row)
+
+        if opt_matches:
+            matched_opt_ids = {r["id"] for r in opt_matches.values()}
+            if len(matched_opt_ids) > 1:
+                conflicts = [
+                    {"method": m, "option_id": r["id"], "parent_public_id": r["intent_public_id"]}
+                    for m, r in opt_matches.items()
+                ]
+                return {
+                    "matched": True, "target_type": "payment_option",
+                    "option_id": None, "payment_intent_id": None, "parent_public_id": None,
+                    "channel": channel, "method": "conflict", "confidence": "conflict",
+                    "reason": "option_identifiers_point_to_different_options",
+                    "conflicts": conflicts,
+                }
+            for method in ("tracking_id", "order_id", "transaction_uid", "account_number"):
+                if method in opt_matches:
+                    opt = opt_matches[method]
+                    return {
+                        "matched": True,
+                        "target_type": "payment_option",
+                        "option_id": opt["id"],
+                        "payment_intent_id": opt["payment_intent_id"],
+                        "parent_public_id": opt["intent_public_id"],
+                        "channel": channel,
+                        "method": method,
+                        "confidence": "strong",
+                        "reason": f"option_matched_by_{method}",
+                        "conflicts": [],
+                    }
+
+        # Fall back to legacy intent matching (ERIP-only intents without options table rows)
+        legacy = self.match_bepaid_transaction_to_intent(transaction)
+        if legacy.get("matched") or legacy.get("confidence") == "conflict":
+            return {**legacy, "target_type": "legacy_intent"}
+
+        return {
+            "matched": False,
+            "target_type": "none",
+            "option_id": None, "payment_intent_id": None, "parent_public_id": None,
+            "intent_id": None, "intent_public_id": None,
+            "method": None, "confidence": "none",
+            "reason": "no_option_or_intent_matched",
+            "conflicts": [],
+        }
+
+    def get_bepaid_transaction_by_id(self, tx_id: int) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM bepaid_transactions WHERE id=?", (int(tx_id),)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_unmatched_bepaid_transactions(self, limit: int = 50) -> list[dict]:
+        """Successful, signature-verified, non-test transactions not yet linked to any intent."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM bepaid_transactions
+                   WHERE status = 'successful'
+                     AND test = 0
+                     AND (intent_public_id IS NULL OR intent_public_id = '')
+                     AND webhook_verified = 1
+                   ORDER BY received_at DESC LIMIT ?""",
+                (max(1, min(int(limit), 200)),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def payment_intent_mark_paid(
         self,
         public_id: str,
@@ -5753,7 +5867,7 @@ class Storage:
         if pi["status"] == "double_payment_requires_check":
             return {"ok": False, "double_payment": True, "reason": "already_flagged_double", "intent": pi}
 
-        if pi["status"] not in ("bepaid_created",):
+        if pi["status"] not in ("bepaid_created", "awaiting_payment", "partial_ready"):
             return {
                 "ok": False, "wrong_state": True,
                 "reason": f"cannot_mark_paid_from_status:{pi['status']}",
@@ -5799,7 +5913,7 @@ class Storage:
                     payment_state_reason = 'paid_via_bepaid_webhook',
                     last_webhook_at      = ?,
                     updated_at           = ?
-                WHERE public_id = ? AND status = 'bepaid_created'
+                WHERE public_id = ? AND status IN ('bepaid_created', 'awaiting_payment', 'partial_ready')
                 """,
                 (
                     paid_at, int(amount_minor), str(currency or "BYN"),

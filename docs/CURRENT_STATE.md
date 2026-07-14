@@ -1,6 +1,6 @@
 # Yellow Club Agent — Current State
 
-> Последнее обновление: 2026-07-14 (v7.0.92.4)
+> Последнее обновление: 2026-07-14 (v7.0.92.5)
 > Цель файла: позволить возобновить работу из любого нового чата без потери контекста.
 > **Этот файл — только документация. Production-код не менять через этот файл.**
 
@@ -31,11 +31,28 @@ Claude Code (локально) → редактирование кода → git
 | Параметр | Значение |
 |---|---|
 | Последняя задеплоенная версия | **v7.0.81** (commit `db0f1e9`) — НЕ развёрнут, production-дата неизвестна |
-| Последний коммит в `main` | **v7.0.92.4** — Fix bePaid webhook signature + unified prepare-options |
-| Frontend cache-bust | **`v=7.0.92.4`** (app.js и styles.css) |
-| `console.log` в app.js | `MiniApp version: v7.0.92.4` |
+| Последний коммит в `main` | **v7.0.92.5** — Fix webhook→option matching + reconciliation endpoint |
+| Frontend cache-bust | **`v=7.0.92.5`** (app.js и styles.css) |
+| `console.log` в app.js | `MiniApp version: v7.0.92.5` |
 
 > Все версии начиная с v7.0.82 запушены, но **НЕ деплоились** на production-сервер. Деплой — только по команде владельца.
+
+### v7.0.92.5 — Fix: bePaid webhook→option matching + reconciliation
+
+**Проблема (production, 2026-07-14):**
+- Вебхук эквайринга для `ycpi_202607_14` (transaction id=156, tracking_id=`ycpi_202607_14_acq`) всегда возвращал `no_match`. Причина: `match_bepaid_transaction_to_intent` искал только в таблице `payment_intents.bepaid_tracking_id`, но значение `ycpi_202607_14_acq` хранится в `payment_intent_options.bepaid_tracking_id`. Intent оставался в `awaiting_payment`, опция не помечалась оплаченной, кнопка МойКласс не показывалась.
+- `payment_intent_mark_paid_via_option` допускал только статус `bepaid_created`, хотя intent находился в `awaiting_payment`.
+
+**Исправления:**
+- **`storage.py`**: новый метод `match_bepaid_transaction_to_payment_target(transaction, channel)` — сначала ищет совпадение в `payment_intent_options` (channel-scoped), затем fallback на legacy `match_bepaid_transaction_to_intent`. Acquiring-вебхук никогда не совпадает с ERIP-опцией и наоборот. Добавлены `get_bepaid_transaction_by_id(tx_id)` и `list_unmatched_bepaid_transactions(limit)`. `payment_intent_mark_paid_via_option` теперь принимает `bepaid_created`, `awaiting_payment`, `partial_ready` как исходные статусы (и в UPDATE WHERE IN).
+- **`web_app_server.py`**: `bepaid_handle_webhook` использует `match_bepaid_transaction_to_payment_target` вместо legacy; для `target_type=payment_option` вызывает `payment_intent_mark_paid_via_option`, для `legacy_intent` — `payment_intent_mark_paid`. Новые методы: `bepaid_list_unmatched_transactions` (`GET /api/payments/bepaid/unmatched`) и `bepaid_reconcile_stored_transaction` (`POST /api/payments/bepaid/transactions/{id}/reconcile`) — повторная обработка сохранённой транзакции без внешних API-вызовов.
+- **`miniapp/app.js`**: версия v7.0.92.5; `bePaidPaidBlock` показывает `paid_channel` ("Оплачено банковской картой (эквайринг)" / "Оплачено через ЕРИП"); `loadUnmatchedTransactions()` / `reconcileTransaction(txId)` / секция «Несопоставленные транзакции bePaid» в UI.
+- **`miniapp/index.html`**: cache-bust → `v=7.0.92.5`; div `unmatchedTxSection`.
+- **`tests/test_option_matching.py`**: 31 новый тест (option matching, channel scoping, mark_paid from awaiting_payment/partial_ready/bepaid_created, sibling superseding, idempotency, conflict detection, unmatched list, legacy fallback, failed intent protection).
+
+**Итого тестов: 518/518 OK (+31 новых).**
+
+**Production safety:** нет внешних API-вызовов в reconcile; BEPAID_AUTO_POST_TO_MOYKLASS=false не тронут; production intents 13, 14 не тронуты кодом.
 
 ### v7.0.92.4 — Fix: bePaid webhook signature (Base64) + unified prepare-options
 
