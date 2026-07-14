@@ -1,6 +1,6 @@
 # Yellow Club Agent — Current State
 
-> Последнее обновление: 2026-07-14 (v7.0.92.5)
+> Последнее обновление: 2026-07-14 (v7.0.92.5.1)
 > Цель файла: позволить возобновить работу из любого нового чата без потери контекста.
 > **Этот файл — только документация. Production-код не менять через этот файл.**
 
@@ -31,11 +31,34 @@ Claude Code (локально) → редактирование кода → git
 | Параметр | Значение |
 |---|---|
 | Последняя задеплоенная версия | **v7.0.81** (commit `db0f1e9`) — НЕ развёрнут, production-дата неизвестна |
-| Последний коммит в `main` | **v7.0.92.5** — Fix webhook→option matching + reconciliation endpoint |
-| Frontend cache-bust | **`v=7.0.92.5`** (app.js и styles.css) |
-| `console.log` в app.js | `MiniApp version: v7.0.92.5` |
+| Последний коммит в `main` | **v7.0.92.5.1** — Fix unmatched transaction list + reconcile for no_match |
+| Frontend cache-bust | **`v=7.0.92.5.1`** (app.js и styles.css) |
+| `console.log` в app.js | `MiniApp version: v7.0.92.5.1` |
 
 > Все версии начиная с v7.0.82 запушены, но **НЕ деплоились** на production-сервер. Деплой — только по команде владельца.
+
+### v7.0.92.5.1 — Fix: unmatched transaction list invisible + reconcile blocked
+
+**Проблема (production):**
+- `GET /api/payments/bepaid/unmatched` возвращал HTTP 200 с пустым списком — transaction 156 не отображалась.
+- Кнопка «Повторно сопоставить оплату» не появлялась. Reconcile не запускался.
+
+**Точные причины:**
+1. **`webhook_verified` не записывался при no_match**: `bepaid_transaction_link_intent` (единственное место записи `webhook_verified=1`) вызывался только при успешном совпадении. При `no_match` транзакция сохранялась с `webhook_verified=0`.
+2. **Фильтр `AND webhook_verified=1`** в `list_unmatched_bepaid_transactions` исключал все no_match транзакции — в том числе production transaction 156.
+3. **Reconcile endpoint блокировал** на `webhook_verified=0` жёстким return error.
+4. **Ключ API `"transactions"`** вместо стандартного `"items"` (frontend читал `data.transactions`, API возвращал `"transactions"` — совпадали между собой, но нарушали стандарт API); frontend не читал `data.items`, не проверял `data.ok`, не использовал `Array.isArray`.
+
+**Исправления:**
+- **`storage.py`**: `bepaid_transaction_set_verified(tx_id)` — новый метод, записывает `webhook_verified=1`. `list_unmatched_bepaid_transactions` — удалён фильтр `AND webhook_verified=1`; теперь `status='successful' AND test=0 AND intent_public_id IS NULL/empty` — достаточно для eligibility. Комментарий о причине изменения.
+- **`web_app_server.py`**: `bepaid_handle_webhook` — немедленно вызывает `bepaid_transaction_set_verified(tx_id)` сразу после upsert при `sig_verified=True`, до любого match/no_match пути. `bepaid_reconcile_stored_transaction` — убран hard block на `webhook_verified=0`, заменён предупреждением в лог (`log.warning`); security gate остаётся через `status='successful'` + `test=0`. `bepaid_list_unmatched_transactions` — ключ `"transactions"` → `"items"`; добавлены поля `signature_verified`, `channel`, `match_status`.
+- **`miniapp/app.js`**: `loadUnmatchedTransactions` читает `data.items`, проверяет `data.ok`, использует `Array.isArray(data.items)`, читает `tx.signature_verified` вместо `tx.webhook_verified`; версия v7.0.92.5.1.
+- **`miniapp/index.html`**: cache-bust → `v=7.0.92.5.1`.
+- **`tests/test_unmatched_transactions.py`**: 31 новый тест.
+
+**Итого тестов: 549/549 OK (+31 новых).**
+
+**Для production transaction 156 после deploy:** открыть раздел платёжных черновиков → transaction 156 появится в секции «Несопоставленные транзакции bePaid» → нажать «Повторно сопоставить оплату» → `ycpi_202607_14` перейдёт в status=paid, paid_channel=acquiring, ERIP-опция→superseded.
 
 ### v7.0.92.5 — Fix: bePaid webhook→option matching + reconciliation
 

@@ -5208,6 +5208,15 @@ class Storage:
             "conflicts": [],
         }
 
+    def bepaid_transaction_set_verified(self, tx_id: int) -> None:
+        """Mark a stored transaction as signature-verified. Called immediately after upsert
+        when the incoming webhook signature passes verification, regardless of match outcome."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE bepaid_transactions SET webhook_verified=1, updated_at=? WHERE id=?",
+                (now_iso(), int(tx_id)),
+            )
+
     def get_bepaid_transaction_by_id(self, tx_id: int) -> Optional[dict]:
         with self._connect() as conn:
             row = conn.execute(
@@ -5216,14 +5225,18 @@ class Storage:
         return dict(row) if row else None
 
     def list_unmatched_bepaid_transactions(self, limit: int = 50) -> list[dict]:
-        """Successful, signature-verified, non-test transactions not yet linked to any intent."""
+        """Successful, non-test transactions not yet linked to any intent.
+
+        webhook_verified=1 is NOT required: due to a prior bug, no_match transactions
+        from the old webhook handler have webhook_verified=0 even though the signature
+        passed. status='successful' + test=0 is sufficient for admin reconcile eligibility.
+        """
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT * FROM bepaid_transactions
                    WHERE status = 'successful'
                      AND test = 0
                      AND (intent_public_id IS NULL OR intent_public_id = '')
-                     AND webhook_verified = 1
                    ORDER BY received_at DESC LIMIT ?""",
                 (max(1, min(int(limit), 200)),),
             ).fetchall()

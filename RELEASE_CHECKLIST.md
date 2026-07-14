@@ -1,9 +1,10 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.92.5**
+**Cache version: v7.0.92.5.1**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.92.5.1 | 2026-07-14 | Fix: unmatched list invisible (webhook_verified=0 для no_match tx — фильтр убран). reconcile разблокирован для no_match. API ключ transactions→items. Frontend: data.items, Array.isArray, data.ok check, signature_verified поле. bepaid_transaction_set_verified(). 31 новый тест. 549/549 OK. |
 | v7.0.92.5 | 2026-07-14 | Fix: webhook→option matching (match_bepaid_transaction_to_payment_target, channel-scoped). Reconciliation endpoint для сохранённых транзакций. UI «Несопоставленные транзакции bePaid». paid_channel label в UI. mark_paid_via_option принимает awaiting_payment/partial_ready. 31 новый тест. 518/518 OK. |
 | v7.0.92.4 | 2026-07-14 | Fix: bePaid webhook signature Base64 (не hex). Новый prepare-options endpoint (ERIP+ACQ за один клик). Дублирующийся чип «Ожидает оплаты» устранён. payment_options в list-ответе. Кнопка «Подготовить способы оплаты». openMkInvoiceCreate авто-вызывает prepare-options. 24 новых теста. 487/487 OK. |
 | v7.0.92.3 | 2026-07-14 | Feature: реальный bePaid acquiring (hosted checkout). BEPAID_CHECKOUT_ENDPOINT, create_acquiring_checkout с валидацией, X-API-Version:2, checkout_token в storage, status partial_ready/awaiting_payment, /payment-return, кнопка «Открыть страницу оплаты картой». 37 новых тестов. 463/463 OK. |

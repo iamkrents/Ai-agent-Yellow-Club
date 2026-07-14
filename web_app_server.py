@@ -8242,6 +8242,10 @@ class MiniAppContext:
             )
 
             if sig_verified:
+                # Immediately persist verification result so no_match transactions
+                # are visible in the unmatched list even if no intent match follows.
+                if tx_id:
+                    self.storage.bepaid_transaction_set_verified(tx_id)
                 self.storage.log_payment_webhook_audit(
                     "webhook_signature_verified",
                     bepaid_tx_id=tx_id,
@@ -8641,6 +8645,7 @@ class MiniAppContext:
             safe.append({
                 "id": r.get("id"),
                 "shop_type": r.get("shop_type"),
+                "channel": r.get("shop_type"),
                 "transaction_uid": r.get("transaction_uid"),
                 "tracking_id": r.get("tracking_id"),
                 "order_id": r.get("order_id"),
@@ -8650,10 +8655,12 @@ class MiniAppContext:
                 "currency": r.get("currency"),
                 "paid_at": r.get("paid_at"),
                 "received_at": r.get("received_at"),
-                "webhook_verified": bool(r.get("webhook_verified")),
+                "signature_verified": bool(r.get("webhook_verified")),
                 "test": bool(r.get("test")),
+                "match_status": r.get("match_status") or "no_match",
             })
-        return {"ok": True, "transactions": safe, "count": len(safe)}
+        log.info("bePaid unmatched list count=%d", len(safe))
+        return {"ok": True, "items": safe, "count": len(safe)}
 
     def bepaid_reconcile_stored_transaction(
         self, auth: dict[str, Any], tx_id_str: str, body: dict[str, Any]
@@ -8678,8 +8685,13 @@ class MiniAppContext:
             return {"ok": False, "error": "transaction_not_found"}
 
         if not tx.get("webhook_verified"):
-            return {"ok": False, "error": "transaction_not_verified",
-                    "reason": "signature_not_verified"}
+            # Log a warning but don't block: prior no_match bug left webhook_verified=0
+            # even when signature was valid. status='successful' + test=0 is the gate.
+            log.warning(
+                "bepaid_reconcile: webhook_verified=0 for tx_id=%s status=%s "
+                "(known bug: old no_match path did not persist verification flag)",
+                tx_id, tx.get("status"),
+            )
         if tx.get("status") != "successful":
             return {"ok": False, "error": "not_successful",
                     "reason": f"status={tx.get('status')}"}

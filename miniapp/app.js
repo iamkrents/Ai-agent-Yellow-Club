@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.92.5");
+console.log("MiniApp version: v7.0.92.5.1");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -11563,7 +11563,8 @@ async function loadUnmatchedTransactions() {
   if (debugEl) debugEl.textContent = "";
   try {
     const data = await apiGet("/api/payments/bepaid/unmatched");
-    const txs = data.transactions || [];
+    if (!data.ok) throw new Error(data.error || "access_denied");
+    const txs = Array.isArray(data.items) ? data.items : [];
     if (section) section.style.display = txs.length > 0 ? "" : "none";
     if (debugEl) debugEl.textContent = `Найдено: ${txs.length}`;
     if (refreshBtn) refreshBtn.textContent = `Обновить (${txs.length})`;
@@ -11572,9 +11573,9 @@ async function loadUnmatchedTransactions() {
       return;
     }
     listEl.innerHTML = txs.map(tx => {
-      const channelLabel = tx.shop_type === "acquiring" ? "Эквайринг" : tx.shop_type === "erip" ? "ЕРИП" : escapeHtml(String(tx.shop_type || ""));
+      const channelLabel = (tx.channel || tx.shop_type) === "acquiring" ? "Эквайринг" : (tx.channel || tx.shop_type) === "erip" ? "ЕРИП" : escapeHtml(String(tx.channel || tx.shop_type || ""));
       const amountByn = tx.amount_byn != null ? fmtByn(tx.amount_byn) : (tx.amount_minor != null ? fmtByn(tx.amount_minor / 100) : "—");
-      const verifiedBadge = tx.webhook_verified ? `<span style="color:var(--green);font-size:11px">✓ подпись проверена</span>` : `<span style="color:var(--red);font-size:11px">✗ подпись не проверена</span>`;
+      const verifiedBadge = tx.signature_verified ? `<span style="color:var(--green);font-size:11px">✓ подпись проверена</span>` : `<span style="color:var(--muted);font-size:11px">подпись: нет данных</span>`;
       const receivedAt = tx.received_at ? String(tx.received_at).slice(0, 19) : "—";
       return `<div class="pi-card" style="margin-bottom:10px;padding:12px;border:1px solid var(--border);border-radius:8px">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:4px">
