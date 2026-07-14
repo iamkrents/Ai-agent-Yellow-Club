@@ -1,12 +1,28 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-14 (v7.0.92.3)_
+_Последнее обновление: 2026-07-14 (v7.0.92.4)_
 
 ---
 
 ## Что сделано
 
-### v7.0.92.3 — Feature: реальный bePaid acquiring (hosted checkout) (текущая)
+### v7.0.92.4 — Fix: bePaid webhook signature (Base64) + unified prepare-options (текущая)
+
+**Критическое исправление:** Все ERIP-вебхуки отклонялись с HTTP 401. Причина: `bytes.fromhex()` — код ожидал hex, bePaid присылает RSA-подпись в Base64. После исправления вебхуки проходят верификацию.
+
+**Ключевые изменения:**
+
+- **`web_app_server.py`:** `_bepaid_verify_signature` переписан — `bytes.fromhex()` → `base64.b64decode(validate=True)`; поддержка PEM и Base64-DER ключей; опциональный prefix `sha256=`/`sha1=` снимается перед декодом. `payment_intent_create_bepaid` получил `_bypass_method_check=False` param для внутреннего вызова из `prepare-options`. Новый метод `payment_intent_prepare_options` — идемпотентный, создаёт ERIP + acquiring за один вызов, preflight-проверка invoice. Маршрут `POST /api/payments/intents/{id}/prepare-options`. `payment_intents_list` добавляет `payment_options` к каждому intent (без `checkout_token`, только `has_checkout`).
+- **`miniapp/app.js`:** кнопка «Подготовить способы оплаты»; `openMkInvoiceCreate` авто-вызывает `prepare-options`; `acqReadyBadge` в карточке; дублирующийся чип «Ожидает оплаты» устранён (суммируются `bepaid_created + awaiting_payment`). Версия v7.0.92.4.
+- **`miniapp/index.html`:** cache-bust → `v=7.0.92.4`.
+- **`tests/test_bepaid_signature.py`:** 14 тестов (RSA PKCS#1 v1.5 + SHA-256, Base64, PEM/DER, reject hex, reject modified body).
+- **`tests/test_payment_options_flow.py`:** 10 тестов (flow, idempotency, fault isolation, status transitions, UI static checks).
+
+**Итого тестов: 487/487 OK (16 skipped). +24 новых теста.**
+
+---
+
+### v7.0.92.3 — Feature: реальный bePaid acquiring (hosted checkout)
 
 **Endpoint:** `POST https://checkout.bepaid.by/ctp/api/checkouts` с HTTP Basic Auth (ACQ credentials), заголовком `X-API-Version: 2`.
 

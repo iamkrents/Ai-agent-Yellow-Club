@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.92.3");
+console.log("MiniApp version: v7.0.92.4");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -11593,22 +11593,22 @@ async function loadPaymentIntents() {
 
 function renderPaymentIntentStats(el, stats) {
   if (!el) return;
+  // Merge bepaid_created + awaiting_payment into one "Ожидает оплаты" chip to avoid duplicates
+  const awaitingTotal = (stats.bepaid_created ?? 0) + (stats.awaiting_payment ?? 0);
   const chips = [
-    { key: "total",                 label: "Всего" },
-    { key: "draft",                 label: "Черновик" },
-    { key: "ready",                 label: "Готово" },
-    { key: "bepaid_creating",       label: "Создаётся" },
-    { key: "bepaid_created",        label: "Ожидает оплаты" },
-    { key: "partial_ready",         label: "Частично готов" },
-    { key: "awaiting_payment",      label: "Ожидает оплаты" },
-    { key: "bepaid_requires_check", label: "Проверка" },
-    { key: "paid",                  label: "Оплачено bePaid" },
-    { key: "posted_to_moyklass",    label: "В МойКласс" },
-    { key: "cancelled",             label: "Отменено" },
-    { key: "error",                 label: "Ошибка" },
+    { label: "Всего",           val: stats.total ?? 0 },
+    { label: "Черновик",        val: stats.draft ?? 0 },
+    { label: "Подготовка",      val: stats.bepaid_creating ?? 0 },
+    { label: "Частично готов",  val: stats.partial_ready ?? 0 },
+    { label: "Ожидает оплаты",  val: awaitingTotal },
+    { label: "Проверка",        val: stats.bepaid_requires_check ?? 0 },
+    { label: "Оплачено bePaid", val: stats.paid ?? 0 },
+    { label: "В МойКласс",      val: stats.posted_to_moyklass ?? 0 },
+    { label: "Отменено",        val: stats.cancelled ?? 0 },
+    { label: "Ошибка",          val: stats.error ?? 0 },
   ];
   el.innerHTML = chips.map(c => {
-    const v = stats[c.key] ?? 0;
+    const v = c.val;
     return `<span class="pi-stat-chip${v > 0 ? " has-value" : ""}">${escapeHtml(c.label)}: ${v}</span>`;
   }).join("");
 }
@@ -11664,11 +11664,17 @@ function renderPaymentIntentCard(pi) {
     ? `<button class="primary" style="font-size:12px;padding:4px 10px" onclick="openBePaidConfirm('${escapeHtml(pi.public_id)}','${cancelSafeName}',${amountVal})">Выставить счёт bePaid</button>`
     : "";
 
-  const canOpenAcquiring = pi.payment_method === "acquiring"
-    && !["paid", "posted_to_moyklass", "cancelled", "bepaid_requires_check"].includes(pi.status)
-    && canUsePaymentIntents();
+  // Acquiring option: show for acquiring/dual intents that are not terminal
+  const acqOption = (pi.payment_options || []).find(o => o.channel === "acquiring");
+  const canOpenAcquiring = !["paid", "posted_to_moyklass", "cancelled"].includes(pi.status)
+    && canUsePaymentIntents()
+    && (pi.payment_method === "acquiring" || acqOption);
   const acquiringBtn = canOpenAcquiring
     ? `<button class="primary" style="font-size:12px;padding:4px 10px" onclick="openAcquiringCheckout('${escapeHtml(pi.public_id)}')">Открыть страницу оплаты картой</button>`
+    : "";
+
+  const acqReadyBadge = acqOption?.has_checkout
+    ? `<div class="pi-acq-info"><span>Эквайринг: <strong>Checkout создан</strong></span></div>`
     : "";
 
   const bePaidCreatingBlock = pi.status === "bepaid_creating"
@@ -11739,7 +11745,7 @@ function renderPaymentIntentCard(pi) {
       ${statusChip}${purposeChip}${period}${method}
     </div>
     ${sourceBadge}
-    ${comment}${cancelInfo}${bePaidCreatingBlock}${bePaidRequiresCheckBlock}${bePaidInfo}${bePaidPaidBlock}${mkPostedBlock}
+    ${comment}${cancelInfo}${bePaidCreatingBlock}${bePaidRequiresCheckBlock}${bePaidInfo}${acqReadyBadge}${bePaidPaidBlock}${mkPostedBlock}
     <div class="pi-card-footer">${bePaidBtn}${acquiringBtn}${mkPostBtn}${cancelBtn}</div>
     <div class="pi-card-id">${escapeHtml(pi.public_id)} · mk_user_id: ${pi.mk_user_id} · ${createdAt} ${createdBy}</div>
   </div>`;
@@ -12650,7 +12656,7 @@ function renderMkInvoiceCard(inv) {
     : "";
 
   const createBtn = !hasActive
-    ? `<button class="primary" style="font-size:12px;padding:4px 12px" onclick="openMkInvoiceCreate(${escapeHtml(JSON.stringify({invoice_id: inv.invoice_id, mk_user_id: userId, remaining, price, pay_until: inv.pay_until, student_name: inv.student_name || ""}))})">Подготовить черновик bePaid</button>`
+    ? `<button class="primary" style="font-size:12px;padding:4px 12px" onclick="openMkInvoiceCreate(${escapeHtml(JSON.stringify({invoice_id: inv.invoice_id, mk_user_id: userId, remaining, price, pay_until: inv.pay_until, student_name: inv.student_name || ""}))})">Подготовить способы оплаты</button>`
     : "";
 
   return `<div class="mk-invoice-card${hasActive ? " has-active-intent" : ""}">
@@ -12767,7 +12773,7 @@ async function showPaymentIntent(publicId, periodMonth) {
 async function openMkInvoiceCreate(inv) {
   if (!canUsePaymentIntents()) return;
   const nameLabel = inv.student_name || `userId=${inv.mk_user_id}`;
-  const confirmMsg = `Создать черновик bePaid для счёта МойКласс #${inv.invoice_id}?\n\nУченик: ${nameLabel}\nСумма: ${fmtByn(Number(inv.remaining))}\n\nДанные будут подтверждены в МойКласс.`;
+  const confirmMsg = `Подготовить способы оплаты для счёта МойКласс #${inv.invoice_id}?\n\nУченик: ${nameLabel}\nСумма: ${fmtByn(Number(inv.remaining))}\n\nДанные будут подтверждены в МойКласс. Будут созданы ЕРИП и страница оплаты картой.`;
   if (!confirm(confirmMsg)) return;
 
   const debugEl = $("mkInvoicesDebug");
@@ -12788,10 +12794,20 @@ async function openMkInvoiceCreate(inv) {
 
   if (!data.ok) {
     if (debugEl) debugEl.textContent = "";
-    // Duplicate intent — friendly message, not system alert
-    const dupId = data.duplicate_intent_id || data.existing_intent_id;
+    // Duplicate intent — try prepare-options on existing intent
+    const dupId = data.duplicate_id || data.duplicate_intent_id || data.existing_intent_id;
     if (dupId) {
-      try { showToast(`Черновик уже существует: ${dupId}`); } catch (_) {}
+      try { showToast(`Черновик уже существует: ${dupId}. Подготовка способов оплаты...`); } catch (_) {}
+      try {
+        const prepR = await apiPost(`/api/payments/intents/${dupId}/prepare-options`, {});
+        if (prepR.ok) {
+          try { showToast(prepR.message || "Способы оплаты подготовлены."); } catch (_) {}
+        }
+        loadMkInvoices();
+        showPaymentIntent(dupId, "").catch(() => {});
+      } catch (_prepErr) {
+        loadMkInvoices();
+      }
     } else {
       try { showToast("Ошибка: " + (data.error || "Неизвестная ошибка")); } catch (_) {}
     }
@@ -12800,12 +12816,27 @@ async function openMkInvoiceCreate(inv) {
 
   const intent = data.intent;
   const publicId = intent?.public_id || data.public_id || "";
-  if (debugEl) debugEl.textContent = publicId ? `Черновик ${publicId} создан.` : "Черновик создан.";
+  if (debugEl) debugEl.textContent = publicId ? `Черновик ${publicId} создан. Подготовка способов оплаты...` : "Черновик создан.";
 
-  try { showToast(data.message || "Черновик создан!"); } catch (_toastErr) {
-    console.warn("Toast failed after intent creation", _toastErr);
+  // Step 2: Prepare both ERIP and acquiring options in one call
+  if (publicId) {
+    try {
+      const prepResult = await apiPost(`/api/payments/intents/${publicId}/prepare-options`, {});
+      if (prepResult.ok) {
+        try { showToast(prepResult.message || "Способы оплаты подготовлены."); } catch (_) {}
+      } else {
+        try {
+          showToast("Черновик создан, но не удалось подготовить все способы оплаты: " + (prepResult.error || prepResult.message || "ошибка"));
+        } catch (_) {}
+      }
+    } catch (_prepErr) {
+      try { showToast("Черновик создан. Не удалось подготовить способы оплаты."); } catch (_) {}
+    }
+  } else {
+    try { showToast(data.message || "Черновик создан!"); } catch (_) {}
   }
 
+  if (debugEl) debugEl.textContent = "";
   // Refresh invoice list; navigate to the new intent
   loadMkInvoices();
   if (publicId) {

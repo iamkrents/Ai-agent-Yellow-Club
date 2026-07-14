@@ -1,6 +1,6 @@
 # Yellow Club Agent — Current State
 
-> Последнее обновление: 2026-07-14 (v7.0.92.3)
+> Последнее обновление: 2026-07-14 (v7.0.92.4)
 > Цель файла: позволить возобновить работу из любого нового чата без потери контекста.
 > **Этот файл — только документация. Production-код не менять через этот файл.**
 
@@ -31,11 +31,27 @@ Claude Code (локально) → редактирование кода → git
 | Параметр | Значение |
 |---|---|
 | Последняя задеплоенная версия | **v7.0.81** (commit `db0f1e9`) — НЕ развёрнут, production-дата неизвестна |
-| Последний коммит в `main` | **v7.0.92.3** — Real bePaid acquiring checkout |
-| Frontend cache-bust | **`v=7.0.92.3`** (app.js и styles.css) |
-| `console.log` в app.js | `MiniApp version: v7.0.92.3` |
+| Последний коммит в `main` | **v7.0.92.4** — Fix bePaid webhook signature + unified prepare-options |
+| Frontend cache-bust | **`v=7.0.92.4`** (app.js и styles.css) |
+| `console.log` в app.js | `MiniApp version: v7.0.92.4` |
 
 > Все версии начиная с v7.0.82 запушены, но **НЕ деплоились** на production-сервер. Деплой — только по команде владельца.
+
+### v7.0.92.4 — Fix: bePaid webhook signature (Base64) + unified prepare-options
+
+**Проблема:**
+- Все входящие ERIP-вебхуки отклонялись с HTTP 401: `verify_failed: non-hexadecimal number found in fromhex()` — код ожидал hex, а bePaid присылает RSA-подпись в Base64.
+- В UI не было единой кнопки для создания обоих способов оплаты (ERIP + эквайринг) за один клик.
+- Статистика Payment Intents показывала дублирующиеся чипы «Ожидает оплаты» (из `bepaid_created` и `awaiting_payment`).
+
+**Исправления:**
+- **`web_app_server.py`**: `_bepaid_verify_signature` — `bytes.fromhex()` → `base64.b64decode(validate=True)`; поддержка PEM и Base64-DER публичных ключей; опциональный prefix `sha256=`/`sha1=` снимается; диагностика включает `error_class=` (не значение ключа). `_bypass_method_check: bool = False` в `payment_intent_create_bepaid`. Новый метод `payment_intent_prepare_options(auth, public_id)` — создаёт ERIP и acquiring за один вызов, проверяет invoice в МойКласс, идемпотентен. Маршрут `POST /api/payments/intents/{id}/prepare-options`. `payment_intents_list` — добавлено поле `payment_options` к каждому intent (channel, status, account_number, uid, payment_url, has_checkout).
+- **`miniapp/app.js`**: кнопка «Подготовить способы оплаты» (было «Подготовить черновик bePaid»); `openMkInvoiceCreate` автоматически вызывает `prepare-options` после создания intent; `acqReadyBadge` в карточке; дублирующийся чип «Ожидает оплаты» убран (сумма `bepaid_created + awaiting_payment`).
+- **`miniapp/index.html`**: cache-bust → `v=7.0.92.4`.
+- **`tests/test_bepaid_signature.py`**: 14 тестов (RSA PKCS#1 v1.5 + SHA-256, Base64 декодинг, PEM/DER ключи, отклонение hex-подписи, отклонение изменённого тела).
+- **`tests/test_payment_options_flow.py`**: 10 тестов (prepare-options flow, idempotency, ERIP/ACQ независимые сбои, статусные переходы, статика UI).
+
+**Итого тестов: 487/487 OK (14 новых signature + 10 новых flow; 16 skipped по иным причинам).**
 
 ### v7.0.92.3 — Feature: real bePaid acquiring (hosted checkout)
 

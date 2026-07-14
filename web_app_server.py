@@ -8015,7 +8015,15 @@ class MiniAppContext:
         }
 
     def _bepaid_verify_signature(self, body: bytes, signature_header: str, public_key_pem: str) -> tuple[bool, str]:
-        """Verify bePaid Content-Signature header using RSA public key. Returns (ok, reason)."""
+        """Verify bePaid Content-Signature header using RSA public key. Returns (ok, reason).
+
+        bePaid signs raw request body bytes with RSA PKCS#1 v1.5 + SHA-256 and encodes
+        the signature in Base64 (NOT hex). The header may optionally be prefixed with
+        'sha256='. Both PEM (BEGIN PUBLIC KEY) and Base64-encoded DER public keys
+        are supported.
+
+        Security: signature value and public key are never logged.
+        """
         if not public_key_pem:
             return True, "no_public_key_configured"
         if not signature_header:
@@ -8023,22 +8031,61 @@ class MiniAppContext:
         try:
             from cryptography.hazmat.primitives import hashes, serialization
             from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
+            from cryptography.hazmat.primitives.serialization import load_der_public_key
         except ImportError:
             log.warning("bePaid: cryptography package not installed; skipping RSA signature verification")
             return True, "crypto_unavailable"
+
+        import base64 as _b64
         try:
-            parts = signature_header.strip().split("=", 1)
-            if len(parts) != 2:
-                return False, "bad_signature_format"
-            algo, sig_hex = parts[0].lower(), parts[1]
-            sig_bytes = bytes.fromhex(sig_hex)
-            pem = public_key_pem.encode("utf-8") if isinstance(public_key_pem, str) else public_key_pem
-            pub_key = serialization.load_pem_public_key(pem)
-            hash_algo = hashes.SHA256() if algo == "sha256" else hashes.SHA1()
-            pub_key.verify(sig_bytes, body, asym_padding.PKCS1v15(), hash_algo)
+            sig_str = signature_header.strip()
+            # Strip optional "sha256=" or "sha1=" algorithm prefix
+            for _prefix in ("sha256=", "sha1="):
+                if sig_str.lower().startswith(_prefix):
+                    sig_str = sig_str[len(_prefix):]
+                    break
+
+            # Decode signature from Base64 (bePaid uses Base64, NOT hex)
+            try:
+                sig_bytes = _b64.b64decode(sig_str, validate=True)
+            except Exception:
+                log.warning(
+                    "bePaid signature: malformed_base64 shop_type=? signature_present=%s signature_encoding=base64",
+                    bool(signature_header),
+                )
+                return False, "malformed_base64_signature"
+            if not sig_bytes:
+                return False, "empty_signature"
+
+            # Load public key — supports PEM (contains "BEGIN") and Base64-encoded DER
+            key_str = public_key_pem.strip()
+            if "BEGIN" in key_str:
+                pem_bytes = key_str.encode("utf-8") if isinstance(key_str, str) else key_str
+                pub_key = serialization.load_pem_public_key(pem_bytes)
+                _key_fmt = "pem"
+            else:
+                try:
+                    der_bytes = _b64.b64decode(key_str)
+                    pub_key = load_der_public_key(der_bytes)
+                    _key_fmt = "der"
+                except Exception as _ke:
+                    log.warning("bePaid signature: invalid_public_key_format error_class=%s", type(_ke).__name__)
+                    return False, f"invalid_public_key_format: {type(_ke).__name__}"
+
+            # Verify raw body bytes against RSA PKCS#1 v1.5 + SHA-256
+            pub_key.verify(sig_bytes, body, asym_padding.PKCS1v15(), hashes.SHA256())
+            log.info(
+                "bePaid signature verified: signature_encoding=base64 key_format=%s",
+                _key_fmt,
+            )
             return True, "verified"
-        except Exception as e:
-            return False, f"verify_failed: {e}"
+        except Exception as _e:
+            _cls = type(_e).__name__
+            log.warning(
+                "bePaid signature verify_failed: signature_present=%s signature_encoding=base64 error_class=%s",
+                bool(signature_header), _cls,
+            )
+            return False, f"verify_failed: {_cls}"
 
     def _bepaid_extract_payload(self, raw_json: dict[str, Any], shop_type: str, shop_id: str) -> dict[str, Any]:
         """Extract normalised fields from bePaid webhook or API list payload."""
@@ -9102,6 +9149,20 @@ class MiniAppContext:
             status=status if status != "all" else None,
         )
         intents = [self._normalize_payment_intent(pi) for pi in intents]
+        # Attach payment options for dual-channel cards (payment_url safe to expose; token not exposed)
+        for pi in intents:
+            opts = self.storage.get_options_for_intent(pi["public_id"])
+            pi["payment_options"] = [
+                {
+                    "channel": o.get("channel"),
+                    "status": o.get("status"),
+                    "account_number": o.get("bepaid_account_number"),
+                    "uid": o.get("bepaid_uid"),
+                    "payment_url": o.get("payment_url"),
+                    "has_checkout": bool(o.get("checkout_token")),
+                }
+                for o in opts
+            ]
         pi_stats = self.storage.payment_intents_stats(month=month or None)
         return {
             "ok": True,
@@ -10723,7 +10784,8 @@ class MiniAppContext:
         return {"ok": True}
 
     def payment_intent_create_bepaid(
-        self, auth: dict[str, Any], public_id: str, body: dict[str, Any]
+        self, auth: dict[str, Any], public_id: str, body: dict[str, Any],
+        *, _bypass_method_check: bool = False,
     ) -> dict[str, Any]:
         denied = self._require_payment_intent_access(auth)
         if denied:
@@ -10733,7 +10795,7 @@ class MiniAppContext:
         if not pi:
             return {"ok": False, "error": "Черновик не найден", "public_id": public_id}
 
-        if pi.get("payment_method") != "erip":
+        if not _bypass_method_check and pi.get("payment_method") != "erip":
             return {"ok": False, "error": "Выставление счёта bePaid доступно только для метода ERIP."}
 
         status = pi["status"]
@@ -11160,6 +11222,163 @@ class MiniAppContext:
             "message": "Checkout создан. Страница оплаты картой готова.",
         }
 
+    def payment_intent_prepare_options(
+        self, auth: dict[str, Any], public_id: str
+    ) -> dict[str, Any]:
+        """POST /api/payments/intents/{id}/prepare-options — create or ensure both ERIP and acquiring options.
+
+        Creates ERIP (bePaid ERIP invoice) and acquiring (hosted checkout) payment options
+        for a single parent intent. Idempotent: repeat calls return existing options without
+        new bePaid API calls. Either channel failing does NOT remove the other.
+
+        Status transitions:
+          draft/ready + both succeed → awaiting_payment
+          draft/ready + only ERIP    → bepaid_created (standard ERIP flow)
+          bepaid_created + ACQ       → awaiting_payment
+          draft/ready + only ACQ     → partial_ready
+        """
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+
+        pi = self.storage.get_payment_intent(public_id)
+        if not pi:
+            return {"ok": False, "error": "Черновик не найден", "public_id": public_id}
+
+        status = pi["status"]
+        blocked_statuses = {"cancelled", "paid", "posted_to_moyklass"}
+        if status in blocked_statuses:
+            return {
+                "ok": False,
+                "error": f"Нельзя подготовить способы оплаты для статуса '{status}'.",
+            }
+
+        # Preflight: verify MK invoice still exists before creating any options
+        if pi.get("source") == "moyklass_invoice" and pi.get("mk_invoice_id"):
+            mk_check = self._preflight_mk_invoice(pi)
+            if not mk_check["ok"]:
+                return mk_check
+
+        # ── ERIP option ───────────────────────────────────────────────────────────
+        erip_result: dict[str, Any]
+        cfg = self.settings
+
+        erip_already_created = (status in ("bepaid_created", "awaiting_payment") and pi.get("bepaid_uid"))
+        if erip_already_created:
+            erip_result = {
+                "ok": True,
+                "already_exists": True,
+                "channel": "erip",
+                "account_number": pi.get("bepaid_account_number"),
+                "uid": pi.get("bepaid_uid"),
+            }
+        elif status in ("bepaid_requires_check", "bepaid_creating"):
+            erip_result = {
+                "ok": False,
+                "skipped": True,
+                "error": f"ERIP creation blocked by current status: {status}",
+            }
+        elif not (getattr(cfg, "bepaid_erip_shop_id", "") and getattr(cfg, "bepaid_erip_secret_key", "")
+                  and getattr(cfg, "bepaid_public_base_url", "") and getattr(cfg, "bepaid_webhook_path_secret", "")):
+            erip_result = {"ok": False, "skipped": True, "error": "BEPAID_ERIP_SHOP_ID or other ERIP config missing"}
+        else:
+            # Call existing ERIP creation, bypassing payment_method restriction
+            _erip_r = self.payment_intent_create_bepaid(
+                auth, public_id, {}, _bypass_method_check=True
+            )
+            erip_result = {
+                "ok": bool(_erip_r.get("ok")),
+                "channel": "erip",
+                "already_exists": bool(_erip_r.get("already_exists")),
+                "account_number": None,
+                "uid": None,
+                "error": _erip_r.get("error") if not _erip_r.get("ok") else None,
+                "requires_check": bool(_erip_r.get("requires_check")),
+            }
+
+        # Refresh pi after ERIP changes (status may have transitioned)
+        pi = self.storage.get_payment_intent(public_id) or pi
+
+        # ── Acquiring option ──────────────────────────────────────────────────────
+        acq_result: dict[str, Any]
+        if not (getattr(cfg, "bepaid_acq_shop_id", "") and getattr(cfg, "bepaid_acq_secret_key", "")
+                and getattr(cfg, "bepaid_public_base_url", "") and getattr(cfg, "bepaid_webhook_path_secret", "")):
+            acq_result = {"ok": False, "skipped": True, "error": "BEPAID_ACQ_SHOP_ID or other ACQ config missing"}
+        else:
+            try:
+                _acq_r = self.payment_intent_create_acquiring_option(auth, public_id)
+                acq_result = {
+                    "ok": bool(_acq_r.get("ok")),
+                    "channel": "acquiring",
+                    "already_exists": bool(_acq_r.get("already_exists")),
+                    "payment_url": _acq_r.get("payment_url"),
+                    "error": _acq_r.get("error") if not _acq_r.get("ok") else None,
+                    "requires_check": bool(_acq_r.get("requires_check")),
+                }
+            except Exception as _acq_exc:
+                log.warning(
+                    "bepaid prepare_options acquiring_exception public_id=%s type=%s",
+                    public_id, type(_acq_exc).__name__,
+                )
+                acq_result = {
+                    "ok": False,
+                    "channel": "acquiring",
+                    "error": f"unexpected_error:{type(_acq_exc).__name__}",
+                    "requires_check": True,
+                }
+
+        # Refresh pi one more time
+        pi = self.storage.get_payment_intent(public_id) or pi
+
+        erip_ok = bool(erip_result.get("ok"))
+        acq_ok = bool(acq_result.get("ok"))
+
+        # Enrich erip_result with live pi data
+        if erip_ok:
+            erip_result["account_number"] = pi.get("bepaid_account_number")
+            erip_result["uid"] = pi.get("bepaid_uid")
+
+        log.info(
+            "bepaid prepare_options public_id=%s erip_ok=%s acq_ok=%s new_status=%s",
+            public_id, erip_ok, acq_ok, pi.get("status"),
+        )
+
+        options_out = []
+        if not erip_result.get("skipped"):
+            options_out.append({
+                "channel": "erip",
+                "status": "ready" if erip_ok else ("requires_check" if erip_result.get("requires_check") else "error"),
+                "account_number": erip_result.get("account_number"),
+                "uid": erip_result.get("uid"),
+                "already_exists": bool(erip_result.get("already_exists")),
+                "error": erip_result.get("error"),
+            })
+        if not acq_result.get("skipped"):
+            options_out.append({
+                "channel": "acquiring",
+                "status": "ready" if acq_ok else ("requires_check" if acq_result.get("requires_check") else "error"),
+                "payment_url": acq_result.get("payment_url"),
+                "already_exists": bool(acq_result.get("already_exists")),
+                "error": acq_result.get("error"),
+            })
+
+        overall_ok = erip_ok or acq_ok
+        if erip_ok and acq_ok:
+            msg = "Оба способа оплаты готовы."
+        elif erip_ok:
+            msg = "ЕРИП готов. Эквайринг не создан."
+        elif acq_ok:
+            msg = "Страница оплаты картой готова. ЕРИП не создан."
+        else:
+            msg = "Не удалось создать ни один способ оплаты."
+
+        return {
+            "ok": overall_ok,
+            "intent": self._normalize_payment_intent(dict(pi)),
+            "options": options_out,
+            "message": msg,
+        }
+
 
 CTX = MiniAppContext()
 
@@ -11499,6 +11718,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.payment_intent_create_bepaid(auth, _pi_parts[0], body))
                 if len(_pi_parts) == 2 and _pi_parts[1] == "create-acquiring":
                     return self._send_json(CTX.payment_intent_create_acquiring_option(auth, _pi_parts[0]))
+                if len(_pi_parts) == 2 and _pi_parts[1] == "prepare-options":
+                    return self._send_json(CTX.payment_intent_prepare_options(auth, _pi_parts[0]))
                 if len(_pi_parts) == 2 and _pi_parts[1] == "post-to-moyklass":
                     return self._send_json(CTX.payment_intent_post_to_moyklass(auth, _pi_parts[0], body))
                 if len(_pi_parts) == 2 and _pi_parts[1] == "reconcile-moyklass-payment":
