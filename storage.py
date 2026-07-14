@@ -5208,13 +5208,22 @@ class Storage:
             "conflicts": [],
         }
 
-    def bepaid_transaction_set_verified(self, tx_id: int) -> None:
-        """Mark a stored transaction as signature-verified. Called immediately after upsert
-        when the incoming webhook signature passes verification, regardless of match outcome."""
+    def mark_bepaid_transaction_signature_verified(
+        self,
+        tx_id: int,
+        *,
+        verified_at: str,
+        verification_method: str = "rsa_pkcs1v15_sha256",
+    ) -> None:
+        """Persist that the webhook signature passed cryptographic verification.
+
+        Called BEFORE matching — signature verification is independent of whether
+        we can find a matching intent or option. Does not touch intent/option fields.
+        """
         with self._connect() as conn:
             conn.execute(
                 "UPDATE bepaid_transactions SET webhook_verified=1, updated_at=? WHERE id=?",
-                (now_iso(), int(tx_id)),
+                (verified_at, int(tx_id)),
             )
 
     def get_bepaid_transaction_by_id(self, tx_id: int) -> Optional[dict]:
@@ -5225,17 +5234,19 @@ class Storage:
         return dict(row) if row else None
 
     def list_unmatched_bepaid_transactions(self, limit: int = 50) -> list[dict]:
-        """Successful, non-test transactions not yet linked to any intent.
+        """Cryptographically verified, successful, non-test transactions not yet linked to an intent.
 
-        webhook_verified=1 is NOT required: due to a prior bug, no_match transactions
-        from the old webhook handler have webhook_verified=0 even though the signature
-        passed. status='successful' + test=0 is sufficient for admin reconcile eligibility.
+        webhook_verified=1 is REQUIRED: only transactions whose Content-Signature passed
+        RSA verification are eligible for the admin reconcile flow. Transactions without a
+        verified signature must not appear here regardless of their status field.
         """
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT * FROM bepaid_transactions
                    WHERE status = 'successful'
                      AND test = 0
+                     AND webhook_verified = 1
+                     AND (transaction_uid IS NOT NULL AND transaction_uid != '')
                      AND (intent_public_id IS NULL OR intent_public_id = '')
                    ORDER BY received_at DESC LIMIT ?""",
                 (max(1, min(int(limit), 200)),),
@@ -5345,7 +5356,6 @@ class Storage:
         match_method: str,
         confidence: str,
         reason: str,
-        verified: bool,
         now: str,
     ) -> None:
         with self._connect() as conn:
@@ -5357,14 +5367,13 @@ class Storage:
                     webhook_match_method = ?,
                     match_confidence     = ?,
                     match_reason         = ?,
-                    webhook_verified     = ?,
                     processed_at         = ?,
                     updated_at           = ?
                 WHERE id = ?
                 """,
                 (
                     intent_id, intent_public_id, match_method, confidence,
-                    reason, 1 if verified else 0, now, now, tx_id,
+                    reason, now, now, tx_id,
                 ),
             )
 

@@ -1,9 +1,10 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.92.5.1**
+**Cache version: v7.0.92.5.2**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.92.5.2 | 2026-07-14 | Security: restored webhook_verified as strictly cryptographic property. mark_bepaid_transaction_signature_verified() called BEFORE matching. bepaid_transaction_link_intent no longer touches webhook_verified. list_unmatched hard-requires webhook_verified=1. reconcile hard-blocks webhook_verified=0. 19 security tests + 32 updated unmatched tests. 569/569 OK. |
 | v7.0.92.5.1 | 2026-07-14 | Fix: unmatched list invisible (webhook_verified=0 для no_match tx — фильтр убран). reconcile разблокирован для no_match. API ключ transactions→items. Frontend: data.items, Array.isArray, data.ok check, signature_verified поле. bepaid_transaction_set_verified(). 31 новый тест. 549/549 OK. |
 | v7.0.92.5 | 2026-07-14 | Fix: webhook→option matching (match_bepaid_transaction_to_payment_target, channel-scoped). Reconciliation endpoint для сохранённых транзакций. UI «Несопоставленные транзакции bePaid». paid_channel label в UI. mark_paid_via_option принимает awaiting_payment/partial_ready. 31 новый тест. 518/518 OK. |
 | v7.0.92.4 | 2026-07-14 | Fix: bePaid webhook signature Base64 (не hex). Новый prepare-options endpoint (ERIP+ACQ за один клик). Дублирующийся чип «Ожидает оплаты» устранён. payment_options в list-ответе. Кнопка «Подготовить способы оплаты». openMkInvoiceCreate авто-вызывает prepare-options. 24 новых теста. 487/487 OK. |

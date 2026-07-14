@@ -1,6 +1,6 @@
 # Yellow Club Agent — Current State
 
-> Последнее обновление: 2026-07-14 (v7.0.92.5.1)
+> Последнее обновление: 2026-07-14 (v7.0.92.5.2)
 > Цель файла: позволить возобновить работу из любого нового чата без потери контекста.
 > **Этот файл — только документация. Production-код не менять через этот файл.**
 
@@ -31,11 +31,39 @@ Claude Code (локально) → редактирование кода → git
 | Параметр | Значение |
 |---|---|
 | Последняя задеплоенная версия | **v7.0.81** (commit `db0f1e9`) — НЕ развёрнут, production-дата неизвестна |
-| Последний коммит в `main` | **v7.0.92.5.1** — Fix unmatched transaction list + reconcile for no_match |
-| Frontend cache-bust | **`v=7.0.92.5.1`** (app.js и styles.css) |
-| `console.log` в app.js | `MiniApp version: v7.0.92.5.1` |
+| Последний коммит в `main` | **v7.0.92.5.2** — Security: restore webhook_verified as cryptographic property |
+| Frontend cache-bust | **`v=7.0.92.5.2`** (app.js и styles.css) |
+| `console.log` в app.js | `MiniApp version: v7.0.92.5.2` |
 
 > Все версии начиная с v7.0.82 запушены, но **НЕ деплоились** на production-сервер. Деплой — только по команде владельца.
+
+### v7.0.92.5.2 — Security: restore webhook_verified as cryptographic property
+
+**Проблема (критическая, до production-деплоя):**
+В v7.0.92.5.1 были сделаны небезопасные изменения: `webhook_verified=1` устанавливался немедленно после upsert через `bepaid_transaction_set_verified()`, не завися от криптографии; фильтр `AND webhook_verified=1` в `list_unmatched` был удалён; hard block в reconcile на `webhook_verified=0` был заменён warning-ом. Это позволяло неверифицированным транзакциям попасть в reconcile flow.
+
+**Правильная архитектура (восстановлена в v7.0.92.5.2):**
+1. `webhook_verified=1` — ТОЛЬКО криптографический результат проверки Content-Signature, устанавливается ДО matching.
+2. `list_unmatched` ТРЕБУЕТ `webhook_verified=1` — без этого транзакция не видна в reconcile.
+3. Reconcile ЖЁСТКО БЛОКИРУЕТСЯ при `webhook_verified!=1`, возвращает `{"ok": false, "reason": "webhook_not_verified"}`.
+4. `bepaid_transaction_link_intent` — НЕ трогает `webhook_verified` (убрано из UPDATE).
+
+**Исправления:**
+- **`storage.py`**: переименован `bepaid_transaction_set_verified` → `mark_bepaid_transaction_signature_verified(tx_id, *, verified_at, verification_method)`. `bepaid_transaction_link_intent` — удалён параметр `verified` и поле `webhook_verified` из UPDATE (matching не должен трогать криптографический флаг). `list_unmatched_bepaid_transactions` — восстановлен `AND webhook_verified=1`, добавлен `AND transaction_uid IS NOT NULL`.
+- **`web_app_server.py`**: `bepaid_handle_webhook` — `mark_bepaid_transaction_signature_verified()` вызывается сразу после upsert, если `sig_verified=True`, ПЕРЕД matching. `bepaid_reconcile_stored_transaction` — восстановлен hard block: при `webhook_verified=0` логирует `stored_transaction_reconcile_blocked`, возвращает `{"ok": False, "error": "reconcile_blocked", "reason": "webhook_not_verified"}`.
+- **`miniapp/app.js`**: версия v7.0.92.5.2; reconcile показывает security-сообщение при `webhook_not_verified`.
+- **`miniapp/index.html`**: cache-bust → `v=7.0.92.5.2`.
+- **`tests/test_option_matching.py`**: test_23 восстановлен — `len=0` для `webhook_verified=0`.
+- **`tests/test_unmatched_transactions.py`**: полностью переписан под strict security model (32 теста).
+- **`tests/test_security_webhook.py`**: новый файл, 19 security тестов.
+
+**Production transaction 156 (webhook_verified=0 в DB):**
+- Content-Signature не хранится в DB → криптографическая пере-верификация невозможна.
+- Безопасное восстановление: запросить у bePaid повторный webhook replay ИЛИ admin SQL:
+  `UPDATE bepaid_transactions SET webhook_verified=1 WHERE id=156 AND transaction_uid='06006e9d-ed00-47a6-8863-07d754744424' AND status='successful' AND test=0;`
+- После восстановления — transaction 156 появится в «Несопоставленные транзакции».
+
+**Итого тестов: 569/569 OK (+51 новых от v7.0.92.5.1 + security tests).**
 
 ### v7.0.92.5.1 — Fix: unmatched transaction list invisible + reconcile blocked
 

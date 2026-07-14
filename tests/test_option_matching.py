@@ -584,13 +584,14 @@ class Test18ListUnmatched(unittest.TestCase):
         result = self.storage.list_unmatched_bepaid_transactions()
         self.assertEqual(len(result), 0)
 
-    def test_23_unverified_tx_still_appears_in_list(self):
-        # webhook_verified=0 happens for no_match transactions (known bug in old webhook path).
-        # The filter was changed to NOT require webhook_verified=1 so these still appear.
+    def test_23_unverified_tx_excluded_from_list(self):
+        # webhook_verified=0 must be excluded: only cryptographically verified webhooks
+        # are eligible for the admin reconcile flow. signature verification is independent
+        # of matching and is now persisted BEFORE matching (v7.0.92.5.2).
         _store_bepaid_tx(self.storage, uid="unverified-001", tracking_id="ycpi_unverified",
                          webhook_verified=0, test=0, intent_public_id="")
         result = self.storage.list_unmatched_bepaid_transactions()
-        self.assertEqual(len(result), 1, "successful+non-test tx must appear regardless of webhook_verified")
+        self.assertEqual(len(result), 0, "webhook_verified=0 must be excluded from unmatched list")
 
     def test_24_failed_tx_excluded_from_list(self):
         _store_bepaid_tx(self.storage, uid="failed-001", tracking_id="ycpi_failed",

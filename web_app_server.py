@@ -8242,10 +8242,16 @@ class MiniAppContext:
             )
 
             if sig_verified:
-                # Immediately persist verification result so no_match transactions
-                # are visible in the unmatched list even if no intent match follows.
+                # Persist signature verification result BEFORE matching.
+                # webhook_verified must reflect cryptographic outcome only —
+                # not matching result, intent state, or reconciliation status.
                 if tx_id:
-                    self.storage.bepaid_transaction_set_verified(tx_id)
+                    from utils import now_iso as _now_iso_ver
+                    self.storage.mark_bepaid_transaction_signature_verified(
+                        tx_id,
+                        verified_at=_now_iso_ver(),
+                        verification_method="rsa_pkcs1v15_sha256",
+                    )
                 self.storage.log_payment_webhook_audit(
                     "webhook_signature_verified",
                     bepaid_tx_id=tx_id,
@@ -8354,7 +8360,6 @@ class MiniAppContext:
                 match_method=match_method,
                 confidence=match_confidence,
                 reason=match_reason,
-                verified=sig_verified,
                 now=_now,
             )
 
@@ -8685,13 +8690,18 @@ class MiniAppContext:
             return {"ok": False, "error": "transaction_not_found"}
 
         if not tx.get("webhook_verified"):
-            # Log a warning but don't block: prior no_match bug left webhook_verified=0
-            # even when signature was valid. status='successful' + test=0 is the gate.
-            log.warning(
-                "bepaid_reconcile: webhook_verified=0 for tx_id=%s status=%s "
-                "(known bug: old no_match path did not persist verification flag)",
-                tx_id, tx.get("status"),
+            self.storage.log_payment_webhook_audit(
+                "stored_transaction_reconcile_blocked",
+                bepaid_tx_id=tx_id,
+                transaction_uid=str(tx.get("transaction_uid") or "") or None,
+                shop_type=str(tx.get("shop_type") or "") or None,
+                reason="webhook_not_verified",
             )
+            return {
+                "ok": False,
+                "error": "reconcile_blocked",
+                "reason": "webhook_not_verified",
+            }
         if tx.get("status") != "successful":
             return {"ok": False, "error": "not_successful",
                     "reason": f"status={tx.get('status')}"}
@@ -8839,7 +8849,6 @@ class MiniAppContext:
                 match_method=match_method,
                 confidence="strong",
                 reason=f"reconciled:{match.get('reason')}",
-                verified=True,
                 now=now_str,
             )
             self.storage.log_payment_webhook_audit(

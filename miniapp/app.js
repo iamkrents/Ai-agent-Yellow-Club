@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.92.5.1");
+console.log("MiniApp version: v7.0.92.5.2");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -11623,7 +11623,10 @@ window.reconcileTransaction = async function reconcileTransaction(txId) {
       await loadPaymentIntents();
     } else {
       const reason = result.reason || result.error || "неизвестная ошибка";
-      alert(`Не удалось сопоставить: ${reason}`);
+      const msg = reason === "webhook_not_verified"
+        ? "Подпись сохранённого webhook не подтверждена. Повторное сопоставление заблокировано."
+        : `Не удалось сопоставить: ${reason}`;
+      alert(msg);
       if (btn) { btn.disabled = false; btn.textContent = "Повторно сопоставить оплату"; }
     }
   } catch (e) {

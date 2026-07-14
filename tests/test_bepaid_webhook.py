@@ -490,7 +490,6 @@ class TestLinkIntent(unittest.TestCase):
             match_method="tracking_id",
             confidence="strong",
             reason="matched_by_tracking_id",
-            verified=True,
             now=now_iso(),
         )
         with self.storage._connect() as conn:
@@ -501,7 +500,9 @@ class TestLinkIntent(unittest.TestCase):
         self.assertEqual(row["intent_public_id"], self.pi["public_id"])
         self.assertEqual(row["webhook_match_method"], "tracking_id")
         self.assertEqual(row["match_confidence"], "strong")
-        self.assertEqual(row["webhook_verified"], 1)
+        # webhook_verified is NOT set by bepaid_transaction_link_intent (v7.0.92.5.2)
+        # It is set exclusively by mark_bepaid_transaction_signature_verified.
+        self.assertEqual(row["webhook_verified"], 0)
 
 
 # ── paid_amount_byn normalization ─────────────────────────────────────────────
