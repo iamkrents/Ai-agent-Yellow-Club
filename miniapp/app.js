@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.92.2");
+console.log("MiniApp version: v7.0.92.3");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -11529,6 +11529,8 @@ const PI_STATUS_LABELS = {
   ready:                  { label: "Готов",                  cls: "chip-pi-ready" },
   bepaid_creating:        { label: "Создаётся...",           cls: "chip-pi-creating" },
   bepaid_created:         { label: "Ожидает оплаты",        cls: "chip-pi-bepaid" },
+  partial_ready:          { label: "Частично готов",         cls: "chip-pi-creating" },
+  awaiting_payment:       { label: "Ожидает оплаты",        cls: "chip-pi-bepaid" },
   bepaid_requires_check:  { label: "Требует проверки",       cls: "chip-pi-requires-check" },
   paid:                   { label: "Оплачено bePaid",        cls: "chip-pi-paid" },
   posted_to_moyklass:     { label: "Внесено в МойКласс",    cls: "chip-pi-posted" },
@@ -11597,6 +11599,8 @@ function renderPaymentIntentStats(el, stats) {
     { key: "ready",                 label: "Готово" },
     { key: "bepaid_creating",       label: "Создаётся" },
     { key: "bepaid_created",        label: "Ожидает оплаты" },
+    { key: "partial_ready",         label: "Частично готов" },
+    { key: "awaiting_payment",      label: "Ожидает оплаты" },
     { key: "bepaid_requires_check", label: "Проверка" },
     { key: "paid",                  label: "Оплачено bePaid" },
     { key: "posted_to_moyklass",    label: "В МойКласс" },
@@ -11658,6 +11662,13 @@ function renderPaymentIntentCard(pi) {
     && canUsePaymentIntents();
   const bePaidBtn = canCreateBePaid
     ? `<button class="primary" style="font-size:12px;padding:4px 10px" onclick="openBePaidConfirm('${escapeHtml(pi.public_id)}','${cancelSafeName}',${amountVal})">Выставить счёт bePaid</button>`
+    : "";
+
+  const canOpenAcquiring = pi.payment_method === "acquiring"
+    && !["paid", "posted_to_moyklass", "cancelled", "bepaid_requires_check"].includes(pi.status)
+    && canUsePaymentIntents();
+  const acquiringBtn = canOpenAcquiring
+    ? `<button class="primary" style="font-size:12px;padding:4px 10px" onclick="openAcquiringCheckout('${escapeHtml(pi.public_id)}')">Открыть страницу оплаты картой</button>`
     : "";
 
   const bePaidCreatingBlock = pi.status === "bepaid_creating"
@@ -11729,7 +11740,7 @@ function renderPaymentIntentCard(pi) {
     </div>
     ${sourceBadge}
     ${comment}${cancelInfo}${bePaidCreatingBlock}${bePaidRequiresCheckBlock}${bePaidInfo}${bePaidPaidBlock}${mkPostedBlock}
-    <div class="pi-card-footer">${bePaidBtn}${mkPostBtn}${cancelBtn}</div>
+    <div class="pi-card-footer">${bePaidBtn}${acquiringBtn}${mkPostBtn}${cancelBtn}</div>
     <div class="pi-card-id">${escapeHtml(pi.public_id)} · mk_user_id: ${pi.mk_user_id} · ${createdAt} ${createdBy}</div>
   </div>`;
 }
@@ -12015,6 +12026,36 @@ async function confirmCreateBePaid() {
     btn.textContent = "Выставить счёт";
   }
 }
+
+// ── bePaid Acquiring checkout ─────────────────────────────────────────────
+
+window.openAcquiringCheckout = async function(publicId) {
+  try {
+    const data = await apiPost(`/api/payments/intents/${publicId}/create-acquiring`, {});
+    if (!data.ok) {
+      if (data.requires_check) {
+        showToast(data.error || "Таймаут bePaid. Проверьте вручную в личном кабинете.");
+      } else {
+        showToast(data.error || "Ошибка создания checkout.");
+      }
+      return;
+    }
+    await loadPaymentIntents();
+    const url = data.payment_url;
+    if (url) {
+      if (window.Telegram?.WebApp?.openLink) {
+        window.Telegram.WebApp.openLink(url);
+      } else {
+        window.open(url, "_blank", "noopener,noreferrer");
+      }
+    }
+    if (!data.already_exists) {
+      showToast(data.message || "Страница оплаты картой готова.");
+    }
+  } catch (e) {
+    showToast(String(e));
+  }
+};
 
 // ── Toast helper ─────────────────────────────────────────────────────────
 

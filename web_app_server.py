@@ -10994,6 +10994,172 @@ class MiniAppContext:
             "message": f"Счёт bePaid ERIP выставлен. Номер счёта: {bp_account_number}.",
         }
 
+    def payment_intent_create_acquiring_option(
+        self, auth: dict[str, Any], public_id: str
+    ) -> dict[str, Any]:
+        """POST /api/payments/intents/{id}/create-acquiring — create or return hosted checkout.
+
+        Idempotent: if acquiring option already exists with checkout_token, returns existing
+        payment_url without creating a new checkout.
+        """
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+
+        pi = self.storage.get_payment_intent(public_id)
+        if not pi:
+            return {"ok": False, "error": "Черновик не найден", "public_id": public_id}
+
+        status = pi["status"]
+        allowed_statuses = {"draft", "ready", "bepaid_created", "partial_ready", "awaiting_payment"}
+        if status not in allowed_statuses:
+            return {
+                "ok": False,
+                "error": (
+                    f"Нельзя создать checkout для черновика в статусе '{status}'. "
+                    f"Доступно для статусов: {', '.join(sorted(allowed_statuses))}."
+                ),
+            }
+
+        # ── Pre-flight config check ───────────────────────────────────────────────
+        cfg = self.settings
+        missing_cfg: list[str] = []
+        if not getattr(cfg, "bepaid_acq_shop_id", ""):
+            missing_cfg.append("BEPAID_ACQ_SHOP_ID")
+        if not getattr(cfg, "bepaid_acq_secret_key", ""):
+            missing_cfg.append("BEPAID_ACQ_SECRET_KEY")
+        if not getattr(cfg, "bepaid_public_base_url", ""):
+            missing_cfg.append("BEPAID_PUBLIC_BASE_URL")
+        if not getattr(cfg, "bepaid_webhook_path_secret", ""):
+            missing_cfg.append("BEPAID_WEBHOOK_PATH_SECRET")
+        if missing_cfg:
+            return {
+                "ok": False,
+                "error": (
+                    f"Не настроены обязательные переменные: {', '.join(missing_cfg)}. "
+                    "Checkout не создан."
+                ),
+            }
+
+        # ── Idempotency: return existing if already created ────────────────────────
+        existing = self.storage.get_option_by_channel(public_id, "acquiring")
+        if existing and existing.get("checkout_token") and existing.get("payment_url"):
+            return {
+                "ok": True,
+                "already_exists": True,
+                "payment_url": existing["payment_url"],
+                "checkout_token": existing["checkout_token"],
+                "message": "Checkout уже создан.",
+            }
+
+        # ── Build URLs ────────────────────────────────────────────────────────────
+        base_url = cfg.bepaid_public_base_url.rstrip("/")
+        path_secret = cfg.bepaid_webhook_path_secret
+        notification_url = f"{base_url}/api/integrations/bepaid/webhook/acquiring/{path_secret}"
+        return_url = f"{base_url}/payment-return"
+
+        # ── Build tracking_id (stable per intent) ────────────────────────────────
+        tracking_id = f"{public_id}_acq"
+
+        # ── Description ──────────────────────────────────────────────────────────
+        description = build_erip_description(pi)
+
+        # ── Create option row before calling bePaid ───────────────────────────────
+        pi_row_id = int(pi["id"])
+        if existing:
+            option = existing
+        else:
+            option = self.storage.create_payment_intent_option(
+                payment_intent_id=pi_row_id,
+                intent_public_id=public_id,
+                channel="acquiring",
+                shop_type="acquiring",
+                bepaid_tracking_id=tracking_id,
+            )
+
+        option_id = int(option["id"])
+        acq_shop_id = cfg.bepaid_acq_shop_id
+
+        log.info(
+            "bepaid create_acquiring_checkout public_id=%s tracking_id=%s "
+            "shop_id_len=%d shop_id_last4=%s",
+            public_id, tracking_id,
+            len(acq_shop_id), acq_shop_id[-4:] if len(acq_shop_id) >= 4 else "****",
+        )
+
+        client = BePaidClient(
+            shop_id=acq_shop_id,
+            secret_key=cfg.bepaid_acq_secret_key,
+            timeout=getattr(cfg, "bepaid_request_timeout", 30),
+        )
+        result = client.create_acquiring_checkout(
+            amount_minor=int(pi["amount_minor"]),
+            currency=str(pi.get("currency") or "BYN"),
+            description=description,
+            tracking_id=tracking_id,
+            notification_url=notification_url,
+            return_url=return_url,
+        )
+
+        # ── Ambiguous: checkout may or may not have been created ──────────────────
+        if result.requires_check:
+            log.warning(
+                "bepaid acquiring ambiguous_result public_id=%s http=%s error=%s",
+                public_id, result.http_status, result.error,
+            )
+            return {
+                "ok": False,
+                "requires_check": True,
+                "error": (
+                    "Статус checkout неизвестен (таймаут или ошибка сети). "
+                    "Проверьте вручную в личном кабинете bePaid."
+                ),
+            }
+
+        # ── Definitive error ──────────────────────────────────────────────────────
+        if not result.ok:
+            log.warning(
+                "bepaid acquiring client_error public_id=%s http=%s error=%s",
+                public_id, result.http_status, result.error,
+            )
+            return {
+                "ok": False,
+                "error": f"bePaid вернул ошибку (HTTP {result.http_status}): {result.error}",
+            }
+
+        # ── Success: save token and payment_url ──────────────────────────────────
+        checkout_token = str(result.data["checkout_token"])
+        payment_url = str(result.data["payment_url"])
+
+        self.storage.update_option_checkout(
+            option_id,
+            checkout_token=checkout_token,
+            payment_url=payment_url,
+        )
+
+        # ── Update parent intent status ───────────────────────────────────────────
+        if status == "bepaid_created":
+            new_status = "awaiting_payment"
+        elif status not in ("partial_ready", "awaiting_payment"):
+            new_status = "partial_ready"
+        else:
+            new_status = status
+
+        if new_status != status:
+            self.storage.payment_intent_update_status(public_id, new_status)
+
+        log.info(
+            "bepaid acquiring success public_id=%s token_prefix=%s new_status=%s",
+            public_id, checkout_token[:8] if len(checkout_token) >= 8 else "***", new_status,
+        )
+
+        return {
+            "ok": True,
+            "payment_url": payment_url,
+            "checkout_token": checkout_token,
+            "message": "Checkout создан. Страница оплаты картой готова.",
+        }
+
 
 CTX = MiniAppContext()
 
@@ -11100,6 +11266,24 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 return self._send_file(WEB_DIR / safe)
             if path == "/health":
                 return self._send_json({"ok": True, "service": "yellow-club-miniapp"})
+            if path == "/payment-return":
+                _pr_html = (
+                    "<!doctype html><html lang='ru'><head><meta charset='utf-8'/>"
+                    "<meta name='viewport' content='width=device-width,initial-scale=1'/>"
+                    "<title>Оплата</title></head>"
+                    "<body style='font-family:sans-serif;text-align:center;padding:40px'>"
+                    "<h2>Платёж обрабатывается</h2>"
+                    "<p>Пожалуйста, закройте эту страницу.</p>"
+                    "</body></html>"
+                )
+                _pr_body = _pr_html.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(_pr_body)))
+                self.end_headers()
+                self.wfile.write(_pr_body)
+                return
             if path.startswith("/api/"):
                 auth = self._auth(params)
                 if not auth.get("ok"):
@@ -11313,6 +11497,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.payment_intent_cancel(auth, _pi_parts[0], body))
                 if len(_pi_parts) == 2 and _pi_parts[1] == "create-bepaid":
                     return self._send_json(CTX.payment_intent_create_bepaid(auth, _pi_parts[0], body))
+                if len(_pi_parts) == 2 and _pi_parts[1] == "create-acquiring":
+                    return self._send_json(CTX.payment_intent_create_acquiring_option(auth, _pi_parts[0]))
                 if len(_pi_parts) == 2 and _pi_parts[1] == "post-to-moyklass":
                     return self._send_json(CTX.payment_intent_post_to_moyklass(auth, _pi_parts[0], body))
                 if len(_pi_parts) == 2 and _pi_parts[1] == "reconcile-moyklass-payment":

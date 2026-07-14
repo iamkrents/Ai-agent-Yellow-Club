@@ -1,12 +1,29 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-13 (v7.0.92.1.2)_
+_Последнее обновление: 2026-07-14 (v7.0.92.3)_
 
 ---
 
 ## Что сделано
 
-### v7.0.92.1.2 — Hotfix: ReferenceError escHtml в renderMkPaymentTypes (текущая)
+### v7.0.92.3 — Feature: реальный bePaid acquiring (hosted checkout) (текущая)
+
+**Endpoint:** `POST https://checkout.bepaid.by/ctp/api/checkouts` с HTTP Basic Auth (ACQ credentials), заголовком `X-API-Version: 2`.
+
+**Ключевые изменения:**
+
+- **`bepaid_client.py`:** `BEPAID_ACQ_ENDPOINT_UNCONFIRMED` удалён → `BEPAID_CHECKOUT_ENDPOINT = "https://checkout.bepaid.by/ctp/api/checkouts"`. `create_acquiring_checkout(*, amount_minor, currency, description, tracking_id, notification_url, return_url, customer=None, test=False)` — реальная реализация с валидацией (int amount, BYN currency, HTTPS URLs). `_post_checkout` добавляет `X-API-Version: 2`. `_parse_checkout_response` парсит `{"checkout": {"token": ..., "redirect_url": ...}}`. `build_checkout_payload` static method.
+- **`storage.py`:** `checkout_token TEXT` в `payment_intent_options` (в схеме + _ensure_column). `update_option_checkout(option_id, *, checkout_token, payment_url)`. `payment_intent_update_status(public_id, new_status)`.
+- **`web_app_server.py`:** `payment_intent_create_acquiring_option(auth, public_id)` — idempotent; статус PI: draft/ready→partial_ready, bepaid_created→awaiting_payment. GET `/payment-return` — статическая страница. POST `/api/payments/intents/{id}/create-acquiring`.
+- **`miniapp/app.js`:** версия v7.0.92.3; статусы `partial_ready`/`awaiting_payment`; кнопка "Открыть страницу оплаты картой"; `openAcquiringCheckout()`.
+- **`miniapp/index.html`:** cache-bust v7.0.92.3.
+- **`tests/test_bepaid_acquiring.py`:** 37 тестов (все pass). `tests/test_dual_channel.py` обновлён (2 теста заменены для нового stub → реальная реализация).
+
+**Итого тестов: 463/463 OK.**
+
+---
+
+### v7.0.92.1.2 — Hotfix: ReferenceError escHtml в renderMkPaymentTypes
 
 **Причина:** `renderMkPaymentTypes()` в `miniapp/app.js` использовала несуществующий alias `escHtml()` (6 вызовов) вместо проектного helper `escapeHtml()` (строка 240). После исправления v7.0.92.1.1 (загрузка заработала, данные стали приходить) — при попытке отрисовать ответ браузер бросал `ReferenceError: Can't find variable: escHtml` в `renderMkPaymentTypes`, и UI оставался пустым несмотря на HTTP 200.
 

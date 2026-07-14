@@ -565,27 +565,42 @@ class TestLegacyMarkPaidUnaffected(unittest.TestCase):
         self.assertIsNone(pi_after.get("paid_channel"))
 
 
-# ─── 6. bepaid_client: acquiring stub ─────────────────────────────────────────
+# ─── 6. bepaid_client: acquiring checkout (v7.0.92.3 — stub replaced) ────────
 
 class TestBePaidClientAcquiringStub(unittest.TestCase):
 
-    def test_create_acquiring_checkout_returns_not_implemented_error(self):
-        """create_acquiring_checkout returns BePaidResult with error, not exception."""
+    def test_create_acquiring_checkout_invalid_amount_raises(self):
+        """v7.0.92.3: create_acquiring_checkout raises ValueError for invalid amount."""
         from bepaid_client import BePaidClient
         client = BePaidClient(shop_id="dummy", secret_key="dummy")
-        result = client.create_acquiring_checkout({})
-        self.assertFalse(result.ok)
-        self.assertIn("acquiring_not_implemented", result.error)
+        with self.assertRaises(ValueError):
+            client.create_acquiring_checkout(
+                amount_minor=0, currency="BYN",
+                description="T", tracking_id="t",
+                notification_url="https://example.com/hook",
+                return_url="https://example.com/return",
+            )
 
-    def test_acquiring_stub_does_not_raise(self):
-        """create_acquiring_checkout does not raise; returns a result."""
-        from bepaid_client import BePaidClient
+    def test_acquiring_checkout_uses_real_endpoint(self):
+        """v7.0.92.3: create_acquiring_checkout uses confirmed BEPAID_CHECKOUT_ENDPOINT."""
+        from bepaid_client import BePaidClient, BEPAID_CHECKOUT_ENDPOINT
+        from unittest.mock import patch, MagicMock
         client = BePaidClient(shop_id="s", secret_key="k")
-        try:
-            result = client.create_acquiring_checkout({"request": {}})
-        except Exception as exc:
-            self.fail(f"Unexpected exception: {exc}")
-        self.assertFalse(result.ok)
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.json.return_value = {
+            "checkout": {"token": "tok1", "redirect_url": "https://pay.bepaid.by/tok1"}
+        }
+        with patch("requests.post", return_value=fake_resp) as mock_post:
+            result = client.create_acquiring_checkout(
+                amount_minor=22900, currency="BYN",
+                description="Тест", tracking_id="ycpi_202607_1_acq",
+                notification_url="https://example.com/hook",
+                return_url="https://example.com/return",
+            )
+        mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_args[0][0], BEPAID_CHECKOUT_ENDPOINT)
+        self.assertTrue(result.ok)
 
 
 # ─── 7. web_app_server: moyklass_payment_types dual-channel ───────────────────

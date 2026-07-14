@@ -1,10 +1,12 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.92.1.2**
+**Cache version: v7.0.92.3**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
-| v7.0.92.1.2 | 2026-07-13 | Hotfix: renderMkPaymentTypes — escHtml→escapeHtml (6 вызовов). ReferenceError после HTTP 200. 11 новых regression тестов (22 total). 365/365 OK. |
+| v7.0.92.3 | 2026-07-14 | Feature: реальный bePaid acquiring (hosted checkout). BEPAID_CHECKOUT_ENDPOINT, create_acquiring_checkout с валидацией, X-API-Version:2, checkout_token в storage, status partial_ready/awaiting_payment, /payment-return, кнопка «Открыть страницу оплаты картой». 37 новых тестов. 463/463 OK. |
+| v7.0.92.2 | 2026-07-14 | Feature: dual-channel payments (ERIP + acquiring). payment_intent_options table, paid_channel/paid_option_id, moyklass_payment_types dual-channel, payment_intent_post_to_moyklass channel selection. 50 тестов. 426/426 OK. |
+| v7.0.92.1.2 | 2026-07-13 | Hotfix: renderMkPaymentTypes — escHtml→escapeHtml (6 вызовов). ReferenceError после HTTP 200. 11 новых regression тестов (22 total). 376/376 OK. |
 | v7.0.92.1.1 | 2026-07-13 | Hotfix: loadMkPaymentTypes — apiFetch→apiGet, async/await, try/catch/finally, button guard, no double-click. 11 regression tests. 365/365 OK. |
 | v7.0.92.1 | 2026-07-13 | Feature: определение типа оплаты ЕРИП в МойКласс. get_payment_types/get_payment_type_by_id, ERIP-кандидаты (без авто-выбора), live проверка paymentTypeId в readiness, UI блок. 21 новый тест. 354/354 OK. |
 | v7.0.92 | 2026-07-13 | Feature: ручное внесение bePaid→МойКласс (owner/admin). Новый статус posted_to_moyklass, atomic claim, fingerprint, ambiguous state, reconciliation, 16 audit events, MK post modal в UI. 67 новых тестов. 333/333 OK. |

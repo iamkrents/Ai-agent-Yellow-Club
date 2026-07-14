@@ -20,10 +20,9 @@ log = logging.getLogger(__name__)
 # Source: https://docs.bepaid.by/en/payment_methods/apms/erip/create_payment/
 BEPAID_ERIP_ENDPOINT = "https://api.bepaid.by/beyag/payments"
 
-# BLOCKER: bePaid acquiring (card) checkout endpoint is not confirmed from official docs.
-# This constant is a placeholder. Do NOT use in production until the exact endpoint
-# and payload format are verified with bePaid and tested in sandbox.
-BEPAID_ACQ_ENDPOINT_UNCONFIRMED = "https://checkout.bepaid.by/ctp/api/checkouts"
+# bePaid hosted checkout (acquiring/card) endpoint.
+# Source: https://docs.bepaid.by/en/payment_methods/cards/hosted_checkout/
+BEPAID_CHECKOUT_ENDPOINT = "https://checkout.bepaid.by/ctp/api/checkouts"
 
 _PURPOSE_MAP: dict[str, str] = {
     "current_month": "Текущий месяц",
@@ -83,21 +82,58 @@ class BePaidClient:
         """POST a new ERIP payment invoice to bePaid."""
         return self._post(BEPAID_ERIP_ENDPOINT, payload)
 
-    def create_acquiring_checkout(self, payload: dict) -> BePaidResult:
-        """POST a new acquiring (card) checkout to bePaid.
+    def create_acquiring_checkout(
+        self,
+        *,
+        amount_minor: int,
+        currency: str,
+        description: str,
+        tracking_id: str,
+        notification_url: str,
+        return_url: str,
+        customer: dict | None = None,
+        test: bool = False,
+    ) -> "BePaidResult":
+        """POST a new hosted checkout to bePaid acquiring (card payments).
 
-        BLOCKER: The bePaid acquiring API endpoint and payload format have not been
-        confirmed from official documentation or sandbox testing. This method returns
-        a not_implemented error and must not be called in production until the endpoint
-        is verified. See BEPAID_ACQ_ENDPOINT_UNCONFIRMED in this module.
+        Requires BEPAID_ACQ_SHOP_ID / BEPAID_ACQ_SECRET_KEY credentials.
+        Returns BePaidResult with data["checkout_token"] and data["payment_url"] on success.
+
+        Reference: https://docs.bepaid.by/en/payment_methods/cards/hosted_checkout/
         """
-        log.error("create_acquiring_checkout called but acquiring endpoint is not confirmed")
-        return BePaidResult(
-            ok=False,
-            http_status=0,
-            error="acquiring_not_implemented:endpoint_unconfirmed",
-            requires_check=False,
+        if not isinstance(amount_minor, int) or isinstance(amount_minor, bool):
+            raise ValueError(
+                f"amount_minor must be a positive int, got {type(amount_minor).__name__}"
+            )
+        if amount_minor <= 0:
+            raise ValueError(f"amount_minor must be positive, got {amount_minor}")
+        if str(currency).upper() != "BYN":
+            raise ValueError(f"currency must be BYN, got {currency!r}")
+        if not str(notification_url).startswith("https://"):
+            raise ValueError(
+                f"notification_url must be HTTPS, got {notification_url!r}"
+            )
+        if not str(return_url).startswith("https://"):
+            raise ValueError(f"return_url must be HTTPS, got {return_url!r}")
+
+        payload = BePaidClient.build_checkout_payload(
+            amount_minor=amount_minor,
+            currency=currency,
+            description=description,
+            tracking_id=tracking_id,
+            notification_url=notification_url,
+            return_url=return_url,
+            customer=customer,
+            test=test,
         )
+        shop_id = self._shop_id
+        log.info(
+            "bepaid create_acquiring_checkout tracking_id=%s shop_id_len=%d shop_id_last4=%s",
+            tracking_id,
+            len(shop_id),
+            shop_id[-4:] if len(shop_id) >= 4 else "****",
+        )
+        return self._post_checkout(BEPAID_CHECKOUT_ENDPOINT, payload)
 
     def _post(self, url: str, payload: dict) -> BePaidResult:
         try:
@@ -122,6 +158,103 @@ class BePaidClient:
         except requests.RequestException as exc:
             log.warning("bePaid network error url=%s type=%s", url, type(exc).__name__)
             return BePaidResult(ok=False, http_status=0, error=f"network_error:{type(exc).__name__}")
+
+    def _post_checkout(self, url: str, payload: dict) -> "BePaidResult":
+        """POST to bePaid hosted checkout endpoint with X-API-Version: 2 header."""
+        try:
+            resp = requests.post(
+                url,
+                json=payload,
+                auth=(self._shop_id, self._secret_key),
+                timeout=self._timeout,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "X-API-Version": "2",
+                },
+            )
+            log.info("bePaid POST %s → HTTP %s", url, resp.status_code)
+            return self._parse_checkout_response(resp)
+        except requests.Timeout:
+            log.warning("bePaid timeout url=%s timeout=%ss", url, self._timeout)
+            return BePaidResult(ok=False, http_status=0, error="timeout", requires_check=True)
+        except requests.ConnectionError as exc:
+            log.warning("bePaid connection_error url=%s type=%s", url, type(exc).__name__)
+            return BePaidResult(
+                ok=False,
+                http_status=0,
+                error=f"connection_error:{type(exc).__name__}",
+                requires_check=True,
+            )
+        except requests.RequestException as exc:
+            log.warning("bePaid network error url=%s type=%s", url, type(exc).__name__)
+            return BePaidResult(
+                ok=False,
+                http_status=0,
+                error=f"network_error:{type(exc).__name__}",
+            )
+
+    @staticmethod
+    def _parse_checkout_response(resp: requests.Response) -> "BePaidResult":
+        """Parse bePaid hosted checkout response: {"checkout": {"token": ..., "redirect_url": ...}}."""
+        try:
+            raw = resp.json()
+        except Exception:
+            raw = {}
+
+        if resp.status_code >= 500:
+            msg = f"HTTP {resp.status_code}"
+            if isinstance(raw, dict):
+                errs = raw.get("errors") or raw.get("message") or raw.get("error")
+                if isinstance(errs, str):
+                    msg = errs[:120]
+                elif isinstance(errs, dict):
+                    msg = "; ".join(f"{k}: {v}" for k, v in list(errs.items())[:2])[:120]
+            return BePaidResult(
+                ok=False,
+                http_status=resp.status_code,
+                error=f"server_error:{msg}",
+                requires_check=True,
+            )
+
+        if resp.status_code in (200, 201):
+            outer = raw if isinstance(raw, dict) else {}
+            checkout = outer.get("checkout") or {}
+            if not isinstance(checkout, dict):
+                checkout = {}
+            token = str(checkout.get("token") or "").strip() or None
+            redirect_url = str(checkout.get("redirect_url") or "").strip() or None
+            if not token or not redirect_url:
+                return BePaidResult(
+                    ok=False,
+                    http_status=resp.status_code,
+                    error="missing_checkout_fields:token_or_redirect_url",
+                    requires_check=False,
+                )
+            return BePaidResult(
+                ok=True,
+                http_status=resp.status_code,
+                data={
+                    "checkout_token": token,
+                    "payment_url": redirect_url,
+                    "status": str(checkout.get("status") or "").strip() or None,
+                },
+            )
+
+        errors: Any = (
+            raw.get("errors") or raw.get("error") or raw.get("message")
+            if isinstance(raw, dict)
+            else None
+        )
+        if isinstance(errors, list):
+            msg = "; ".join(str(e)[:120] for e in errors[:3])
+        elif isinstance(errors, dict):
+            msg = "; ".join(f"{k}: {v}" for k, v in list(errors.items())[:3])
+        elif isinstance(errors, str):
+            msg = errors[:200]
+        else:
+            msg = f"HTTP {resp.status_code}"
+        return BePaidResult(ok=False, http_status=resp.status_code, error=msg)
 
     @staticmethod
     def _parse_response(resp: requests.Response) -> BePaidResult:
@@ -222,6 +355,46 @@ class BePaidClient:
         if customer:
             request["customer"] = customer
         return {"request": request}
+
+    @staticmethod
+    def build_checkout_payload(
+        *,
+        amount_minor: int,
+        currency: str = "BYN",
+        description: str,
+        tracking_id: str,
+        notification_url: str,
+        return_url: str,
+        customer: dict | None = None,
+        test: bool = False,
+    ) -> dict:
+        """Build request body for bePaid hosted checkout (acquiring).
+
+        Reference: https://docs.bepaid.by/en/payment_methods/cards/hosted_checkout/
+        """
+        checkout: dict[str, Any] = {
+            "transaction_type": "payment",
+            "order": {
+                "amount": int(amount_minor),
+                "currency": str(currency or "BYN"),
+                "description": str(description),
+                "tracking_id": str(tracking_id),
+            },
+            "settings": {
+                "notification_url": str(notification_url),
+                "return_url": str(return_url),
+                "language": "ru",
+                "auto_return": 0,
+            },
+            "payment_method": {
+                "types": ["credit_card"],
+            },
+        }
+        if customer and isinstance(customer, dict):
+            checkout["customer"] = customer
+        if test:
+            checkout["test"] = True
+        return {"checkout": checkout}
 
     @staticmethod
     def erip_account_number(mk_user_id: int, period_month: str, pi_row_id: int) -> str:

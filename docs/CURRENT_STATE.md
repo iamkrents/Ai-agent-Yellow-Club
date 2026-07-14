@@ -1,6 +1,6 @@
 # Yellow Club Agent — Current State
 
-> Последнее обновление: 2026-07-14 (v7.0.92.2)
+> Последнее обновление: 2026-07-14 (v7.0.92.3)
 > Цель файла: позволить возобновить работу из любого нового чата без потери контекста.
 > **Этот файл — только документация. Production-код не менять через этот файл.**
 
@@ -31,23 +31,42 @@ Claude Code (локально) → редактирование кода → git
 | Параметр | Значение |
 |---|---|
 | Последняя задеплоенная версия | **v7.0.81** (commit `db0f1e9`) — НЕ развёрнут, production-дата неизвестна |
-| Последний коммит в `main` | **v7.0.92.2** — Dual-channel payments (ERIP + acquiring) |
-| Frontend cache-bust | **`v=7.0.92.2`** (app.js и styles.css) |
-| `console.log` в app.js | `MiniApp version: v7.0.92.2` |
+| Последний коммит в `main` | **v7.0.92.3** — Real bePaid acquiring checkout |
+| Frontend cache-bust | **`v=7.0.92.3`** (app.js и styles.css) |
+| `console.log` в app.js | `MiniApp version: v7.0.92.3` |
 
 > Все версии начиная с v7.0.82 запушены, но **НЕ деплоились** на production-сервер. Деплой — только по команде владельца.
+
+### v7.0.92.3 — Feature: real bePaid acquiring (hosted checkout)
+
+**Новое:**
+- `bepaid_client.py`: удалена `BEPAID_ACQ_ENDPOINT_UNCONFIRMED`; добавлена `BEPAID_CHECKOUT_ENDPOINT = "https://checkout.bepaid.by/ctp/api/checkouts"`; реализован `create_acquiring_checkout(*, amount_minor, currency, description, tracking_id, notification_url, return_url, customer=None, test=False)` с валидацией; `_post_checkout` с заголовком `X-API-Version: 2`; `_parse_checkout_response` для `{"checkout": {...}}`; `build_checkout_payload` static method
+- `storage.py`: `checkout_token TEXT` в `payment_intent_options` (в схеме + _ensure_column); `update_option_checkout(option_id, *, checkout_token, payment_url)`; `payment_intent_update_status(public_id, new_status)`
+- `web_app_server.py`: `payment_intent_create_acquiring_option(auth, public_id)` — idempotent, создаёт option + checkout, обновляет статус PI; GET `/payment-return` — статическая страница "Платёж обрабатывается"; маршрут `POST /api/payments/intents/{id}/create-acquiring`
+- `miniapp/app.js`: версия v7.0.92.3; статусы `partial_ready` / `awaiting_payment`; кнопка "Открыть страницу оплаты картой" для acquiring-метода; `openAcquiringCheckout()` — idempotent, открывает URL через Telegram.WebApp.openLink
+- `miniapp/index.html`: cache-bust v7.0.92.3
+- `tests/test_bepaid_acquiring.py`: 37 тестов (все pass)
+
+**Статусные переходы:**
+- `draft`/`ready` + acquiring checkout → `partial_ready`
+- `bepaid_created` (ERIP уже создан) + acquiring checkout → `awaiting_payment`
+- Idempotency: repeat click возвращает existing `payment_url` без нового API-вызова
+
+**Миграция:** только additive (`checkout_token TEXT` column via _ensure_column). Существующие DB не затронуты.
+
+**Cache-bust:** `app.js?v=7.0.92.3`, `styles.css?v=7.0.92.3`.
 
 ### v7.0.92.2 — Feature: dual-channel payments (ERIP + acquiring)
 
 **Новое:**
 - `config.py`: добавлен `moyklass_acquiring_payment_type_id` (из `MOYKLASS_ACQUIRING_PAYMENT_TYPE_ID`, default 0)
 - `storage.py`: новая таблица `payment_intent_options` (один ряд на канал: erip/acquiring); колонки `paid_channel` и `paid_option_id` в `payment_intents`; 8 новых методов (`create_payment_intent_option`, `get_options_for_intent`, `get_option_by_channel`, `get_option_by_provider_ref`, `mark_option_paid`, `mark_option_failed`, `mark_option_expired`, `supersede_sibling_options`, `payment_intent_mark_paid_via_option`)
-- `bepaid_client.py`: константа `BEPAID_ACQ_ENDPOINT_UNCONFIRMED`; метод `create_acquiring_checkout` (stub, возвращает error `acquiring_not_implemented:endpoint_unconfirmed` — BLOCKER до подтверждения endpoint)
+- `bepaid_client.py`: (stub заменён в v7.0.92.3)
 - `web_app_server.py`: `_ACQ_KEYWORDS` + `_is_acquiring_candidate`; `moyklass_payment_types()` возвращает обе привязки (erip + acquiring); `payment_intent_post_to_moyklass` выбирает `payment_type_id` по `paid_channel` (acquiring → `MOYKLASS_ACQUIRING_PAYMENT_TYPE_ID`, erip/None → `MOYKLASS_ERIP_PAYMENT_TYPE_ID`)
 - `miniapp/app.js`: `_renderPaymentTypeBlock` (helper); `renderMkPaymentTypes` показывает оба канала; версия → v7.0.92.2
 - `miniapp/styles.css`: стили для `.mk-pt-dual-channels`, `.mk-pt-channel-block`, `.mk-pt-badge-acq`
 - `tests/test_dual_channel.py`: 50 тестов (все pass)
-- **BLOCKER**: bePaid acquiring endpoint не подтверждён → `create_acquiring_checkout` нельзя использовать в production до верификации
+- ~~**BLOCKER**~~: resolved in v7.0.92.3 — acquiring endpoint confirmed and implemented
 
 **Миграции (additive):** `paid_channel TEXT`, `paid_option_id INTEGER` в `payment_intents`; CREATE TABLE IF NOT EXISTS `payment_intent_options`. Legacy intents не затронуты.
 

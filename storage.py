@@ -737,6 +737,7 @@ class Storage:
                 bepaid_uid TEXT,
                 bepaid_account_number TEXT,
                 payment_url TEXT,
+                checkout_token TEXT,
                 qr_code_raw TEXT,
                 expires_at TEXT,
                 transaction_uid TEXT,
@@ -757,6 +758,8 @@ class Storage:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pio_order ON payment_intent_options(bepaid_order_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pio_uid ON payment_intent_options(bepaid_uid)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pio_status ON payment_intent_options(status)")
+        # v7.0.92.3 — acquiring checkout token
+        self._ensure_column(conn, "payment_intent_options", "checkout_token", "checkout_token TEXT")
 
     def _init_bepaid_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -5634,6 +5637,40 @@ class Storage:
                 "SELECT * FROM payment_intent_options WHERE id=?", (option_id,)
             ).fetchone()
         return {"ok": True, "marked_expired": True, "option": dict(row_after) if row_after else {}}
+
+    def update_option_checkout(
+        self,
+        option_id: int,
+        *,
+        checkout_token: str,
+        payment_url: str,
+    ) -> dict:
+        """Set checkout_token and payment_url on an existing option row (v7.0.92.3)."""
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE payment_intent_options
+                SET checkout_token = ?, payment_url = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (checkout_token, payment_url, now, option_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM payment_intent_options WHERE id=?", (option_id,)
+            ).fetchone()
+        return dict(row) if row else {}
+
+    def payment_intent_update_status(self, public_id: str, new_status: str) -> bool:
+        """Update the status of a payment intent. Returns True if a row was changed."""
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE payment_intents SET status=?, updated_at=? WHERE public_id=?",
+                (new_status, now, public_id),
+            )
+            changed = conn.execute("SELECT changes()").fetchone()[0]
+        return changed == 1
 
     def supersede_sibling_options(self, intent_public_id: str, winning_option_id: int) -> int:
         """Mark all non-winning, non-paid options as 'superseded'. Returns row count changed."""
