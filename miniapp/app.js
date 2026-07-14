@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.92.1.1");
+console.log("MiniApp version: v7.0.92.1.2");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12085,7 +12085,7 @@ function renderMkPaymentTypes(data) {
   if (!statusEl || !listEl) return;
 
   if (!data.ok) {
-    statusEl.innerHTML = `<span class="mk-pt-error">Ошибка: ${escHtml(data.error || "")}</span>`;
+    statusEl.innerHTML = `<span class="mk-pt-error">Ошибка: ${escapeHtml(data.error || "")}</span>`;
     return;
   }
 
@@ -12102,9 +12102,9 @@ function renderMkPaymentTypes(data) {
     statusHtml = `<div class="mk-pt-warn">ID ${configuredId} не найден в МойКласс. Проверьте конфигурацию.</div>`;
   } else if (!valid) {
     const reason = (pt.blocking_reasons || []).join(", ") || "тип недоступен";
-    statusHtml = `<div class="mk-pt-warn">Тип ${configuredId} (${escHtml(pt.payment_type_name || "")}) недоступен: ${escHtml(reason)}</div>`;
+    statusHtml = `<div class="mk-pt-warn">Тип ${configuredId} (${escapeHtml(pt.payment_type_name || "")}) недоступен: ${escapeHtml(reason)}</div>`;
   } else {
-    statusHtml = `<div class="mk-pt-ok">Тип оплаты настроен: ID ${configuredId} — <strong>${escHtml(pt.payment_type_name || "")}</strong></div>`;
+    statusHtml = `<div class="mk-pt-ok">Тип оплаты настроен: ID ${configuredId} — <strong>${escapeHtml(pt.payment_type_name || "")}</strong></div>`;
   }
   statusEl.innerHTML = statusHtml;
 
@@ -12113,11 +12113,11 @@ function renderMkPaymentTypes(data) {
   let html = `<div class="mk-pt-diag">Всего типов: ${diag.total || 0} · Активных: ${diag.active || 0} · Кандидатов ЕРИП: ${diag.possible_erip_matches || 0}</div>`;
 
   if (candidates.length === 1) {
-    html += `<div class="mk-pt-hint"><span class="mk-pt-badge-likely">Вероятный тип ЕРИП</span> ID ${candidates[0].id} — ${escHtml(candidates[0].name)}<br>` +
+    html += `<div class="mk-pt-hint"><span class="mk-pt-badge-likely">Вероятный тип ЕРИП</span> ID ${candidates[0].id} — ${escapeHtml(candidates[0].name)}<br>` +
       `<code class="mk-pt-env-hint">MOYKLASS_ERIP_PAYMENT_TYPE_ID=${candidates[0].id}</code></div>`;
   } else if (candidates.length > 1) {
     html += `<div class="mk-pt-hint"><span class="mk-pt-badge-multi">Несколько кандидатов ЕРИП — требуется ручной выбор:</span><ul>` +
-      candidates.map(c => `<li>ID ${c.id} — ${escHtml(c.name)}</li>`).join("") + `</ul></div>`;
+      candidates.map(c => `<li>ID ${c.id} — ${escapeHtml(c.name)}</li>`).join("") + `</ul></div>`;
   }
 
   if (items.length) {
@@ -12128,7 +12128,7 @@ function renderMkPaymentTypes(data) {
       const badge = isConfigured ? ` <span class="mk-pt-badge-active">настроен</span>` :
         isCandidate ? ` <span class="mk-pt-badge-likely">ЕРИП?</span>` : "";
       html += `<li class="mk-pt-item${isConfigured ? " mk-pt-item-configured" : ""}">` +
-        `<span class="mk-pt-id">ID ${item.id}</span> ${escHtml(item.name)}${badge}</li>`;
+        `<span class="mk-pt-id">ID ${item.id}</span> ${escapeHtml(item.name)}${badge}</li>`;
     }
     html += `</ul>`;
   }

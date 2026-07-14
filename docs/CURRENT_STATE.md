@@ -1,6 +1,6 @@
 # Yellow Club Agent — Current State
 
-> Последнее обновление: 2026-07-13 (v7.0.92.1.1)
+> Последнее обновление: 2026-07-13 (v7.0.92.1.2)
 > Цель файла: позволить возобновить работу из любого нового чата без потери контекста.
 > **Этот файл — только документация. Production-код не менять через этот файл.**
 
@@ -31,11 +31,17 @@ Claude Code (локально) → редактирование кода → git
 | Параметр | Значение |
 |---|---|
 | Последняя задеплоенная версия | **v7.0.81** (commit `db0f1e9`) — НЕ развёрнут, production-дата неизвестна |
-| Последний коммит в `main` | **v7.0.92.1.1** — Fix loadMkPaymentTypes (apiFetch→apiGet) |
-| Frontend cache-bust | **`v=7.0.92.1.1`** (app.js); `styles.css?v=7.0.92.1` (CSS не менялась) |
-| `console.log` в app.js | `MiniApp version: v7.0.92.1.1` |
+| Последний коммит в `main` | **v7.0.92.1.2** — Fix renderMkPaymentTypes (escHtml→escapeHtml) |
+| Frontend cache-bust | **`v=7.0.92.1.2`** (app.js); `styles.css?v=7.0.92.1` (CSS не менялась) |
+| `console.log` в app.js | `MiniApp version: v7.0.92.1.2` |
 
 > Все версии начиная с v7.0.82 запушены, но **НЕ деплоились** на production-сервер. Деплой — только по команде владельца.
+
+### v7.0.92.1.2 — Hotfix: ReferenceError escHtml в renderMkPaymentTypes
+
+**Баг:** `renderMkPaymentTypes()` использовала несуществующий alias `escHtml()` — 6 вызовов. После того как v7.0.92.1.1 исправил загрузку (`apiGet` работает, HTTP 200 приходит), рендеринг падал с `ReferenceError: Can't find variable: escHtml`. UI оставался пустым.
+
+**Исправление:** 6 вызовов `escHtml(...)` → `escapeHtml(...)` (проектный helper, строка 240 app.js). Другие undefined aliases отсутствуют. Cache-bust: `app.js?v=7.0.92.1.2`.
 
 ### v7.0.92.1.1 — Hotfix: ReferenceError в loadMkPaymentTypes
 

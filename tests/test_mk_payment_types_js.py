@@ -1,6 +1,6 @@
-"""Regression tests for v7.0.92.1.1 hotfix: loadMkPaymentTypes bug.
+"""Regression tests for v7.0.92.1.1 and v7.0.92.1.2 hotfixes.
 
-Verifies that the JS source in miniapp/app.js:
+v7.0.92.1.1 — loadMkPaymentTypes bug:
 1. Does NOT contain the non-existent apiFetch call.
 2. Uses the correct apiGet helper.
 3. Does NOT call .json() after apiGet (apiGet already returns parsed JSON).
@@ -9,6 +9,17 @@ Verifies that the JS source in miniapp/app.js:
 6. Disables the refresh button during the request (button guard).
 7. Re-enables the button in the finally block.
 8. Guards against double-click (early return when button is disabled).
+
+v7.0.92.1.2 — renderMkPaymentTypes escHtml bug:
+12. escHtml alias does not appear in renderMkPaymentTypes (was undefined, caused ReferenceError).
+13. Uses existing escapeHtml helper.
+14. All dynamic values in renderMkPaymentTypes pass through escapeHtml.
+15. renderMkPaymentTypes renders valid payload (status + list) without ReferenceError.
+16. renderMkPaymentTypes renders error payload safely.
+17. Missing configured ID branch uses no undefined helpers.
+18. Empty items list does not call undefined helpers.
+19. Single ERIP candidate branch uses escapeHtml.
+20. Multiple ERIP candidates branch uses escapeHtml.
 
 These tests parse the JS source as plain text — no JS runtime needed.
 """
@@ -138,6 +149,101 @@ class TestLoadMkPaymentTypesJS(unittest.TestCase):
             "function apiFetch",
             self.source,
             "apiFetch should not be defined — it was a naming mistake",
+        )
+
+
+class TestRenderMkPaymentTypesJS(unittest.TestCase):
+    """v7.0.92.1.2 regression: escHtml → escapeHtml in renderMkPaymentTypes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = APP_JS.read_text(encoding="utf-8")
+        cls.fn_body = _load_fn(cls.source, "renderMkPaymentTypes")
+
+    def test_12_no_escHtml_in_render(self):
+        """Test 12 (regression): renderMkPaymentTypes must NOT call undefined escHtml."""
+        self.assertNotIn(
+            "escHtml(",
+            self.fn_body,
+            "escHtml is not defined — caused ReferenceError in production",
+        )
+
+    def test_13_uses_escapeHtml_in_render(self):
+        """Test 13 (regression): renderMkPaymentTypes uses the existing escapeHtml helper."""
+        self.assertIn(
+            "escapeHtml(",
+            self.fn_body,
+            "renderMkPaymentTypes must use escapeHtml (defined at line ~240)",
+        )
+
+    def test_14_all_dynamic_values_escaped(self):
+        """Test 14: every interpolated user-controlled string goes through escapeHtml."""
+        # Each of these field names appears in an escapeHtml() call, not raw
+        for field in ("data.error", "pt.payment_type_name", "reason", "candidates[0].name", "c.name", "item.name"):
+            # Verify the field appears inside escapeHtml(…) somewhere in the function
+            pattern = re.compile(
+                r"escapeHtml\([^)]*" + re.escape(field.split(".")[-1]),
+                re.DOTALL,
+            )
+            self.assertRegex(
+                self.fn_body,
+                pattern,
+                f"Field '{field}' must be wrapped in escapeHtml()",
+            )
+
+    def test_15_renders_valid_payload_no_undefined_calls(self):
+        """Test 15: renderMkPaymentTypes body contains no references to escHtml or other undefined aliases."""
+        for bad_alias in ("escHtml(", "esc_html(", "escapeAttrHtml(", "htmlEscape(", "safeHtml("):
+            self.assertNotIn(
+                bad_alias,
+                self.fn_body,
+                f"Undefined helper alias '{bad_alias}' found in renderMkPaymentTypes",
+            )
+
+    def test_16_error_payload_branch_uses_escapeHtml(self):
+        """Test 16: the data.ok===false branch escapes data.error with escapeHtml."""
+        # Line: statusEl.innerHTML = `...${escapeHtml(data.error || "")}...`
+        self.assertRegex(
+            self.fn_body,
+            r"escapeHtml\(data\.error",
+        )
+
+    def test_17_missing_configured_id_branch_safe(self):
+        """Test 17: the 'not configured' branch uses no undefined helpers (no dynamic HTML)."""
+        # This branch has no user-supplied data → no escape calls needed, but also no bad ones
+        self.assertNotIn("escHtml(", self.fn_body)
+
+    def test_18_empty_items_no_undefined_helpers(self):
+        """Test 18: items loop uses escapeHtml for item.name."""
+        self.assertRegex(
+            self.fn_body,
+            r"escapeHtml\(item\.name\)",
+        )
+
+    def test_19_single_erip_candidate_uses_escapeHtml(self):
+        """Test 19: single ERIP candidate branch escapes candidate name."""
+        self.assertRegex(
+            self.fn_body,
+            r"escapeHtml\(candidates\[0\]\.name\)",
+        )
+
+    def test_20_multiple_erip_candidates_use_escapeHtml(self):
+        """Test 20: multiple candidates .map() uses escapeHtml for c.name."""
+        self.assertRegex(
+            self.fn_body,
+            r"escapeHtml\(c\.name\)",
+        )
+
+    def test_21_escapeHtml_defined_in_app_js(self):
+        """Sanity: escapeHtml is defined in app.js (around line 240)."""
+        self.assertIn("function escapeHtml(", self.source)
+
+    def test_22_no_escHtml_anywhere_in_app_js(self):
+        """Sanity: escHtml does not appear anywhere in app.js."""
+        self.assertNotIn(
+            "escHtml(",
+            self.source,
+            "escHtml must be fully replaced — it is not defined anywhere",
         )
 
 

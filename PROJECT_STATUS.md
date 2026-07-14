@@ -1,12 +1,24 @@
 # PROJECT STATUS — Yellow Club Mini App
 
-_Последнее обновление: 2026-07-13 (v7.0.92.1.1)_
+_Последнее обновление: 2026-07-13 (v7.0.92.1.2)_
 
 ---
 
 ## Что сделано
 
-### v7.0.92.1.1 — Hotfix: ReferenceError в loadMkPaymentTypes (текущая)
+### v7.0.92.1.2 — Hotfix: ReferenceError escHtml в renderMkPaymentTypes (текущая)
+
+**Причина:** `renderMkPaymentTypes()` в `miniapp/app.js` использовала несуществующий alias `escHtml()` (6 вызовов) вместо проектного helper `escapeHtml()` (строка 240). После исправления v7.0.92.1.1 (загрузка заработала, данные стали приходить) — при попытке отрисовать ответ браузер бросал `ReferenceError: Can't find variable: escHtml` в `renderMkPaymentTypes`, и UI оставался пустым несмотря на HTTP 200.
+
+**Ключевые изменения:**
+
+- **`miniapp/app.js`:** 6 вызовов `escHtml(...)` в `renderMkPaymentTypes` → `escapeHtml(...)` (проектный helper, строка 240). Другие undefined aliases (`escAttr`, `esc_html` и др.) — не использовались, проверено.
+- **Cache-bust:** `app.js?v=7.0.92.1.1` → `app.js?v=7.0.92.1.2`. CSS не менялась.
+- **`tests/test_mk_payment_types_js.py`:** +11 тестов класса `TestRenderMkPaymentTypesJS` (тесты 12–22): нет `escHtml`, есть `escapeHtml`, все dynamic values экранируются, нет других undefined aliases, каждая ветка (error, no-config, single/multi candidate, items list) проверена. Итого 22/22 OK.
+
+---
+
+### v7.0.92.1.1 — Hotfix: ReferenceError в loadMkPaymentTypes
 
 **Причина:** `loadMkPaymentTypes()` в `miniapp/app.js` вызывала несуществующую функцию `apiFetch()` вместо существующей `apiGet()`, а также дополнительно вызывала `.json()` на результате, хотя `apiGet` уже возвращает разобранный JSON. Это вызывало `ReferenceError` до отправки HTTP-запроса: backend-логи не фиксировали ни одного `GET /api/payments/moyklass/payment-types`, интерфейс навсегда зависал в «Загрузка…». `.catch()` не перехватывал ошибку, потому что исходная функция не была `async` — цепочка `.then/.catch` на `undefined` (возврат `apiFetch()`) выбрасывала синхронно.
 
