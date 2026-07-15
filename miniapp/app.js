@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.92.5.3");
+console.log("MiniApp version: v7.0.92.5.4");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -11614,7 +11614,7 @@ window.reconcileTransaction = async function reconcileTransaction(txId) {
   const btn = document.querySelector(`button[onclick="reconcileTransaction(${txId})"]`);
   if (btn) { btn.disabled = true; btn.textContent = "Сопоставление..."; }
   try {
-    const result = await apiFetch(`/api/payments/bepaid/transactions/${txId}/reconcile`, { method: "POST" });
+    const result = await _apiPostRaw(`/api/payments/bepaid/transactions/${txId}/reconcile`, {});
     if (result.ok || result.matched) {
       const intentId = result.intent_public_id || result.parent_public_id || "";
       const msg = intentId ? `Оплата сопоставлена: ${intentId}` : "Оплата успешно сопоставлена";
@@ -11640,7 +11640,7 @@ window.verifyAcquiringPayment = async function verifyAcquiringPayment(publicId) 
   const btn = document.querySelector(`button[onclick="verifyAcquiringPayment('${publicId}')"]`);
   if (btn) { btn.disabled = true; btn.textContent = "Проверка..."; }
   try {
-    const result = await apiFetch(`/api/payments/intents/${encodeURIComponent(publicId)}/verify-acquiring`, { method: "POST" });
+    const result = await _apiPostRaw(`/api/payments/intents/${encodeURIComponent(publicId)}/verify-acquiring`, {});
     if (result.ok) {
       const msg = result.idempotent
         ? `Оплата уже подтверждена ранее: ${publicId}`
