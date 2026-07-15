@@ -618,20 +618,31 @@ class TestCSS(unittest.TestCase):
 
 # ── Cache-bust ────────────────────────────────────────────────────────────────
 
+CURRENT_MINIAPP_VERSION = "7.0.93"
+
+
 class TestCacheBust(unittest.TestCase):
-    """index.html cache-bust updated to v=7.0.91."""
+    """index.html and app.js cache-bust / version marker match CURRENT_MINIAPP_VERSION."""
 
     _HTML = ROOT / "miniapp" / "index.html"
+    _APP = ROOT / "miniapp" / "app.js"
 
-    def test_cache_bust_v7091(self):
+    def test_current_cache_bust_in_html(self):
         html = self._HTML.read_text(encoding="utf-8")
-        self.assertIn("v=7.0.92", html,
-                      "index.html must cache-bust to v=7.0.92")
+        self.assertIn(f"styles.css?v={CURRENT_MINIAPP_VERSION}", html,
+                      f"styles.css cache-bust must be v={CURRENT_MINIAPP_VERSION}")
+        self.assertIn(f"app.js?v={CURRENT_MINIAPP_VERSION}", html,
+                      f"app.js cache-bust must be v={CURRENT_MINIAPP_VERSION}")
+
+    def test_old_cache_bust_not_in_asset_tags(self):
+        html = self._HTML.read_text(encoding="utf-8")
+        self.assertNotIn("v=7.0.92", html,
+                         "Old v=7.0.92 cache-bust must not appear in index.html asset tags")
 
     def test_version_string_in_app_js(self):
-        app = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v7.0.92", app,
-                      "app.js version string must be updated to v7.0.92")
+        app = self._APP.read_text(encoding="utf-8")
+        self.assertIn(f"v{CURRENT_MINIAPP_VERSION}", app,
+                      f"app.js version marker must contain v{CURRENT_MINIAPP_VERSION}")
 
 
 # ── Webhook endpoint exists ───────────────────────────────────────────────────

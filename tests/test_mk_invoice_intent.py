@@ -21,6 +21,8 @@ from typing import Optional
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+CURRENT_MINIAPP_VERSION = "7.0.93"
+
 # Storage is importable standalone (only needs sqlite3 + utils)
 from storage import Storage
 # Pure helpers from web_app_server (no network/env required)
@@ -648,7 +650,7 @@ class TestV90904UIFix(unittest.TestCase):
 
     def test_version_bumped_to_91(self):
         src = self._read_app_js()
-        self.assertIn("v7.0.92", src, "Version must be bumped to v7.0.92")
+        self.assertIn(f"v{CURRENT_MINIAPP_VERSION}", src, f"Version must be v{CURRENT_MINIAPP_VERSION}")
 
     def test_student_name_field_in_invoice_card_html(self):
         """renderMkInvoiceCard must reference inv.student_name."""
@@ -834,10 +836,10 @@ class TestV90905ShowPaymentIntent(unittest.TestCase):
         self.assertIn("255, 196, 0", css,
                       "piIntentHighlightRing must use yellow border color")
 
-    def test_cache_bust_v7091_in_html(self):
+    def test_current_cache_bust_in_html(self):
         html = self._html()
-        self.assertIn("v=7.0.92", html,
-                      "index.html must cache-bust to v=7.0.92")
+        self.assertIn(f"v={CURRENT_MINIAPP_VERSION}", html,
+                      f"index.html must cache-bust to v={CURRENT_MINIAPP_VERSION}")
 
     def test_data_intent_public_id_on_pi_card(self):
         src = self._app()
@@ -1035,13 +1037,13 @@ class TestV90906InvoiceListFixes(unittest.TestCase):
 
     # ── Version ──────────────────────────────────────────────────────────────
 
-    def test_version_7091_in_app_js(self):
+    def test_current_version_in_app_js(self):
         src = self._app()
-        self.assertIn("v7.0.92", src, "app.js version must be v7.0.92")
+        self.assertIn(f"v{CURRENT_MINIAPP_VERSION}", src, f"app.js version must be v{CURRENT_MINIAPP_VERSION}")
 
-    def test_cache_bust_7091_in_html(self):
+    def test_cache_bust_current_in_html(self):
         html = self._html()
-        self.assertIn("v=7.0.92", html, "index.html cache-bust must be v=7.0.92")
+        self.assertIn(f"v={CURRENT_MINIAPP_VERSION}", html, f"index.html cache-bust must be v={CURRENT_MINIAPP_VERSION}")
 
 
 if __name__ == "__main__":
