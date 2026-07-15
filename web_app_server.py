@@ -90,10 +90,12 @@ FOOD_ADMIN_EDIT_ROLES = {"owner", "admin", "operations"}
 BEPAID_RECONCILE_ROLES = {"owner", "admin", "director", "operations", "client_manager"}
 PAYMENT_INTENT_ROLES = {"owner", "admin", "director", "operations", "client_manager"}
 PAYMENT_MK_POST_ROLES = {"owner", "admin"}  # only senior roles may post to MoyKlass
+CLIENT_LINK_ADMIN_ROLES = {"owner", "admin", "operations"}
+
 ADMIN_TABS_BY_ROLE = {
-    "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
-    "admin": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
-    "operations": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns"],
+    "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links"],
+    "admin": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links"],
+    "operations": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links"],
     "methodist": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "notifications", "kpi", "interns"],
 }
 
@@ -9810,7 +9812,13 @@ class MiniAppContext:
             })
         return {"ok": True, "payments": result, "total": len(result)}
 
-    # ── v7.0.93.1 — separate client parent-child link system ─────────────────
+    # ── v7.0.93.1/93.2 — separate client parent-child link system ───────────
+
+    def _require_client_link_admin_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in CLIENT_LINK_ADMIN_ROLES:
+            return {"ok": False, "error": "Доступ ограничен: owner, admin, operations."}
+        return None
 
     def client_children_list(self, auth: dict[str, Any]) -> dict[str, Any]:
         """GET /api/client/children — unified read-only list for parents.
@@ -9874,7 +9882,7 @@ class MiniAppContext:
 
     def admin_client_generate_code(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         """POST /api/client/admin/link-codes — admin creates a CL- code for a student."""
-        denied = self._require_payment_intent_access(auth)
+        denied = self._require_client_link_admin_access(auth)
         if denied:
             return denied
         mk_user_id = str(body.get("mk_user_id") or "").strip()
@@ -9889,7 +9897,7 @@ class MiniAppContext:
 
     def admin_client_invalidate_code(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         """POST /api/client/admin/link-codes/invalidate — admin invalidates a code by id."""
-        denied = self._require_payment_intent_access(auth)
+        denied = self._require_client_link_admin_access(auth)
         if denied:
             return denied
         try:
@@ -9904,7 +9912,7 @@ class MiniAppContext:
 
     def admin_client_unlink_child(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         """POST /api/client/admin/unlink — admin unlinks a parent from a student."""
-        denied = self._require_payment_intent_access(auth)
+        denied = self._require_client_link_admin_access(auth)
         if denied:
             return denied
         parent_telegram_user_id = str(body.get("parent_telegram_user_id") or "").strip()
@@ -9917,7 +9925,7 @@ class MiniAppContext:
 
     def admin_client_link_status(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
         """GET /api/client/admin/link-status?mk_user_id=... — admin views link status for a student."""
-        denied = self._require_payment_intent_access(auth)
+        denied = self._require_client_link_admin_access(auth)
         if denied:
             return denied
         mk_user_id = str(params.get("mk_user_id") or "").strip()
@@ -9925,6 +9933,67 @@ class MiniAppContext:
             return {"ok": False, "error": "mk_user_id обязателен"}
         data = self.storage.get_client_link_status_for_student(mk_user_id)
         return {"ok": True, **data}
+
+    def admin_client_search_students(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        """GET /api/client/admin/search-students?q=... — search MoyKlass students for link management.
+
+        Returns limited fields: mk_user_id, name, active client link, active code status.
+        Never returns YC food codes or food links.
+        """
+        denied = self._require_client_link_admin_access(auth)
+        if denied:
+            return denied
+        q = str(params.get("q") or "").strip()
+        if not q:
+            return {"ok": False, "error": "Введите имя ученика или userId МойКласс"}
+        if len(q) > 200:
+            return {"ok": False, "error": "Запрос слишком длинный"}
+
+        mk_results: list[dict] = []
+        q_is_numeric = q.isdigit()
+
+        if q_is_numeric:
+            # Direct lookup by userId
+            try:
+                res = self.moyklass.request("GET", f"/v1/company/users/{q}")
+                if res.ok:
+                    u = res.data if isinstance(res.data, dict) else {}
+                    if u.get("id"):
+                        mk_results = [u]
+                    elif isinstance(res.data, list) and res.data:
+                        mk_results = res.data[:10]
+            except Exception:
+                pass
+        else:
+            # Name search via query param
+            try:
+                res = self.moyklass.request("GET", "/v1/company/users", params={"q": q, "limit": "15"})
+                if res.ok:
+                    raw = res.data
+                    if isinstance(raw, list):
+                        mk_results = raw[:15]
+                    elif isinstance(raw, dict) and isinstance(raw.get("items"), list):
+                        mk_results = raw["items"][:15]
+            except Exception:
+                pass
+
+        students = []
+        for u in mk_results:
+            mk_user_id = str(u.get("id") or u.get("userId") or u.get("mk_user_id") or "").strip()
+            if not mk_user_id:
+                continue
+            first = str(u.get("name") or u.get("firstName") or "").strip()
+            last = str(u.get("lastName") or "").strip()
+            full_name = f"{first} {last}".strip() if last else first
+            status_data = self.storage.get_client_link_status_for_student(mk_user_id)
+            students.append({
+                "mk_user_id": mk_user_id,
+                "full_name": full_name or f"Ученик #{mk_user_id}",
+                "codes": status_data.get("codes", []),
+                "links": status_data.get("links", []),
+            })
+
+        return {"ok": True, "students": students, "total": len(students), "query": q}
 
     @staticmethod
     def _normalize_payment_intent(pi: dict) -> dict:
@@ -12347,6 +12416,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.client_children_list(auth))
                 if path == "/api/client/admin/link-status":
                     return self._send_json(CTX.admin_client_link_status(auth, params))
+                if path == "/api/client/admin/search-students":
+                    return self._send_json(CTX.admin_client_search_students(auth, params))
                 if path == "/api/payments/intents":
                     return self._send_json(CTX.payment_intents_list(auth, params))
                 if path == "/api/payments/moyklass/invoices":

@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.93.1");
+console.log("MiniApp version: v7.0.93.2");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -154,6 +154,9 @@ const state = {
   campChildrenData: null,
   myChildren: null,
   clientChildren: [],
+  clientLinksSearchQuery: "",
+  clientLinksSearchResults: null,
+  clientLinksSearchBusy: false,
   activeMenus: null,
   myOrders: null,
   selectedChildId: null,
@@ -6555,8 +6558,346 @@ async function renderAdminContent() {
       await renderStaffFoodLunch(root);
       return;
     }
+    if (tab === "client-links") {
+      renderClientLinksPanel(root);
+      return;
+    }
   } catch (e) { root.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`; }
 }
+// ── v7.0.93.2 — Admin: client link codes panel ───────────────────────────
+
+function _clStatusLabel(status) {
+  const map = {
+    active: "Код активен", used: "Код использован",
+    expired: "Код просрочен", invalidated: "Код инвалидирован",
+    unlinked: "Родитель отвязан",
+  };
+  return map[status] || escapeHtml(status || "");
+}
+
+function _clCodeStatusClass(status) {
+  if (status === "active") return "cl-badge--active";
+  if (status === "used") return "cl-badge--used";
+  return "cl-badge--inactive";
+}
+
+function renderClientLinksPanel(root) {
+  root.innerHTML = `
+    <div class="cl-panel">
+      <h3 class="cl-panel-title">Клиенты и родители</h3>
+      <p class="cl-panel-hint">Управление привязкой родителей к ученикам для раздела «Оплаты».<br>
+        Коды CL- не относятся к питанию и не заменяют коды YC городской программы.</p>
+
+      <div class="cl-search-block">
+        <h4>Поиск ученика МойКласс</h4>
+        <div class="cl-search-form">
+          <input type="text" id="clSearchInput" class="cl-search-input"
+            placeholder="Имя ученика или userId МойКласс"
+            autocomplete="off" autocorrect="off" spellcheck="false"
+            value="${escapeAttr(state.clientLinksSearchQuery)}">
+          <button type="button" class="primary" id="clSearchBtn">Найти ученика</button>
+        </div>
+        <div id="clSearchError" class="cl-error hidden"></div>
+      </div>
+
+      <div id="clResultsArea"></div>
+    </div>`;
+
+  const input = $("clSearchInput");
+  const btn = $("clSearchBtn");
+  const errEl = $("clSearchError");
+
+  if (input) {
+    input.addEventListener("input", () => {
+      state.clientLinksSearchQuery = input.value;
+      if (errEl) errEl.classList.add("hidden");
+    });
+    input.addEventListener("keydown", e => { if (e.key === "Enter") btn?.click(); });
+  }
+  if (btn) btn.addEventListener("click", () => clSearchStudents());
+
+  // Re-render results if we already have them
+  if (state.clientLinksSearchResults !== null) {
+    _clRenderResults($("clResultsArea"), state.clientLinksSearchResults);
+  } else if (state.clientLinksSearchBusy) {
+    const area = $("clResultsArea");
+    if (area) area.innerHTML = `<div class="kpi-loading">Поиск…</div>`;
+  }
+}
+
+async function clSearchStudents() {
+  const input = $("clSearchInput");
+  const btn = $("clSearchBtn");
+  const errEl = $("clSearchError");
+  const area = $("clResultsArea");
+  const q = (input?.value || "").trim();
+  state.clientLinksSearchQuery = q;
+  if (!q) {
+    if (errEl) { errEl.textContent = "Введите имя ученика или userId"; errEl.classList.remove("hidden"); }
+    return;
+  }
+  if (state.clientLinksSearchBusy) return;
+  state.clientLinksSearchBusy = true;
+  if (btn) btn.disabled = true;
+  if (errEl) errEl.classList.add("hidden");
+  if (area) area.innerHTML = `<div class="kpi-loading">Поиск…</div>`;
+  try {
+    const data = await apiGet(`/api/client/admin/search-students?q=${encodeURIComponent(q)}`);
+    if (!data.ok) {
+      if (errEl) { errEl.textContent = data.error || "Ошибка поиска"; errEl.classList.remove("hidden"); }
+      if (area) area.innerHTML = "";
+      state.clientLinksSearchResults = null;
+    } else {
+      state.clientLinksSearchResults = data.students || [];
+      _clRenderResults(area, state.clientLinksSearchResults);
+    }
+  } catch (e) {
+    if (errEl) { errEl.textContent = e.message || "Ошибка сети"; errEl.classList.remove("hidden"); }
+    if (area) area.innerHTML = "";
+    state.clientLinksSearchResults = null;
+  } finally {
+    state.clientLinksSearchBusy = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
+function _clRenderResults(area, students) {
+  if (!area) return;
+  if (!students || !students.length) {
+    area.innerHTML = `<div class="empty">Ученики не найдены. Попробуйте другой запрос.</div>`;
+    return;
+  }
+  area.innerHTML = students.map((s, idx) => _clStudentCard(s, idx)).join("");
+  area.querySelectorAll("[data-cl-action]").forEach(el => {
+    el.addEventListener("click", () => _clHandleAction(el));
+  });
+}
+
+function _clStudentCard(s, idx) {
+  const mkId = escapeAttr(String(s.mk_user_id || ""));
+  const name = escapeHtml(s.full_name || `Ученик #${s.mk_user_id}`);
+  const codes = s.codes || [];
+  const links = s.links || [];
+  const activeCode = codes.find(c => c.status === "active");
+  const activeLink = links.find(l => l.status === "active");
+
+  let statusBadge = "";
+  let actionsHtml = "";
+  let codeInfoHtml = "";
+  let linkInfoHtml = "";
+
+  if (activeLink) {
+    const parentId = escapeHtml(activeLink.parent_telegram_user_id || "");
+    const linkedAt = escapeHtml((activeLink.linked_at || "").slice(0, 16).replace("T", " "));
+    statusBadge = `<span class="cl-badge cl-badge--linked">Родитель привязан</span>`;
+    linkInfoHtml = `
+      <div class="cl-info-row"><b>Telegram ID родителя:</b> ${parentId}</div>
+      <div class="cl-info-row"><b>Дата привязки:</b> ${linkedAt || "—"}</div>`;
+    actionsHtml = `
+      <button type="button" class="secondary cl-btn" data-cl-action="refresh"
+        data-mk-user-id="${mkId}" data-idx="${idx}">Обновить статус</button>
+      <button type="button" class="red cl-btn" data-cl-action="confirm-unlink"
+        data-mk-user-id="${mkId}" data-parent-id="${escapeAttr(activeLink.parent_telegram_user_id || "")}"
+        data-child-name="${escapeAttr(s.full_name || "")}" data-idx="${idx}">Отвязать родителя</button>`;
+  } else if (activeCode) {
+    const codePlain = escapeHtml(activeCode.code || "");
+    const exp = activeCode.expires_at ? escapeHtml(activeCode.expires_at.slice(0, 16).replace("T", " ")) : "без срока";
+    statusBadge = `<span class="cl-badge cl-badge--active">Код активен</span>`;
+    codeInfoHtml = `
+      <div class="cl-code-block">
+        <span class="cl-code-display" id="clCode_${idx}">${codePlain}</span>
+        <button type="button" class="cl-copy-btn" data-cl-action="copy-code"
+          data-code="${escapeAttr(activeCode.code || "")}" data-idx="${idx}" title="Скопировать код">📋 Копировать</button>
+      </div>
+      <div class="cl-info-row"><b>Срок действия:</b> ${exp}</div>
+      <div class="cl-hint">Передайте этот код родителю. Родитель открывает Mini App → Мои дети → Обычный ученик Yellow Club → вводит CL-код. После привязки родитель получит доступ к оплатам этого ученика.</div>
+      <div class="cl-warn">Этот код не относится к питанию и не заменяет код YC для городской программы.</div>`;
+    actionsHtml = `
+      <button type="button" class="secondary cl-btn" data-cl-action="refresh"
+        data-mk-user-id="${mkId}" data-idx="${idx}">Обновить статус</button>
+      <button type="button" class="red cl-btn" data-cl-action="confirm-invalidate"
+        data-mk-user-id="${mkId}" data-code-id="${escapeAttr(String(activeCode.id || ""))}"
+        data-idx="${idx}">Инвалидировать код</button>
+      <button type="button" class="secondary cl-btn" data-cl-action="confirm-gen-code"
+        data-mk-user-id="${mkId}" data-child-name="${escapeAttr(s.full_name || "")}"
+        data-idx="${idx}">Создать новый код</button>`;
+  } else {
+    statusBadge = `<span class="cl-badge cl-badge--inactive">Код не создан</span>`;
+    actionsHtml = `
+      <button type="button" class="primary cl-btn" data-cl-action="confirm-gen-code"
+        data-mk-user-id="${mkId}" data-child-name="${escapeAttr(s.full_name || "")}"
+        data-idx="${idx}">Создать код привязки</button>`;
+  }
+
+  // Show history: last non-active code/link if no active ones
+  if (!activeCode && codes.length) {
+    const last = codes[codes.length - 1];
+    if (last.status !== "active") {
+      codeInfoHtml += `<div class="cl-info-row"><b>Последний код:</b> <span class="cl-badge ${_clCodeStatusClass(last.status)}">${_clStatusLabel(last.status)}</span></div>`;
+    }
+  }
+
+  return `
+    <article class="card cl-student-card" data-cl-student-idx="${idx}">
+      <div class="cl-student-header">
+        <div class="cl-student-name">${name}</div>
+        <div class="cl-student-id">userId: ${escapeHtml(String(s.mk_user_id))}</div>
+        ${statusBadge}
+      </div>
+      ${linkInfoHtml}
+      ${codeInfoHtml}
+      <div class="cl-msg hidden" id="clMsg_${idx}"></div>
+      <div class="cl-actions">${actionsHtml}</div>
+    </article>`;
+}
+
+async function _clHandleAction(el) {
+  const action = el.dataset.clAction;
+  const idx = el.dataset.idx || "";
+  const mkUserId = el.dataset.mkUserId || "";
+
+  if (action === "copy-code") {
+    const code = el.dataset.code || "";
+    try {
+      await navigator.clipboard.writeText(code);
+      _clShowMsg(idx, "Код скопирован в буфер обмена", "ok");
+    } catch (e) {
+      _clShowMsg(idx, `Не удалось скопировать автоматически. Код: ${code}`, "info");
+    }
+    return;
+  }
+
+  if (action === "refresh") {
+    await _clRefreshStudent(idx, mkUserId);
+    return;
+  }
+
+  if (action === "confirm-gen-code") {
+    const childName = el.dataset.childName || `Ученик #${mkUserId}`;
+    if (!confirm(`Создать код привязки CL- для ученика:\n${childName} (userId ${mkUserId})\n\nНазначение: клиентский кабинет и оплаты.`)) return;
+    await _clGenerateCode(idx, mkUserId, childName);
+    return;
+  }
+
+  if (action === "confirm-invalidate") {
+    const codeId = el.dataset.codeId || "";
+    if (!confirm(`Инвалидировать активный код привязки?\n\nПосле этого код нельзя будет использовать.`)) return;
+    await _clInvalidateCode(idx, mkUserId, codeId);
+    return;
+  }
+
+  if (action === "confirm-unlink") {
+    const parentId = el.dataset.parentId || "";
+    const childName = el.dataset.childName || `Ученик #${mkUserId}`;
+    if (!confirm(`Отвязать родителя от ученика?\n\nУченик: ${childName} (userId ${mkUserId})\nRoditel TG ID: ${parentId}\n\n⚠️ Будет закрыт доступ к оплатам этого ученика.\n✅ Питание (городская программа) не изменится.\n✅ История платежей не удалится.`)) return;
+    await _clUnlinkParent(idx, mkUserId, parentId);
+    return;
+  }
+}
+
+async function _clRefreshStudent(idx, mkUserId) {
+  const card = document.querySelector(`[data-cl-student-idx="${idx}"]`);
+  if (card) card.style.opacity = "0.6";
+  try {
+    const data = await apiGet(`/api/client/admin/link-status?mk_user_id=${encodeURIComponent(mkUserId)}`);
+    if (data.ok && state.clientLinksSearchResults) {
+      const s = state.clientLinksSearchResults[parseInt(idx)];
+      if (s) {
+        s.codes = data.codes || [];
+        s.links = data.links || [];
+        const area = $("clResultsArea");
+        if (area) _clRenderResults(area, state.clientLinksSearchResults);
+      }
+    } else {
+      _clShowMsg(idx, data.error || "Ошибка обновления", "error");
+    }
+  } catch (e) {
+    _clShowMsg(idx, e.message || "Ошибка сети", "error");
+    if (card) card.style.opacity = "";
+  }
+}
+
+async function _clGenerateCode(idx, mkUserId, childName) {
+  _clDisableCardBtns(idx, true);
+  _clShowMsg(idx, "Создаю код…", "info");
+  try {
+    const data = await _apiPostRaw("/api/client/admin/link-codes", {
+      mk_user_id: mkUserId,
+      child_display_name: childName,
+    });
+    if (data.ok && data.code) {
+      // Update student in results list
+      if (state.clientLinksSearchResults) {
+        const s = state.clientLinksSearchResults[parseInt(idx)];
+        if (s) {
+          s.codes = [{ id: data.code_id || null, status: "active", code: data.code, expires_at: data.expires_at || null }];
+        }
+      }
+      const area = $("clResultsArea");
+      if (area && state.clientLinksSearchResults) _clRenderResults(area, state.clientLinksSearchResults);
+      _clShowMsg(idx, `Код создан: ${data.code}`, "ok");
+    } else {
+      _clShowMsg(idx, data.error || "Ошибка создания кода", "error");
+      _clDisableCardBtns(idx, false);
+    }
+  } catch (e) {
+    _clShowMsg(idx, e.message || "Ошибка сети", "error");
+    _clDisableCardBtns(idx, false);
+  }
+}
+
+async function _clInvalidateCode(idx, mkUserId, codeId) {
+  _clDisableCardBtns(idx, true);
+  _clShowMsg(idx, "Инвалидирую код…", "info");
+  try {
+    const data = await _apiPostRaw("/api/client/admin/link-codes/invalidate", { code_id: parseInt(codeId) });
+    if (data.ok) {
+      await _clRefreshStudent(idx, mkUserId);
+      _clShowMsg(idx, "Код инвалидирован", "ok");
+    } else {
+      _clShowMsg(idx, data.error || "Ошибка инвалидации", "error");
+      _clDisableCardBtns(idx, false);
+    }
+  } catch (e) {
+    _clShowMsg(idx, e.message || "Ошибка сети", "error");
+    _clDisableCardBtns(idx, false);
+  }
+}
+
+async function _clUnlinkParent(idx, mkUserId, parentTelegramUserId) {
+  _clDisableCardBtns(idx, true);
+  _clShowMsg(idx, "Отвязываю родителя…", "info");
+  try {
+    const data = await _apiPostRaw("/api/client/admin/unlink", {
+      mk_user_id: mkUserId,
+      parent_telegram_user_id: parentTelegramUserId,
+    });
+    if (data.ok) {
+      await _clRefreshStudent(idx, mkUserId);
+      _clShowMsg(idx, "Родитель отвязан. Доступ к оплатам закрыт. Питание не изменилось.", "ok");
+    } else {
+      _clShowMsg(idx, data.error || "Ошибка отвязки", "error");
+      _clDisableCardBtns(idx, false);
+    }
+  } catch (e) {
+    _clShowMsg(idx, e.message || "Ошибка сети", "error");
+    _clDisableCardBtns(idx, false);
+  }
+}
+
+function _clShowMsg(idx, text, type) {
+  const el = $(`clMsg_${idx}`);
+  if (!el) return;
+  el.textContent = text;
+  el.className = `cl-msg cl-msg--${type}`;
+}
+
+function _clDisableCardBtns(idx, disabled) {
+  const card = document.querySelector(`[data-cl-student-idx="${idx}"]`);
+  if (!card) return;
+  card.querySelectorAll("button").forEach(b => { b.disabled = disabled; });
+}
+
 function _renderActiveCampWeekInfo(aw) {
   if (!aw || !aw.startDate) return "";
   const reason = _foodActiveWeekReasonLabel(aw.reason);
