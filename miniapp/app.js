@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.93.2");
+console.log("MiniApp version: v7.0.93.2.1");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -236,7 +236,7 @@ const MVP_TABS_BY_ROLE = {
   director:       ["reports", "my-lunch"],
   parent:         ["my-children", "food", "help"],
 };
-const MVP_ADMIN_TABS = ["interns", "prep-results", "lesson-control", "teachers", "users", "notifications", "food-debug", "food-children", "food-menu", "food-report"];
+const MVP_ADMIN_TABS = ["interns", "prep-results", "lesson-control", "teachers", "users", "notifications", "client-links", "food-debug", "food-children", "food-menu", "food-report"];
 function isMvpMode() { return !!state.me?.mvpReleaseMode; }
 function availableAdminTabs() {
   const tabs = roleCaps().adminTabs || [];
@@ -1202,6 +1202,16 @@ function setupRoleUi() {
     document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.remove("hidden"));
   } else {
     document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.add("hidden"));
+  }
+
+  // Admin roles (owner/admin/operations): hide tasks and help from bottom nav —
+  // they work exclusively in the admin subtab area.
+  const _adminNavRoles = ["owner", "admin", "operations"];
+  if (_adminNavRoles.includes(role)) {
+    ["tasks", "help"].forEach(tabName => {
+      const btn = document.querySelector(`.tab[data-tab="${tabName}"]`);
+      if (btn) btn.classList.add("hidden");
+    });
   }
 
   renderRoleHelp();

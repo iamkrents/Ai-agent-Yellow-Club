@@ -218,12 +218,12 @@ class Test05VersionAndCacheBust(unittest.TestCase):
         cls.html = INDEX_HTML.read_text(encoding="utf-8")
 
     def test_18_version_is_current(self):
-        """app.js version marker is v7.0.93.2."""
-        self.assertIn("v7.0.93.2", self.js)
+        """app.js version marker is v7.0.93.2.1."""
+        self.assertIn("v7.0.93.2.1", self.js)
 
     def test_19_cache_bust_is_current(self):
-        """index.html cache-bust parameter is v=7.0.93.2."""
-        self.assertIn("v=7.0.93.2", self.html)
+        """index.html cache-bust parameter is v=7.0.93.2.1."""
+        self.assertIn("v=7.0.93.2.1", self.html)
 
     def test_20_old_version_not_in_js(self):
         """Old version marker v7.0.92.5.3 is gone from version log line."""
