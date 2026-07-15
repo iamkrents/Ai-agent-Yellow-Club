@@ -760,6 +760,12 @@ class Storage:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pio_status ON payment_intent_options(status)")
         # v7.0.92.3 — acquiring checkout token
         self._ensure_column(conn, "payment_intent_options", "checkout_token", "checkout_token TEXT")
+        # v7.0.93 — parent client visibility
+        self._ensure_column(conn, "payment_intents", "client_visibility", "client_visibility TEXT NOT NULL DEFAULT 'hidden'")
+        self._ensure_column(conn, "payment_intents", "published_at", "published_at TEXT")
+        self._ensure_column(conn, "payment_intents", "published_by", "published_by TEXT")
+        self._ensure_column(conn, "payment_intents", "withdrawn_at", "withdrawn_at TEXT")
+        self._ensure_column(conn, "payment_intents", "withdrawn_by", "withdrawn_by TEXT")
 
     def _init_bepaid_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -4930,6 +4936,89 @@ class Storage:
                 "intent": pi_after,
             }
         return {"ok": True, "intent": pi_after}
+
+    # ── v7.0.93 — parent client visibility ───────────────────────────────────
+
+    def get_parents_for_child(self, mk_student_id: str) -> list[dict[str, Any]]:
+        """Return active confirmed parent links for the given student."""
+        mk_student_id = str(mk_student_id or "").strip()
+        if not mk_student_id:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM parent_child_links
+                WHERE mk_student_id = ? AND active = 1 AND confirmed_at IS NOT NULL
+                ORDER BY id
+                """,
+                (mk_student_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def publish_payment_intent_to_client(
+        self, public_id: str, published_by: str, now: str
+    ) -> dict[str, Any]:
+        """Set client_visibility='published'. Idempotent if already published."""
+        pi = self.get_payment_intent(public_id)
+        if not pi:
+            return {"ok": False, "error": "not_found", "public_id": public_id}
+        if pi.get("client_visibility") == "published":
+            return {"ok": True, "idempotent": True, "intent": pi}
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE payment_intents
+                SET client_visibility='published', published_at=?, published_by=?, updated_at=?
+                WHERE public_id=?
+                """,
+                (now, str(published_by), now, public_id),
+            )
+        return {"ok": True, "intent": self.get_payment_intent(public_id)}
+
+    def withdraw_payment_intent_from_client(
+        self, public_id: str, withdrawn_by: str, now: str
+    ) -> dict[str, Any]:
+        """Set client_visibility='withdrawn'. Idempotent if already withdrawn."""
+        pi = self.get_payment_intent(public_id)
+        if not pi:
+            return {"ok": False, "error": "not_found", "public_id": public_id}
+        if pi.get("client_visibility") == "withdrawn":
+            return {"ok": True, "idempotent": True, "intent": pi}
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE payment_intents
+                SET client_visibility='withdrawn', withdrawn_at=?, withdrawn_by=?, updated_at=?
+                WHERE public_id=?
+                """,
+                (now, str(withdrawn_by), now, public_id),
+            )
+        return {"ok": True, "intent": self.get_payment_intent(public_id)}
+
+    def list_client_visible_payment_intents(
+        self, parent_telegram_id: str
+    ) -> list[dict[str, Any]]:
+        """Return published, non-cancelled intents visible to the given parent."""
+        parent_telegram_id = str(parent_telegram_id or "").strip()
+        if not parent_telegram_id:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT pi.*
+                FROM payment_intents pi
+                JOIN parent_child_links l
+                  ON CAST(l.mk_student_id AS TEXT) = CAST(pi.mk_user_id AS TEXT)
+                WHERE l.parent_telegram_id = ?
+                  AND l.active = 1
+                  AND l.confirmed_at IS NOT NULL
+                  AND pi.client_visibility = 'published'
+                  AND pi.status != 'cancelled'
+                ORDER BY pi.created_at DESC
+                """,
+                (parent_telegram_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def find_duplicate_payment_intents(
         self,

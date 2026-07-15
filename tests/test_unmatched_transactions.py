@@ -424,8 +424,8 @@ class Test05FrontendJS(unittest.TestCase):
     def setUp(self):
         self.js = APP_JS.read_text(encoding="utf-8")
 
-    def test_28_version_is_92_5_2(self):
-        self.assertIn("v7.0.92.5.4", self.js)
+    def test_28_version_is_current(self):
+        self.assertIn("v7.0.93", self.js)
 
     def test_29_reads_data_items(self):
         import re
@@ -455,8 +455,8 @@ class Test06IndexHtml(unittest.TestCase):
     def setUp(self):
         self.html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
 
-    def test_32_cache_bust_is_92_5_2(self):
-        self.assertIn("v=7.0.92.5.4", self.html)
+    def test_32_cache_bust_is_current(self):
+        self.assertIn("v=7.0.93", self.html)
         self.assertNotIn("v=7.0.92.5.1\"", self.html)
 
 

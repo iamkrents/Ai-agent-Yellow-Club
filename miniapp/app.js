@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.92.5.4");
+console.log("MiniApp version: v7.0.93");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -174,6 +174,9 @@ const state = {
   kitchenAuditMenuId: null,
   foodAdminAuditData: null,
   foodAdminAuditMenuId: null,
+  clientPayments: [],
+  clientPaymentsBusy: false,
+  clientPaymentsPollTimer: null,
 };
 
 function $(id) { return document.getElementById(id); }
@@ -1157,7 +1160,7 @@ function setupRoleUi() {
 
   // Parent role: override all tab visibility and show only parent tabs
   if (role === "parent") {
-    const parentAllowed = ["my-children", "food", "help"];
+    const parentAllowed = ["my-children", "food", "client-payments", "help"];
     document.querySelectorAll(".tab[data-tab]").forEach(t => {
       t.classList.toggle("hidden", !parentAllowed.includes(t.dataset.tab));
     });
@@ -11843,6 +11846,19 @@ function renderPaymentIntentCard(pi) {
     ? `<button class="primary" style="font-size:12px;padding:4px 10px" onclick="openMkPostModal('${escapeHtml(pi.public_id)}','${cancelSafeName}',${amountVal})">Внести в МойКласс</button>`
     : "";
 
+  const clientVis = pi.client_visibility || "hidden";
+  const canPublishToParent = canUsePaymentIntents() && !["cancelled"].includes(pi.status) && clientVis !== "published";
+  const publishToParentBtn = canPublishToParent
+    ? `<button class="secondary" style="font-size:12px;padding:4px 10px" data-publish-btn="${escapeHtml(pi.public_id)}" onclick="openPublishToParentModal('${escapeHtml(pi.public_id)}')">Открыть оплату родителю</button>`
+    : "";
+  const isPublishedToParent = clientVis === "published";
+  const publishedBadge = isPublishedToParent
+    ? `<span class="chip chip-pi-draft" style="font-size:10px">👁 Открыто родителю</span>`
+    : "";
+  const withdrawFromParentBtn = isPublishedToParent && canUsePaymentIntents()
+    ? `<button class="secondary" style="font-size:12px;padding:4px 10px" data-withdraw-btn="${escapeHtml(pi.public_id)}" onclick="withdrawIntentFromParent('${escapeHtml(pi.public_id)}')">Скрыть от родителя</button>`
+    : "";
+
   const extraCls = pi.status === "cancelled" ? " pi-card-cancelled"
     : pi.status === "posted_to_moyklass" ? " pi-card-posted"
     : pi.status === "paid" ? " pi-card-paid"
@@ -11863,7 +11879,8 @@ function renderPaymentIntentCard(pi) {
     </div>
     ${sourceBadge}
     ${comment}${cancelInfo}${bePaidCreatingBlock}${bePaidRequiresCheckBlock}${bePaidInfo}${acqReadyBadge}${bePaidPaidBlock}${mkPostedBlock}
-    <div class="pi-card-footer">${bePaidBtn}${acquiringBtn}${verifyAcquiringBtn}${mkPostBtn}${cancelBtn}</div>
+    ${publishedBadge}
+    <div class="pi-card-footer">${bePaidBtn}${acquiringBtn}${verifyAcquiringBtn}${mkPostBtn}${cancelBtn}${publishToParentBtn}${withdrawFromParentBtn}</div>
     <div class="pi-card-id">${escapeHtml(pi.public_id)} · mk_user_id: ${pi.mk_user_id} · ${createdAt} ${createdBy}</div>
   </div>`;
 }
@@ -12963,6 +12980,204 @@ async function openMkInvoiceCreate(inv) {
   }
 }
 
+// ── v7.0.93 — Parent Payments (client-payments tab) ──────────────────────
+
+function isParent() {
+  return state.me?.role === "parent";
+}
+
+const CLIENT_PAYMENT_STATUS_LABELS = {
+  draft:                 "Ожидает выставления",
+  ready:                 "Ожидает оплаты",
+  bepaid_creating:       "Создаётся...",
+  bepaid_created:        "Счёт выставлен",
+  paid:                  "Оплачено",
+  posted_to_moyklass:    "Оплачено",
+  cancelled:             "Отменено",
+  bepaid_requires_check: "Требует проверки",
+};
+
+function renderClientPaymentCard(pi) {
+  const statusLabel = CLIENT_PAYMENT_STATUS_LABELS[pi.status] || pi.status || "—";
+  const isPaid = ["paid", "posted_to_moyklass"].includes(pi.status);
+  const amountStr = pi.amount_byn != null ? `${parseFloat(pi.amount_byn).toFixed(2)} BYN` : "—";
+  const period = pi.period_month ? `<span class="chip chip-info" style="font-size:11px">${escapeHtml(pi.period_month)}</span>` : "";
+  const name = pi.student_name ? escapeHtml(pi.student_name) : "Ребёнок";
+  const comment = pi.comment ? `<div style="font-size:12px;color:var(--muted);margin-top:4px">${escapeHtml(pi.comment)}</div>` : "";
+  const publishedAt = pi.published_at ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">Выставлено: ${escapeHtml(String(pi.published_at).slice(0,10))}</div>` : "";
+
+  let paymentBlock = "";
+  if (!isPaid) {
+    if (pi.erip_account_number) {
+      paymentBlock = `
+        <div class="cp-card-payment-block">
+          <strong>Оплата через ЕРИП</strong>
+          <div style="margin-top:6px;font-size:13px">Счёт № <strong>${escapeHtml(pi.erip_account_number)}</strong></div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">Путь в ЕРИП: Система «Расчёт» → Образование → Yellow Club</div>
+        </div>`;
+    } else if (pi.acquiring_payment_url) {
+      paymentBlock = `
+        <div class="cp-card-payment-block">
+          <strong>Оплата банковской картой</strong>
+          <div style="margin-top:6px">
+            <a href="${escapeHtml(pi.acquiring_payment_url)}" target="_blank" rel="noopener noreferrer"
+               class="btn-link-pay">Перейти к оплате</a>
+          </div>
+        </div>`;
+    } else {
+      paymentBlock = `<div style="font-size:12px;color:var(--muted);margin-top:4px">Реквизиты для оплаты уточняются.</div>`;
+    }
+  } else {
+    const paidAmt = pi.paid_amount_byn != null ? `${parseFloat(pi.paid_amount_byn).toFixed(2)} BYN` : "";
+    paymentBlock = `
+      <div class="cp-card-paid-block">
+        <strong>✓ Оплачено</strong>
+        ${paidAmt ? `<div style="font-size:12px;margin-top:2px">Сумма: ${escapeHtml(paidAmt)}</div>` : ""}
+        ${pi.paid_at ? `<div style="font-size:11px;color:var(--muted)">Дата: ${escapeHtml(String(pi.paid_at).slice(0,10))}</div>` : ""}
+      </div>`;
+  }
+
+  const statusCls = isPaid ? "cp-status-paid" : "cp-status-pending";
+  return `
+    <div class="cp-card">
+      <div class="cp-card-head">
+        <div class="cp-card-name">${name}</div>
+        <div class="cp-card-amount">${escapeHtml(amountStr)}</div>
+      </div>
+      <div class="cp-card-meta">${period} <span class="chip ${statusCls}" style="font-size:11px">${escapeHtml(statusLabel)}</span></div>
+      ${comment}${publishedAt}
+      ${paymentBlock}
+    </div>`;
+}
+
+async function loadClientPayments() {
+  if (!isParent()) return;
+  const listEl = $("clientPaymentsList");
+  if (!listEl) return;
+  if (state.clientPaymentsBusy) return;
+  state.clientPaymentsBusy = true;
+  listEl.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:16px">Загрузка...</div>`;
+  try {
+    const data = await apiGet("/api/client/payments");
+    if (!data.ok) {
+      listEl.innerHTML = `<div class="error-msg">${escapeHtml(data.error || "Ошибка загрузки")}</div>`;
+      return;
+    }
+    state.clientPayments = data.payments || [];
+    if (state.clientPayments.length === 0) {
+      listEl.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:16px">Нет активных счетов на оплату.</div>`;
+    } else {
+      listEl.innerHTML = state.clientPayments.map(renderClientPaymentCard).join("");
+    }
+    _scheduleClientPaymentsPoll();
+  } catch (err) {
+    listEl.innerHTML = `<div class="error-msg">Ошибка: ${escapeHtml(String(err))}</div>`;
+  } finally {
+    state.clientPaymentsBusy = false;
+  }
+}
+
+function _scheduleClientPaymentsPoll() {
+  if (state.clientPaymentsPollTimer) {
+    clearTimeout(state.clientPaymentsPollTimer);
+    state.clientPaymentsPollTimer = null;
+  }
+  const hasPending = state.clientPayments.some(p =>
+    !["paid", "posted_to_moyklass", "cancelled"].includes(p.status)
+  );
+  if (hasPending) {
+    state.clientPaymentsPollTimer = setTimeout(() => {
+      state.clientPaymentsPollTimer = null;
+      loadClientPayments();
+    }, 30000);
+  }
+}
+
+// Admin: open publish-preview modal and confirm
+let _publishPreviewTarget = null;
+
+window.openPublishToParentModal = async function(publicId) {
+  if (!canUsePaymentIntents()) return;
+  const btn = document.querySelector(`[data-publish-btn="${escapeHtml(publicId)}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = "Проверка..."; }
+  try {
+    const data = await apiGet(`/api/payments/intents/${encodeURIComponent(publicId)}/publish-preview`);
+    if (!data.ok) {
+      alert(`Ошибка: ${data.error || "неизвестно"}`);
+      return;
+    }
+    _publishPreviewTarget = publicId;
+    const blockers = (data.checks || []).filter(c => !c.ok && c.blocker);
+    const warnings = (data.checks || []).filter(c => !c.ok && !c.blocker);
+    const modalEl = $("publishToParentModal");
+    const bodyEl = $("publishToParentModalBody");
+    const confirmBtn = $("publishToParentConfirm");
+    if (!modalEl || !bodyEl) return;
+    let html = `<div style="margin-bottom:8px;font-size:13px">Счёт: <strong>${escapeHtml(publicId)}</strong></div>`;
+    if (blockers.length > 0) {
+      html += `<div class="error-msg" style="margin-bottom:8px">Публикация невозможна (${blockers.length} блокировщик${blockers.length > 1 ? "а" : ""}):</div>`;
+      html += `<ul style="font-size:12px;margin:0 0 8px 16px">` + blockers.map(c => `<li>${escapeHtml(c.name)}: ${escapeHtml(c.detail)}</li>`).join("") + `</ul>`;
+    }
+    if (warnings.length > 0) {
+      html += `<div style="font-size:12px;color:var(--muted);margin-bottom:4px">Предупреждения:</div>`;
+      html += `<ul style="font-size:12px;margin:0 0 8px 16px;color:var(--muted)">` + warnings.map(c => `<li>${escapeHtml(c.name)}: ${escapeHtml(c.detail)}</li>`).join("") + `</ul>`;
+    }
+    if (data.parents && data.parents.length > 0) {
+      html += `<div style="font-size:12px;color:var(--muted)">Родители, которые увидят счёт: ${data.parents.length}</div>`;
+    }
+    bodyEl.innerHTML = html;
+    if (confirmBtn) confirmBtn.disabled = blockers.length > 0;
+    modalEl.classList.remove("hidden");
+  } catch (err) {
+    alert(`Ошибка: ${err}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Открыть оплату родителю"; }
+  }
+};
+
+async function confirmPublishToParent() {
+  const publicId = _publishPreviewTarget;
+  if (!publicId) return;
+  const confirmBtn = $("publishToParentConfirm");
+  if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = "Публикация..."; }
+  try {
+    const result = await _apiPostRaw(`/api/payments/intents/${encodeURIComponent(publicId)}/publish-to-parent`, {});
+    if (result.ok) {
+      closePublishToParentModal();
+      loadPaymentIntents();
+    } else {
+      alert(`Ошибка публикации: ${result.error || result.reason || "неизвестно"}`);
+    }
+  } catch (err) {
+    alert(`Ошибка: ${err}`);
+  } finally {
+    if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = "Опубликовать"; }
+  }
+}
+
+function closePublishToParentModal() {
+  _publishPreviewTarget = null;
+  $("publishToParentModal")?.classList.add("hidden");
+}
+
+window.withdrawIntentFromParent = async function(publicId) {
+  if (!canUsePaymentIntents()) return;
+  const btn = document.querySelector(`[data-withdraw-btn="${escapeHtml(publicId)}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = "Скрытие..."; }
+  try {
+    const result = await _apiPostRaw(`/api/payments/intents/${encodeURIComponent(publicId)}/withdraw-from-parent`, {});
+    if (result.ok) {
+      loadPaymentIntents();
+    } else {
+      alert(`Ошибка: ${result.error || result.reason || "неизвестно"}`);
+    }
+  } catch (err) {
+    alert(`Ошибка: ${err}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Скрыть от родителя"; }
+  }
+};
+
 // ── Wire up event listeners ───────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -13013,6 +13228,17 @@ document.addEventListener("DOMContentLoaded", () => {
   $("piMkPostReadinessBtn")?.addEventListener("click", loadMkPostReadiness);
   $("piMkPostConfirmBtn")?.addEventListener("click", confirmPostToMoyklass);
   $("piMkReconcileBtn")?.addEventListener("click", reconcileMkPayment);
+
+  // Publish-to-parent modal
+  $("publishToParentConfirm")?.addEventListener("click", confirmPublishToParent);
+  $("publishToParentCancel")?.addEventListener("click", closePublishToParentModal);
+  $("publishToParentClose")?.addEventListener("click", closePublishToParentModal);
+  $("publishToParentModal")?.addEventListener("click", e => { if (e.target === $("publishToParentModal")) closePublishToParentModal(); });
+
+  // Client payments tab: load when tab becomes active
+  document.querySelectorAll('.tab[data-tab="client-payments"]').forEach(btn => {
+    btn.addEventListener("click", () => { if (isParent()) loadClientPayments(); });
+  });
 
   // Event delegation for dynamically rendered invoice-card buttons
   document.addEventListener("click", e => {

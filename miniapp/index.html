@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.0.92.5.4" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.0.93" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -64,6 +64,9 @@
       </button>
       <button class="tab parent-only hidden" data-tab="food" type="button">
         <span class="tab-icon">🍽</span><span class="tab-label">Питание</span>
+      </button>
+      <button class="tab parent-only hidden" data-tab="client-payments" type="button">
+        <span class="tab-icon">💳</span><span class="tab-label">Оплаты</span>
       </button>
       <button class="tab kitchen-only hidden" data-tab="kitchen" type="button">
         <span class="tab-icon">🍳</span><span class="tab-label">Сводка</span>
@@ -754,7 +757,30 @@
         <div id="restaurantPanelContent"></div>
       </section>
 
+      <section id="tab-client-payments" class="tab-panel">
+        <div class="section-head">
+          <div>
+            <h2>Оплаты</h2>
+            <p>Счета на оплату от Yellow Club.</p>
+          </div>
+        </div>
+        <div id="clientPaymentsList"></div>
+      </section>
+
     </main>
+
+    <!-- Publish-to-parent confirmation modal -->
+    <div id="publishToParentModal" class="modal hidden">
+      <div class="modal-card">
+        <button class="modal-close" id="publishToParentClose">×</button>
+        <h3>Открыть оплату родителю</h3>
+        <div id="publishToParentModalBody"></div>
+        <div style="margin-top:16px;display:flex;gap:8px">
+          <button class="primary" id="publishToParentConfirm">Опубликовать</button>
+          <button class="secondary" id="publishToParentCancel">Отмена</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div id="lessonModal" class="modal hidden">
@@ -892,6 +918,6 @@
 
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.0.92.5.4"></script>
+  <script src="/static/app.js?v=7.0.93"></script>
 </body>
 </html>

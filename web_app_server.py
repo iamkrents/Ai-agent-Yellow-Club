@@ -9686,6 +9686,130 @@ class MiniAppContext:
         intent = self._normalize_payment_intent(intent)
         return {"ok": True, "intent": intent}
 
+    # ── v7.0.93 — parent client visibility ───────────────────────────────────
+
+    def get_intent_publish_preview(
+        self, auth: dict[str, Any], public_id: str
+    ) -> dict[str, Any]:
+        """GET …/{id}/publish-preview — 12-point pre-publication check (read-only)."""
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+        import re as _re
+
+        pi = self.storage.get_payment_intent(public_id)
+        if not pi:
+            return {"ok": False, "error": "Черновик платежа не найден", "public_id": public_id}
+
+        checks: list[dict] = []
+
+        def _check(name: str, ok: bool, detail: str = "", blocker: bool = True) -> None:
+            checks.append({"name": name, "ok": ok, "detail": detail, "blocker": blocker})
+
+        _check("intent_exists", True, f"public_id={public_id}")
+        _check("not_cancelled", pi.get("status") != "cancelled", f"status={pi.get('status')}")
+        amount_minor = pi.get("amount_minor") or 0
+        _check("has_amount", int(amount_minor) > 0, f"amount_minor={amount_minor}")
+        _check("has_student_name", bool(pi.get("student_name")), f"student_name={'set' if pi.get('student_name') else 'missing'}")
+        _check("has_mk_user_id", bool(pi.get("mk_user_id")), f"mk_user_id={pi.get('mk_user_id')}")
+        _check("has_purpose", bool(pi.get("purpose")), f"purpose={pi.get('purpose')!r}")
+        period = str(pi.get("period_month") or "")
+        _check("has_period_month", bool(period and _re.match(r"^\d{4}-\d{2}$", period)), f"period_month={period!r}")
+        pmethod = pi.get("payment_method") or ""
+        _check("payment_method_valid", pmethod in ("erip", "acquiring"), f"payment_method={pmethod!r}")
+
+        opts = self.storage.get_options_for_intent(public_id)
+        erip_opt = next((o for o in opts if o.get("channel") == "erip"), None)
+        acq_opt = next((o for o in opts if o.get("channel") == "acquiring"), None)
+        if pmethod == "erip":
+            _check("erip_option_ready", bool(erip_opt and erip_opt.get("bepaid_account_number")),
+                   f"erip_account={'set' if erip_opt and erip_opt.get('bepaid_account_number') else 'missing'}")
+        elif pmethod == "acquiring":
+            _check("acquiring_option_ready", bool(acq_opt and acq_opt.get("payment_url")),
+                   f"payment_url={'set' if acq_opt and acq_opt.get('payment_url') else 'missing'}")
+
+        mk_user_id = str(pi.get("mk_user_id") or "")
+        parents = self.storage.get_parents_for_child(mk_user_id) if mk_user_id else []
+        _check("has_parent_link", bool(parents), f"confirmed_parent_links={len(parents)}")
+
+        _check("not_already_posted", pi.get("status") != "posted_to_moyklass",
+               f"status={pi.get('status')}", blocker=False)
+        _check("not_already_published", pi.get("client_visibility") != "published",
+               f"client_visibility={pi.get('client_visibility')}", blocker=False)
+
+        blockers = [c for c in checks if not c["ok"] and c["blocker"]]
+        return {
+            "ok": True,
+            "public_id": public_id,
+            "ready": len(blockers) == 0,
+            "checks": checks,
+            "blockers": len(blockers),
+            "intent_status": pi.get("status"),
+            "client_visibility": pi.get("client_visibility") or "hidden",
+            "parents": [{"parent_telegram_id": p.get("parent_telegram_id")} for p in parents],
+        }
+
+    def publish_intent_to_parent(
+        self, auth: dict[str, Any], public_id: str
+    ) -> dict[str, Any]:
+        """POST …/{id}/publish-to-parent — mark intent visible to parent."""
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+        published_by = str(auth.get("user_id") or "")
+        now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        result = self.storage.publish_payment_intent_to_client(public_id, published_by, now)
+        if not result.get("ok"):
+            return result
+        return {"ok": True, "idempotent": result.get("idempotent", False), "intent": self._normalize_payment_intent(result["intent"])}
+
+    def withdraw_intent_from_parent(
+        self, auth: dict[str, Any], public_id: str
+    ) -> dict[str, Any]:
+        """POST …/{id}/withdraw-from-parent — hide intent from parent."""
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+        withdrawn_by = str(auth.get("user_id") or "")
+        now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        result = self.storage.withdraw_payment_intent_from_client(public_id, withdrawn_by, now)
+        if not result.get("ok"):
+            return result
+        return {"ok": True, "idempotent": result.get("idempotent", False), "intent": self._normalize_payment_intent(result["intent"])}
+
+    def client_payments_list(self, auth: dict[str, Any]) -> dict[str, Any]:
+        """GET /api/client/payments — parent-only, returns published intents for own children."""
+        role = self._role_for_user(int(auth["user_id"]))
+        if role != "parent":
+            return {"ok": False, "error": "Доступ только для родителей."}
+        parent_telegram_id = str(auth["user_id"])
+        intents = self.storage.list_client_visible_payment_intents(parent_telegram_id)
+        result = []
+        for pi in intents:
+            opts = self.storage.get_options_for_intent(pi["public_id"])
+            erip_opt = next((o for o in opts if o.get("channel") == "erip"), None)
+            acq_opt = next((o for o in opts if o.get("channel") == "acquiring"), None)
+            amount_minor = pi.get("amount_minor") or 0
+            amount_byn = round(int(amount_minor) / 100.0, 2) if amount_minor else None
+            paid_minor = pi.get("paid_amount_minor")
+            paid_byn = round(int(paid_minor) / 100.0, 2) if paid_minor is not None else None
+            result.append({
+                "public_id": pi["public_id"],
+                "student_name": pi.get("student_name"),
+                "amount_byn": amount_byn,
+                "purpose": pi.get("purpose"),
+                "period_month": pi.get("period_month"),
+                "payment_method": pi.get("payment_method"),
+                "status": pi.get("status"),
+                "comment": pi.get("comment"),
+                "published_at": pi.get("published_at"),
+                "paid_at": pi.get("paid_at"),
+                "paid_amount_byn": paid_byn,
+                "erip_account_number": erip_opt.get("bepaid_account_number") if erip_opt else None,
+                "acquiring_payment_url": acq_opt.get("payment_url") if acq_opt else None,
+            })
+        return {"ok": True, "payments": result, "total": len(result)}
+
     @staticmethod
     def _normalize_payment_intent(pi: dict) -> dict:
         """Add derived frontend-friendly fields to a payment_intent row."""
@@ -12101,6 +12225,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.bepaid_reconcile(auth, params))
                 if path == "/api/payments/bepaid/unmatched":
                     return self._send_json(CTX.bepaid_list_unmatched_transactions(auth))
+                if path == "/api/client/payments":
+                    return self._send_json(CTX.client_payments_list(auth))
                 if path == "/api/payments/intents":
                     return self._send_json(CTX.payment_intents_list(auth, params))
                 if path == "/api/payments/moyklass/invoices":
@@ -12116,6 +12242,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                         return self._send_json(CTX.payment_intent_webhook_readiness(auth, _pi_parts[0]))
                     if len(_pi_parts) == 2 and _pi_parts[1] == "moyklass-post-readiness":
                         return self._send_json(CTX.payment_intent_moyklass_readiness(auth, _pi_parts[0]))
+                    if len(_pi_parts) == 2 and _pi_parts[1] == "publish-preview":
+                        return self._send_json(CTX.get_intent_publish_preview(auth, _pi_parts[0]))
                 if path.startswith("/api/food/kitchen/menus/"):
                     _krest = path[len("/api/food/kitchen/menus/"):]
                     _kparts = _krest.split("/")
@@ -12223,6 +12351,10 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.payment_intent_post_to_moyklass(auth, _pi_parts[0], body))
                 if len(_pi_parts) == 2 and _pi_parts[1] == "reconcile-moyklass-payment":
                     return self._send_json(CTX.payment_intent_reconcile_moyklass(auth, _pi_parts[0], body))
+                if len(_pi_parts) == 2 and _pi_parts[1] == "publish-to-parent":
+                    return self._send_json(CTX.publish_intent_to_parent(auth, _pi_parts[0]))
+                if len(_pi_parts) == 2 and _pi_parts[1] == "withdraw-from-parent":
+                    return self._send_json(CTX.withdraw_intent_from_parent(auth, _pi_parts[0]))
             if path.startswith("/api/payments/bepaid/transactions/"):
                 _btx_rest = path[len("/api/payments/bepaid/transactions/"):]
                 _btx_parts = _btx_rest.split("/")

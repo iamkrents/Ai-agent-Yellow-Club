@@ -210,20 +210,20 @@ class Test04HelpersDefined(unittest.TestCase):
 
 
 class Test05VersionAndCacheBust(unittest.TestCase):
-    """Version marker and cache-bust updated to v7.0.92.5.4."""
+    """Version marker and cache-bust updated (now v7.0.93)."""
 
     @classmethod
     def setUpClass(cls):
         cls.js = APP_JS.read_text(encoding="utf-8")
         cls.html = INDEX_HTML.read_text(encoding="utf-8")
 
-    def test_18_version_is_92_5_4(self):
-        """app.js version marker is v7.0.92.5.4."""
-        self.assertIn("v7.0.92.5.4", self.js)
+    def test_18_version_is_current(self):
+        """app.js version marker is v7.0.93."""
+        self.assertIn("v7.0.93", self.js)
 
-    def test_19_cache_bust_is_92_5_4(self):
-        """index.html cache-bust parameter is v=7.0.92.5.4."""
-        self.assertIn("v=7.0.92.5.4", self.html)
+    def test_19_cache_bust_is_current(self):
+        """index.html cache-bust parameter is v=7.0.93."""
+        self.assertIn("v=7.0.93", self.html)
 
     def test_20_old_version_not_in_js(self):
         """Old version marker v7.0.92.5.3 is gone from version log line."""
