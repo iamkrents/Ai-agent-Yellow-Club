@@ -1,6 +1,6 @@
 # Yellow Club Agent — Current State
 
-> Последнее обновление: 2026-07-14 (v7.0.92.5.2)
+> Последнее обновление: 2026-07-15 (v7.0.92.5.3)
 > Цель файла: позволить возобновить работу из любого нового чата без потери контекста.
 > **Этот файл — только документация. Production-код не менять через этот файл.**
 
@@ -31,11 +31,45 @@ Claude Code (локально) → редактирование кода → git
 | Параметр | Значение |
 |---|---|
 | Последняя задеплоенная версия | **v7.0.81** (commit `db0f1e9`) — НЕ развёрнут, production-дата неизвестна |
-| Последний коммит в `main` | **v7.0.92.5.2** — Security: restore webhook_verified as cryptographic property |
-| Frontend cache-bust | **`v=7.0.92.5.2`** (app.js и styles.css) |
-| `console.log` в app.js | `MiniApp version: v7.0.92.5.2` |
+| Последний коммит в `main` | **v7.0.92.5.3** — Verify unmatched acquiring payments with bePaid |
+| Frontend cache-bust | **`v=7.0.92.5.3`** (app.js и styles.css) |
+| `console.log` в app.js | `MiniApp version: v7.0.92.5.3` |
 
 > Все версии начиная с v7.0.82 запушены, но **НЕ деплоились** на production-сервер. Деплой — только по команде владельца.
+
+### v7.0.92.5.3 — Verify unmatched acquiring payments with bePaid
+
+**Задача:** Безопасное восстановление успешной acquiring-оплаты через официальный bePaid checkout status query. Решает production transaction 156 (webhook_verified=0) без ручного SQL.
+
+**Новый trust path — provider_verified:**
+- `provider_verified=1` устанавливается `mark_bepaid_transaction_provider_verified()` после успешного GET checkout status query.
+- `webhook_verified` НЕ меняется — это строго криптографический флаг RSA-подписи webhook.
+- `list_unmatched` теперь показывает транзакции с `webhook_verified=1 OR provider_verified=1`.
+- `bepaid_reconcile_stored_transaction` разрешает reconcile при `webhook_verified=1 OR provider_verified=1`.
+
+**Новый endpoint:** `POST /api/payments/intents/{id}/verify-acquiring`
+- Owner/admin only.
+- `checkout_token` берётся ТОЛЬКО из DB (из acquiring option), никогда из frontend.
+- Статус-запрос делается с ACQ credentials (никогда ERIP).
+- Валидируются: `shop.id`, `finished`, `test=false`, `status`, `order.amount`, `order.currency`, `order.tracking_id`, `gateway_response.payment.uid`, `payment.status`, `payment.amount`, `payment.currency`.
+- Любое несовпадение → блок, без изменения статусов.
+- Timeout/5xx → `retry=True`, без изменения статусов.
+- При успехе: acquiring option → paid, parent intent → paid (`paid_channel=acquiring`), ERIP sibling → superseded, transaction → linked. MoyKlass не вызывается.
+- Повторный вызов → idempotent=True.
+
+**UI:** Кнопка «Подтвердить оплату через bePaid» на карточке intent (owner/admin, когда есть acquiring option с checkout_token и статус не terminal).
+
+**Исправления:**
+- **`bepaid_client.py`**: `get_checkout_status(payment_token)`, `_get_checkout(url)`, `_parse_checkout_status_response(resp)`.
+- **`storage.py`**: новые колонки `provider_verified`, `provider_verified_at`, `provider_verification_method` в `bepaid_transactions`; метод `mark_bepaid_transaction_provider_verified()`; `list_unmatched_bepaid_transactions` — `OR provider_verified=1`.
+- **`web_app_server.py`**: метод `bepaid_verify_acquiring_payment()`; reconcile block обновлён на `not webhook_verified AND not provider_verified`; route `verify-acquiring`; поле `provider_verified` в unmatched list response.
+- **`miniapp/app.js`**: версия v7.0.92.5.3; `verifyAcquiringPayment()`; кнопка «Подтвердить оплату через bePaid».
+- **`miniapp/index.html`**: cache-bust → `v=7.0.92.5.3`.
+- **`tests/test_provider_verify.py`**: новый файл, 24 теста.
+
+**Production transaction 156:** Вызов `POST /api/payments/intents/ycpi_202607_14/verify-acquiring` безопасно восстановит оплату без ручного SQL и без повторной оплаты.
+
+**Итого тестов: 593/593 OK (+24 новых).**
 
 ### v7.0.92.5.2 — Security: restore webhook_verified as cryptographic property
 

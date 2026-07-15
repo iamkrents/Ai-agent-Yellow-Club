@@ -8661,6 +8661,7 @@ class MiniAppContext:
                 "paid_at": r.get("paid_at"),
                 "received_at": r.get("received_at"),
                 "signature_verified": bool(r.get("webhook_verified")),
+                "provider_verified": bool(r.get("provider_verified")),
                 "test": bool(r.get("test")),
                 "match_status": r.get("match_status") or "no_match",
             })
@@ -8689,7 +8690,7 @@ class MiniAppContext:
         if not tx:
             return {"ok": False, "error": "transaction_not_found"}
 
-        if not tx.get("webhook_verified"):
+        if not tx.get("webhook_verified") and not tx.get("provider_verified"):
             self.storage.log_payment_webhook_audit(
                 "stored_transaction_reconcile_blocked",
                 bepaid_tx_id=tx_id,
@@ -8880,6 +8881,218 @@ class MiniAppContext:
             payment_intent_id=intent_id,
             intent_public_id=intent_public_id,
             transaction_uid=tx_uid or None,
+            reason=str(mark_result.get("reason") or mark_result.get("error") or "mark_paid_failed"),
+        )
+        return {
+            "ok": False, "error": "mark_paid_failed",
+            "reason": str(mark_result.get("reason") or mark_result.get("error") or "unknown"),
+        }
+
+    def bepaid_verify_acquiring_payment(
+        self, auth: dict[str, Any], public_id: str
+    ) -> dict[str, Any]:
+        """POST /api/payments/intents/{id}/verify-acquiring
+
+        Verifies a stored acquiring transaction via the bePaid checkout status API and
+        atomically reconciles it with the intent. Owner/admin only.
+
+        Security properties:
+        - checkout_token is always read from DB; never accepted from the frontend
+        - Only ACQ credentials are used (never ERIP)
+        - All checkout response fields are validated before any state change
+        - Sets provider_verified=1 on the transaction (NOT webhook_verified)
+        - MoyKlass posting is NOT triggered (BEPAID_AUTO_POST_TO_MOYKLASS=false)
+        """
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in {"owner", "admin"}:
+            return {"ok": False, "error": "access_denied"}
+
+        pi = self.storage.get_payment_intent(public_id)
+        if not pi:
+            return {"ok": False, "error": "intent_not_found"}
+
+        # Token comes from DB only — never from frontend
+        option = self.storage.get_option_by_channel(public_id, "acquiring")
+        if not option:
+            return {"ok": False, "error": "no_acquiring_option"}
+
+        checkout_token = str(option.get("checkout_token") or "").strip()
+        if not checkout_token:
+            return {"ok": False, "error": "no_checkout_token_in_db"}
+
+        tracking_id_expected = str(option.get("bepaid_tracking_id") or "").strip()
+        amount_expected = int(pi.get("amount_minor") or -1)
+
+        cfg = self.settings
+        if not getattr(cfg, "bepaid_acq_shop_id", "") or not getattr(cfg, "bepaid_acq_secret_key", ""):
+            return {"ok": False, "error": "acq_credentials_not_configured"}
+
+        acq_shop_id = cfg.bepaid_acq_shop_id
+
+        # Status query uses ACQ credentials only — never ERIP credentials
+        client = BePaidClient(
+            shop_id=acq_shop_id,
+            secret_key=cfg.bepaid_acq_secret_key,
+            timeout=getattr(cfg, "bepaid_request_timeout", 30),
+        )
+        result = client.get_checkout_status(checkout_token)
+
+        if result.requires_check:
+            return {"ok": False, "error": "provider_unavailable", "retry": True}
+        if not result.ok or result.http_status != 200:
+            return {"ok": False, "error": "provider_error", "detail": result.error}
+
+        checkout = result.data.get("checkout") or {}
+        shop = checkout.get("shop") or {}
+        order = checkout.get("order") or {}
+        gw = checkout.get("gateway_response") or {}
+        payment = gw.get("payment") or {}
+
+        if str(shop.get("id") or "") != str(acq_shop_id):
+            return {"ok": False, "error": "shop_mismatch"}
+
+        if not checkout.get("finished"):
+            return {"ok": False, "error": "checkout_not_finished"}
+
+        if checkout.get("test"):
+            return {"ok": False, "error": "test_checkout_rejected"}
+
+        if checkout.get("status") != "successful":
+            return {"ok": False, "error": "checkout_not_successful",
+                    "checkout_status": str(checkout.get("status") or "")}
+
+        if int(order.get("amount") or -1) != amount_expected:
+            return {"ok": False, "error": "order_amount_mismatch",
+                    "expected": amount_expected, "got": order.get("amount")}
+
+        if str(order.get("currency") or "") != "BYN":
+            return {"ok": False, "error": "order_currency_mismatch",
+                    "got": str(order.get("currency") or "")}
+
+        if str(order.get("tracking_id") or "") != tracking_id_expected:
+            return {"ok": False, "error": "tracking_id_mismatch",
+                    "expected": tracking_id_expected,
+                    "got": str(order.get("tracking_id") or "")}
+
+        if not payment:
+            return {"ok": False, "error": "missing_gateway_payment"}
+
+        if str(payment.get("status") or "") != "successful":
+            return {"ok": False, "error": "payment_not_successful",
+                    "payment_status": str(payment.get("status") or "")}
+
+        if int(payment.get("amount") or -1) != amount_expected:
+            return {"ok": False, "error": "payment_amount_mismatch",
+                    "expected": amount_expected, "got": payment.get("amount")}
+
+        if str(payment.get("currency") or "") != "BYN":
+            return {"ok": False, "error": "payment_currency_mismatch",
+                    "got": str(payment.get("currency") or "")}
+
+        tx_uid = str(payment.get("uid") or "").strip()
+        if not tx_uid:
+            return {"ok": False, "error": "missing_payment_uid"}
+
+        # Find the stored transaction by UID returned from the provider
+        stored_tx = self.storage.find_bepaid_transaction("bepaid", "acquiring", tx_uid, None, None, None)
+        if not stored_tx:
+            return {"ok": False, "error": "transaction_not_found_in_db",
+                    "transaction_uid": tx_uid}
+
+        tx_id = int(stored_tx["id"])
+
+        from utils import now_iso as _now_iso_pv
+        now_str = _now_iso_pv()
+
+        # Mark provider_verified=1 — separate from webhook_verified (RSA), never conflated
+        self.storage.mark_bepaid_transaction_provider_verified(
+            tx_id,
+            verified_at=now_str,
+            verification_method="checkout_status_query",
+        )
+        self.storage.log_payment_webhook_audit(
+            "acquiring_payment_provider_verified",
+            bepaid_tx_id=tx_id,
+            transaction_uid=tx_uid,
+            shop_type="acquiring",
+            amount_minor=amount_expected,
+            currency="BYN",
+            reason="checkout_status_query_success",
+        )
+
+        # Idempotency: already reconciled?
+        existing_pub_id = str(stored_tx.get("intent_public_id") or "").strip()
+        if existing_pub_id:
+            existing_pi = self.storage.get_payment_intent(existing_pub_id)
+            if existing_pi and existing_pi.get("status") == "paid":
+                if str(existing_pi.get("paid_transaction_uid") or "").strip() == tx_uid:
+                    return {
+                        "ok": True, "idempotent": True,
+                        "intent_public_id": existing_pub_id,
+                        "intent": self._normalize_payment_intent(existing_pi),
+                        "provider_verified": True,
+                    }
+
+        option_id = int(option["id"])
+        intent_id = int(pi["id"])
+        order_id_stored = str(stored_tx.get("order_id") or "").strip() or None
+        erip_account = str(stored_tx.get("erip_account_number") or "").strip() or None
+        paid_at = str(stored_tx.get("paid_at") or "").strip() or None
+
+        mark_result = self.storage.payment_intent_mark_paid_via_option(
+            public_id,
+            option_id=option_id,
+            channel="acquiring",
+            tx_uid=tx_uid,
+            amount_minor=amount_expected,
+            currency="BYN",
+            paid_at=paid_at or now_str,
+            tracking_id=tracking_id_expected or None,
+            order_id=order_id_stored,
+            account_number=erip_account,
+            verified=True,
+            match_method="provider_verify_checkout_status",
+        )
+
+        if mark_result.get("ok") and (mark_result.get("marked_paid") or mark_result.get("idempotent")):
+            self.storage.bepaid_transaction_link_intent(
+                tx_id,
+                intent_id=intent_id,
+                intent_public_id=public_id,
+                match_method="provider_verify_checkout_status",
+                confidence="strong",
+                reason="provider_verified_checkout_status_query",
+                now=now_str,
+            )
+            self.storage.log_payment_webhook_audit(
+                "acquiring_payment_provider_reconciled",
+                bepaid_tx_id=tx_id,
+                payment_intent_id=intent_id,
+                intent_public_id=public_id,
+                transaction_uid=tx_uid,
+                shop_type="acquiring",
+                amount_minor=amount_expected,
+                currency="BYN",
+                match_method="provider_verify_checkout_status",
+                reason="provider_verify_success",
+            )
+            updated_pi = self.storage.get_payment_intent(public_id)
+            return {
+                "ok": True,
+                "reconciled": True,
+                "idempotent": bool(mark_result.get("idempotent")),
+                "intent_public_id": public_id,
+                "intent": self._normalize_payment_intent(updated_pi) if updated_pi else {},
+                "channel": "acquiring",
+                "provider_verified": True,
+                "match_method": "provider_verify_checkout_status",
+            }
+
+        self.storage.log_payment_webhook_audit(
+            "acquiring_payment_provider_verify_blocked",
+            bepaid_tx_id=tx_id,
+            intent_public_id=public_id,
+            transaction_uid=tx_uid,
             reason=str(mark_result.get("reason") or mark_result.get("error") or "mark_paid_failed"),
         )
         return {
@@ -12001,6 +12214,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.payment_intent_create_bepaid(auth, _pi_parts[0], body))
                 if len(_pi_parts) == 2 and _pi_parts[1] == "create-acquiring":
                     return self._send_json(CTX.payment_intent_create_acquiring_option(auth, _pi_parts[0]))
+                if len(_pi_parts) == 2 and _pi_parts[1] == "verify-acquiring":
+                    return self._send_json(CTX.bepaid_verify_acquiring_payment(auth, _pi_parts[0]))
                 if len(_pi_parts) == 2 and _pi_parts[1] == "prepare-options":
                     return self._send_json(CTX.payment_intent_prepare_options(auth, _pi_parts[0]))
                 if len(_pi_parts) == 2 and _pi_parts[1] == "post-to-moyklass":

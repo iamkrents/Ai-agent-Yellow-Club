@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.92.5.2");
+console.log("MiniApp version: v7.0.92.5.3");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -11635,6 +11635,30 @@ window.reconcileTransaction = async function reconcileTransaction(txId) {
   }
 };
 
+window.verifyAcquiringPayment = async function verifyAcquiringPayment(publicId) {
+  if (!publicId) return;
+  const btn = document.querySelector(`button[onclick="verifyAcquiringPayment('${publicId}')"]`);
+  if (btn) { btn.disabled = true; btn.textContent = "Проверка..."; }
+  try {
+    const result = await apiFetch(`/api/payments/intents/${encodeURIComponent(publicId)}/verify-acquiring`, { method: "POST" });
+    if (result.ok) {
+      const msg = result.idempotent
+        ? `Оплата уже подтверждена ранее: ${publicId}`
+        : `Оплачено банковской картой. В МойКласс ещё не внесено.\nintent: ${publicId}`;
+      alert(msg);
+      await loadPaymentIntents();
+      await loadUnmatchedTransactions();
+    } else {
+      const reason = result.reason || result.error || "неизвестная ошибка";
+      alert(`Не удалось подтвердить оплату: ${reason}`);
+      if (btn) { btn.disabled = false; btn.textContent = "Подтвердить оплату через bePaid"; }
+    }
+  } catch (e) {
+    alert(`Ошибка: ${String(e)}`);
+    if (btn) { btn.disabled = false; btn.textContent = "Подтвердить оплату через bePaid"; }
+  }
+};
+
 async function loadPaymentIntents() {
   if (!canUsePaymentIntents()) {
     const listEl = $("piList");
@@ -11760,6 +11784,13 @@ function renderPaymentIntentCard(pi) {
     ? `<div class="pi-acq-info"><span>Эквайринг: <strong>Checkout создан</strong></span></div>`
     : "";
 
+  const canVerifyAcquiring = !["paid", "posted_to_moyklass", "cancelled"].includes(pi.status)
+    && acqOption?.has_checkout
+    && canPostToMoyklass();
+  const verifyAcquiringBtn = canVerifyAcquiring
+    ? `<button class="secondary" style="font-size:12px;padding:4px 10px" onclick="verifyAcquiringPayment('${escapeHtml(pi.public_id)}')">Подтвердить оплату через bePaid</button>`
+    : "";
+
   const bePaidCreatingBlock = pi.status === "bepaid_creating"
     ? `<div class="pi-bepaid-creating">⏳ Счёт bePaid создаётся... Обновите страницу через несколько секунд.</div>`
     : "";
@@ -11832,7 +11863,7 @@ function renderPaymentIntentCard(pi) {
     </div>
     ${sourceBadge}
     ${comment}${cancelInfo}${bePaidCreatingBlock}${bePaidRequiresCheckBlock}${bePaidInfo}${acqReadyBadge}${bePaidPaidBlock}${mkPostedBlock}
-    <div class="pi-card-footer">${bePaidBtn}${acquiringBtn}${mkPostBtn}${cancelBtn}</div>
+    <div class="pi-card-footer">${bePaidBtn}${acquiringBtn}${verifyAcquiringBtn}${mkPostBtn}${cancelBtn}</div>
     <div class="pi-card-id">${escapeHtml(pi.public_id)} · mk_user_id: ${pi.mk_user_id} · ${createdAt} ${createdBy}</div>
   </div>`;
 }

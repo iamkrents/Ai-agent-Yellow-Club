@@ -824,6 +824,10 @@ class Storage:
         self._ensure_column(conn, "bepaid_transactions", "match_confidence", "match_confidence TEXT")
         self._ensure_column(conn, "bepaid_transactions", "processed_at", "processed_at TEXT")
         self._ensure_column(conn, "bepaid_transactions", "erip_account_number", "erip_account_number TEXT")
+        # v7.0.92.5.3 — provider-verified trust path (separate from webhook RSA signature)
+        self._ensure_column(conn, "bepaid_transactions", "provider_verified", "provider_verified INTEGER DEFAULT 0")
+        self._ensure_column(conn, "bepaid_transactions", "provider_verified_at", "provider_verified_at TEXT")
+        self._ensure_column(conn, "bepaid_transactions", "provider_verification_method", "provider_verification_method TEXT")
 
     def _init_food_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -5226,6 +5230,25 @@ class Storage:
                 (verified_at, int(tx_id)),
             )
 
+    def mark_bepaid_transaction_provider_verified(
+        self,
+        tx_id: int,
+        *,
+        verified_at: str,
+        verification_method: str = "checkout_status_query",
+    ) -> None:
+        """Set provider_verified=1 via authenticated checkout status query.
+
+        Separate from webhook_verified (RSA signature). Never sets webhook_verified.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE bepaid_transactions SET
+                   provider_verified=1, provider_verified_at=?, provider_verification_method=?,
+                   updated_at=? WHERE id=?""",
+                (verified_at, verification_method, verified_at, int(tx_id)),
+            )
+
     def get_bepaid_transaction_by_id(self, tx_id: int) -> Optional[dict]:
         with self._connect() as conn:
             row = conn.execute(
@@ -5234,18 +5257,21 @@ class Storage:
         return dict(row) if row else None
 
     def list_unmatched_bepaid_transactions(self, limit: int = 50) -> list[dict]:
-        """Cryptographically verified, successful, non-test transactions not yet linked to an intent.
+        """Successful, non-test, unlinked transactions eligible for the admin reconcile flow.
 
-        webhook_verified=1 is REQUIRED: only transactions whose Content-Signature passed
-        RSA verification are eligible for the admin reconcile flow. Transactions without a
-        verified signature must not appear here regardless of their status field.
+        Trust paths (OR):
+        - webhook_verified=1: Content-Signature passed RSA verification
+        - provider_verified=1: authenticated GET checkout status query confirmed payment
+
+        Both paths require status='successful', test=0, transaction_uid IS NOT NULL,
+        and no existing intent match (intent_public_id is empty).
         """
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT * FROM bepaid_transactions
                    WHERE status = 'successful'
                      AND test = 0
-                     AND webhook_verified = 1
+                     AND (webhook_verified = 1 OR provider_verified = 1)
                      AND (transaction_uid IS NOT NULL AND transaction_uid != '')
                      AND (intent_public_id IS NULL OR intent_public_id = '')
                    ORDER BY received_at DESC LIMIT ?""",

@@ -135,6 +135,87 @@ class BePaidClient:
         )
         return self._post_checkout(BEPAID_CHECKOUT_ENDPOINT, payload)
 
+    def get_checkout_status(self, payment_token: str) -> "BePaidResult":
+        """GET checkout status from bePaid using ACQ credentials.
+
+        This client instance must be initialised with ACQ shop_id/secret_key.
+        Never logs the token or secret.
+
+        Reference: GET https://checkout.bepaid.by/ctp/api/checkouts/{payment_token}
+        """
+        shop_id = self._shop_id
+        log.info(
+            "bepaid get_checkout_status shop_id_len=%d shop_id_last4=%s",
+            len(shop_id),
+            shop_id[-4:] if len(shop_id) >= 4 else "****",
+        )
+        url = f"{BEPAID_CHECKOUT_ENDPOINT}/{payment_token}"
+        return self._get_checkout(url)
+
+    def _get_checkout(self, url: str) -> "BePaidResult":
+        """GET from bePaid checkout endpoint with X-API-Version: 2 header."""
+        try:
+            resp = requests.get(
+                url,
+                auth=(self._shop_id, self._secret_key),
+                timeout=self._timeout,
+                headers={
+                    "Accept": "application/json",
+                    "X-API-Version": "2",
+                },
+            )
+            log.info("bePaid GET %s → HTTP %s", url, resp.status_code)
+            return self._parse_checkout_status_response(resp)
+        except requests.Timeout:
+            log.warning("bePaid timeout url=<checkout_status> timeout=%ss", self._timeout)
+            return BePaidResult(ok=False, http_status=0, error="timeout", requires_check=True)
+        except requests.ConnectionError as exc:
+            log.warning("bePaid connection_error url=<checkout_status> type=%s", type(exc).__name__)
+            return BePaidResult(
+                ok=False, http_status=0,
+                error=f"connection_error:{type(exc).__name__}", requires_check=True,
+            )
+        except requests.RequestException as exc:
+            log.warning("bePaid network error url=<checkout_status> type=%s", type(exc).__name__)
+            return BePaidResult(ok=False, http_status=0, error=f"network_error:{type(exc).__name__}")
+
+    @staticmethod
+    def _parse_checkout_status_response(resp: requests.Response) -> "BePaidResult":
+        """Parse GET /ctp/api/checkouts/{token} response."""
+        try:
+            raw = resp.json()
+        except Exception:
+            raw = {}
+
+        if resp.status_code >= 500:
+            return BePaidResult(
+                ok=False, http_status=resp.status_code,
+                error=f"server_error:HTTP {resp.status_code}", requires_check=True,
+            )
+
+        if resp.status_code == 200:
+            outer = raw if isinstance(raw, dict) else {}
+            checkout = outer.get("checkout")
+            if not isinstance(checkout, dict):
+                return BePaidResult(
+                    ok=False, http_status=resp.status_code,
+                    error="missing_checkout_in_response",
+                )
+            return BePaidResult(ok=True, http_status=resp.status_code, data={"checkout": checkout})
+
+        errors: Any = None
+        if isinstance(raw, dict):
+            errors = raw.get("errors") or raw.get("error") or raw.get("message")
+        if isinstance(errors, list):
+            msg = "; ".join(str(e)[:120] for e in errors[:3])
+        elif isinstance(errors, dict):
+            msg = "; ".join(f"{k}: {v}" for k, v in list(errors.items())[:3])
+        elif isinstance(errors, str):
+            msg = errors[:200]
+        else:
+            msg = f"HTTP {resp.status_code}"
+        return BePaidResult(ok=False, http_status=resp.status_code, error=msg)
+
     def _post(self, url: str, payload: dict) -> BePaidResult:
         try:
             resp = requests.post(
