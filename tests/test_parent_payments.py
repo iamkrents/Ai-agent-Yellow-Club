@@ -1,4 +1,4 @@
-"""Tests for v7.0.93 — parent payment visibility.
+"""Tests for v7.0.93 / v7.0.93.1 — parent payment visibility.
 
 Covers:
   Storage layer:
@@ -14,14 +14,14 @@ Covers:
     10. list_client_visible_payment_intents excludes withdrawn intents
     11. list_client_visible_payment_intents excludes cancelled intents
     12. list_client_visible_payment_intents returns empty for unlinked parent
-    13. get_parents_for_child returns confirmed active links
+    13. get_parents_for_child returns confirmed active links (client_parent_child_links)
     14. get_parents_for_child returns empty for unknown student
-    15. get_parents_for_child returns empty when link not confirmed
+    15. get_parents_for_child returns empty when no client link created
     16. list_client_visible_payment_intents excludes intents with no parent link
 
   Frontend (static analysis):
-    17. version marker is v7.0.93 in app.js
-    18. cache-bust is v=7.0.93 in index.html
+    17. version marker is v7.0.93.1 in app.js
+    18. cache-bust is v=7.0.93.1 in index.html
     19. loadClientPayments function exists in app.js
     20. renderClientPaymentCard function exists in app.js
     21. isParent function exists in app.js
@@ -82,9 +82,13 @@ def _seed_intent(storage: Storage, mk_user_id: int = 1001, status: str = "bepaid
 
 
 def _seed_parent_link(storage: Storage, mk_student_id: str, parent_telegram_id: str) -> str:
-    """Generate a link code and confirm it for the given parent."""
-    code = storage.generate_child_link_code(str(mk_student_id))
-    storage.link_parent_to_child(parent_telegram_id, code)
+    """Create a client CL- code and immediately link it to the given parent.
+
+    Uses client_parent_child_links (v7.0.93.1+), not food parent_child_links.
+    """
+    result = storage.create_client_link_code(str(mk_student_id), "Тест Ученик", "test_admin")
+    code = result["code"]
+    storage.link_client_child(parent_telegram_id, code, NOW)
     return code
 
 
@@ -249,7 +253,7 @@ class Test13GetParentsForChild(unittest.TestCase):
     def test_returns_confirmed_links(self):
         parents = self.storage.get_parents_for_child("2001")
         self.assertEqual(len(parents), 1)
-        self.assertEqual(parents[0]["parent_telegram_id"], "tg_parent_A")
+        self.assertEqual(parents[0]["parent_telegram_user_id"], "tg_parent_A")
 
 
 class Test14GetParentsForChildUnknown(unittest.TestCase):
@@ -262,8 +266,8 @@ class Test14GetParentsForChildUnknown(unittest.TestCase):
 class Test15GetParentsForChildUnconfirmed(unittest.TestCase):
     def setUp(self):
         self.storage = _tmp_storage()
-        # Create a link code but don't confirm it
-        self.storage.generate_child_link_code("3001")
+        # Create a client link code but don't use it (no link entry created)
+        self.storage.create_client_link_code("3001", "Ученик Три", "admin")
 
     def test_unconfirmed_link_not_returned(self):
         parents = self.storage.get_parents_for_child("3001")
@@ -292,11 +296,11 @@ class TestFrontend(unittest.TestCase):
         cls.js = APP_JS.read_text(encoding="utf-8")
         cls.html = INDEX_HTML.read_text(encoding="utf-8")
 
-    def test_17_version_marker_v7_0_93(self):
-        self.assertIn('console.log("MiniApp version: v7.0.93")', self.js)
+    def test_17_version_marker_v7_0_93_1(self):
+        self.assertIn('console.log("MiniApp version: v7.0.93.1")', self.js)
 
-    def test_18_cache_bust_v7_0_93(self):
-        self.assertIn("v=7.0.93", self.html)
+    def test_18_cache_bust_v7_0_93_1(self):
+        self.assertIn("v=7.0.93.1", self.html)
         self.assertNotIn("v=7.0.92", self.html)
 
     def test_19_loadClientPayments_exists(self):

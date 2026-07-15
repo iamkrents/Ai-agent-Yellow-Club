@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.93");
+console.log("MiniApp version: v7.0.93.1");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -153,6 +153,7 @@ const state = {
   foodDebugLastResult: null,
   campChildrenData: null,
   myChildren: null,
+  clientChildren: [],
   activeMenus: null,
   myOrders: null,
   selectedChildId: null,
@@ -7143,20 +7144,58 @@ function copyCampCodesList() {
   }
 }
 
-// ---- Parent interface (my-children tab) ----
+// ---- Parent interface (my-children tab) ── v7.0.93.1 ----
 function renderMyChildren() {
   const root = $("myChildrenContent");
   if (!root) return;
-  const children = state.myChildren;
-  if (!Array.isArray(children)) {
+  // null = still loading
+  if (state.myChildren === null) {
     root.innerHTML = `<div class="kpi-loading">Загружаю…</div>`;
     return;
   }
 
-  const linkFormHtml = `
+  const clientChildren = state.clientChildren || [];
+  const foodChildren = (state.myChildren || []).filter(c => c.source === "food" || !c.source);
+
+  // Section: client children (Оплаты access)
+  const clientCardsHtml = clientChildren.map(c => {
+    const name = escapeHtml(c.display_name || "Ученик");
+    const since = c.linked_at ? escapeHtml(String(c.linked_at).slice(0, 10)) : "";
+    return `<div class="parent-child-card parent-child-card--client">
+      <div class="parent-child-name">${name}</div>
+      <div class="parent-child-meta">Оплаты</div>
+      ${since ? `<div class="parent-child-meta">Привязан: ${since}</div>` : ""}
+    </div>`;
+  }).join("");
+
+  const clientLinkFormHtml = `
     <div class="parent-link-card">
-      <h3>${children.length ? "Добавить ещё ребёнка" : "Привязать ребёнка"}</h3>
-      <p class="parent-link-hint">Введите код YC-XXXX, который вы получили от администратора Yellow Club.</p>
+      <h3>${clientChildren.length ? "Добавить ещё (код CL-)" : "Привязать ученика (Оплаты)"}</h3>
+      <p class="parent-link-hint">Введите код CL-XXXXXXXX, выданный администратором Yellow Club для раздела «Оплаты».</p>
+      <div class="parent-link-form">
+        <input type="text" id="parentClientLinkCodeInput" class="parent-code-input" placeholder="CL-XXXXXXXX" maxlength="11" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false">
+        <button type="button" class="primary" id="parentClientLinkBtn">Привязать</button>
+      </div>
+      <div id="parentClientLinkError" class="parent-link-error hidden"></div>
+    </div>`;
+
+  // Section: food children (City programme, read-only here)
+  const foodCardsHtml = foodChildren.map(c => {
+    const name = escapeHtml(c.full_name || c.display_name || "Ребёнок");
+    const group = escapeHtml(c.group_name || c.mk_class_name || "");
+    const room = escapeHtml(c.classroom || "");
+    const since = c.confirmed_at ? escapeHtml(String(c.confirmed_at).slice(0, 10)) : "";
+    return `<div class="parent-child-card parent-child-card--food">
+      <div class="parent-child-name">${name}</div>
+      ${group ? `<div class="parent-child-meta">${group}${room ? ` · ${room}` : ""}</div>` : ""}
+      ${since ? `<div class="parent-child-meta">Городская программа · с ${since}</div>` : `<div class="parent-child-meta">Городская программа</div>`}
+    </div>`;
+  }).join("");
+
+  const foodLinkFormHtml = `
+    <div class="parent-link-card">
+      <h3>${foodChildren.length ? "Добавить ещё (код YC-)" : "Привязать ребёнка (Питание)"}</h3>
+      <p class="parent-link-hint">Введите код YC-XXXX, выданный администратором Yellow Club для раздела «Питание».</p>
       <div class="parent-link-form">
         <input type="text" id="parentLinkCodeInput" class="parent-code-input" placeholder="YC-XXXX" maxlength="7" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false">
         <button type="button" class="primary" id="parentLinkBtn">Привязать</button>
@@ -7165,30 +7204,34 @@ function renderMyChildren() {
       <p class="parent-link-footnote">Код выдаётся администратором Yellow Club.</p>
     </div>`;
 
-  if (!children.length) {
-    root.innerHTML = linkFormHtml;
-  } else {
-    const cardsHtml = children.map(c => {
-      const name = escapeHtml(c.full_name || "Ребёнок");
-      const group = escapeHtml(c.group_name || c.mk_class_name || "");
-      const room = escapeHtml(c.classroom || "");
-      const since = c.confirmed_at ? escapeHtml(String(c.confirmed_at).slice(0, 10)) : "";
-      return `<div class="parent-child-card">
-        <div class="parent-child-name">${name}</div>
-        ${group ? `<div class="parent-child-meta">${group}${room ? ` · ${room}` : ""}</div>` : ""}
-        ${since ? `<div class="parent-child-meta">Привязан: ${since}</div>` : ""}
-      </div>`;
-    }).join("");
-    root.innerHTML = `<div class="parent-children-list">${cardsHtml}</div>${linkFormHtml}`;
-  }
+  root.innerHTML = `
+    <div class="parent-children-section">
+      <h4 class="parent-children-section-title">Оплаты</h4>
+      ${clientCardsHtml ? `<div class="parent-children-list">${clientCardsHtml}</div>` : ""}
+      ${clientLinkFormHtml}
+    </div>
+    <div class="parent-children-section">
+      <h4 class="parent-children-section-title">Питание (Городская программа)</h4>
+      ${foodCardsHtml ? `<div class="parent-children-list">${foodCardsHtml}</div>` : ""}
+      ${foodLinkFormHtml}
+    </div>`;
 
+  // Wire up client CL- code form
+  const clInput = $("parentClientLinkCodeInput");
+  const clBtn = $("parentClientLinkBtn");
+  const clErr = $("parentClientLinkError");
+  if (clInput) {
+    clInput.addEventListener("input", () => { if (clErr) clErr.classList.add("hidden"); });
+    clInput.addEventListener("keydown", e => { if (e.key === "Enter") clBtn?.click(); });
+  }
+  if (clBtn) clBtn.addEventListener("click", linkClientChild);
+
+  // Wire up food YC- code form
   const input = $("parentLinkCodeInput");
   const btn = $("parentLinkBtn");
   const errEl = $("parentLinkError");
   if (input) {
-    input.addEventListener("input", () => {
-      if (errEl) errEl.classList.add("hidden");
-    });
+    input.addEventListener("input", () => { if (errEl) errEl.classList.add("hidden"); });
     input.addEventListener("keydown", e => { if (e.key === "Enter") btn?.click(); });
   }
   if (btn) btn.addEventListener("click", linkChild);
@@ -7196,14 +7239,53 @@ function renderMyChildren() {
 
 async function loadMyChildren() {
   state.myChildren = null;
+  state.clientChildren = [];
   renderMyChildren();
   try {
-    const data = await apiGet("/api/food/my-children");
-    state.myChildren = Array.isArray(data.children) ? data.children : [];
+    const data = await apiGet("/api/client/children");
+    if (data.ok) {
+      state.clientChildren = (data.children || []).filter(c => c.source === "client");
+      // Keep food children in myChildren for backward compat with other callers
+      state.myChildren = (data.children || []).filter(c => c.source === "food");
+    } else {
+      state.clientChildren = [];
+      state.myChildren = [];
+    }
   } catch (e) {
+    state.clientChildren = [];
     state.myChildren = [];
   }
   renderMyChildren();
+}
+
+async function linkClientChild() {
+  const input = $("parentClientLinkCodeInput");
+  const btn = $("parentClientLinkBtn");
+  const errEl = $("parentClientLinkError");
+  const code = (input?.value || "").trim().toUpperCase();
+  if (!code) {
+    if (errEl) { errEl.textContent = "Введите код CL-"; errEl.classList.remove("hidden"); }
+    return;
+  }
+  if (btn) btn.disabled = true;
+  if (errEl) errEl.classList.add("hidden");
+  try {
+    const data = await _apiPostRaw("/api/client/children/link", { code });
+    if (data.ok) {
+      const name = data.child?.display_name || data.display_name || "Ученик";
+      setNotice(`${name} успешно привязан`, "ok");
+      state.myChildren = null;
+      state.clientChildren = [];
+      await loadMyChildren();
+    } else {
+      const msg = data.error || "Ошибка привязки";
+      if (errEl) { errEl.textContent = msg; errEl.classList.remove("hidden"); }
+    }
+  } catch (e) {
+    if (errEl) { errEl.textContent = e.message || "Ошибка сети"; errEl.classList.remove("hidden"); }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function linkChild() {
@@ -11364,6 +11446,7 @@ async function reloadCabinetAfterRoleChange() {
   state.lessonCache = {};
   state.lessonFetches = {};
   state.myChildren = null;
+  state.clientChildren = [];
   state.activeMenus = null;
   state.myOrders = null;
   state.selectedChildId = null;

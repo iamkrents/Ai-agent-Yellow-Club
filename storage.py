@@ -594,6 +594,7 @@ class Storage:
             self._init_food_tables(conn)
             self._init_bepaid_tables(conn)
             self._init_payment_intent_tables(conn)
+            self._init_client_link_tables(conn)
 
     def _init_payment_intent_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -1040,6 +1041,54 @@ class Storage:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_food_audit_log_menu ON food_order_audit_log(menu_id, created_at)")
+
+    # ── v7.0.93.1 — separate client parent-child link system ─────────────────
+
+    def _init_client_link_tables(self, conn: sqlite3.Connection) -> None:
+        """Create tables for the client parent-child link system.
+
+        Completely separate from Food Module (parent_child_links / camp_children).
+        Used for: payments, future client cabinet, future visit history.
+        """
+        import hashlib as _hl  # noqa: F401 (used in methods below)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_child_link_codes (
+                id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+                code_hash                       TEXT NOT NULL UNIQUE,
+                mk_user_id                      TEXT NOT NULL,
+                child_display_name              TEXT NOT NULL DEFAULT '',
+                status                          TEXT NOT NULL DEFAULT 'active',
+                created_at                      TEXT NOT NULL,
+                expires_at                      TEXT,
+                used_at                         TEXT,
+                used_by_parent_telegram_user_id TEXT,
+                invalidated_at                  TEXT,
+                invalidated_by                  TEXT,
+                created_by                      TEXT NOT NULL DEFAULT '',
+                updated_at                      TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cclc_mk_user ON client_child_link_codes(mk_user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cclc_status ON client_child_link_codes(status, created_at)")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_parent_child_links (
+                id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+                parent_telegram_user_id     TEXT NOT NULL,
+                mk_user_id                  TEXT NOT NULL,
+                child_display_name          TEXT NOT NULL DEFAULT '',
+                status                      TEXT NOT NULL DEFAULT 'active',
+                linked_at                   TEXT NOT NULL,
+                unlinked_at                 TEXT,
+                unlinked_by                 TEXT,
+                linked_by_code_id           INTEGER,
+                created_at                  TEXT NOT NULL,
+                updated_at                  TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cpcl_parent ON client_parent_child_links(parent_telegram_user_id, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cpcl_mk_user ON client_parent_child_links(mk_user_id, status)")
 
     # --- Food module: camp children ---
 
@@ -4939,19 +4988,18 @@ class Storage:
 
     # ── v7.0.93 — parent client visibility ───────────────────────────────────
 
-    def get_parents_for_child(self, mk_student_id: str) -> list[dict[str, Any]]:
-        """Return active confirmed parent links for the given student."""
-        mk_student_id = str(mk_student_id or "").strip()
-        if not mk_student_id:
+    def get_parents_for_child(self, mk_user_id: str) -> list[dict[str, Any]]:
+        """Return active client parent-child links for the given student.
+
+        Uses client_parent_child_links (client system), NOT the food parent_child_links table.
+        """
+        mk_user_id = str(mk_user_id or "").strip()
+        if not mk_user_id:
             return []
         with self._connect() as conn:
             rows = conn.execute(
-                """
-                SELECT * FROM parent_child_links
-                WHERE mk_student_id = ? AND active = 1 AND confirmed_at IS NOT NULL
-                ORDER BY id
-                """,
-                (mk_student_id,),
+                "SELECT * FROM client_parent_child_links WHERE mk_user_id=? AND status='active' ORDER BY id",
+                (mk_user_id,),
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -4996,29 +5044,290 @@ class Storage:
         return {"ok": True, "intent": self.get_payment_intent(public_id)}
 
     def list_client_visible_payment_intents(
-        self, parent_telegram_id: str
+        self, parent_telegram_user_id: str
     ) -> list[dict[str, Any]]:
-        """Return published, non-cancelled intents visible to the given parent."""
-        parent_telegram_id = str(parent_telegram_id or "").strip()
-        if not parent_telegram_id:
+        """Return published, non-cancelled intents visible to the given parent.
+
+        Uses client_parent_child_links (client system).
+        Food parent_child_links do NOT grant access to payments.
+        """
+        parent_telegram_user_id = str(parent_telegram_user_id or "").strip()
+        if not parent_telegram_user_id:
             return []
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT DISTINCT pi.*
                 FROM payment_intents pi
-                JOIN parent_child_links l
-                  ON CAST(l.mk_student_id AS TEXT) = CAST(pi.mk_user_id AS TEXT)
-                WHERE l.parent_telegram_id = ?
-                  AND l.active = 1
-                  AND l.confirmed_at IS NOT NULL
+                JOIN client_parent_child_links l
+                  ON CAST(l.mk_user_id AS TEXT) = CAST(pi.mk_user_id AS TEXT)
+                WHERE l.parent_telegram_user_id = ?
+                  AND l.status = 'active'
                   AND pi.client_visibility = 'published'
                   AND pi.status != 'cancelled'
                 ORDER BY pi.created_at DESC
                 """,
-                (parent_telegram_id,),
+                (parent_telegram_user_id,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── v7.0.93.1 — client parent-child link methods ──────────────────────────
+
+    @staticmethod
+    def _hash_client_code(code: str) -> str:
+        import hashlib as _hl
+        return _hl.sha256(code.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _generate_client_code_plaintext() -> str:
+        import secrets as _sec
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        suffix = "".join(_sec.choice(alphabet) for _ in range(8))
+        return f"CL-{suffix}"
+
+    def create_client_link_code(
+        self,
+        mk_user_id: str,
+        child_display_name: str,
+        created_by: str,
+        expires_at: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Generate a new one-time client link code for a student.
+
+        Automatically invalidates any previously active code for the same mk_user_id.
+        Returns the plaintext code (shown once) and the stored code_id.
+        Does NOT touch food parent_child_links or camp_children.
+        """
+        mk_user_id = str(mk_user_id or "").strip()
+        child_display_name = str(child_display_name or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "mk_user_id обязателен"}
+        if not child_display_name:
+            return {"ok": False, "error": "child_display_name обязателен"}
+        now = now_iso()
+        # Invalidate any existing active codes for this student
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE client_child_link_codes
+                SET status='invalidated', invalidated_at=?, invalidated_by=?, updated_at=?
+                WHERE mk_user_id=? AND status='active'
+                """,
+                (now, f"auto_replaced_by:{created_by}", now, mk_user_id),
+            )
+        # Generate a unique hashed code
+        for _ in range(30):
+            plaintext = self._generate_client_code_plaintext()
+            code_hash = self._hash_client_code(plaintext)
+            try:
+                with self._connect() as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO client_child_link_codes
+                        (code_hash, mk_user_id, child_display_name, status,
+                         created_at, expires_at, created_by, updated_at)
+                        VALUES (?, ?, ?, 'active', ?, ?, ?, ?)
+                        """,
+                        (code_hash, mk_user_id, child_display_name, now,
+                         expires_at, str(created_by), now),
+                    )
+                    code_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                return {
+                    "ok": True,
+                    "code": plaintext,
+                    "code_id": code_id,
+                    "mk_user_id": mk_user_id,
+                    "child_display_name": child_display_name,
+                }
+            except Exception:
+                continue
+        return {"ok": False, "error": "Не удалось создать уникальный код"}
+
+    def link_client_child(
+        self, parent_telegram_user_id: str, code_plaintext: str, now: str
+    ) -> dict[str, Any]:
+        """Validate a client code and create a parent-child link.
+
+        One-time use: marks the code as 'used' after successful link.
+        Does NOT touch food parent_child_links or camp_children.
+        """
+        parent_telegram_user_id = str(parent_telegram_user_id or "").strip()
+        code_plaintext = str(code_plaintext or "").strip().upper()
+        if not parent_telegram_user_id or not code_plaintext:
+            return {"ok": False, "error": "Код и ID родителя обязательны"}
+        code_hash = self._hash_client_code(code_plaintext)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM client_child_link_codes WHERE code_hash=?", (code_hash,)
+            ).fetchone()
+        if not row:
+            return {"ok": False, "error": "Код не найден. Проверьте правильность ввода."}
+        cr = dict(row)
+        if cr["status"] == "used":
+            # Idempotent: if this same parent already used it
+            if cr.get("used_by_parent_telegram_user_id") == parent_telegram_user_id:
+                with self._connect() as conn:
+                    existing = conn.execute(
+                        "SELECT * FROM client_parent_child_links WHERE parent_telegram_user_id=? AND mk_user_id=? AND status='active'",
+                        (parent_telegram_user_id, cr["mk_user_id"]),
+                    ).fetchone()
+                if existing:
+                    return {"ok": True, "already_linked": True,
+                            "mk_user_id": cr["mk_user_id"],
+                            "child_display_name": cr["child_display_name"]}
+            return {"ok": False, "error": "Этот код уже был использован."}
+        if cr["status"] == "invalidated":
+            return {"ok": False, "error": "Этот код недействителен. Обратитесь к администратору."}
+        if cr["status"] == "expired":
+            return {"ok": False, "error": "Срок действия кода истёк. Обратитесь к администратору."}
+        if cr["status"] != "active":
+            return {"ok": False, "error": f"Код недействителен (статус: {cr['status']})."}
+        if cr.get("expires_at") and cr["expires_at"] < now:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE client_child_link_codes SET status='expired', updated_at=? WHERE id=?",
+                    (now, cr["id"]),
+                )
+            return {"ok": False, "error": "Срок действия кода истёк. Обратитесь к администратору."}
+        mk_user_id = cr["mk_user_id"]
+        child_display_name = cr.get("child_display_name") or ""
+        # Check for existing active link for this pair
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM client_parent_child_links WHERE parent_telegram_user_id=? AND mk_user_id=? AND status='active'",
+                (parent_telegram_user_id, mk_user_id),
+            ).fetchone()
+        if existing:
+            return {"ok": True, "already_linked": True,
+                    "mk_user_id": mk_user_id, "child_display_name": child_display_name}
+        # Create the link and mark code as used (atomic)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO client_parent_child_links
+                (parent_telegram_user_id, mk_user_id, child_display_name, status,
+                 linked_at, linked_by_code_id, created_at, updated_at)
+                VALUES (?, ?, ?, 'active', ?, ?, ?, ?)
+                """,
+                (parent_telegram_user_id, mk_user_id, child_display_name,
+                 now, cr["id"], now, now),
+            )
+            conn.execute(
+                """
+                UPDATE client_child_link_codes
+                SET status='used', used_at=?, used_by_parent_telegram_user_id=?, updated_at=?
+                WHERE id=?
+                """,
+                (now, parent_telegram_user_id, now, cr["id"]),
+            )
+        return {"ok": True, "mk_user_id": mk_user_id, "child_display_name": child_display_name}
+
+    def list_client_children_for_parent(
+        self, parent_telegram_user_id: str
+    ) -> list[dict[str, Any]]:
+        """Return all active client-linked children for the given parent.
+
+        Does NOT query the food parent_child_links table.
+        """
+        parent_telegram_user_id = str(parent_telegram_user_id or "").strip()
+        if not parent_telegram_user_id:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM client_parent_child_links
+                WHERE parent_telegram_user_id=? AND status='active'
+                ORDER BY linked_at DESC
+                """,
+                (parent_telegram_user_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def unlink_client_child(
+        self,
+        parent_telegram_user_id: str,
+        mk_user_id: str,
+        unlinked_by: str,
+        now: str,
+    ) -> dict[str, Any]:
+        """Mark a client parent-child link as 'unlinked'.
+
+        Does NOT delete payment intents, audit rows, or food links.
+        Does NOT affect the Food Module in any way.
+        """
+        parent_telegram_user_id = str(parent_telegram_user_id or "").strip()
+        mk_user_id = str(mk_user_id or "").strip()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM client_parent_child_links
+                WHERE parent_telegram_user_id=? AND mk_user_id=? AND status='active'
+                """,
+                (parent_telegram_user_id, mk_user_id),
+            ).fetchone()
+        if not row:
+            return {"ok": False, "error": "Активная привязка не найдена"}
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE client_parent_child_links
+                SET status='unlinked', unlinked_at=?, unlinked_by=?, updated_at=?
+                WHERE id=?
+                """,
+                (now, str(unlinked_by), now, row["id"]),
+            )
+        return {"ok": True, "unlinked": {"mk_user_id": mk_user_id,
+                                          "parent_telegram_user_id": parent_telegram_user_id}}
+
+    def invalidate_client_link_code(
+        self, code_id: int, invalidated_by: str, now: str
+    ) -> dict[str, Any]:
+        """Mark a client link code as invalidated (admin action)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM client_child_link_codes WHERE id=?", (code_id,)
+            ).fetchone()
+        if not row:
+            return {"ok": False, "error": "Код не найден"}
+        cr = dict(row)
+        if cr["status"] != "active":
+            return {"ok": False, "error": f"Код уже {cr['status']}"}
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE client_child_link_codes
+                SET status='invalidated', invalidated_at=?, invalidated_by=?, updated_at=?
+                WHERE id=?
+                """,
+                (now, str(invalidated_by), now, code_id),
+            )
+        return {"ok": True, "code_id": code_id}
+
+    def get_client_link_status_for_student(self, mk_user_id: str) -> dict[str, Any]:
+        """Admin view: active links and recent codes for a student.
+
+        Does NOT expose code_hash or food data.
+        """
+        mk_user_id = str(mk_user_id or "").strip()
+        with self._connect() as conn:
+            links = conn.execute(
+                "SELECT * FROM client_parent_child_links WHERE mk_user_id=? ORDER BY linked_at DESC",
+                (mk_user_id,),
+            ).fetchall()
+            codes = conn.execute(
+                """
+                SELECT id, mk_user_id, child_display_name, status,
+                       created_at, expires_at, used_at, invalidated_at, created_by
+                FROM client_child_link_codes
+                WHERE mk_user_id=? ORDER BY created_at DESC LIMIT 20
+                """,
+                (mk_user_id,),
+            ).fetchall()
+        return {
+            "mk_user_id": mk_user_id,
+            "links": [dict(r) for r in links],
+            "codes": [dict(r) for r in codes],
+        }
 
     def find_duplicate_payment_intents(
         self,

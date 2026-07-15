@@ -9810,6 +9810,122 @@ class MiniAppContext:
             })
         return {"ok": True, "payments": result, "total": len(result)}
 
+    # ── v7.0.93.1 — separate client parent-child link system ─────────────────
+
+    def client_children_list(self, auth: dict[str, Any]) -> dict[str, Any]:
+        """GET /api/client/children — unified read-only list for parents.
+
+        Returns both client children (source=client, available_modules=[payments])
+        and food children (source=food, available_modules=[food]).
+        Food parent_child_links are read-only here; food module is not modified.
+        """
+        role = self._role_for_user(int(auth["user_id"]))
+        if role != "parent":
+            return {"ok": False, "error": "Доступ только для родителей."}
+        parent_tid = str(auth["user_id"])
+
+        client_links = self.storage.list_client_children_for_parent(parent_tid)
+        client_children = [
+            {
+                "source": "client",
+                "mk_user_id": l["mk_user_id"],
+                "display_name": l.get("child_display_name") or "Ученик",
+                "linked_at": l.get("linked_at"),
+                "available_modules": ["payments"],
+            }
+            for l in client_links
+        ]
+
+        # Food children — read-only from the food system
+        food_children_raw = self.storage.list_children_for_parent(parent_tid)
+        food_children = [
+            {
+                "source": "food",
+                "mk_student_id": c.get("mk_student_id"),
+                "display_name": c.get("full_name") or c.get("first_name") or "Ребёнок",
+                "group_name": c.get("group_name"),
+                "classroom": c.get("classroom"),
+                "confirmed_at": c.get("confirmed_at"),
+                "available_modules": ["food"],
+            }
+            for c in food_children_raw
+        ]
+
+        return {
+            "ok": True,
+            "children": client_children + food_children,
+            "client_count": len(client_children),
+            "food_count": len(food_children),
+        }
+
+    def client_link_child(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/client/children/link — parent enters CL- code to link a child."""
+        role = self._role_for_user(int(auth["user_id"]))
+        if role != "parent":
+            return {"ok": False, "error": "Доступ только для родителей."}
+        parent_tid = str(auth["user_id"])
+        code = str(body.get("code") or "").strip().upper()
+        if not code:
+            return {"ok": False, "error": "Введите код привязки."}
+        if not code.startswith("CL-") or len(code) != 11:
+            return {"ok": False, "error": "Неверный формат кода. Ожидается CL-XXXXXXXX."}
+        now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        return self.storage.link_client_child(parent_tid, code, now)
+
+    def admin_client_generate_code(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/client/admin/link-codes — admin creates a CL- code for a student."""
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+        mk_user_id = str(body.get("mk_user_id") or "").strip()
+        child_display_name = str(body.get("child_display_name") or "").strip()
+        expires_at = str(body.get("expires_at") or "").strip() or None
+        if not mk_user_id:
+            return {"ok": False, "error": "mk_user_id обязателен"}
+        if not child_display_name:
+            return {"ok": False, "error": "child_display_name обязателен"}
+        created_by = str(auth.get("user_id") or "")
+        return self.storage.create_client_link_code(mk_user_id, child_display_name, created_by, expires_at)
+
+    def admin_client_invalidate_code(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/client/admin/link-codes/invalidate — admin invalidates a code by id."""
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+        try:
+            code_id = int(body.get("code_id") or 0)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "code_id must be an integer"}
+        if not code_id:
+            return {"ok": False, "error": "code_id обязателен"}
+        now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        invalidated_by = str(auth.get("user_id") or "")
+        return self.storage.invalidate_client_link_code(code_id, invalidated_by, now)
+
+    def admin_client_unlink_child(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/client/admin/unlink — admin unlinks a parent from a student."""
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+        parent_telegram_user_id = str(body.get("parent_telegram_user_id") or "").strip()
+        mk_user_id = str(body.get("mk_user_id") or "").strip()
+        if not parent_telegram_user_id or not mk_user_id:
+            return {"ok": False, "error": "parent_telegram_user_id и mk_user_id обязательны"}
+        now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        unlinked_by = str(auth.get("user_id") or "")
+        return self.storage.unlink_client_child(parent_telegram_user_id, mk_user_id, unlinked_by, now)
+
+    def admin_client_link_status(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        """GET /api/client/admin/link-status?mk_user_id=... — admin views link status for a student."""
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+        mk_user_id = str(params.get("mk_user_id") or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "mk_user_id обязателен"}
+        data = self.storage.get_client_link_status_for_student(mk_user_id)
+        return {"ok": True, **data}
+
     @staticmethod
     def _normalize_payment_intent(pi: dict) -> dict:
         """Add derived frontend-friendly fields to a payment_intent row."""
@@ -12227,6 +12343,10 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.bepaid_list_unmatched_transactions(auth))
                 if path == "/api/client/payments":
                     return self._send_json(CTX.client_payments_list(auth))
+                if path == "/api/client/children":
+                    return self._send_json(CTX.client_children_list(auth))
+                if path == "/api/client/admin/link-status":
+                    return self._send_json(CTX.admin_client_link_status(auth, params))
                 if path == "/api/payments/intents":
                     return self._send_json(CTX.payment_intents_list(auth, params))
                 if path == "/api/payments/moyklass/invoices":
@@ -12424,6 +12544,14 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 return self._send_json(CTX.admin_moyklass_staff_link(auth, body))
             if path == "/api/food/link-child":
                 return self._send_json(CTX.food_link_child(auth, body))
+            if path == "/api/client/children/link":
+                return self._send_json(CTX.client_link_child(auth, body))
+            if path == "/api/client/admin/link-codes":
+                return self._send_json(CTX.admin_client_generate_code(auth, body))
+            if path == "/api/client/admin/link-codes/invalidate":
+                return self._send_json(CTX.admin_client_invalidate_code(auth, body))
+            if path == "/api/client/admin/unlink":
+                return self._send_json(CTX.admin_client_unlink_child(auth, body))
             if path == "/api/food/debug/sync-camp-children":
                 return self._send_json(CTX.food_debug_sync_camp_children(auth, body))
             if path == "/api/food/debug/clear-camp-children":
