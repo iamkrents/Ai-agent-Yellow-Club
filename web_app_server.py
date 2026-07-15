@@ -9641,6 +9641,7 @@ class MiniAppContext:
         intents = self.storage.list_payment_intents(
             month=month or None,
             status=status if status != "all" else None,
+            exclude_cancelled=(status == "all"),
         )
         intents = [self._normalize_payment_intent(pi) for pi in intents]
         # Attach payment options for dual-channel cards (payment_url safe to expose; token not exposed)

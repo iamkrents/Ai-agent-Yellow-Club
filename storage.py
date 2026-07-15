@@ -4812,6 +4812,8 @@ class Storage:
         status: Optional[str] = None,
         mk_user_id: Optional[int] = None,
         limit: int = 200,
+        *,
+        exclude_cancelled: bool = False,
     ) -> list[dict]:
         clauses: list[str] = []
         params: list = []
@@ -4821,6 +4823,8 @@ class Storage:
         if status and status != "all":
             clauses.append("status=?")
             params.append(status)
+        elif exclude_cancelled:
+            clauses.append("status != 'cancelled'")
         if mk_user_id:
             clauses.append("mk_user_id=?")
             params.append(mk_user_id)
@@ -4847,6 +4851,85 @@ class Storage:
                 "SELECT * FROM payment_intents WHERE public_id=?", (public_id,)
             ).fetchone()
         return dict(row) if row else None
+
+    def get_bepaid_transactions_for_intent(self, intent_public_id: str) -> list[dict]:
+        """Return all bePaid transactions linked to this intent. Read-only."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM bepaid_transactions WHERE intent_public_id=? ORDER BY id",
+                (intent_public_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def cancel_options_for_cleanup(self, intent_public_id: str, now: str) -> int:
+        """Mark all active (non-paid, non-cancelled, non-superseded) options as cancelled.
+
+        Never deletes rows. Returns number of rows changed.
+        Safe to call multiple times (idempotent on already-cancelled rows).
+        """
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE payment_intent_options SET
+                    status = 'cancelled',
+                    updated_at = ?
+                WHERE intent_public_id = ?
+                  AND status NOT IN ('paid', 'cancelled', 'superseded')
+                """,
+                (now, intent_public_id),
+            )
+            changes = conn.execute("SELECT changes()").fetchone()[0]
+        return int(changes)
+
+    def cancel_payment_intent_for_cleanup(
+        self, public_id: str, reason: str, now: str
+    ) -> dict:
+        """Cancel a payment intent for test/maintenance cleanup.
+
+        Covers any pre-payment status. Hard-blocks paid/posted_to_moyklass.
+        Idempotent: already-cancelled returns {"ok": True, "idempotent": True}.
+        Does NOT delete transactions, options, webhooks, MK identifiers, or audit rows.
+        """
+        _HARD_BLOCK = frozenset({"paid", "posted_to_moyklass", "double_payment_requires_check"})
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM payment_intents WHERE public_id=?", (public_id,)
+            ).fetchone()
+        if not row:
+            return {"ok": False, "error": "not_found", "public_id": public_id}
+        pi = dict(row)
+        if pi["status"] == "cancelled":
+            return {"ok": True, "idempotent": True, "intent": pi}
+        if pi["status"] in _HARD_BLOCK:
+            return {
+                "ok": False,
+                "error": "blocked_paid_or_posted",
+                "status": pi["status"],
+                "intent": pi,
+            }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE payment_intents
+                SET status='cancelled', cancel_reason=?, cancelled_at=?, updated_at=?
+                WHERE public_id=?
+                  AND status NOT IN ('paid', 'posted_to_moyklass',
+                                     'cancelled', 'double_payment_requires_check')
+                """,
+                (reason, now, now, public_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM payment_intents WHERE public_id=?", (public_id,)
+            ).fetchone()
+        pi_after = dict(row) if row else pi
+        if pi_after.get("status") != "cancelled":
+            return {
+                "ok": False,
+                "error": "update_did_not_apply",
+                "status": pi_after.get("status"),
+                "intent": pi_after,
+            }
+        return {"ok": True, "intent": pi_after}
 
     def find_duplicate_payment_intents(
         self,
