@@ -8048,69 +8048,127 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
 :root[data-theme="dark"] .mk-pt-hint { background: rgba(234,179,8,.08); border-color: rgba(234,179,8,.20); }
 :root[data-theme="dark"] .mk-pt-env-hint { background: rgba(255,255,255,.08); }
 
-/* ── v7.0.93.2.3 — Client parent payment cards ────────────────────────── */
-.cp-card { background: var(--card-bg,#f4f7fb); border-radius: 12px; padding: 14px 14px 12px; margin-bottom: 12px; border: 1px solid rgba(0,0,0,.07); }
-.cp-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
-.cp-card-name { font-size: 14px; font-weight: 600; color: var(--label,#172033); flex: 1; }
-.cp-card-amount { font-size: 16px; font-weight: 700; color: var(--label,#172033); white-space: nowrap; }
-.cp-card-meta { display: flex; align-items: center; gap: 6px; margin: 6px 0 4px; flex-wrap: wrap; }
-.cp-period { font-size: 12px; color: var(--muted,#687083); }
-.cp-status-paid { background: rgba(16,185,129,.15); color: #059669; border-radius: 6px; }
-.cp-status-pending { background: rgba(99,102,241,.12); color: #4f46e5; border-radius: 6px; }
-.cp-card-comment { font-size: 12px; color: var(--muted,#687083); margin-top: 4px; }
-.cp-card-date { font-size: 10px; color: var(--muted,#687083); margin-top: 2px; }
-.cp-pay-method { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: rgba(0,0,0,.03); border: 1px solid rgba(0,0,0,.06); }
-.cp-pay-method + .cp-pay-method { margin-top: 8px; }
-.cp-pay-method-title { font-size: 13px; font-weight: 600; color: var(--label,#172033); margin-bottom: 6px; }
-.cp-pay-erip-acct { font-size: 15px; color: var(--label,#172033); margin-bottom: 6px; letter-spacing: .02em; }
-.cp-copy-btn { display: inline-block; font-size: 12px; padding: 5px 12px; border-radius: 7px; border: 1px solid var(--accent,#6366f1); background: transparent; color: var(--accent,#6366f1); cursor: pointer; transition: background .15s; }
-.cp-copy-btn:hover { background: rgba(99,102,241,.10); }
-.cp-copy-btn:disabled { opacity: .6; cursor: default; }
-.cp-pay-hint { font-size: 11px; color: var(--muted,#687083); margin-top: 6px; }
-.cp-card-pay-btn { display: inline-block; padding: 8px 16px; border-radius: 8px; background: var(--accent,#6366f1); color: #fff; font-size: 13px; font-weight: 600; text-decoration: none; transition: opacity .15s; }
-.cp-card-pay-btn:hover { opacity: .88; }
-.cp-card-paid-block { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: rgba(16,185,129,.08); border-left: 3px solid #10b981; }
-.cp-paid-amt { font-size: 12px; color: var(--label,#172033); }
-.cp-paid-date { font-size: 11px; color: var(--muted,#687083); margin-top: 2px; }
-@media (prefers-color-scheme: dark) {
-  .cp-card { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.07); }
-  .cp-pay-method { background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.08); }
-  .cp-status-paid { background: rgba(16,185,129,.20); color: #34d399; }
-  .cp-status-pending { background: rgba(99,102,241,.18); color: #a5b4fc; }
-  .cp-copy-btn { border-color: #a5b4fc; color: #a5b4fc; }
-  .cp-copy-btn:hover { background: rgba(165,180,252,.12); }
-  .cp-card-paid-block { background: rgba(16,185,129,.12); }
-}
-:root[data-theme="dark"] .cp-card { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.07); }
-:root[data-theme="dark"] .cp-pay-method { background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.08); }
-:root[data-theme="dark"] .cp-status-paid { background: rgba(16,185,129,.20); color: #34d399; }
-:root[data-theme="dark"] .cp-status-pending { background: rgba(99,102,241,.18); color: #a5b4fc; }
-:root[data-theme="dark"] .cp-copy-btn { border-color: #a5b4fc; color: #a5b4fc; }
-:root[data-theme="dark"] .cp-copy-btn:hover { background: rgba(165,180,252,.12); }
-:root[data-theme="dark"] .cp-card-paid-block { background: rgba(16,185,129,.12); }
-:root[data-theme="light"] .cp-card { background: #fff; border-color: #e8ecf4; }
-:root[data-theme="light"] .cp-pay-method { background: #f8f9fc; border-color: #e0e4ef; }
-:root[data-theme="light"] .cp-status-paid { background: rgba(16,185,129,.12); color: #059669; }
-:root[data-theme="light"] .cp-status-pending { background: rgba(99,102,241,.10); color: #4f46e5; }
-/* ── v7.0.93.2.4 — ERIP instruction block ──────────────────────────────── */
-.cp-erip-row { margin: 6px 0; }
-.cp-erip-label { font-size: 11px; color: var(--muted,#687083); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
-.cp-erip-value { font-size: 16px; color: var(--label,#172033); margin-bottom: 5px; letter-spacing: .02em; }
-.cp-erip-details { margin-top: 10px; }
-.cp-erip-details > summary { font-size: 12px; color: var(--accent,#6366f1); cursor: pointer; list-style: none; padding: 4px 0; }
+/* ── v7.0.93.2.5 — Client payment page — Yellow Club brand redesign ────── */
+
+/* List container */
+.cp-list { display: flex; flex-direction: column; padding-bottom: 84px; }
+
+/* Card */
+.cp-card { background: #fff; border: 1px solid #ece9dd; border-radius: 20px; padding: 18px 16px 16px; margin-bottom: 14px; box-shadow: 0 4px 18px rgba(26,38,66,.07); overflow: hidden; }
+
+/* Header */
+.cp-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.cp-card-name { font-size: 18px; font-weight: 700; color: #172033; flex: 1; min-width: 0; word-break: break-word; overflow-wrap: anywhere; line-height: 1.3; }
+.cp-card-amount { font-size: 22px; font-weight: 800; color: #172033; white-space: nowrap; line-height: 1.2; }
+
+/* Meta row */
+.cp-card-meta { display: flex; align-items: center; gap: 8px; margin: 8px 0 6px; flex-wrap: wrap; }
+.cp-period { font-size: 13px; color: #657089; font-weight: 500; }
+
+/* Status badges */
+.cp-status-paid { display: inline-flex; align-items: center; background: rgba(31,165,107,.13); color: #116643; border-radius: 8px; padding: 3px 10px; font-size: 12px; font-weight: 700; line-height: 1.4; }
+.cp-status-pending { display: inline-flex; align-items: center; background: rgba(255,216,77,.30); color: #6b4e00; border-radius: 8px; padding: 3px 10px; font-size: 12px; font-weight: 700; line-height: 1.4; }
+
+/* Comment / date */
+.cp-card-comment { font-size: 13px; color: #657089; margin-top: 5px; line-height: 1.4; }
+.cp-card-date { font-size: 12px; color: #8e9ab3; margin-top: 3px; }
+
+/* Divider above payment methods */
+.cp-methods-divider { height: 1px; background: #f0eee6; margin: 12px 0 0; }
+
+/* Payment method blocks */
+.cp-pay-method { margin-top: 12px; padding: 12px 14px; border-radius: 14px; background: #f6f7fb; border: 1px solid #e8ecf4; }
+.cp-pay-method + .cp-pay-method { margin-top: 10px; }
+.cp-pay-method-title { font-size: 15px; font-weight: 700; color: #172033; margin-bottom: 10px; }
+
+/* ERIP block — light yellow tint */
+.cp-erip-block { background: rgba(255,248,210,.75); border: 1px solid rgba(255,216,77,.45); }
+
+/* Primary button — yellow, dark text, full width */
+.cp-card-pay-btn { display: block; width: 100%; box-sizing: border-box; padding: 14px 20px; border-radius: 12px; background: #ffd84d; color: #172033; font-family: "Nunito", system-ui, sans-serif; font-size: 16px; font-weight: 700; text-align: center; text-decoration: none; border: none; cursor: pointer; transition: background .15s, transform .12s; min-height: 48px; line-height: 1.2; }
+.cp-card-pay-btn:hover { background: #ffc800; }
+.cp-card-pay-btn:active { transform: scale(.98); }
+
+/* ERIP fields */
+.cp-erip-row { margin-bottom: 10px; }
+.cp-erip-label { font-size: 11px; font-weight: 700; color: #657089; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 3px; }
+.cp-erip-value { font-size: 17px; font-weight: 700; color: #172033; margin-bottom: 6px; word-break: break-all; overflow-wrap: anywhere; line-height: 1.3; }
+
+/* Copy buttons — secondary, dark border */
+.cp-copy-btn { display: inline-flex; align-items: center; font-family: "Nunito", system-ui, sans-serif; font-size: 14px; font-weight: 600; padding: 9px 16px; border-radius: 10px; border: 1.5px solid #172033; background: #fff; color: #172033; cursor: pointer; transition: background .15s, border-color .15s, color .15s, transform .1s; min-height: 44px; line-height: 1.2; }
+.cp-copy-btn:hover { background: #ffd84d; border-color: #c4a200; }
+.cp-copy-btn:active { transform: scale(.98); }
+.cp-copy-btn:disabled { opacity: 1; cursor: default; background: rgba(31,165,107,.12); border-color: #1fa56b; color: #116643; }
+
+/* Pay hint */
+.cp-pay-hint { font-size: 13px; color: #657089; margin-top: 8px; }
+
+/* Paid block */
+.cp-card-paid-block { margin-top: 10px; padding: 10px 12px; border-radius: 12px; background: rgba(31,165,107,.08); border-left: 3px solid #1fa56b; }
+.cp-paid-amt { font-size: 14px; font-weight: 600; color: #172033; }
+.cp-paid-date { font-size: 12px; color: #657089; margin-top: 2px; }
+
+/* ERIP accordion */
+.cp-erip-details { margin-top: 12px; border-radius: 12px; border: 1px solid rgba(255,216,77,.40); background: #fff; overflow: hidden; }
+.cp-erip-details > summary { list-style: none; display: flex; align-items: center; justify-content: space-between; padding: 11px 14px; font-size: 14px; font-weight: 700; color: #172033; cursor: pointer; user-select: none; background: rgba(255,248,210,.60); }
 .cp-erip-details > summary::-webkit-details-marker { display: none; }
-.cp-erip-details[open] > summary { margin-bottom: 6px; }
-.cp-erip-steps { margin: 0; padding-left: 18px; }
-.cp-erip-steps li { font-size: 12px; color: var(--label,#172033); margin: 6px 0; line-height: 1.5; }
-.cp-erip-hint-label { font-weight: 600; }
+.cp-erip-details > summary::after { content: "▾"; font-size: 16px; color: #c4a200; transition: transform .20s; flex-shrink: 0; margin-left: 8px; line-height: 1; }
+.cp-erip-details[open] > summary::after { transform: rotate(180deg); }
+.cp-erip-details[open] > summary { border-bottom: 1px solid rgba(255,216,77,.30); }
+
+/* Instruction steps */
+.cp-erip-steps { margin: 0; padding: 14px 14px 14px 32px; }
+.cp-erip-steps li { font-size: 14px; color: #172033; opacity: 1; margin: 8px 0; line-height: 1.55; }
+.cp-erip-hint-label { font-weight: 700; color: #172033; }
+.cp-erip-path { display: block; margin-top: 6px; padding: 8px 12px; background: rgba(255,216,77,.15); border-radius: 8px; font-size: 13px; color: #4a3900; line-height: 1.7; }
+
+/* Dark mode */
 @media (prefers-color-scheme: dark) {
-  .cp-erip-value { color: #e2e8f0; }
-  .cp-erip-steps li { color: #cbd5e1; }
-  .cp-erip-details > summary { color: #a5b4fc; }
+  .cp-card { background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.10); box-shadow: none; }
+  .cp-card-name, .cp-card-amount { color: #f0f0f0; }
+  .cp-status-pending { background: rgba(255,216,77,.18); color: #d4a800; }
+  .cp-status-paid { background: rgba(31,165,107,.20); color: #34d399; }
+  .cp-period, .cp-card-comment, .cp-card-date { color: #94a3b8; }
+  .cp-methods-divider { background: rgba(255,255,255,.10); }
+  .cp-pay-method { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.08); }
+  .cp-pay-method-title { color: #f0f0f0; }
+  .cp-erip-block { background: rgba(255,216,77,.07); border-color: rgba(255,216,77,.20); }
+  .cp-erip-label { color: #94a3b8; }
+  .cp-erip-value { color: #f0f0f0; }
+  .cp-copy-btn { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.30); color: #f0f0f0; }
+  .cp-copy-btn:hover { background: #ffd84d; border-color: #ffd84d; color: #172033; }
+  .cp-copy-btn:disabled { background: rgba(31,165,107,.18); border-color: #34d399; color: #34d399; }
+  .cp-erip-details { border-color: rgba(255,216,77,.22); background: rgba(255,255,255,.04); }
+  .cp-erip-details > summary { color: #f0f0f0; background: rgba(255,216,77,.07); }
+  .cp-erip-steps li { color: #e0e0e0; opacity: 1; }
+  .cp-erip-hint-label { color: #f0f0f0; }
+  .cp-erip-path { background: rgba(255,216,77,.10); color: #e0c060; }
+  .cp-paid-amt { color: #f0f0f0; }
+  .cp-card-paid-block { background: rgba(31,165,107,.12); }
 }
-:root[data-theme="dark"] .cp-erip-value { color: #e2e8f0; }
-:root[data-theme="dark"] .cp-erip-steps li { color: #cbd5e1; }
-:root[data-theme="dark"] .cp-erip-details > summary { color: #a5b4fc; }
-:root[data-theme="light"] .cp-erip-value { color: #172033; }
-:root[data-theme="light"] .cp-erip-steps li { color: #172033; }
-:root[data-theme="light"] .cp-erip-details > summary { color: #4f46e5; }
+:root[data-theme="dark"] .cp-card { background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.10); box-shadow: none; }
+:root[data-theme="dark"] .cp-card-name, :root[data-theme="dark"] .cp-card-amount { color: #f0f0f0; }
+:root[data-theme="dark"] .cp-status-pending { background: rgba(255,216,77,.18); color: #d4a800; }
+:root[data-theme="dark"] .cp-status-paid { background: rgba(31,165,107,.20); color: #34d399; }
+:root[data-theme="dark"] .cp-period, :root[data-theme="dark"] .cp-card-comment, :root[data-theme="dark"] .cp-card-date { color: #94a3b8; }
+:root[data-theme="dark"] .cp-methods-divider { background: rgba(255,255,255,.10); }
+:root[data-theme="dark"] .cp-pay-method { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.08); }
+:root[data-theme="dark"] .cp-pay-method-title { color: #f0f0f0; }
+:root[data-theme="dark"] .cp-erip-block { background: rgba(255,216,77,.07); border-color: rgba(255,216,77,.20); }
+:root[data-theme="dark"] .cp-erip-label { color: #94a3b8; }
+:root[data-theme="dark"] .cp-erip-value { color: #f0f0f0; }
+:root[data-theme="dark"] .cp-copy-btn { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.30); color: #f0f0f0; }
+:root[data-theme="dark"] .cp-copy-btn:hover { background: #ffd84d; border-color: #ffd84d; color: #172033; }
+:root[data-theme="dark"] .cp-copy-btn:disabled { background: rgba(31,165,107,.18); border-color: #34d399; color: #34d399; }
+:root[data-theme="dark"] .cp-erip-details { border-color: rgba(255,216,77,.22); background: rgba(255,255,255,.04); }
+:root[data-theme="dark"] .cp-erip-details > summary { color: #f0f0f0; background: rgba(255,216,77,.07); }
+:root[data-theme="dark"] .cp-erip-steps li { color: #e0e0e0; opacity: 1; }
+:root[data-theme="dark"] .cp-erip-hint-label { color: #f0f0f0; }
+:root[data-theme="dark"] .cp-erip-path { background: rgba(255,216,77,.10); color: #e0c060; }
+:root[data-theme="dark"] .cp-paid-amt { color: #f0f0f0; }
+:root[data-theme="dark"] .cp-card-paid-block { background: rgba(31,165,107,.12); }
+:root[data-theme="light"] .cp-card { background: #fff; border-color: #ece9dd; }
+:root[data-theme="light"] .cp-erip-block { background: rgba(255,248,210,.75); border-color: rgba(255,216,77,.45); }
+:root[data-theme="light"] .cp-status-pending { background: rgba(255,216,77,.30); color: #6b4e00; }
+:root[data-theme="light"] .cp-status-paid { background: rgba(31,165,107,.13); color: #116643; }
+:root[data-theme="light"] .cp-copy-btn { background: #fff; border-color: #172033; color: #172033; }

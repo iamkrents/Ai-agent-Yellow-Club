@@ -61,7 +61,7 @@ INDEX_HTML = ROOT / "miniapp" / "index.html"
 SERVER_PY = ROOT / "web_app_server.py"
 STYLES_CSS = ROOT / "miniapp" / "styles.css"
 
-CURRENT_VERSION = "7.0.93.2.4"
+CURRENT_VERSION = "7.0.93.2.5"
 NOW = "2026-07-16T10:00:00"
 PARENT_ID = "789012"  # numeric-string telegram id used across tests
 

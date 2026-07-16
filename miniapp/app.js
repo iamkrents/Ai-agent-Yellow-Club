@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.93.2.4");
+console.log("MiniApp version: v7.0.93.2.5");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -13492,7 +13492,7 @@ function renderClientPaymentCard(pi) {
     if (pi.erip_account_number) {
       const safeAcct = escapeHtml(String(pi.erip_account_number));
       erpBlock = `
-        <div class="cp-pay-method">
+        <div class="cp-pay-method cp-erip-block">
           <div class="cp-pay-method-title">Оплата через ЕРИП</div>
           <div class="cp-erip-row">
             <div class="cp-erip-label">Номер заказа</div>
@@ -13511,7 +13511,7 @@ function renderClientPaymentCard(pi) {
               <li>Найдите услугу одним из способов:<br>
                 <span class="cp-erip-hint-label">По коду ЕРИП:</span> <strong>${escapeHtml(ERIP_CODE)}</strong><br>
                 <span class="cp-erip-hint-label">Или последовательно:</span><br>
-                Образование и развитие<br>→ Дополнительное образование и развитие<br>→ Обучение ИТ, инженерии<br>→ Минск<br>→ Еллоу клаб<br>→ Обучение</li>
+                <span class="cp-erip-path">Образование и развитие<br>→ Дополнительное образование и развитие<br>→ Обучение ИТ, инженерии<br>→ Минск<br>→ Еллоу клаб<br>→ Обучение</span></li>
               <li>Введите номер заказа: <strong>${safeAcct}</strong></li>
               <li>Проверьте корректность информации.</li>
               <li>Совершите платёж.</li>
@@ -13540,9 +13540,10 @@ function renderClientPaymentCard(pi) {
       </div>
       <div class="cp-card-meta">
         ${periodStr ? `<span class="cp-period">${escapeHtml(periodStr)}</span>` : ""}
-        <span class="chip ${statusCls}" style="font-size:11px">${escapeHtml(statusLabel)}</span>
+        <span class="${statusCls}">${escapeHtml(statusLabel)}</span>
       </div>
       ${comment}${publishedAt}
+      <div class="cp-methods-divider"></div>
       ${paymentBlock}
     </div>`;
 }
@@ -13564,7 +13565,7 @@ async function loadClientPayments() {
     if (state.clientPayments.length === 0) {
       listEl.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:16px">Нет активных счетов на оплату.</div>`;
     } else {
-      listEl.innerHTML = state.clientPayments.map(renderClientPaymentCard).join("");
+      listEl.innerHTML = `<div class="cp-list">${state.clientPayments.map(renderClientPaymentCard).join("")}</div>`;
     }
     _scheduleClientPaymentsPoll();
   } catch (err) {
