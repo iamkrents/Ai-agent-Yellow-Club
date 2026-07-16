@@ -1,4 +1,4 @@
-"""Tests for v7.0.91: bePaid webhook processing and payment intent reconciliation.
+﻿"""Tests for v7.0.91: bePaid webhook processing and payment intent reconciliation.
 
 Fixtures A-J cover the key matching/idempotency/state-machine scenarios.
 Run offline (no network/bePaid/Telegram needed):
@@ -618,7 +618,7 @@ class TestCSS(unittest.TestCase):
 
 # ── Cache-bust ────────────────────────────────────────────────────────────────
 
-CURRENT_MINIAPP_VERSION = "7.0.93.2.6"
+CURRENT_MINIAPP_VERSION = "7.0.93.2.7"
 
 
 class TestCacheBust(unittest.TestCase):

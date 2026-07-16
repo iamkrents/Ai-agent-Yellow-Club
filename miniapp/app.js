@@ -1,4 +1,4 @@
-const tg = window.Telegram?.WebApp;
+﻿const tg = window.Telegram?.WebApp;
 if (tg) {
   tg.ready();
   tg.expand();
@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.93.2.6");
+console.log("MiniApp version: v7.0.93.2.7");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -1169,7 +1169,7 @@ function setupRoleUi() {
       t.classList.toggle("hidden", !parentAllowed.includes(t.dataset.tab));
     });
     document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.add("hidden"));
-    $("appTitle").textContent = "Питание · Yellow Club";
+    $("appTitle").textContent = "Оплаты · Yellow Club";
     $("roleBadge").textContent = "Родитель";
   }
 
@@ -13743,7 +13743,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Client payments tab: load when tab becomes active
   document.querySelectorAll('.tab[data-tab="client-payments"]').forEach(btn => {
-    btn.addEventListener("click", () => { if (isParent()) loadClientPayments(); });
+    btn.addEventListener("click", () => {
+      // Context guard: always show parent-facing header on this tab,
+      // regardless of legacy DB role (restaurant/kitchen/food).
+      const _t = $("appTitle"); if (_t) _t.textContent = "Оплаты · Yellow Club";
+      const _b = $("roleBadge"); if (_b) _b.textContent = "Родитель";
+      if (isParent()) loadClientPayments();
+    });
   });
 
   // Event delegation for dynamically rendered invoice-card buttons

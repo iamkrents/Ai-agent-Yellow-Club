@@ -8172,3 +8172,44 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
 :root[data-theme="light"] .cp-status-pending { background: rgba(255,216,77,.30); color: #6b4e00; }
 :root[data-theme="light"] .cp-status-paid { background: rgba(31,165,107,.13); color: #116643; }
 :root[data-theme="light"] .cp-copy-btn { background: #fff; border-color: #172033; color: #172033; }
+
+/* ── v7.0.93.2.7 — Parent payment contrast & header hotfix ────────────────
+ *
+ * Root cause (dark mode invisible text):
+ *   The dark-mode rule gave cp-card `background: rgba(255,255,255,.06)` —
+ *   nearly transparent. The page body has no dark-mode override, so it stays
+ *   light (#f7f8fb). Text was set to #f0f0f0 (light) but the card showed
+ *   through to the light body → invisible text on a cream background.
+ *   Fix: give cards a solid dark background so text stays readable.
+ *
+ * Root cause (ERIP summary fades on hover):
+ *   Global rule `details > summary:hover { opacity: 0.75 }` applies to
+ *   cp-erip-details > summary. Override to opacity: 1.
+ *
+ * Root cause (copy button looks disabled):
+ *   Explicit `opacity: 1` on active cp- buttons guards against any global
+ *   `button:disabled { opacity: 0.5 }` cascade or Telegram theme injection.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+@media (prefers-color-scheme: dark) {
+  .cp-card { background: #1b2236; border-color: rgba(255,255,255,.12); }
+  .cp-pay-method { background: rgba(255,255,255,.08); }
+  .cp-erip-block { background: rgba(255,216,77,.10); border-color: rgba(255,216,77,.25); }
+  .cp-erip-details { background: rgba(22,32,52,.90); }
+  .cp-erip-details > summary { background: rgba(255,216,77,.12); }
+}
+:root[data-theme="dark"] .cp-card { background: #1b2236; border-color: rgba(255,255,255,.12); }
+:root[data-theme="dark"] .cp-pay-method { background: rgba(255,255,255,.08); }
+:root[data-theme="dark"] .cp-erip-block { background: rgba(255,216,77,.10); border-color: rgba(255,216,77,.25); }
+:root[data-theme="dark"] .cp-erip-details { background: rgba(22,32,52,.90); }
+:root[data-theme="dark"] .cp-erip-details > summary { background: rgba(255,216,77,.12); }
+
+/* ERIP accordion summary — no fade on hover, no ghost focus ring */
+.cp-erip-details > summary:hover { opacity: 1; }
+.cp-erip-details > summary:focus { outline: none; box-shadow: 0 0 0 2px rgba(255,216,77,.50); border-radius: 8px; }
+
+/* Active cp- buttons: explicit opacity guards against global button:disabled
+ * cascade and Telegram WebView theme injection */
+.cp-copy-btn { opacity: 1; }
+.cp-copy-btn:disabled { opacity: 1; }
+.cp-card-pay-btn { opacity: 1; }

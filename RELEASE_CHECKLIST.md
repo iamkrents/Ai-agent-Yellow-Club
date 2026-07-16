@@ -1,9 +1,11 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.93.2.5**
+**Cache version: v7.0.93.2.7**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.93.2.7 | 2026-07-16 | UI/UX hotfix: parent payment contrast (dark-mode card solid bg #1b2236), header «Оплаты · Yellow Club», client-payments tab context guard (blocks legacy restaurant role from header), details summary hover opacity fix, copy button opacity guard. 22 new tests. |
+| v7.0.93.2.6 | 2026-07-16 | Enforce exact MoyKlass payment type name matching for bePaid channels. Fail-closed name validation before posting. 21 new tests. |
 | v7.0.93.2.5 | 2026-07-16 | UI/UX rebrand: client payment page — Yellow Club brand system (white cards, #ffd84d yellow, #172033 dark text), yellow ERIP block, primary button yellow, secondary copy buttons dark-border, accordion styled, Nunito, mobile word-wrap, 84px bottom padding. 25 new tests. |
 | v7.0.93.2.4 | 2026-07-16 | Hotfix: ERIP payment instruction UX — full 5-step instructions, ERIP code 7485856 constant, «Номер заказа» terminology, copy buttons for order number and ERIP code, details/summary accordion. 17 new tests. |
 | v7.0.93.2.3 | 2026-07-16 | Hotfix: client payments ERIP display — same legacy fallback in client_payments_list, show both ERIP+acquiring, awaiting_payment status label, cp-card CSS, copy button. 29 new tests. |

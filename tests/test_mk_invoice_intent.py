@@ -1,4 +1,4 @@
-"""Unit tests for MoyKlass invoice → bePaid intent flow (v7.0.90 / v7.0.90.2).
+﻿"""Unit tests for MoyKlass invoice → bePaid intent flow (v7.0.90 / v7.0.90.2).
 
 Tests cover all guard conditions for payment_intent_from_mk_invoice,
 _preflight_mk_invoice, and the storage helper find_active_intent_by_invoice,
@@ -21,7 +21,7 @@ from typing import Optional
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-CURRENT_MINIAPP_VERSION = "7.0.93.2.6"
+CURRENT_MINIAPP_VERSION = "7.0.93.2.7"
 
 # Storage is importable standalone (only needs sqlite3 + utils)
 from storage import Storage
