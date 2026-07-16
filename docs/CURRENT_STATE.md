@@ -1,6 +1,6 @@
 # Yellow Club Agent — Current State
 
-> Последнее обновление: 2026-07-15 (v7.0.93.2.1)
+> Последнее обновление: 2026-07-16 (v7.0.93.2.2)
 > Цель файла: позволить возобновить работу из любого нового чата без потери контекста.
 > **Этот файл — только документация. Production-код не менять через этот файл.**
 
@@ -31,9 +31,9 @@ Claude Code (локально) → редактирование кода → git
 | Параметр | Значение |
 |---|---|
 | Последняя задеплоенная версия | **v7.0.81** (commit `db0f1e9`) — НЕ развёрнут, production-дата неизвестна |
-| Последний коммит в `main` | **v7.0.93.2.1** — Fix client admin tab and admin navigation |
-| Frontend cache-bust | **`v=7.0.93.2.1`** (app.js и styles.css) |
-| `console.log` в app.js | `MiniApp version: v7.0.93.2.1` |
+| Последний коммит в `main` | **v7.0.93.2.2** — Fix parent payment publish readiness |
+| Frontend cache-bust | **`v=7.0.93.2.2`** (app.js и styles.css) |
+| `console.log` в app.js | `MiniApp version: v7.0.93.2.2` |
 
 > Все версии начиная с v7.0.82 запушены, но **НЕ деплоились** на production-сервер. Деплой — только по команде владельца.
 

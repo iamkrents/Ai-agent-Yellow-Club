@@ -9721,14 +9721,32 @@ class MiniAppContext:
         _check("payment_method_valid", pmethod in ("erip", "acquiring"), f"payment_method={pmethod!r}")
 
         opts = self.storage.get_options_for_intent(public_id)
-        erip_opt = next((o for o in opts if o.get("channel") == "erip"), None)
-        acq_opt = next((o for o in opts if o.get("channel") == "acquiring"), None)
+        # Only consider active options — ignore cancelled / superseded / expired rows.
+        _inactive_opt_statuses = {"cancelled", "superseded", "expired"}
+        erip_opt = next(
+            (o for o in opts if o.get("channel") == "erip"
+             and o.get("status") not in _inactive_opt_statuses),
+            None,
+        )
+        acq_opt = next(
+            (o for o in opts if o.get("channel") == "acquiring"
+             and o.get("status") not in _inactive_opt_statuses),
+            None,
+        )
         if pmethod == "erip":
-            _check("erip_option_ready", bool(erip_opt and erip_opt.get("bepaid_account_number")),
-                   f"erip_account={'set' if erip_opt and erip_opt.get('bepaid_account_number') else 'missing'}")
+            # Check options table first.  For intents created via the legacy single-channel
+            # path (before v7.0.92.2 dual-channel options), ERIP data is stored only on the
+            # payment_intents row (bepaid_account_number + bepaid_uid) with no option row.
+            # The admin card reads pi.bepaid_account_number — we use the same canonical source.
+            erip_acct = str(erip_opt.get("bepaid_account_number") or "").strip() if erip_opt else ""
+            if not erip_acct and pi.get("bepaid_uid"):
+                erip_acct = str(pi.get("bepaid_account_number") or "").strip()
+            _check("erip_option_ready", bool(erip_acct),
+                   f"erip_account={'set' if erip_acct else 'missing'}")
         elif pmethod == "acquiring":
-            _check("acquiring_option_ready", bool(acq_opt and acq_opt.get("payment_url")),
-                   f"payment_url={'set' if acq_opt and acq_opt.get('payment_url') else 'missing'}")
+            acq_url = str(acq_opt.get("payment_url") or "").strip() if acq_opt else ""
+            _check("acquiring_option_ready", bool(acq_url),
+                   f"payment_url={'set' if acq_url else 'missing'}")
 
         mk_user_id = str(pi.get("mk_user_id") or "")
         parents = self.storage.get_parents_for_child(mk_user_id) if mk_user_id else []
@@ -9748,7 +9766,7 @@ class MiniAppContext:
             "blockers": len(blockers),
             "intent_status": pi.get("status"),
             "client_visibility": pi.get("client_visibility") or "hidden",
-            "parents": [{"parent_telegram_id": p.get("parent_telegram_id")} for p in parents],
+            "parents": [{"parent_telegram_user_id": p.get("parent_telegram_user_id")} for p in parents],
         }
 
     def publish_intent_to_parent(

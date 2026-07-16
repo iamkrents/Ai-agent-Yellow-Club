@@ -1,9 +1,14 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.92.5.4**
+**Cache version: v7.0.93.2.2**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.93.2.2 | 2026-07-16 | Hotfix: publish-preview ERIP readiness — fallback to legacy payment_intents.bepaid_account_number when no erip option row exists. Fixes publish blocked for dual-channel intents. Active option filter (cancelled/superseded/expired). Fixed parents field key. 19 new tests. |
+| v7.0.93.2.1 | 2026-07-15 | Fix: client-links invisible (missing from MVP_ADMIN_TABS). Hide tasks/help nav for admin roles. 24 regression tests. |
+| v7.0.93.2 | 2026-07-15 | Admin UI for client link codes — Клиенты subtab, student search, CL-code card with copy/generate/invalidate/unlink. 21 tests. |
+| v7.0.93.1 | 2026-07-15 | Separate client parent-child links (CL-XXXXXXXX). client_child_link_codes + client_parent_child_links tables. Unified /api/client/children. 28 tests. |
+| v7.0.93 | 2026-07-15 | Parent payment access — client_visibility field, publish/withdraw endpoints, parent payments UI. |
 | v7.0.92.5.4 | 2026-07-15 | Frontend hotfix: replaced undefined apiFetch with _apiPostRaw in verifyAcquiringPayment and reconcileTransaction. 20 new JS static-analysis tests. |
 | v7.0.92.5.3 | 2026-07-15 | Provider-verified acquiring payment recovery via GET checkout status query. New provider_verified trust path (separate from webhook_verified RSA). bepaid_verify_acquiring_payment endpoint + verifyAcquiringPayment UI button. 24 new tests. 593/593 OK. |
 | v7.0.92.5.2 | 2026-07-14 | Security: restored webhook_verified as strictly cryptographic property. mark_bepaid_transaction_signature_verified() called BEFORE matching. bepaid_transaction_link_intent no longer touches webhook_verified. list_unmatched hard-requires webhook_verified=1. reconcile hard-blocks webhook_verified=0. 19 security tests + 32 updated unmatched tests. 569/569 OK. |

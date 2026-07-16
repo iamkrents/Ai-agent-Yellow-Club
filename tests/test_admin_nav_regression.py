@@ -1,4 +1,4 @@
-"""Frontend regression tests for v7.0.93.2.1 — admin tab visibility and nav fixes.
+"""Frontend regression tests for v7.0.93.2.2 — admin tab visibility and nav fixes.
 
 Covers:
   Root cause analysis:
@@ -33,8 +33,8 @@ Covers:
     17. .subtabs has flex layout (for nowrap scrolling)
 
   Version and cache-bust:
-    18. version marker is v7.0.93.2.1
-    19. cache-bust is v=7.0.93.2.1
+    18. version marker is v7.0.93.2.2
+    19. cache-bust is v=7.0.93.2.2
     20. version constant passes existing test files
 
   Existing systems not broken:
@@ -58,7 +58,7 @@ INDEX_HTML = ROOT / "miniapp" / "index.html"
 SERVER_PY = ROOT / "web_app_server.py"
 STYLES_CSS = ROOT / "miniapp" / "styles.css"
 
-CURRENT_VERSION = "7.0.93.2.1"
+CURRENT_VERSION = "7.0.93.2.2"
 
 
 class Test01RootCause(unittest.TestCase):
@@ -221,7 +221,7 @@ class Test08Version(unittest.TestCase):
         self.assertIn(f"v={CURRENT_VERSION}", self.html)
 
     def test_20_no_old_version_93_2_exact(self):
-        # v7.0.93.2" (with quote) should not appear — replaced by v7.0.93.2.1
+        # v7.0.93.2" (with quote) should not appear — replaced by v7.0.93.2.2
         self.assertNotIn('"MiniApp version: v7.0.93.2"', self.js)
         self.assertNotIn('v=7.0.93.2"', self.html)
 
