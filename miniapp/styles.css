@@ -8092,3 +8092,25 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
 :root[data-theme="light"] .cp-pay-method { background: #f8f9fc; border-color: #e0e4ef; }
 :root[data-theme="light"] .cp-status-paid { background: rgba(16,185,129,.12); color: #059669; }
 :root[data-theme="light"] .cp-status-pending { background: rgba(99,102,241,.10); color: #4f46e5; }
+/* ── v7.0.93.2.4 — ERIP instruction block ──────────────────────────────── */
+.cp-erip-row { margin: 6px 0; }
+.cp-erip-label { font-size: 11px; color: var(--muted,#687083); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
+.cp-erip-value { font-size: 16px; color: var(--label,#172033); margin-bottom: 5px; letter-spacing: .02em; }
+.cp-erip-details { margin-top: 10px; }
+.cp-erip-details > summary { font-size: 12px; color: var(--accent,#6366f1); cursor: pointer; list-style: none; padding: 4px 0; }
+.cp-erip-details > summary::-webkit-details-marker { display: none; }
+.cp-erip-details[open] > summary { margin-bottom: 6px; }
+.cp-erip-steps { margin: 0; padding-left: 18px; }
+.cp-erip-steps li { font-size: 12px; color: var(--label,#172033); margin: 6px 0; line-height: 1.5; }
+.cp-erip-hint-label { font-weight: 600; }
+@media (prefers-color-scheme: dark) {
+  .cp-erip-value { color: #e2e8f0; }
+  .cp-erip-steps li { color: #cbd5e1; }
+  .cp-erip-details > summary { color: #a5b4fc; }
+}
+:root[data-theme="dark"] .cp-erip-value { color: #e2e8f0; }
+:root[data-theme="dark"] .cp-erip-steps li { color: #cbd5e1; }
+:root[data-theme="dark"] .cp-erip-details > summary { color: #a5b4fc; }
+:root[data-theme="light"] .cp-erip-value { color: #172033; }
+:root[data-theme="light"] .cp-erip-steps li { color: #172033; }
+:root[data-theme="light"] .cp-erip-details > summary { color: #4f46e5; }

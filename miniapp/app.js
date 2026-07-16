@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.93.2.3");
+console.log("MiniApp version: v7.0.93.2.4");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -13442,18 +13442,28 @@ const CLIENT_PAYMENT_STATUS_LABELS = {
   bepaid_requires_check: "Уточняется",
 };
 
-function cpCopyErip(btn, account) {
+const ERIP_CODE = "7485856";
+
+function _cpCopy(btn, text, doneText) {
   const p = (navigator.clipboard && navigator.clipboard.writeText)
-    ? navigator.clipboard.writeText(account)
+    ? navigator.clipboard.writeText(text)
     : Promise.reject(new Error("clipboard_unavailable"));
   p.then(() => {
     const orig = btn.textContent;
-    btn.textContent = "Номер ЕРИП скопирован";
+    btn.textContent = doneText;
     btn.disabled = true;
     setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
   }).catch(() => {
-    try { window.prompt("Номер ЕРИП:", account); } catch (_) {}
+    try { window.prompt(doneText + ":", text); } catch (_) {}
   });
+}
+
+function cpCopyOrderNum(btn, account) {
+  _cpCopy(btn, account, "Номер заказа скопирован");
+}
+
+function cpCopyEripCode(btn) {
+  _cpCopy(btn, ERIP_CODE, "Код ЕРИП скопирован");
 }
 
 function renderClientPaymentCard(pi) {
@@ -13484,9 +13494,29 @@ function renderClientPaymentCard(pi) {
       erpBlock = `
         <div class="cp-pay-method">
           <div class="cp-pay-method-title">Оплата через ЕРИП</div>
-          <div class="cp-pay-erip-acct">№ <strong>${safeAcct}</strong></div>
-          <button class="cp-copy-btn" onclick="cpCopyErip(this,'${safeAcct}')">Скопировать номер</button>
-          <div class="cp-pay-hint">Приложение банка → ЕРИП → Система «Расчёт» → введите номер платежа.</div>
+          <div class="cp-erip-row">
+            <div class="cp-erip-label">Номер заказа</div>
+            <div class="cp-erip-value"><strong>${safeAcct}</strong></div>
+            <button class="cp-copy-btn" onclick="cpCopyOrderNum(this,'${safeAcct}')">Скопировать номер заказа</button>
+          </div>
+          <div class="cp-erip-row">
+            <div class="cp-erip-label">Код ЕРИП</div>
+            <div class="cp-erip-value"><strong>${escapeHtml(ERIP_CODE)}</strong></div>
+            <button class="cp-copy-btn" onclick="cpCopyEripCode(this)">Скопировать код ЕРИП</button>
+          </div>
+          <details class="cp-erip-details">
+            <summary>Как оплатить через ЕРИП</summary>
+            <ol class="cp-erip-steps">
+              <li>Откройте в приложении банка раздел:<br><strong>«Система "Расчёт" (ЕРИП)»</strong>.</li>
+              <li>Найдите услугу одним из способов:<br>
+                <span class="cp-erip-hint-label">По коду ЕРИП:</span> <strong>${escapeHtml(ERIP_CODE)}</strong><br>
+                <span class="cp-erip-hint-label">Или последовательно:</span><br>
+                Образование и развитие<br>→ Дополнительное образование и развитие<br>→ Обучение ИТ, инженерии<br>→ Минск<br>→ Еллоу клаб<br>→ Обучение</li>
+              <li>Введите номер заказа: <strong>${safeAcct}</strong></li>
+              <li>Проверьте корректность информации.</li>
+              <li>Совершите платёж.</li>
+            </ol>
+          </details>
         </div>`;
     }
     paymentBlock = (acqBlock || erpBlock)

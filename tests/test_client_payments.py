@@ -61,7 +61,7 @@ INDEX_HTML = ROOT / "miniapp" / "index.html"
 SERVER_PY = ROOT / "web_app_server.py"
 STYLES_CSS = ROOT / "miniapp" / "styles.css"
 
-CURRENT_VERSION = "7.0.93.2.3"
+CURRENT_VERSION = "7.0.93.2.4"
 NOW = "2026-07-16T10:00:00"
 PARENT_ID = "789012"  # numeric-string telegram id used across tests
 
@@ -369,7 +369,7 @@ class Test09FrontendStaticAnalysis(unittest.TestCase):
 
     def test_12_erip_copy_button_in_card(self):
         self.assertIn("cp-copy-btn", self.card_fn)
-        self.assertIn("Скопировать номер", self.card_fn)
+        self.assertIn("Скопировать номер заказа", self.card_fn)
 
     def test_13_card_pay_button_for_acquiring(self):
         self.assertIn("cp-card-pay-btn", self.card_fn)
@@ -378,8 +378,9 @@ class Test09FrontendStaticAnalysis(unittest.TestCase):
     def test_14_clipboard_used_in_copy_fn(self):
         self.assertIn("navigator.clipboard.writeText", self.js)
 
-    def test_15_cpCopyErip_function_exists(self):
-        self.assertIn("function cpCopyErip(", self.js)
+    def test_15_copy_functions_exist(self):
+        self.assertIn("function cpCopyOrderNum(", self.js)
+        self.assertIn("function cpCopyEripCode(", self.js)
 
     def test_16_fmtPeriodRu_function_exists(self):
         self.assertIn("function _fmtPeriodRu(", self.js)

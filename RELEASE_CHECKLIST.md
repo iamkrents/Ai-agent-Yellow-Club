@@ -1,9 +1,10 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.93.2.3**
+**Cache version: v7.0.93.2.4**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.93.2.4 | 2026-07-16 | Hotfix: ERIP payment instruction UX — full 5-step instructions, ERIP code 7485856 constant, «Номер заказа» terminology, copy buttons for order number and ERIP code, details/summary accordion. 17 new tests. |
 | v7.0.93.2.3 | 2026-07-16 | Hotfix: client payments ERIP display — same legacy fallback in client_payments_list, show both ERIP+acquiring, awaiting_payment status label, cp-card CSS, copy button. 29 new tests. |
 | v7.0.93.2.2 | 2026-07-16 | Hotfix: publish-preview ERIP readiness — fallback to legacy payment_intents.bepaid_account_number when no erip option row exists. Fixes publish blocked for dual-channel intents. Active option filter (cancelled/superseded/expired). Fixed parents field key. 19 new tests. |
 | v7.0.93.2.1 | 2026-07-15 | Fix: client-links invisible (missing from MVP_ADMIN_TABS). Hide tasks/help nav for admin roles. 24 regression tests. |
