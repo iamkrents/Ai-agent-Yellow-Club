@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.93.2.5");
+console.log("MiniApp version: v7.0.93.2.6");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12699,6 +12699,9 @@ function _renderPaymentTypeBlock(label, channelData, candidates, envKey) {
   const configuredId = channelData && channelData.configured_payment_type_id;
   const found = channelData && channelData.configured_payment_type_found;
   const valid = pt.valid;
+  const nameMatch = pt.name_match;
+  const requiredName = pt.required_name || "";
+  const actualName = pt.payment_type_name || "";
   let html = `<div class="mk-pt-channel-block"><div class="mk-pt-channel-label">${escapeHtml(label)}</div>`;
   if (!configuredId) {
     html += `<div class="mk-pt-warn">${escapeHtml(envKey)} не задан.</div>`;
@@ -12706,9 +12709,15 @@ function _renderPaymentTypeBlock(label, channelData, candidates, envKey) {
     html += `<div class="mk-pt-warn">ID ${configuredId} не найден в МойКласс.</div>`;
   } else if (!valid) {
     const reason = (pt.blocking_reasons || []).join(", ") || "тип недоступен";
-    html += `<div class="mk-pt-warn">ID ${configuredId} (${escapeHtml(pt.payment_type_name || "")}) — ${escapeHtml(reason)}</div>`;
+    html += `<div class="mk-pt-warn">ID ${configuredId} (${escapeHtml(actualName)}) — ${escapeHtml(reason)}</div>`;
+    if (nameMatch === false) {
+      html += `<div class="mk-pt-warn">Ожидается: «${escapeHtml(requiredName)}» / Фактически: «${escapeHtml(actualName)}»</div>`;
+    }
   } else {
-    html += `<div class="mk-pt-ok">ID ${configuredId} — <strong>${escapeHtml(pt.payment_type_name || "")}</strong></div>`;
+    html += `<div class="mk-pt-ok">ID ${configuredId} — <strong>${escapeHtml(actualName)}</strong></div>`;
+    if (nameMatch === true) {
+      html += `<div class="mk-pt-name-ok">Имя совпадает: «${escapeHtml(requiredName)}» ✓</div>`;
+    }
   }
   if (candidates && candidates.length === 1 && candidates[0].id !== configuredId) {
     html += `<div class="mk-pt-hint"><code class="mk-pt-env-hint">${escapeHtml(envKey)}=${candidates[0].id}</code> (${escapeHtml(candidates[0].name)})</div>`;

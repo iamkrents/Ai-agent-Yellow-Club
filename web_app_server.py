@@ -136,6 +136,18 @@ def _compute_moyklass_post_fingerprint(intent: dict, invoice: dict) -> str:
 _ERIP_KEYWORDS = ("ЕРИП", "ERIP", "BEPAID", "БЕЗНАЛИЧНЫЙ", "ОНЛАЙН-ОПЛАТА", "ОНЛАЙН ОПЛАТА")
 _ACQ_KEYWORDS = ("ЭКВАЙРИНГ", "ACQUIRING", "БАНКОВСКАЯ КАРТА", "CARD", "BEPAID CARD", "КАРТОЙ")
 
+# v7.0.93.2.6 — exact required names for bePaid payment types in MoyKlass
+_REQUIRED_ACQUIRING_TYPE_NAME = "BePaid эквайринг"
+_REQUIRED_ERIP_TYPE_NAME = "BePaid ЕРИП"
+
+
+def _normalize_mk_type_name(name: str | None) -> str:
+    return (name or "").strip().lower()
+
+
+def _check_exact_type_name(name: str | None, required: str) -> bool:
+    return _normalize_mk_type_name(name) == _normalize_mk_type_name(required)
+
 
 def _is_erip_candidate(name: str) -> bool:
     """Return True if the payment type name suggests bePaid ERIP."""
@@ -167,10 +179,15 @@ def _normalize_payment_type(raw: dict) -> dict:
     }
 
 
-def _build_payment_type_readiness(configured_id: int, pt: dict | None) -> dict:
-    """Build a normalized readiness object for a configured payment type."""
+def _build_payment_type_readiness(configured_id: int, pt: dict | None, required_name: str = "") -> dict:
+    """Build a normalized readiness object for a configured payment type.
+
+    When required_name is provided, an exact (case-insensitive, trimmed) name
+    match is enforced and a mismatch is treated as a blocking reason.
+    """
     blocking_reasons: list[str] = []
     valid = False
+    name_match: bool | None = None
     if configured_id <= 0:
         blocking_reasons.append("payment_type_not_configured")
     elif pt is None:
@@ -180,13 +197,20 @@ def _build_payment_type_readiness(configured_id: int, pt: dict | None) -> dict:
             blocking_reasons.append("payment_type_deleted")
         elif not pt.get("active", True):
             blocking_reasons.append("payment_type_inactive")
+        elif required_name and not _check_exact_type_name(pt.get("name"), required_name):
+            blocking_reasons.append("payment_type_name_mismatch")
+            name_match = False
         else:
+            if required_name:
+                name_match = True
             valid = True
     return {
         "configured": configured_id > 0,
         "valid": valid,
         "payment_type_id": configured_id if configured_id > 0 else None,
         "payment_type_name": pt.get("name") if pt else None,
+        "required_name": required_name or None,
+        "name_match": name_match,
         "active": pt.get("active", True) if pt else None,
         "blocking_reasons": blocking_reasons,
         "warnings": [],
@@ -10147,8 +10171,8 @@ class MiniAppContext:
             if _is_acquiring_candidate(i["name"])
         ]
 
-        erip_readiness = _build_payment_type_readiness(erip_id, erip_type)
-        acq_readiness = _build_payment_type_readiness(acq_id, acq_type)
+        erip_readiness = _build_payment_type_readiness(erip_id, erip_type, _REQUIRED_ERIP_TYPE_NAME)
+        acq_readiness = _build_payment_type_readiness(acq_id, acq_type, _REQUIRED_ACQUIRING_TYPE_NAME)
 
         return {
             "ok": True,
@@ -10257,11 +10281,21 @@ class MiniAppContext:
                "BEPAID_AUTO_POST_TO_MOYKLASS=false",
                "disabled" if not getattr(cfg, "bepaid_auto_post_to_moyklass", True) else "WARNING:enabled")
 
-        # — Payment type config check —
-        payment_type_id = int(getattr(cfg, "moyklass_erip_payment_type_id", 0) or 0)
+        # — Payment type config check (channel-specific, v7.0.93.2.6) —
+        paid_channel = str(intent.get("paid_channel") or "erip").strip().lower() or "erip"
+        if paid_channel == "acquiring":
+            payment_type_id = int(getattr(cfg, "moyklass_acquiring_payment_type_id", 0) or 0)
+            _pt_env_key = "MOYKLASS_ACQUIRING_PAYMENT_TYPE_ID"
+            _pt_required_name = _REQUIRED_ACQUIRING_TYPE_NAME
+            _pt_channel_label = "Эквайринг"
+        else:
+            payment_type_id = int(getattr(cfg, "moyklass_erip_payment_type_id", 0) or 0)
+            _pt_env_key = "MOYKLASS_ERIP_PAYMENT_TYPE_ID"
+            _pt_required_name = _REQUIRED_ERIP_TYPE_NAME
+            _pt_channel_label = "ЕРИП"
         _check("payment_type_configured", payment_type_id > 0,
-               "Тип оплаты МойКласс настроен",
-               f"MOYKLASS_ERIP_PAYMENT_TYPE_ID={payment_type_id if payment_type_id > 0 else 'not set'}")
+               f"Тип оплаты МойКласс настроен ({_pt_channel_label})",
+               f"{_pt_env_key}={payment_type_id if payment_type_id > 0 else 'not set'}")
 
         # — MK subscription check (if source is invoice) —
         mk_sub_id = intent.get("mk_user_subscription_id")
@@ -10294,8 +10328,14 @@ class MiniAppContext:
                             _check("payment_type_valid", False, "Тип оплаты активен",
                                    f"paymentTypeId={payment_type_id} active=false")
                         else:
+                            actual_pt_name = str(pt.get("name") or "")
                             _check("payment_type_valid", True, "Тип оплаты существует и активен",
-                                   f"paymentTypeId={payment_type_id} name={str(pt.get('name') or '')[:40]}")
+                                   f"paymentTypeId={payment_type_id} name={actual_pt_name[:40]!r}")
+                            # v7.0.93.2.6 — exact name match (fail-closed)
+                            _check("payment_type_name_match",
+                                   _check_exact_type_name(actual_pt_name, _pt_required_name),
+                                   f"Имя типа оплаты: «{_pt_required_name}»",
+                                   f"actual={actual_pt_name!r} expected={_pt_required_name!r}")
                     elif pt_result.status == 404:
                         _check("payment_type_valid", False, "Тип оплаты найден в МойКласс",
                                f"paymentTypeId={payment_type_id} → 404 Not Found")
@@ -10394,8 +10434,10 @@ class MiniAppContext:
             "currency": str(intent.get("paid_currency") or "BYN"),
             "paid_at": str(intent.get("paid_at") or "") or None,
             "transaction_uid": str(intent.get("paid_transaction_uid") or "") or None,
-            "payment_method_label": "bePaid ЕРИП",
+            "payment_method_label": f"bePaid {_pt_channel_label}",
+            "payment_channel": paid_channel,
             "payment_type_id": payment_type_id if payment_type_id > 0 else None,
+            "payment_type_required_name": _pt_required_name,
         }
 
         return {
@@ -10504,6 +10546,61 @@ class MiniAppContext:
             return {"ok": False, "error": f"Не настроен тип оплаты МойКласс ({_missing_env})"}
         if not self.moyklass.is_configured:
             return {"ok": False, "error": "МойКласс API не настроен"}
+
+        # 5b. Exact name validation — fetch live payment type, fail-closed (v7.0.93.2.6)
+        _pt_required_name = _REQUIRED_ACQUIRING_TYPE_NAME if paid_channel == "acquiring" else _REQUIRED_ERIP_TYPE_NAME
+        try:
+            _pt_result = self.moyklass.get_payment_type_by_id(payment_type_id)
+            if _pt_result.ok and isinstance(_pt_result.data, dict):
+                _actual_pt_name = str(_pt_result.data.get("name") or "")
+                if not _check_exact_type_name(_actual_pt_name, _pt_required_name):
+                    self.storage.log_moyklass_post_audit(
+                        "moyklass_post_blocked",
+                        intent_public_id=public_id,
+                        reason=f"payment_type_name_mismatch:expected={_pt_required_name!r}:actual={_actual_pt_name!r}",
+                    )
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"Тип оплаты МойКласс не соответствует каналу ({paid_channel}). "
+                            f"Ожидается «{_pt_required_name}», настроен «{_actual_pt_name}». "
+                            f"Исправьте {_missing_env}."
+                        ),
+                        "error_code": "payment_type_name_mismatch",
+                    }
+            elif _pt_result.status == 404:
+                self.storage.log_moyklass_post_audit(
+                    "moyklass_post_blocked",
+                    intent_public_id=public_id,
+                    reason=f"payment_type_not_found:id={payment_type_id}",
+                )
+                return {
+                    "ok": False,
+                    "error": f"Тип оплаты {payment_type_id} не найден в МойКласс.",
+                    "error_code": "payment_type_not_found",
+                }
+            else:
+                self.storage.log_moyklass_post_audit(
+                    "moyklass_post_blocked",
+                    intent_public_id=public_id,
+                    reason=f"payment_type_fetch_failed:HTTP_{_pt_result.status}",
+                )
+                return {
+                    "ok": False,
+                    "error": f"Не удалось проверить тип оплаты МойКласс: HTTP {_pt_result.status}. Оплата заблокирована.",
+                    "error_code": "payment_type_fetch_failed",
+                }
+        except Exception as _pt_exc:
+            self.storage.log_moyklass_post_audit(
+                "moyklass_post_blocked",
+                intent_public_id=public_id,
+                reason=f"payment_type_check_exception:{str(_pt_exc)[:100]}",
+            )
+            return {
+                "ok": False,
+                "error": f"Не удалось проверить тип оплаты: {str(_pt_exc)[:100]}. Оплата заблокирована.",
+                "error_code": "payment_type_check_exception",
+            }
 
         # 6. Atomic claim
         claimed = self.storage.payment_intent_claim_moyklass_post(public_id, user_id_str)
