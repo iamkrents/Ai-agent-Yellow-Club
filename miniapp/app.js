@@ -12701,7 +12701,6 @@ function _renderPaymentTypeBlock(label, channelData, candidates, envKey) {
   const valid = pt.valid;
   const nameMatch = pt.name_match;
   const requiredName = pt.required_name || "";
-  const actualName = pt.payment_type_name || "";
   let html = `<div class="mk-pt-channel-block"><div class="mk-pt-channel-label">${escapeHtml(label)}</div>`;
   if (!configuredId) {
     html += `<div class="mk-pt-warn">${escapeHtml(envKey)} не задан.</div>`;
@@ -12709,12 +12708,12 @@ function _renderPaymentTypeBlock(label, channelData, candidates, envKey) {
     html += `<div class="mk-pt-warn">ID ${configuredId} не найден в МойКласс.</div>`;
   } else if (!valid) {
     const reason = (pt.blocking_reasons || []).join(", ") || "тип недоступен";
-    html += `<div class="mk-pt-warn">ID ${configuredId} (${escapeHtml(actualName)}) — ${escapeHtml(reason)}</div>`;
+    html += `<div class="mk-pt-warn">ID ${configuredId} (${escapeHtml(pt.payment_type_name || "")}) — ${escapeHtml(reason)}</div>`;
     if (nameMatch === false) {
-      html += `<div class="mk-pt-warn">Ожидается: «${escapeHtml(requiredName)}» / Фактически: «${escapeHtml(actualName)}»</div>`;
+      html += `<div class="mk-pt-warn">Ожидается: «${escapeHtml(requiredName)}» / Фактически: «${escapeHtml(pt.payment_type_name || "")}»</div>`;
     }
   } else {
-    html += `<div class="mk-pt-ok">ID ${configuredId} — <strong>${escapeHtml(actualName)}</strong></div>`;
+    html += `<div class="mk-pt-ok">ID ${configuredId} — <strong>${escapeHtml(pt.payment_type_name || "")}</strong></div>`;
     if (nameMatch === true) {
       html += `<div class="mk-pt-name-ok">Имя совпадает: «${escapeHtml(requiredName)}» ✓</div>`;
     }

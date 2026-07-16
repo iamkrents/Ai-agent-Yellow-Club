@@ -109,6 +109,10 @@ def _make_ctx(storage: Storage, **settings_overrides) -> MiniAppContext:
 
     mk_client = MagicMock()
     mk_client.is_configured = True
+    # Default stub: payment type 42 → "BePaid ЕРИП" (matches _REQUIRED_ERIP_TYPE_NAME)
+    mk_client.get_payment_type_by_id.return_value = MoyKlassResult(
+        True, data={"id": 42, "name": "BePaid ЕРИП", "active": True, "deleted": False}, status=200
+    )
     ctx.moyklass = mk_client  # MiniAppContext uses self.moyklass
 
     ctx._role_store: dict[int, str] = {}
