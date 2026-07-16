@@ -5768,13 +5768,19 @@ class Storage:
         amount_minor: int,
         currency: str,
         paid_at: str,
+        channel: str = "",
         tracking_id: Optional[str] = None,
         order_id: Optional[str] = None,
         account_number: Optional[str] = None,
         verified: bool = False,
         match_method: str = "",
     ) -> dict:
-        """Mark a payment_intent as paid. State machine: bepaid_created → paid only.
+        """Mark a payment_intent as paid (legacy / non-option path).
+
+        State machine: bepaid_created | awaiting_payment | partial_ready → paid.
+        awaiting_payment added in v7.0.93.2.8: intents go to awaiting_payment when
+        ERIP is created via prepare-options; the legacy webhook match path must also
+        honour that state.
 
         Returns:
           {ok: True, marked_paid: True, intent: {...}}  — success
@@ -5782,6 +5788,7 @@ class Storage:
           {ok: False, conflict: True, reason: ..., intent: {...}} — already paid differently
           {ok: False, wrong_state: True, reason: ..., intent: {...}} — wrong source status
         """
+        _allowed_source = ("bepaid_created", "awaiting_payment", "partial_ready")
         now = now_iso()
         with self._connect() as conn:
             row = conn.execute(
@@ -5801,7 +5808,7 @@ class Storage:
                     "intent": pi,
                 }
 
-            if pi["status"] != "bepaid_created":
+            if pi["status"] not in _allowed_source:
                 return {
                     "ok": False, "wrong_state": True,
                     "reason": f"cannot_mark_paid_from_status:{pi['status']}",
@@ -5816,6 +5823,7 @@ class Storage:
                     paid_amount_minor    = ?,
                     paid_currency        = ?,
                     paid_transaction_uid = ?,
+                    paid_channel         = ?,
                     paid_tracking_id     = ?,
                     paid_order_id        = ?,
                     paid_account_number  = ?,
@@ -5824,11 +5832,11 @@ class Storage:
                     payment_state_reason = 'paid_via_bepaid_webhook',
                     last_webhook_at      = ?,
                     updated_at           = ?
-                WHERE public_id = ? AND status = 'bepaid_created'
+                WHERE public_id = ? AND status IN ('bepaid_created', 'awaiting_payment', 'partial_ready')
                 """,
                 (
                     paid_at, int(amount_minor), str(currency or "BYN"),
-                    tx_uid, tracking_id, order_id, account_number,
+                    tx_uid, channel or None, tracking_id, order_id, account_number,
                     1 if verified else 0, match_method, now, now, public_id,
                 ),
             )
