@@ -8047,3 +8047,48 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
 :root[data-theme="dark"] .mk-payment-type-section { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.08); }
 :root[data-theme="dark"] .mk-pt-hint { background: rgba(234,179,8,.08); border-color: rgba(234,179,8,.20); }
 :root[data-theme="dark"] .mk-pt-env-hint { background: rgba(255,255,255,.08); }
+
+/* ── v7.0.93.2.3 — Client parent payment cards ────────────────────────── */
+.cp-card { background: var(--card-bg,#f4f7fb); border-radius: 12px; padding: 14px 14px 12px; margin-bottom: 12px; border: 1px solid rgba(0,0,0,.07); }
+.cp-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.cp-card-name { font-size: 14px; font-weight: 600; color: var(--label,#172033); flex: 1; }
+.cp-card-amount { font-size: 16px; font-weight: 700; color: var(--label,#172033); white-space: nowrap; }
+.cp-card-meta { display: flex; align-items: center; gap: 6px; margin: 6px 0 4px; flex-wrap: wrap; }
+.cp-period { font-size: 12px; color: var(--muted,#687083); }
+.cp-status-paid { background: rgba(16,185,129,.15); color: #059669; border-radius: 6px; }
+.cp-status-pending { background: rgba(99,102,241,.12); color: #4f46e5; border-radius: 6px; }
+.cp-card-comment { font-size: 12px; color: var(--muted,#687083); margin-top: 4px; }
+.cp-card-date { font-size: 10px; color: var(--muted,#687083); margin-top: 2px; }
+.cp-pay-method { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: rgba(0,0,0,.03); border: 1px solid rgba(0,0,0,.06); }
+.cp-pay-method + .cp-pay-method { margin-top: 8px; }
+.cp-pay-method-title { font-size: 13px; font-weight: 600; color: var(--label,#172033); margin-bottom: 6px; }
+.cp-pay-erip-acct { font-size: 15px; color: var(--label,#172033); margin-bottom: 6px; letter-spacing: .02em; }
+.cp-copy-btn { display: inline-block; font-size: 12px; padding: 5px 12px; border-radius: 7px; border: 1px solid var(--accent,#6366f1); background: transparent; color: var(--accent,#6366f1); cursor: pointer; transition: background .15s; }
+.cp-copy-btn:hover { background: rgba(99,102,241,.10); }
+.cp-copy-btn:disabled { opacity: .6; cursor: default; }
+.cp-pay-hint { font-size: 11px; color: var(--muted,#687083); margin-top: 6px; }
+.cp-card-pay-btn { display: inline-block; padding: 8px 16px; border-radius: 8px; background: var(--accent,#6366f1); color: #fff; font-size: 13px; font-weight: 600; text-decoration: none; transition: opacity .15s; }
+.cp-card-pay-btn:hover { opacity: .88; }
+.cp-card-paid-block { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: rgba(16,185,129,.08); border-left: 3px solid #10b981; }
+.cp-paid-amt { font-size: 12px; color: var(--label,#172033); }
+.cp-paid-date { font-size: 11px; color: var(--muted,#687083); margin-top: 2px; }
+@media (prefers-color-scheme: dark) {
+  .cp-card { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.07); }
+  .cp-pay-method { background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.08); }
+  .cp-status-paid { background: rgba(16,185,129,.20); color: #34d399; }
+  .cp-status-pending { background: rgba(99,102,241,.18); color: #a5b4fc; }
+  .cp-copy-btn { border-color: #a5b4fc; color: #a5b4fc; }
+  .cp-copy-btn:hover { background: rgba(165,180,252,.12); }
+  .cp-card-paid-block { background: rgba(16,185,129,.12); }
+}
+:root[data-theme="dark"] .cp-card { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.07); }
+:root[data-theme="dark"] .cp-pay-method { background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.08); }
+:root[data-theme="dark"] .cp-status-paid { background: rgba(16,185,129,.20); color: #34d399; }
+:root[data-theme="dark"] .cp-status-pending { background: rgba(99,102,241,.18); color: #a5b4fc; }
+:root[data-theme="dark"] .cp-copy-btn { border-color: #a5b4fc; color: #a5b4fc; }
+:root[data-theme="dark"] .cp-copy-btn:hover { background: rgba(165,180,252,.12); }
+:root[data-theme="dark"] .cp-card-paid-block { background: rgba(16,185,129,.12); }
+:root[data-theme="light"] .cp-card { background: #fff; border-color: #e8ecf4; }
+:root[data-theme="light"] .cp-pay-method { background: #f8f9fc; border-color: #e0e4ef; }
+:root[data-theme="light"] .cp-status-paid { background: rgba(16,185,129,.12); color: #059669; }
+:root[data-theme="light"] .cp-status-pending { background: rgba(99,102,241,.10); color: #4f46e5; }

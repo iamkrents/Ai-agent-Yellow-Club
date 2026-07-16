@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.93.2.2");
+console.log("MiniApp version: v7.0.93.2.3");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -13420,54 +13420,84 @@ function isParent() {
   return state.me?.role === "parent";
 }
 
+function _fmtPeriodRu(ym) {
+  if (!ym) return "";
+  const parts = String(ym).split("-");
+  if (parts.length < 2) return ym;
+  const m = parseInt(parts[1], 10);
+  const mNames = ["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
+  return (mNames[m - 1] || parts[1]) + " " + parts[0];
+}
+
 const CLIENT_PAYMENT_STATUS_LABELS = {
   draft:                 "Ожидает выставления",
   ready:                 "Ожидает оплаты",
   bepaid_creating:       "Создаётся...",
-  bepaid_created:        "Счёт выставлен",
-  paid:                  "Оплачено",
-  posted_to_moyklass:    "Оплачено",
+  bepaid_created:        "Ожидает оплаты",
+  awaiting_payment:      "Ожидает оплаты",
+  partial_ready:         "Ожидает оплаты",
+  paid:                  "Оплата получена, обрабатывается",
+  posted_to_moyklass:    "Оплата зачислена",
   cancelled:             "Отменено",
-  bepaid_requires_check: "Требует проверки",
+  bepaid_requires_check: "Уточняется",
 };
 
+function cpCopyErip(btn, account) {
+  const p = (navigator.clipboard && navigator.clipboard.writeText)
+    ? navigator.clipboard.writeText(account)
+    : Promise.reject(new Error("clipboard_unavailable"));
+  p.then(() => {
+    const orig = btn.textContent;
+    btn.textContent = "Номер ЕРИП скопирован";
+    btn.disabled = true;
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
+  }).catch(() => {
+    try { window.prompt("Номер ЕРИП:", account); } catch (_) {}
+  });
+}
+
 function renderClientPaymentCard(pi) {
-  const statusLabel = CLIENT_PAYMENT_STATUS_LABELS[pi.status] || pi.status || "—";
+  const statusLabel = CLIENT_PAYMENT_STATUS_LABELS[pi.status] || "Ожидает оплаты";
   const isPaid = ["paid", "posted_to_moyklass"].includes(pi.status);
-  const amountStr = pi.amount_byn != null ? `${parseFloat(pi.amount_byn).toFixed(2)} BYN` : "—";
-  const period = pi.period_month ? `<span class="chip chip-info" style="font-size:11px">${escapeHtml(pi.period_month)}</span>` : "";
+  const amountStr = fmtByn(pi.amount_byn);
+  const periodStr = _fmtPeriodRu(pi.period_month);
   const name = pi.student_name ? escapeHtml(pi.student_name) : "Ребёнок";
-  const comment = pi.comment ? `<div style="font-size:12px;color:var(--muted);margin-top:4px">${escapeHtml(pi.comment)}</div>` : "";
-  const publishedAt = pi.published_at ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">Выставлено: ${escapeHtml(String(pi.published_at).slice(0,10))}</div>` : "";
+  const comment = pi.comment ? `<div class="cp-card-comment">${escapeHtml(pi.comment)}</div>` : "";
+  const publishedAt = pi.published_at
+    ? `<div class="cp-card-date">Выставлено: ${escapeHtml(String(pi.published_at).slice(0, 10))}</div>`
+    : "";
 
   let paymentBlock = "";
   if (!isPaid) {
-    if (pi.erip_account_number) {
-      paymentBlock = `
-        <div class="cp-card-payment-block">
-          <strong>Оплата через ЕРИП</strong>
-          <div style="margin-top:6px;font-size:13px">Счёт № <strong>${escapeHtml(pi.erip_account_number)}</strong></div>
-          <div style="font-size:12px;color:var(--muted);margin-top:2px">Путь в ЕРИП: Система «Расчёт» → Образование → Yellow Club</div>
+    let acqBlock = "";
+    if (pi.acquiring_payment_url) {
+      acqBlock = `
+        <div class="cp-pay-method">
+          <div class="cp-pay-method-title">Оплата банковской картой</div>
+          <a href="${escapeHtml(pi.acquiring_payment_url)}" target="_blank" rel="noopener noreferrer"
+             class="cp-card-pay-btn">Оплатить банковской картой</a>
         </div>`;
-    } else if (pi.acquiring_payment_url) {
-      paymentBlock = `
-        <div class="cp-card-payment-block">
-          <strong>Оплата банковской картой</strong>
-          <div style="margin-top:6px">
-            <a href="${escapeHtml(pi.acquiring_payment_url)}" target="_blank" rel="noopener noreferrer"
-               class="btn-link-pay">Перейти к оплате</a>
-          </div>
-        </div>`;
-    } else {
-      paymentBlock = `<div style="font-size:12px;color:var(--muted);margin-top:4px">Реквизиты для оплаты уточняются.</div>`;
     }
+    let erpBlock = "";
+    if (pi.erip_account_number) {
+      const safeAcct = escapeHtml(String(pi.erip_account_number));
+      erpBlock = `
+        <div class="cp-pay-method">
+          <div class="cp-pay-method-title">Оплата через ЕРИП</div>
+          <div class="cp-pay-erip-acct">№ <strong>${safeAcct}</strong></div>
+          <button class="cp-copy-btn" onclick="cpCopyErip(this,'${safeAcct}')">Скопировать номер</button>
+          <div class="cp-pay-hint">Приложение банка → ЕРИП → Система «Расчёт» → введите номер платежа.</div>
+        </div>`;
+    }
+    paymentBlock = (acqBlock || erpBlock)
+      ? (acqBlock + erpBlock)
+      : `<div class="cp-pay-hint">Реквизиты для оплаты уточняются.</div>`;
   } else {
-    const paidAmt = pi.paid_amount_byn != null ? `${parseFloat(pi.paid_amount_byn).toFixed(2)} BYN` : "";
+    const paidAmt = pi.paid_amount_byn != null ? fmtByn(pi.paid_amount_byn) : "";
     paymentBlock = `
       <div class="cp-card-paid-block">
-        <strong>✓ Оплачено</strong>
-        ${paidAmt ? `<div style="font-size:12px;margin-top:2px">Сумма: ${escapeHtml(paidAmt)}</div>` : ""}
-        ${pi.paid_at ? `<div style="font-size:11px;color:var(--muted)">Дата: ${escapeHtml(String(pi.paid_at).slice(0,10))}</div>` : ""}
+        ${paidAmt ? `<div class="cp-paid-amt">Сумма: ${escapeHtml(paidAmt)}</div>` : ""}
+        ${pi.paid_at ? `<div class="cp-paid-date">Дата: ${escapeHtml(String(pi.paid_at).slice(0, 10))}</div>` : ""}
       </div>`;
   }
 
@@ -13478,7 +13508,10 @@ function renderClientPaymentCard(pi) {
         <div class="cp-card-name">${name}</div>
         <div class="cp-card-amount">${escapeHtml(amountStr)}</div>
       </div>
-      <div class="cp-card-meta">${period} <span class="chip ${statusCls}" style="font-size:11px">${escapeHtml(statusLabel)}</span></div>
+      <div class="cp-card-meta">
+        ${periodStr ? `<span class="cp-period">${escapeHtml(periodStr)}</span>` : ""}
+        <span class="chip ${statusCls}" style="font-size:11px">${escapeHtml(statusLabel)}</span>
+      </div>
       ${comment}${publishedAt}
       ${paymentBlock}
     </div>`;

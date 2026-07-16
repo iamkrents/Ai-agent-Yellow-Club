@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.93.2.2 — publish-preview ERIP readiness fix.
+"""Regression tests for v7.0.93.2.3 — publish-preview ERIP readiness fix.
 
 Root cause: publish-preview read ERIP account number only from payment_intent_options
 rows, while the admin card reads from payment_intents.bepaid_account_number (the legacy
@@ -32,7 +32,7 @@ Covers:
   Existing suite guard:
     17. Existing parent_payments tests still import and run (static check)
     18. Existing client_link tests still import (static check)
-    19. Full suite version constant matches v7.0.93.2.2
+    19. Full suite version constant matches v7.0.93.2.3
 """
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 SERVER_PY = ROOT / "web_app_server.py"
 
-CURRENT_VERSION = "7.0.93.2.2"
+CURRENT_VERSION = "7.0.93.2.3"
 NOW = "2026-07-16T10:00:00"
 
 

@@ -9805,10 +9805,24 @@ class MiniAppContext:
         parent_telegram_id = str(auth["user_id"])
         intents = self.storage.list_client_visible_payment_intents(parent_telegram_id)
         result = []
+        _inactive_opt = {"cancelled", "superseded", "expired"}
         for pi in intents:
             opts = self.storage.get_options_for_intent(pi["public_id"])
-            erip_opt = next((o for o in opts if o.get("channel") == "erip"), None)
-            acq_opt = next((o for o in opts if o.get("channel") == "acquiring"), None)
+            erip_opt = next(
+                (o for o in opts if o.get("channel") == "erip"
+                 and o.get("status") not in _inactive_opt),
+                None,
+            )
+            acq_opt = next(
+                (o for o in opts if o.get("channel") == "acquiring"
+                 and o.get("status") not in _inactive_opt),
+                None,
+            )
+            # ERIP account: options table first; fallback to legacy payment_intents field
+            # for intents created before the dual-channel option system (same logic as publish-preview).
+            erip_acct = str(erip_opt.get("bepaid_account_number") or "").strip() if erip_opt else ""
+            if not erip_acct and pi.get("bepaid_uid"):
+                erip_acct = str(pi.get("bepaid_account_number") or "").strip()
             amount_minor = pi.get("amount_minor") or 0
             amount_byn = round(int(amount_minor) / 100.0, 2) if amount_minor else None
             paid_minor = pi.get("paid_amount_minor")
@@ -9825,8 +9839,10 @@ class MiniAppContext:
                 "published_at": pi.get("published_at"),
                 "paid_at": pi.get("paid_at"),
                 "paid_amount_byn": paid_byn,
-                "erip_account_number": erip_opt.get("bepaid_account_number") if erip_opt else None,
-                "acquiring_payment_url": acq_opt.get("payment_url") if acq_opt else None,
+                "erip_account_number": erip_acct or None,
+                "acquiring_payment_url": (
+                    str(acq_opt.get("payment_url") or "").strip() or None
+                ) if acq_opt else None,
             })
         return {"ok": True, "payments": result, "total": len(result)}
 
