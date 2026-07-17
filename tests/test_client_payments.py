@@ -1,4 +1,4 @@
-﻿"""Regression tests for v7.0.93.2.3 вЂ” client parent payment display fix.
+"""Regression tests for v7.0.93.2.3 — client parent payment display fix.
 
 Root cause: client_payments_list read ERIP account only from payment_intent_options,
 so legacy intents (ERIP in payment_intents.bepaid_account_number, no option row) showed
@@ -18,8 +18,8 @@ Covers:
 
   Frontend static analysis (app.js):
     9.  awaiting_payment in CLIENT_PAYMENT_STATUS_LABELS
-    10. awaiting_payment maps to В«РћР¶РёРґР°РµС‚ РѕРїР»Р°С‚С‹В»
-    11. posted_to_moyklass maps to В«РћРїР»Р°С‚Р° Р·Р°С‡РёСЃР»РµРЅР°В»
+    10. awaiting_payment maps to «Ожидает оплаты»
+    11. posted_to_moyklass maps to «Оплата зачислена»
     12. ERIP copy button (cp-copy-btn) present in renderClientPaymentCard
     13. Card pay button (cp-card-pay-btn) present for acquiring
     14. navigator.clipboard.writeText called in cpCopyErip
@@ -81,7 +81,7 @@ def _seed_erip_intent(storage: Storage, mk_user_id: int = 6001,
                       bepaid_account_number: str | None = "9748998260715") -> dict:
     pi = storage.create_payment_intent({
         "mk_user_id": mk_user_id,
-        "student_name": "РўРµСЃС‚ РЎС‚СѓРґРµРЅС‚",
+        "student_name": "Тест Студент",
         "amount_minor": 100,
         "amount_byn": 1.0,
         "currency": "BYN",
@@ -108,7 +108,7 @@ def _seed_erip_intent(storage: Storage, mk_user_id: int = 6001,
 
 
 def _seed_parent_link(storage: Storage, mk_user_id: str, parent_telegram_id: str) -> None:
-    result = storage.create_client_link_code(mk_user_id, "РўРµСЃС‚ РЈС‡РµРЅРёРє", "test_admin")
+    result = storage.create_client_link_code(mk_user_id, "Тест Ученик", "test_admin")
     storage.link_client_child(parent_telegram_id, result["code"], NOW)
 
 
@@ -357,23 +357,23 @@ class Test09FrontendStaticAnalysis(unittest.TestCase):
         idx = self.labels_block.find("awaiting_payment")
         line_end = self.labels_block.find("\n", idx)
         line = self.labels_block[idx:line_end]
-        self.assertIn("РћР¶РёРґР°РµС‚ РѕРїР»Р°С‚С‹", line,
-                      "awaiting_payment must map to В«РћР¶РёРґР°РµС‚ РѕРїР»Р°С‚С‹В»")
+        self.assertIn("Ожидает оплаты", line,
+                      "awaiting_payment must map to «Ожидает оплаты»")
 
     def test_11_posted_to_moyklass_maps_to_zachislena(self):
         idx = self.labels_block.find("posted_to_moyklass")
         line_end = self.labels_block.find("\n", idx)
         line = self.labels_block[idx:line_end]
-        self.assertIn("Р·Р°С‡РёСЃР»РµРЅР°", line.lower(),
-                      "posted_to_moyklass must contain В«Р·Р°С‡РёСЃР»РµРЅР°В»")
+        self.assertIn("зачислена", line.lower(),
+                      "posted_to_moyklass must contain «зачислена»")
 
     def test_12_erip_copy_button_in_card(self):
         self.assertIn("cp-copy-btn", self.card_fn)
-        self.assertIn("РЎРєРѕРїРёСЂРѕРІР°С‚СЊ РЅРѕРјРµСЂ Р·Р°РєР°Р·Р°", self.card_fn)
+        self.assertIn("Скопировать номер заказа", self.card_fn)
 
     def test_13_card_pay_button_for_acquiring(self):
         self.assertIn("cp-card-pay-btn", self.card_fn)
-        self.assertIn("РћРїР»Р°С‚РёС‚СЊ Р±Р°РЅРєРѕРІСЃРєРѕР№ РєР°СЂС‚РѕР№", self.card_fn)
+        self.assertIn("Оплатить банковской картой", self.card_fn)
 
     def test_14_clipboard_used_in_copy_fn(self):
         self.assertIn("navigator.clipboard.writeText", self.js)

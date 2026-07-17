@@ -1,9 +1,9 @@
-﻿"""Regression tests for v7.0.94.0 вЂ” bePaid MoyKlass payment type exact name matching.
+"""Regression tests for v7.0.94.1 — bePaid MoyKlass payment type exact name matching.
 
 Covers:
   Backend constants and helpers:
-    1.  _REQUIRED_ACQUIRING_TYPE_NAME is "BePaid СЌРєРІР°Р№СЂРёРЅРі"
-    2.  _REQUIRED_ERIP_TYPE_NAME is "BePaid Р•Р РРџ"
+    1.  _REQUIRED_ACQUIRING_TYPE_NAME is "BePaid эквайринг"
+    2.  _REQUIRED_ERIP_TYPE_NAME is "BePaid ЕРИП"
     3.  _normalize_mk_type_name strips and lowercases
     4.  _check_exact_type_name: exact match passes
     5.  _check_exact_type_name: case-insensitive match passes
@@ -12,13 +12,13 @@ Covers:
     8.  _check_exact_type_name: None name fails
 
   _build_payment_type_readiness with required_name:
-    9.  Valid type with matching name в†’ valid=True, name_match=True
-    10. Valid type with wrong name в†’ valid=False, name_match=False, reason="payment_type_name_mismatch"
-    11. Valid type without required_name в†’ valid=True, name_match=None (legacy mode)
-    12. Deleted type в†’ valid=False, name_match=None (deleted blocks before name check)
-    13. Inactive type в†’ valid=False, name_match=None
-    14. Unconfigured (id=0) в†’ valid=False, name_match=None
-    15. Not found (pt=None) в†’ valid=False, name_match=None
+    9.  Valid type with matching name → valid=True, name_match=True
+    10. Valid type with wrong name → valid=False, name_match=False, reason="payment_type_name_mismatch"
+    11. Valid type without required_name → valid=True, name_match=None (legacy mode)
+    12. Deleted type → valid=False, name_match=None (deleted blocks before name check)
+    13. Inactive type → valid=False, name_match=None
+    14. Unconfigured (id=0) → valid=False, name_match=None
+    15. Not found (pt=None) → valid=False, name_match=None
     16. required_name in response dict
 
   moyklass_payment_types readiness objects:
@@ -30,7 +30,7 @@ Covers:
     20. paid_channel="erip" (default) selects ERIP type ID
 
   Frontend _renderPaymentTypeBlock:
-    21. Version marker is v7.0.94.0
+    21. Version marker is v7.0.94.1
 """
 from __future__ import annotations
 
@@ -99,12 +99,12 @@ class TestRequiredNameConstants(unittest.TestCase):
     def test_01_required_acquiring_name(self):
         val = _get("_REQUIRED_ACQUIRING_TYPE_NAME")
         self.assertIsNotNone(val, "_REQUIRED_ACQUIRING_TYPE_NAME must be defined")
-        self.assertEqual(val, "BePaid СЌРєРІР°Р№СЂРёРЅРі")
+        self.assertEqual(val, "BePaid эквайринг")
 
     def test_02_required_erip_name(self):
         val = _get("_REQUIRED_ERIP_TYPE_NAME")
         self.assertIsNotNone(val, "_REQUIRED_ERIP_TYPE_NAME must be defined")
-        self.assertEqual(val, "BePaid Р•Р РРџ")
+        self.assertEqual(val, "BePaid ЕРИП")
 
 
 class TestNormalizeAndCheck(unittest.TestCase):
@@ -115,31 +115,31 @@ class TestNormalizeAndCheck(unittest.TestCase):
             self.skipTest("Helper functions not found in extracted snippet")
 
     def test_03_normalize_strips_and_lowercases(self):
-        self.assertEqual(self.normalize("  BePaid Р•Р РРџ  "), "bepaid РµСЂРёРї")
-        self.assertEqual(self.normalize("BePaid СЌРєРІР°Р№СЂРёРЅРі"), "bepaid СЌРєРІР°Р№СЂРёРЅРі")
+        self.assertEqual(self.normalize("  BePaid ЕРИП  "), "bepaid ерип")
+        self.assertEqual(self.normalize("BePaid эквайринг"), "bepaid эквайринг")
         self.assertEqual(self.normalize(None), "")
         self.assertEqual(self.normalize(""), "")
 
     def test_04_check_exact_match(self):
-        self.assertTrue(self.check("BePaid Р•Р РРџ", "BePaid Р•Р РРџ"))
-        self.assertTrue(self.check("BePaid СЌРєРІР°Р№СЂРёРЅРі", "BePaid СЌРєРІР°Р№СЂРёРЅРі"))
+        self.assertTrue(self.check("BePaid ЕРИП", "BePaid ЕРИП"))
+        self.assertTrue(self.check("BePaid эквайринг", "BePaid эквайринг"))
 
     def test_05_check_case_insensitive(self):
-        self.assertTrue(self.check("bepaid РµСЂРёРї", "BePaid Р•Р РРџ"))
-        self.assertTrue(self.check("BEPAID Р­РљР’РђР™Р РРќР“", "BePaid СЌРєРІР°Р№СЂРёРЅРі"))
+        self.assertTrue(self.check("bepaid ерип", "BePaid ЕРИП"))
+        self.assertTrue(self.check("BEPAID ЭКВАЙРИНГ", "BePaid эквайринг"))
 
     def test_06_check_whitespace_trimmed(self):
-        self.assertTrue(self.check("  BePaid Р•Р РРџ  ", "BePaid Р•Р РРџ"))
-        self.assertTrue(self.check("BePaid СЌРєРІР°Р№СЂРёРЅРі", "  BePaid СЌРєРІР°Р№СЂРёРЅРі  "))
+        self.assertTrue(self.check("  BePaid ЕРИП  ", "BePaid ЕРИП"))
+        self.assertTrue(self.check("BePaid эквайринг", "  BePaid эквайринг  "))
 
     def test_07_check_wrong_name_fails(self):
-        self.assertFalse(self.check("Р­РєРІР°Р№СЂРёРЅРі", "BePaid СЌРєРІР°Р№СЂРёРЅРі"))
-        self.assertFalse(self.check("BePaid ERIP", "BePaid Р•Р РРџ"))
-        self.assertFalse(self.check("Р•Р РРџ", "BePaid Р•Р РРџ"))
+        self.assertFalse(self.check("Эквайринг", "BePaid эквайринг"))
+        self.assertFalse(self.check("BePaid ERIP", "BePaid ЕРИП"))
+        self.assertFalse(self.check("ЕРИП", "BePaid ЕРИП"))
 
     def test_08_check_none_fails(self):
-        self.assertFalse(self.check(None, "BePaid Р•Р РРџ"))
-        self.assertFalse(self.check(None, "BePaid СЌРєРІР°Р№СЂРёРЅРі"))
+        self.assertFalse(self.check(None, "BePaid ЕРИП"))
+        self.assertFalse(self.check(None, "BePaid эквайринг"))
 
 
 class TestBuildPaymentTypeReadiness(unittest.TestCase):
@@ -152,13 +152,13 @@ class TestBuildPaymentTypeReadiness(unittest.TestCase):
         return {"id": 42, "name": name, "active": True, "deleted": False}
 
     def test_09_valid_matching_name(self):
-        r = self.build(42, self._active_pt("BePaid Р•Р РРџ"), "BePaid Р•Р РРџ")
+        r = self.build(42, self._active_pt("BePaid ЕРИП"), "BePaid ЕРИП")
         self.assertTrue(r["valid"])
         self.assertTrue(r["name_match"])
         self.assertEqual(r["blocking_reasons"], [])
 
     def test_10_valid_wrong_name_blocked(self):
-        r = self.build(42, self._active_pt("Р•Р РРџ"), "BePaid Р•Р РРџ")
+        r = self.build(42, self._active_pt("ЕРИП"), "BePaid ЕРИП")
         self.assertFalse(r["valid"])
         self.assertFalse(r["name_match"])
         self.assertIn("payment_type_name_mismatch", r["blocking_reasons"])
@@ -169,35 +169,35 @@ class TestBuildPaymentTypeReadiness(unittest.TestCase):
         self.assertIsNone(r["name_match"])
 
     def test_12_deleted_blocks_before_name(self):
-        pt = {"id": 42, "name": "BePaid Р•Р РРџ", "active": True, "deleted": True}
-        r = self.build(42, pt, "BePaid Р•Р РРџ")
+        pt = {"id": 42, "name": "BePaid ЕРИП", "active": True, "deleted": True}
+        r = self.build(42, pt, "BePaid ЕРИП")
         self.assertFalse(r["valid"])
         self.assertIsNone(r["name_match"])
         self.assertIn("payment_type_deleted", r["blocking_reasons"])
 
     def test_13_inactive_blocks_before_name(self):
-        pt = {"id": 42, "name": "BePaid Р•Р РРџ", "active": False, "deleted": False}
-        r = self.build(42, pt, "BePaid Р•Р РРџ")
+        pt = {"id": 42, "name": "BePaid ЕРИП", "active": False, "deleted": False}
+        r = self.build(42, pt, "BePaid ЕРИП")
         self.assertFalse(r["valid"])
         self.assertIsNone(r["name_match"])
         self.assertIn("payment_type_inactive", r["blocking_reasons"])
 
     def test_14_unconfigured_id(self):
-        r = self.build(0, None, "BePaid Р•Р РРџ")
+        r = self.build(0, None, "BePaid ЕРИП")
         self.assertFalse(r["valid"])
         self.assertFalse(r["configured"])
         self.assertIsNone(r["name_match"])
         self.assertIn("payment_type_not_configured", r["blocking_reasons"])
 
     def test_15_not_found(self):
-        r = self.build(42, None, "BePaid Р•Р РРџ")
+        r = self.build(42, None, "BePaid ЕРИП")
         self.assertFalse(r["valid"])
         self.assertIsNone(r["name_match"])
         self.assertIn("payment_type_not_found", r["blocking_reasons"])
 
     def test_16_required_name_in_response(self):
-        r = self.build(42, self._active_pt("BePaid Р•Р РРџ"), "BePaid Р•Р РРџ")
-        self.assertEqual(r.get("required_name"), "BePaid Р•Р РРџ")
+        r = self.build(42, self._active_pt("BePaid ЕРИП"), "BePaid ЕРИП")
+        self.assertEqual(r.get("required_name"), "BePaid ЕРИП")
 
         r2 = self.build(42, self._active_pt("X"), "")
         self.assertIsNone(r2.get("required_name"))
@@ -245,7 +245,7 @@ class TestReadinessChannelRouting(unittest.TestCase):
         body = self._find_readiness_fn_body()
         self.assertIn("moyklass_erip_payment_type_id", body,
                       "readiness must read ERIP type ID")
-        # Must NOT hardcode only erip вЂ” the acquiring branch must also be present
+        # Must NOT hardcode only erip — the acquiring branch must also be present
         self.assertIn("paid_channel", body,
                       "readiness must branch on paid_channel")
 

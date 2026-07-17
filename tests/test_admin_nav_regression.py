@@ -1,4 +1,4 @@
-﻿"""Frontend regression tests for v7.0.93.2.3 вЂ” admin tab visibility and nav fixes.
+"""Frontend regression tests for v7.0.93.2.3 — admin tab visibility and nav fixes.
 
 Covers:
   Root cause analysis:
@@ -75,7 +75,7 @@ class Test01RootCause(unittest.TestCase):
         """Root cause fix: client-links must be in MVP_ADMIN_TABS."""
         tabs = self._mvp_admin_tabs_list()
         self.assertIn('"client-links"', tabs,
-                      "client-links missing from MVP_ADMIN_TABS вЂ” this was the visibility bug")
+                      "client-links missing from MVP_ADMIN_TABS — this was the visibility bug")
 
 
 class Test02ServerAdminTabs(unittest.TestCase):
@@ -221,7 +221,7 @@ class Test08Version(unittest.TestCase):
         self.assertIn(f"v={CURRENT_VERSION}", self.html)
 
     def test_20_no_old_version_93_2_exact(self):
-        # v7.0.93.2" (with quote) should not appear вЂ” replaced by v7.0.93.2.3
+        # v7.0.93.2" (with quote) should not appear — replaced by v7.0.93.2.3
         self.assertNotIn('"MiniApp version: v7.0.93.2"', self.js)
         self.assertNotIn('v=7.0.93.2"', self.html)
 

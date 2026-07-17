@@ -1,4 +1,4 @@
-﻿"""Regression tests for v7.0.94.0 вЂ” ERIP awaiting_payment в†’ paid state machine.
+"""Regression tests for v7.0.94.1 — ERIP awaiting_payment → paid state machine.
 
 Root cause fixed:
   payment_intent_mark_paid (legacy path) previously only allowed bepaid_created
@@ -9,25 +9,25 @@ Root cause fixed:
   Also: channel param added so paid_channel is set correctly on the legacy path.
 
 Tests:
-  State machine вЂ” allowed transitions:
-    1.  awaiting_payment в†’ paid for verified ERIP webhook
-    2.  awaiting_payment в†’ paid for verified acquiring webhook
-    3.  partial_ready   в†’ paid for verified ERIP webhook
-    4.  bepaid_created  в†’ paid still works (no regression)
-  State machine вЂ” blocked transitions:
-    5.  draft intent в†’ blocked
-    6.  ready intent в†’ blocked
-    7.  cancelled intent в†’ blocked
-    8.  posted_to_moyklass в†’ unchanged (conflict)
+  State machine — allowed transitions:
+    1.  awaiting_payment → paid for verified ERIP webhook
+    2.  awaiting_payment → paid for verified acquiring webhook
+    3.  partial_ready   → paid for verified ERIP webhook
+    4.  bepaid_created  → paid still works (no regression)
+  State machine — blocked transitions:
+    5.  draft intent → blocked
+    6.  ready intent → blocked
+    7.  cancelled intent → blocked
+    8.  posted_to_moyklass → unchanged (conflict)
   Signature / test guards:
-    9.  Unverified webhook does NOT mark paid (caller responsibility вЂ” method still marks;
+    9.  Unverified webhook does NOT mark paid (caller responsibility — method still marks;
         test confirms caller must check verified before calling)
-    10. test=True transaction вЂ” method marks paid (caller must guard test flag)
+    10. test=True transaction — method marks paid (caller must guard test flag)
   Amount / currency guards:
     11. Amount mismatch is not enforced by mark_paid itself (caller guards)
   Idempotency:
-    12. Same tx_uid on paid intent в†’ idempotent True
-    13. Different tx_uid on paid intent в†’ conflict
+    12. Same tx_uid on paid intent → idempotent True
+    13. Different tx_uid on paid intent → conflict
   paid_channel field:
     14. ERIP webhook sets paid_channel='erip'
     15. Acquiring webhook sets paid_channel='acquiring'
@@ -46,7 +46,7 @@ Tests:
     23. test_bepaid_webhook importable
     24. test_unmatched_transactions importable
   Version:
-    25. Version marker is v7.0.94.0
+    25. Version marker is v7.0.94.1
 """
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def _make_intent(
     """Create a minimal payment_intent and force it to the requested status."""
     pi = storage.create_payment_intent({
         "mk_user_id": 8875658,
-        "student_name": "РўРµСЃС‚ РўРµСЃС‚РѕРІРёС‡",
+        "student_name": "Тест Тестович",
         "amount_minor": amount_minor,
         "amount_byn": amount_minor / 100,
         "currency": "BYN",
@@ -155,7 +155,7 @@ class Test01AllowedSourceStates(unittest.TestCase):
     """Tests 1-4: All allowed source states transition to paid."""
 
     def test_01_awaiting_payment_erip_marks_paid(self):
-        """awaiting_payment в†’ paid for verified ERIP webhook."""
+        """awaiting_payment → paid for verified ERIP webhook."""
         s = _make_storage()
         pi = _make_intent(s, status="awaiting_payment")
         result = _call_mark_paid(s, pi["public_id"], channel="erip")
@@ -165,7 +165,7 @@ class Test01AllowedSourceStates(unittest.TestCase):
         self.assertEqual(after["status"], "paid")
 
     def test_02_awaiting_payment_acquiring_marks_paid(self):
-        """awaiting_payment в†’ paid for verified acquiring webhook."""
+        """awaiting_payment → paid for verified acquiring webhook."""
         s = _make_storage()
         pi = _make_intent(s, status="awaiting_payment")
         result = _call_mark_paid(
@@ -178,7 +178,7 @@ class Test01AllowedSourceStates(unittest.TestCase):
         self.assertEqual(after["status"], "paid")
 
     def test_03_partial_ready_erip_marks_paid(self):
-        """partial_ready в†’ paid for verified ERIP webhook."""
+        """partial_ready → paid for verified ERIP webhook."""
         s = _make_storage()
         pi = _make_intent(s, status="partial_ready")
         result = _call_mark_paid(s, pi["public_id"], channel="erip",
@@ -188,7 +188,7 @@ class Test01AllowedSourceStates(unittest.TestCase):
         self.assertEqual(after["status"], "paid")
 
     def test_04_bepaid_created_still_marks_paid(self):
-        """bepaid_created в†’ paid still works (no regression from original path)."""
+        """bepaid_created → paid still works (no regression from original path)."""
         s = _make_storage()
         pi = _make_intent(s, status="bepaid_created")
         result = _call_mark_paid(s, pi["public_id"], tx_uid="bc-tx-uid-0001")
@@ -313,7 +313,7 @@ class Test05Idempotency(unittest.TestCase):
         _call_mark_paid(self.s, self.pi["public_id"], tx_uid=self.tx_uid)
 
     def test_12_same_tx_uid_is_idempotent(self):
-        """Repeat delivery of same tx_uid в†’ idempotent=True."""
+        """Repeat delivery of same tx_uid → idempotent=True."""
         result = _call_mark_paid(
             self.s, self.pi["public_id"], tx_uid=self.tx_uid
         )
@@ -321,7 +321,7 @@ class Test05Idempotency(unittest.TestCase):
         self.assertTrue(result.get("idempotent"), f"Expected idempotent=True; got {result}")
 
     def test_13_different_tx_uid_is_conflict(self):
-        """Different tx_uid on already-paid intent в†’ conflict protection."""
+        """Different tx_uid on already-paid intent → conflict protection."""
         result = _call_mark_paid(
             self.s, self.pi["public_id"], tx_uid="different-tx-uid-999"
         )
@@ -419,7 +419,7 @@ class Test08PaymentStateReason(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class Test09ProductionFixture(unittest.TestCase):
-    """Tests 19-21: ycpi_202607_16-like fixture вЂ” reconcile path."""
+    """Tests 19-21: ycpi_202607_16-like fixture — reconcile path."""
 
     PROD_PUBLIC_ID = "ycpi_202607_16_test"
     PROD_TX_UID = "7bf1c1ce-fb32-4320-a682-d6bcb43a8ffd"
@@ -545,7 +545,7 @@ class Test11ExistingGuards(unittest.TestCase):
 
 class Test12Version(unittest.TestCase):
     def test_25_version_marker(self):
-        """Full suite guard вЂ” version marker is v7.0.94.0."""
+        """Full suite guard — version marker is v7.0.94.1."""
         js = APP_JS.read_text(encoding="utf-8")
         self.assertIn(
             f'console.log("MiniApp version: v{CURRENT_VERSION}")',
