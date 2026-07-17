@@ -1157,6 +1157,26 @@ class Storage:
                 lease_token TEXT
             )
         """)
+        # v7.0.94.2 — automation metadata audit log
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS automation_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                automation_item_id INTEGER,
+                intent_public_id TEXT,
+                mk_invoice_id TEXT,
+                mk_user_id TEXT,
+                old_source TEXT,
+                new_source TEXT,
+                name_updated INTEGER NOT NULL DEFAULT 0,
+                initiator TEXT,
+                details_json TEXT
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_aal_intent ON automation_audit_log(intent_public_id)"
+        )
 
     # ── v7.0.94.0 — Invoice Automation methods ───────────────────────────────
 
@@ -1272,6 +1292,107 @@ class Storage:
             conn.execute(
                 f"UPDATE invoice_automation_items SET {', '.join(sets)} WHERE id=?",
                 vals,
+            )
+
+    def update_automation_item_student_name(
+        self, mk_invoice_id: str, student_name: str, now: str
+    ) -> None:
+        """Set student_name only when the current stored value is NULL (idempotent)."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE invoice_automation_items SET student_name=?, updated_at=?"
+                " WHERE mk_invoice_id=? AND student_name IS NULL",
+                (student_name, now, str(mk_invoice_id)),
+            )
+
+    def repair_intent_metadata(
+        self,
+        public_id: str,
+        *,
+        student_name: Optional[str] = None,
+        source: Optional[str] = None,
+        source_reference: Optional[str] = None,
+        now: str,
+    ) -> dict:
+        """Idempotent repair of safe metadata fields on a payment intent.
+
+        Allowed to change: student_name (if NULL or userId= placeholder), source (if 'manual'),
+        source_reference (only when source is also being corrected).
+        Never changes: amount, mk_invoice_id, mk_user_id, bepaid fields, paid/posted fields.
+        Returns a dict with ok, changed, old_*/new_* fields for audit logging.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT public_id, student_name, source, source_reference, status, paid_at, mk_posted_at"
+                " FROM payment_intents WHERE public_id=?",
+                (public_id,),
+            ).fetchone()
+        if not row:
+            return {"ok": False, "error": "not_found"}
+
+        old_name = row["student_name"]
+        old_source = row["source"]
+
+        sets: list[str] = ["updated_at=?"]
+        vals: list = [now]
+        name_updated = False
+        source_updated = False
+
+        if student_name and (not old_name or old_name.startswith("userId=")):
+            sets.append("student_name=?")
+            vals.append(student_name)
+            name_updated = True
+
+        if source and old_source == "manual":
+            sets.append("source=?")
+            vals.append(source)
+            source_updated = True
+            if source_reference:
+                sets.append("source_reference=?")
+                vals.append(source_reference)
+
+        if len(sets) == 1:
+            return {"ok": True, "changed": False, "old_name": old_name, "old_source": old_source}
+
+        vals.append(public_id)
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE payment_intents SET {', '.join(sets)} WHERE public_id=?",
+                vals,
+            )
+
+        return {
+            "ok": True,
+            "changed": True,
+            "old_name": old_name,
+            "new_name": student_name if name_updated else old_name,
+            "old_source": old_source,
+            "new_source": source if source_updated else old_source,
+            "name_updated": name_updated,
+            "source_updated": source_updated,
+        }
+
+    def create_automation_audit_event(self, event: dict) -> None:
+        """Append an automation audit record to automation_audit_log."""
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO automation_audit_log
+                   (created_at, event_type, automation_item_id, intent_public_id, mk_invoice_id,
+                    mk_user_id, old_source, new_source, name_updated, initiator, details_json)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    event.get("created_at") or "",
+                    event.get("event_type") or "",
+                    event.get("automation_item_id"),
+                    event.get("intent_public_id"),
+                    str(event.get("mk_invoice_id") or ""),
+                    str(event.get("mk_user_id") or ""),
+                    event.get("old_source"),
+                    event.get("new_source"),
+                    1 if event.get("name_updated") else 0,
+                    event.get("initiator"),
+                    event.get("details_json"),
+                ),
             )
 
     def list_automation_items(

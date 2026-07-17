@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.94.1");
+console.log("MiniApp version: v7.0.94.2");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12388,6 +12388,8 @@ function renderPaymentIntentCard(pi) {
 
   const sourceBadge = pi.source === "moyklass_invoice"
     ? `<span class="pi-source-badge pi-source-badge-mk">Данные проверены в МойКласс</span>`
+    : pi.source === "moyklass_invoice_automation"
+    ? `<span class="pi-source-badge pi-source-badge-auto">Автоматизация счетов</span>`
     : `<span class="pi-source-badge pi-source-badge-manual">Ручной ввод</span>`;
 
   const safeId = pi.public_id ? paymentIntentDomId(pi.public_id) : "";
@@ -13944,9 +13946,13 @@ async function loadAutomationQueue(stage) {
       const canPublish = item.current_stage === "payment_options_created" && item.intent_public_id;
       const canRetry = ["error", "requires_check"].includes(item.current_stage);
       const isIgnored = item.current_stage === "ignored";
+      const needsRepair = !item.student_name && !!item.intent_public_id;
+      const queueNameHtml = item.student_name
+        ? escapeHtml(item.student_name)
+        : `<span style="color:var(--muted)">Имя ученика не определено</span><br><span style="font-size:10px;color:var(--muted)">MK user ID: ${escapeHtml(String(item.mk_user_id || "?"))}</span>`;
       return `<div class="auto-queue-card" id="autoq-${item.id}">
         <div class="auto-queue-head">
-          <span class="auto-queue-name">${escapeHtml(item.student_name || "Ученик")}</span>
+          <span class="auto-queue-name">${queueNameHtml}</span>
           <span class="auto-queue-badge auto-stage-${item.current_stage}">${escapeHtml(stageLabel)}</span>
         </div>
         <div class="auto-queue-meta">
@@ -13959,6 +13965,7 @@ async function loadAutomationQueue(stage) {
           ${canCreate ? `<button class="secondary small" onclick="automationItemAction(${item.id},'create-payment',event)">Создать оплату</button>` : ""}
           ${canPublish ? `<button class="secondary small" onclick="automationItemAction(${item.id},'publish',event)">Опубликовать</button>` : ""}
           ${canRetry ? `<button class="secondary small" onclick="automationItemAction(${item.id},'retry',event)">Повторить</button>` : ""}
+          ${needsRepair ? `<button class="secondary small" onclick="automationItemAction(${item.id},'repair-metadata',event)">Исправить имя</button>` : ""}
           ${!isIgnored ? `<button class="secondary small muted" onclick="automationItemAction(${item.id},'ignore',event)">Пропустить</button>` : `<button class="secondary small" onclick="automationItemAction(${item.id},'unignore',event)">Восстановить</button>`}
         </div>
       </div>`;

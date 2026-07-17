@@ -12429,6 +12429,25 @@ class MiniAppContext:
                     uid, role, action, required)
         return {"ok": False, "error": "Нет доступа"}
 
+    def _fetch_mk_student_name(self, mk_user_id: int) -> Optional[str]:
+        """Fetch student full name from MoyKlass /v1/company/users/{id}. Returns None on failure."""
+        try:
+            result = self.moyklass.request("GET", f"/v1/company/users/{mk_user_id}")
+            if result.ok and isinstance(result.data, dict):
+                u = result.data
+                name = str(u.get("name") or "").strip()
+                if not name:
+                    name = " ".join(filter(None, [
+                        str(u.get("clientName") or u.get("lastName") or ""),
+                        str(u.get("firstName") or ""),
+                        str(u.get("middleName") or u.get("patronymic") or ""),
+                    ])).strip()
+                if name and not name.startswith("userId="):
+                    return name
+        except Exception:
+            log.warning("_fetch_mk_student_name: failed for mk_user_id=%s", mk_user_id)
+        return None
+
     def automation_get_settings(self, auth: dict[str, Any]) -> dict[str, Any]:
         role = self._automation_effective_role(auth)
         if role not in AUTOMATION_VIEW_ROLES:
@@ -12572,6 +12591,42 @@ class MiniAppContext:
                     now=now,
                 )
             return pub
+
+        if action == "repair-metadata":
+            intent_public_id = item.get("intent_public_id")
+            if not intent_public_id:
+                return {"ok": False, "error": "Нет связанного payment intent"}
+            mk_uid = item.get("mk_user_id")
+            fetched_name: Optional[str] = None
+            if mk_uid:
+                try:
+                    fetched_name = self._fetch_mk_student_name(int(mk_uid))
+                except (ValueError, TypeError):
+                    pass
+            inv_id_item = str(item.get("mk_invoice_id") or "")
+            repair = self.storage.repair_intent_metadata(
+                intent_public_id,
+                student_name=fetched_name,
+                source="moyklass_invoice_automation",
+                source_reference=f"mk_invoice_{inv_id_item}" if inv_id_item else None,
+                now=now,
+            )
+            if repair.get("changed"):
+                if fetched_name:
+                    self.storage.update_automation_item_student_name(inv_id_item, fetched_name, now)
+                self.storage.create_automation_audit_event({
+                    "created_at": now,
+                    "event_type": "automation_intent_metadata_repaired",
+                    "automation_item_id": iid,
+                    "intent_public_id": intent_public_id,
+                    "mk_invoice_id": inv_id_item,
+                    "mk_user_id": mk_uid,
+                    "old_source": repair.get("old_source"),
+                    "new_source": repair.get("new_source"),
+                    "name_updated": repair.get("name_updated", False),
+                    "initiator": f"admin:{auth.get('user_id')}",
+                })
+            return {"ok": True, **repair}
 
         return {"ok": False, "error": f"Unknown action: {action}"}
 
@@ -12734,6 +12789,13 @@ class MiniAppContext:
         except Exception:
             pass
 
+        # Fallback: fetch student name from MoyKlass user endpoint if not in subscription data
+        if not student_name:
+            try:
+                student_name = self._fetch_mk_student_name(int(mk_user_id))
+            except (ValueError, TypeError):
+                pass
+
         import json as _json
         snapshot = _json.dumps(inv, ensure_ascii=False)[:4000]
 
@@ -12741,6 +12803,10 @@ class MiniAppContext:
         item = self.storage.upsert_automation_item(inv_id, mk_user_id, student_name, snapshot, now)
         item_id = item.get("id")
         stage = item.get("current_stage", "discovered")
+
+        # If item pre-existed with null student_name and we now have it, update it
+        if student_name and not item.get("student_name"):
+            self.storage.update_automation_item_student_name(inv_id, student_name, now)
 
         # Skip ignored items
         if stage == "ignored":
@@ -12755,6 +12821,39 @@ class MiniAppContext:
         # Check for existing payment intent
         existing_intent = self.storage.find_active_intent_by_invoice(inv_id)
         if existing_intent:
+            # Idempotent metadata repair: fix student_name and source on existing intents
+            _needs_repair = (
+                (student_name and not existing_intent.get("student_name"))
+                or (student_name and (existing_intent.get("student_name") or "").startswith("userId="))
+                or existing_intent.get("source") == "manual"
+            )
+            if _needs_repair:
+                _repair = self.storage.repair_intent_metadata(
+                    existing_intent["public_id"],
+                    student_name=student_name,
+                    source="moyklass_invoice_automation",
+                    source_reference=f"mk_invoice_{inv_id}",
+                    now=now,
+                )
+                if _repair.get("changed"):
+                    log.info(
+                        "automation: repaired metadata for %s name_updated=%s source_updated=%s",
+                        existing_intent["public_id"],
+                        _repair.get("name_updated"),
+                        _repair.get("source_updated"),
+                    )
+                    self.storage.create_automation_audit_event({
+                        "created_at": now,
+                        "event_type": "automation_intent_metadata_repaired",
+                        "automation_item_id": item_id,
+                        "intent_public_id": existing_intent["public_id"],
+                        "mk_invoice_id": inv_id,
+                        "mk_user_id": mk_user_id,
+                        "old_source": _repair.get("old_source"),
+                        "new_source": _repair.get("new_source"),
+                        "name_updated": _repair.get("name_updated", False),
+                        "initiator": "scheduled",
+                    })
             if stage not in ("payment_options_created", "published"):
                 self.storage.update_automation_item_stage(
                     item_id, "payment_options_created",
@@ -12797,6 +12896,19 @@ class MiniAppContext:
                     now=now,
                 )
             return {"discovered": is_new}
+
+        # Guard: student name required before creating bePaid options
+        if not student_name:
+            self.storage.update_automation_item_stage(
+                item_id, "requires_check",
+                reason_code="student_name_missing",
+                readable_reason=(
+                    f"Не удалось определить имя ученика (MK user ID: {mk_user_id}, "
+                    f"счёт: {inv_id}). Проверьте данные ученика в МойКласс."
+                ),
+                now=now,
+            )
+            return {"requires_check": True, "discovered": is_new}
 
         # Create payment intent
         try:

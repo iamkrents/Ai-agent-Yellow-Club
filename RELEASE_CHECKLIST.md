@@ -1,9 +1,10 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.94.1**
+**Cache version: v7.0.94.2**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.94.2 | 2026-07-17 | Hotfix: automation intent student name + source badge. _fetch_mk_student_name() API fallback for NULL student_name. repair_intent_metadata() idempotent repair (name only if NULL or userId= prefix, source only if 'manual'). automation_audit_log table + create_automation_audit_event(). update_automation_item_student_name(). requires_check guard for unresolvable name. repair-metadata admin action. UI: 'Автоматизация счетов' badge for moyklass_invoice_automation source, 'Имя ученика не определено' fallback in queue, 'Исправить имя' button. .pi-source-badge-auto CSS. 45 new tests. |
 | v7.0.94.1 | 2026-07-17 | Critical hotfix: invoice automation role resolution. All automation handlers now call _role_for_user() server-side instead of trusting auth["role"] from frontend. Added _automation_effective_role() + _automation_deny() helpers. Diagnostic access-denied log. 22 new role regression tests. |
 | v7.0.94.0 | 2026-07-17 | Automated MoyKlass invoice detection and payment preparation pipeline. invoice_automation_settings + invoice_automation_items + invoice_automation_runs tables. InvoiceAutomationScheduler background thread. process_new_moyklass_invoices pipeline. API: GET/POST /api/payments/automation/settings, /status, /items, /scan, /items/{id}/{action}. Admin UI block «Автоматизация счетов» with toggles (discovery/create/publish), interval, manual scan, queue view. .notice:empty CSS fix. Safe-by-default: discovery ON, create OFF, publish OFF. PAYMENT_INVOICE_AUTOMATION_ENABLED env kill switch. 121 new tests. |
 | v7.0.93.3.0 | 2026-07-17 | UI/UX hotfix: parent payment screen role banner + light-theme contrast. Suppress «Руководитель Ресторана» notice for parent role (loadMe guard + tab click clear). Add :root[data-theme="light"] text overrides for all cp-card elements (defeats dark-mode media query when Telegram light theme + dark OS). 22 new tests. |
