@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.93.2.3 — publish-preview ERIP readiness fix.
+﻿"""Regression tests for v7.0.93.2.3 вЂ” publish-preview ERIP readiness fix.
 
 Root cause: publish-preview read ERIP account number only from payment_intent_options
 rows, while the admin card reads from payment_intents.bepaid_account_number (the legacy
@@ -16,18 +16,18 @@ Covers:
     6.  parents field uses parent_telegram_user_id (correct field name)
 
   Storage scenarios (temp DB):
-    7.  ERIP account in payment_intent_options row → erip_opt found with account
-    8.  No erip option row but legacy pi.bepaid_account_number+bepaid_uid set → account reachable
-    9.  Acquiring option with payment_url present in DB → acq_opt found with url
-    10. Legacy ERIP field set, no options row → test helper confirms data model
-    11. ERIP option with status=cancelled → not selected by active filter
-    12. ERIP option with status=superseded → not selected by active filter
+    7.  ERIP account in payment_intent_options row в†’ erip_opt found with account
+    8.  No erip option row but legacy pi.bepaid_account_number+bepaid_uid set в†’ account reachable
+    9.  Acquiring option with payment_url present in DB в†’ acq_opt found with url
+    10. Legacy ERIP field set, no options row в†’ test helper confirms data model
+    11. ERIP option with status=cancelled в†’ not selected by active filter
+    12. ERIP option with status=superseded в†’ not selected by active filter
 
   Publish-preview endpoint logic (MiniAppContext with patched storage):
-    13. Legacy erip intent (no option row) → erip_option_ready=True, ready=True
-    14. Legacy erip intent, legacy field missing (bepaid_uid absent) → erip_option_ready=False
-    15. Dual-channel fixture with account 9748998260715 → can_publish (erip ready, parent linked)
-    16. Acquiring intent, acq option with payment_url → acquiring_option_ready=True
+    13. Legacy erip intent (no option row) в†’ erip_option_ready=True, ready=True
+    14. Legacy erip intent, legacy field missing (bepaid_uid absent) в†’ erip_option_ready=False
+    15. Dual-channel fixture with account 9748998260715 в†’ can_publish (erip ready, parent linked)
+    16. Acquiring intent, acq option with payment_url в†’ acquiring_option_ready=True
 
   Existing suite guard:
     17. Existing parent_payments tests still import and run (static check)
@@ -51,7 +51,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 SERVER_PY = ROOT / "web_app_server.py"
 
-CURRENT_VERSION = "7.0.94.0"
+CURRENT_VERSION = "7.0.94.1"
 NOW = "2026-07-16T10:00:00"
 
 
@@ -70,7 +70,7 @@ def _seed_erip_intent(storage: Storage, *, mk_user_id: int = 5001,
                       bepaid_account_number: str | None = "9748998260715") -> dict:
     pi = storage.create_payment_intent({
         "mk_user_id": mk_user_id,
-        "student_name": "Тест Студент",
+        "student_name": "РўРµСЃС‚ РЎС‚СѓРґРµРЅС‚",
         "amount_minor": 5000,
         "amount_byn": 50.0,
         "currency": "BYN",
@@ -98,7 +98,7 @@ def _seed_erip_intent(storage: Storage, *, mk_user_id: int = 5001,
 
 
 def _seed_parent_link(storage: Storage, mk_user_id: str, parent_telegram_id: str) -> None:
-    result = storage.create_client_link_code(mk_user_id, "Тест Ученик", "test_admin")
+    result = storage.create_client_link_code(mk_user_id, "РўРµСЃС‚ РЈС‡РµРЅРёРє", "test_admin")
     storage.link_client_child(parent_telegram_id, result["code"], NOW)
 
 
@@ -142,7 +142,7 @@ class Test01StaticAnalysis(unittest.TestCase):
         self.assertIn("expired", self.method)
 
     def test_03_no_bepaid_client_call_in_preview(self):
-        """Preview must not call bePaid — it is read-only."""
+        """Preview must not call bePaid вЂ” it is read-only."""
         self.assertNotIn("BePaidClient(", self.method)
         self.assertNotIn("create_bepaid", self.method)
         self.assertNotIn("bepaid.create", self.method)
@@ -171,7 +171,7 @@ class Test01StaticAnalysis(unittest.TestCase):
 class Test02StorageScenarios(unittest.TestCase):
 
     def test_07_erip_account_in_option_row(self):
-        """payment_intent_options row with bepaid_account_number → found by get_options_for_intent."""
+        """payment_intent_options row with bepaid_account_number в†’ found by get_options_for_intent."""
         storage = _tmp_storage()
         pi = _seed_erip_intent(storage, bepaid_uid=None, bepaid_account_number=None)
         # Create an erip option row with account number
@@ -264,11 +264,11 @@ class Test02StorageScenarios(unittest.TestCase):
             shop_type="erip",
             bepaid_account_number="9748998260716",
         )
-        # opt2 wins → opt1 is superseded
+        # opt2 wins в†’ opt1 is superseded
         storage.supersede_sibling_options(pi["public_id"], int(opt2["id"]))
         opts = storage.get_options_for_intent(pi["public_id"])
         _inactive = {"cancelled", "superseded", "expired"}
-        # opt1 must be superseded — filter must exclude it
+        # opt1 must be superseded вЂ” filter must exclude it
         opt1_row = next((o for o in opts if int(o["id"]) == int(opt1["id"])), None)
         self.assertIsNotNone(opt1_row)
         self.assertEqual(opt1_row["status"], "superseded")
@@ -288,7 +288,7 @@ class Test03EndpointLogic(unittest.TestCase):
         return {"user_id": 1}
 
     def test_13_legacy_erip_intent_no_option_row_is_ready(self):
-        """Legacy intent: bepaid_uid + bepaid_account_number on pi row → erip_option_ready=True."""
+        """Legacy intent: bepaid_uid + bepaid_account_number on pi row в†’ erip_option_ready=True."""
         storage = _tmp_storage()
         pi = _seed_erip_intent(storage, bepaid_uid="uid_legacy", bepaid_account_number="9748998260715")
         _seed_parent_link(storage, str(pi["mk_user_id"]), "tg_parent_test")
@@ -304,12 +304,12 @@ class Test03EndpointLogic(unittest.TestCase):
                         f"detail={erip_check.get('detail')}")
 
     def test_14_legacy_erip_no_uid_is_blocked(self):
-        """Intent with no bepaid_uid (ERIP not created) → erip_option_ready=False."""
+        """Intent with no bepaid_uid (ERIP not created) в†’ erip_option_ready=False."""
         storage = _tmp_storage()
         # Create intent without ERIP creation (draft state)
         pi_raw = storage.create_payment_intent({
             "mk_user_id": 5002,
-            "student_name": "Другой Студент",
+            "student_name": "Р”СЂСѓРіРѕР№ РЎС‚СѓРґРµРЅС‚",
             "amount_minor": 3000,
             "amount_byn": 30.0,
             "currency": "BYN",
@@ -333,7 +333,7 @@ class Test03EndpointLogic(unittest.TestCase):
                          "erip_option_ready must be False when no ERIP created")
 
     def test_15_dual_channel_9748998260715_fixture(self):
-        """Reproduces ycpi_202607_15: legacy ERIP + acquiring option → erip ready, can_publish."""
+        """Reproduces ycpi_202607_15: legacy ERIP + acquiring option в†’ erip ready, can_publish."""
         storage = _tmp_storage()
         pi = _seed_erip_intent(storage, bepaid_uid="uid_real",
                                bepaid_account_number="9748998260715")
@@ -369,11 +369,11 @@ class Test03EndpointLogic(unittest.TestCase):
                         "dual-channel intent with both options must be ready to publish")
 
     def test_16_acquiring_intent_option_url_ready(self):
-        """Acquiring payment_method with payment_url in option → acquiring_option_ready=True."""
+        """Acquiring payment_method with payment_url in option в†’ acquiring_option_ready=True."""
         storage = _tmp_storage()
         pi_raw = storage.create_payment_intent({
             "mk_user_id": 5003,
-            "student_name": "Acq Студент",
+            "student_name": "Acq РЎС‚СѓРґРµРЅС‚",
             "amount_minor": 4000,
             "amount_byn": 40.0,
             "currency": "BYN",

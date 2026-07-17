@@ -1,4 +1,4 @@
-"""Tests for MoyKlass invoice automation pipeline (v7.0.94.0).
+"""Tests for MoyKlass invoice automation pipeline (v7.0.94.1).
 
 Covers:
 - Storage automation tables and methods
@@ -27,7 +27,7 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-CURRENT_VERSION = "7.0.94.0"
+CURRENT_VERSION = "7.0.94.1"
 
 from storage import Storage
 
@@ -567,15 +567,31 @@ class TestPipelineWithParent(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestAutomationHandlerAccess(unittest.TestCase):
+    """Handler routing tests.
+
+    _automation_effective_role is mocked to return auth["_test_role"] so these
+    tests verify routing logic without coupling to DB role resolution.
+    Role resolution correctness is covered by TestAutomationRoleResolution.
+    """
+
     def setUp(self):
         from web_app_server import MiniAppContext
         self.ctx = MiniAppContext.__new__(MiniAppContext)
         self.ctx.storage = _make_storage()
         self.ctx.settings = MagicMock()
         self.ctx.moyklass = MagicMock()
+        # Patch role resolution so tests are DB-independent
+        self._patcher = patch.object(
+            self.ctx, "_automation_effective_role",
+            side_effect=lambda auth: auth.get("_test_role", "other"),
+        )
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
 
     def _auth(self, role: str) -> dict:
-        return {"role": role, "user_id": "0", "ok": True}
+        return {"_test_role": role, "user_id": "0", "ok": True}
 
     def test_automation_get_settings_owner_allowed(self):
         result = self.ctx.automation_get_settings(self._auth("owner"))
@@ -943,6 +959,203 @@ class TestRegressionImports(unittest.TestCase):
         self.assertEqual(counts["skipped"], 1)
         _automation_update_counts(counts, {"missing_parent": True})
         self.assertEqual(counts["missing_parent"], 1)
+
+
+# ---------------------------------------------------------------------------
+# 12. Role resolution hotfix — v7.0.94.1
+#     Verifies that _automation_effective_role() uses _role_for_user() and
+#     NOT auth["role"] for access decisions.
+# ---------------------------------------------------------------------------
+
+def _make_ctx_for_role_tests(role_map: dict[int, str]) -> Any:
+    """Minimal ctx whose _role_for_user is driven by role_map dict.
+
+    role_map: {user_id -> role}. Missing user_id returns "other".
+    test_mode_map: optional, set via ctx._test_mode_map.
+    """
+    from web_app_server import MiniAppContext
+    ctx = MiniAppContext.__new__(MiniAppContext)
+    ctx.storage = _make_storage()
+    ctx.settings = MagicMock()
+    ctx.moyklass = MagicMock()
+
+    def _fake_role_for_user(uid: int) -> str:
+        return role_map.get(int(uid), "other")
+
+    ctx._role_for_user = _fake_role_for_user
+    return ctx
+
+
+class TestAutomationRoleResolution(unittest.TestCase):
+    """Test that _automation_effective_role uses _role_for_user() server-side resolution.
+
+    Tests 1-22 from hotfix spec v7.0.94.1.
+    """
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _ctx(self, uid: int, effective_role: str):
+        """Context where uid maps to effective_role via _role_for_user."""
+        return _make_ctx_for_role_tests({uid: effective_role})
+
+    def _view_auth(self, uid: int, frontend_role: str = "other") -> dict:
+        """Auth payload where frontend_role is intentionally wrong/stale."""
+        return {"user_id": str(uid), "role": frontend_role}
+
+    # ── 1-6: owner / admin base access ───────────────────────────────────────
+
+    def test_01_owner_gets_automation_settings(self):
+        """Owner with base role gets automation settings."""
+        ctx = self._ctx(uid=1, effective_role="owner")
+        result = ctx.automation_get_settings(self._view_auth(1))
+        self.assertTrue(result.get("ok"), result)
+
+    def test_02_owner_gets_automation_status(self):
+        ctx = self._ctx(uid=1, effective_role="owner")
+        result = ctx.automation_get_status(self._view_auth(1), {})
+        self.assertTrue(result.get("ok"), result)
+
+    def test_03_owner_gets_automation_items(self):
+        ctx = self._ctx(uid=1, effective_role="owner")
+        result = ctx.automation_list_items(self._view_auth(1), {})
+        self.assertTrue(result.get("ok"), result)
+
+    def test_04_owner_can_update_settings(self):
+        ctx = self._ctx(uid=1, effective_role="owner")
+        body = {"discovery_enabled": True, "create_payment_options_enabled": False,
+                "publish_to_parent_enabled": False, "scan_interval_minutes": 10}
+        result = ctx.automation_update_settings(self._view_auth(1), body)
+        self.assertTrue(result.get("ok"), result)
+
+    def test_05_owner_can_run_manual_scan(self):
+        ctx = self._ctx(uid=1, effective_role="owner")
+        with patch.object(ctx, "process_new_moyklass_invoices", return_value={"ok": True}):
+            result = ctx.automation_manual_scan(self._view_auth(1))
+        self.assertTrue(result.get("ok"), result)
+
+    def test_06_owner_can_perform_item_action(self):
+        ctx = self._ctx(uid=1, effective_role="owner")
+        now = _now()
+        ctx.storage.upsert_automation_item("inv_role_1", "u1", None, "{}", now)
+        iid = ctx.storage.get_automation_item_by_invoice("inv_role_1")["id"]
+        result = ctx.automation_item_action(self._view_auth(1), str(iid), "ignore", {})
+        self.assertTrue(result.get("ok"), result)
+
+    # ── 7-8: admin access ────────────────────────────────────────────────────
+
+    def test_07_admin_gets_view_access(self):
+        ctx = self._ctx(uid=2, effective_role="admin")
+        result = ctx.automation_get_status(self._view_auth(2), {})
+        self.assertTrue(result.get("ok"), result)
+
+    def test_08_admin_gets_admin_access(self):
+        ctx = self._ctx(uid=2, effective_role="admin")
+        body = {"discovery_enabled": True, "create_payment_options_enabled": False,
+                "publish_to_parent_enabled": False, "scan_interval_minutes": 10}
+        result = ctx.automation_update_settings(self._view_auth(2), body)
+        self.assertTrue(result.get("ok"), result)
+
+    # ── 9-12: denied roles ───────────────────────────────────────────────────
+
+    def test_09_parent_gets_access_denied(self):
+        ctx = self._ctx(uid=10, effective_role="parent")
+        result = ctx.automation_get_settings(self._view_auth(10))
+        self.assertFalse(result.get("ok"))
+
+    def test_10_teacher_gets_access_denied(self):
+        ctx = self._ctx(uid=11, effective_role="teacher")
+        result = ctx.automation_get_status(self._view_auth(11), {})
+        self.assertFalse(result.get("ok"))
+
+    def test_11_kitchen_gets_access_denied(self):
+        ctx = self._ctx(uid=12, effective_role="kitchen")
+        result = ctx.automation_list_items(self._view_auth(12), {})
+        self.assertFalse(result.get("ok"))
+
+    def test_12_restaurant_gets_access_denied(self):
+        ctx = self._ctx(uid=13, effective_role="restaurant")
+        result = ctx.automation_get_settings(self._view_auth(13))
+        self.assertFalse(result.get("ok"))
+
+    # ── 13-14: stale / missing auth["role"] ──────────────────────────────────
+
+    def test_13_owner_uid_no_role_field_gets_access(self):
+        """auth without role field — if uid resolves to owner, access must be granted."""
+        ctx = self._ctx(uid=1, effective_role="owner")
+        auth_no_role = {"user_id": "1"}  # no "role" key at all
+        result = ctx.automation_get_settings(auth_no_role)
+        self.assertTrue(result.get("ok"), result)
+
+    def test_14_stale_role_in_payload_does_not_grant_access(self):
+        """Frontend sends role='owner' but _role_for_user returns 'parent' — access denied."""
+        ctx = self._ctx(uid=20, effective_role="parent")
+        stale_auth = {"user_id": "20", "role": "owner"}  # frontend lies
+        result = ctx.automation_get_settings(stale_auth)
+        self.assertFalse(result.get("ok"), "Stale frontend role must not grant access")
+
+    # ── 15-17: test-role mode ─────────────────────────────────────────────────
+
+    def test_15_owner_with_test_role_parent_gets_denied(self):
+        """Owner in test-role 'parent' must be denied (test-role is honoured)."""
+        # _role_for_user returns "parent" when test-role is active
+        ctx = self._ctx(uid=1, effective_role="parent")
+        result = ctx.automation_get_settings(self._view_auth(1))
+        self.assertFalse(result.get("ok"), "test-role parent must be denied")
+
+    def test_16_after_test_role_cleared_owner_regains_access(self):
+        """After test-role disabled, owner's base role (owner) is used → access granted."""
+        # Simulate test-role disabled: _role_for_user returns base "owner"
+        ctx = self._ctx(uid=1, effective_role="owner")
+        result = ctx.automation_get_settings(self._view_auth(1))
+        self.assertTrue(result.get("ok"), result)
+
+    def test_17_test_role_owner_gets_access(self):
+        """User in test-role 'owner' must get access (test-role owner is valid)."""
+        ctx = self._ctx(uid=5, effective_role="owner")
+        result = ctx.automation_get_settings(self._view_auth(5))
+        self.assertTrue(result.get("ok"), result)
+
+    # ── 18: operations scope ─────────────────────────────────────────────────
+
+    def test_18_operations_gets_view_not_admin(self):
+        """operations is in VIEW_ROLES but not ADMIN_ROLES."""
+        ctx = self._ctx(uid=3, effective_role="operations")
+        view_ok = ctx.automation_get_status(self._view_auth(3), {})
+        self.assertTrue(view_ok.get("ok"), "operations must have view access")
+        body = {"discovery_enabled": False, "create_payment_options_enabled": False,
+                "publish_to_parent_enabled": False, "scan_interval_minutes": 10}
+        admin_result = ctx.automation_update_settings(self._view_auth(3), body)
+        self.assertFalse(admin_result.get("ok"), "operations must NOT have admin access")
+
+    # ── 19: frontend not source of truth ─────────────────────────────────────
+
+    def test_19_frontend_role_not_trusted(self):
+        """Sending any role in auth payload must not bypass _role_for_user."""
+        # uid=99 resolves to "parent" — no matter what frontend sends
+        ctx = self._ctx(uid=99, effective_role="parent")
+        for spoofed in ("owner", "admin", "operations", "director"):
+            with self.subTest(spoofed=spoofed):
+                auth = {"user_id": "99", "role": spoofed}
+                result = ctx.automation_get_settings(auth)
+                self.assertFalse(result.get("ok"),
+                                 f"Spoofed role '{spoofed}' must not grant access")
+
+    # ── 20-22: regression guards ──────────────────────────────────────────────
+
+    def test_20_existing_121_automation_tests_still_importable(self):
+        """test_invoice_automation module is importable (guards the 121 existing tests)."""
+        import tests.test_invoice_automation  # noqa: F401
+
+    def test_21_existing_payment_tests_importable(self):
+        import tests.test_client_payments  # noqa: F401
+        import tests.test_mk_invoice_intent  # noqa: F401
+        import tests.test_bepaid_recovery_queue  # noqa: F401
+
+    def test_22_automation_helper_methods_exist(self):
+        """_automation_effective_role and _automation_deny must exist on MiniAppContext."""
+        from web_app_server import MiniAppContext
+        self.assertTrue(hasattr(MiniAppContext, "_automation_effective_role"))
+        self.assertTrue(hasattr(MiniAppContext, "_automation_deny"))
 
 
 if __name__ == "__main__":

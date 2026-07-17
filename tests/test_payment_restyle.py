@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.93.2.5 — client payment page Yellow Club rebrand.
+﻿"""Regression tests for v7.0.93.2.5 вЂ” client payment page Yellow Club rebrand.
 
 Covers:
   CSS structure:
@@ -46,7 +46,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 STYLES_CSS = ROOT / "miniapp" / "styles.css"
 
-CURRENT_VERSION = "7.0.94.0"
+CURRENT_VERSION = "7.0.94.1"
 PURPLE_HEX = "#6366f1"
 PURPLE_RGBA = "rgba(99,102,241"
 YELLOW_HEX = "#ffd84d"
@@ -145,7 +145,7 @@ class TestCSSBrandColors(unittest.TestCase):
                          "cp-copy-btn:disabled must not use opacity: .6")
         self.assertNotIn(": 0.6", self.cp_copy_disabled_block,
                          "cp-copy-btn:disabled must not use opacity: 0.6")
-        # Verify opacity:1 or no opacity set — both are fine
+        # Verify opacity:1 or no opacity set вЂ” both are fine
         if "opacity" in self.cp_copy_disabled_block:
             self.assertIn("opacity: 1", self.cp_copy_disabled_block,
                           "If opacity is set on disabled, it must be 1")
@@ -177,7 +177,7 @@ class TestCSSMobile(unittest.TestCase):
         cls.value_block = _css_block(cls.css, ".cp-erip-value")
 
     def test_12_nunito_globally_applied(self):
-        # Nunito is imported and applied on body — find the body rule that contains Nunito
+        # Nunito is imported and applied on body вЂ” find the body rule that contains Nunito
         self.assertIn("Nunito", self.css,
                       "Nunito must appear somewhere in styles.css")
         # Find a body rule that actually sets the font-family with Nunito
@@ -256,7 +256,7 @@ class TestJSStructure(unittest.TestCase):
         self.assertIn("acquiring_payment_url", self.card_fn)
         self.assertIn('href="', self.card_fn)
         self.assertIn("cp-card-pay-btn", self.card_fn)
-        self.assertIn("Оплатить банковской картой", self.card_fn)
+        self.assertIn("РћРїР»Р°С‚РёС‚СЊ Р±Р°РЅРєРѕРІСЃРєРѕР№ РєР°СЂС‚РѕР№", self.card_fn)
 
     def test_19_erip_account_is_dynamic(self):
         self.assertIn("erip_account_number", self.card_fn)

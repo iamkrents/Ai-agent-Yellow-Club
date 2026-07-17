@@ -1,18 +1,18 @@
-"""Regression tests for v7.0.93.2.4 — ERIP payment instruction UX.
+﻿"""Regression tests for v7.0.93.2.4 вЂ” ERIP payment instruction UX.
 
 Covers:
   Frontend static analysis:
-    1.  «Как оплатить через ЕРИП» text present in renderClientPaymentCard
+    1.  В«РљР°Рє РѕРїР»Р°С‚РёС‚СЊ С‡РµСЂРµР· Р•Р РРџВ» text present in renderClientPaymentCard
     2.  ERIP code 7485856 declared as frontend constant ERIP_CODE
-    3.  Button «Скопировать код ЕРИП» present in renderClientPaymentCard
-    4.  Button «Скопировать номер заказа» present in renderClientPaymentCard
+    3.  Button В«РЎРєРѕРїРёСЂРѕРІР°С‚СЊ РєРѕРґ Р•Р РРџВ» present in renderClientPaymentCard
+    4.  Button В«РЎРєРѕРїРёСЂРѕРІР°С‚СЊ РЅРѕРјРµСЂ Р·Р°РєР°Р·Р°В» present in renderClientPaymentCard
     5.  Dynamic order number taken from pi.erip_account_number (safeAcct variable)
-    6.  Literal «9748998260715» not hardcoded in frontend source
+    6.  Literal В«9748998260715В» not hardcoded in frontend source
     7.  Full navigation path present in app.js:
-        Образование и развитие, Дополнительное образование и развитие,
-        Обучение ИТ, Минск, Еллоу клаб, Обучение
-    8.  Term «Номер заказа» used in card (correct terminology)
-    9.  Old text «введите номер платежа» absent
+        РћР±СЂР°Р·РѕРІР°РЅРёРµ Рё СЂР°Р·РІРёС‚РёРµ, Р”РѕРїРѕР»РЅРёС‚РµР»СЊРЅРѕРµ РѕР±СЂР°Р·РѕРІР°РЅРёРµ Рё СЂР°Р·РІРёС‚РёРµ,
+        РћР±СѓС‡РµРЅРёРµ РРў, РњРёРЅСЃРє, Р•Р»Р»РѕСѓ РєР»Р°Р±, РћР±СѓС‡РµРЅРёРµ
+    8.  Term В«РќРѕРјРµСЂ Р·Р°РєР°Р·Р°В» used in card (correct terminology)
+    9.  Old text В«РІРІРµРґРёС‚Рµ РЅРѕРјРµСЂ РїР»Р°С‚РµР¶Р°В» absent
     10. cpCopyOrderNum uses navigator.clipboard.writeText
     11. cpCopyEripCode exists and references ERIP_CODE
     12. ERIP instruction does not call checkout endpoint
@@ -38,7 +38,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 STYLES_CSS = ROOT / "miniapp" / "styles.css"
 
-CURRENT_VERSION = "7.0.94.0"
+CURRENT_VERSION = "7.0.94.1"
 ERIP_CODE_EXPECTED = "7485856"
 
 
@@ -68,20 +68,20 @@ class TestEripInstructionContent(unittest.TestCase):
         cls.card_fn = _extract_fn(cls.js, "renderClientPaymentCard")
 
     def test_01_how_to_pay_text_in_card(self):
-        self.assertIn("Как оплатить через ЕРИП", self.card_fn,
-                      "renderClientPaymentCard must contain «Как оплатить через ЕРИП»")
+        self.assertIn("РљР°Рє РѕРїР»Р°С‚РёС‚СЊ С‡РµСЂРµР· Р•Р РРџ", self.card_fn,
+                      "renderClientPaymentCard must contain В«РљР°Рє РѕРїР»Р°С‚РёС‚СЊ С‡РµСЂРµР· Р•Р РРџВ»")
 
     def test_02_erip_code_constant_declared(self):
         self.assertIn(f'ERIP_CODE = "{ERIP_CODE_EXPECTED}"', self.js,
                       f"ERIP_CODE must be declared as const ERIP_CODE = \"{ERIP_CODE_EXPECTED}\"")
 
     def test_03_copy_erip_code_button_in_card(self):
-        self.assertIn("Скопировать код ЕРИП", self.card_fn,
-                      "Button «Скопировать код ЕРИП» must be in renderClientPaymentCard")
+        self.assertIn("РЎРєРѕРїРёСЂРѕРІР°С‚СЊ РєРѕРґ Р•Р РРџ", self.card_fn,
+                      "Button В«РЎРєРѕРїРёСЂРѕРІР°С‚СЊ РєРѕРґ Р•Р РРџВ» must be in renderClientPaymentCard")
 
     def test_04_copy_order_num_button_in_card(self):
-        self.assertIn("Скопировать номер заказа", self.card_fn,
-                      "Button «Скопировать номер заказа» must be in renderClientPaymentCard")
+        self.assertIn("РЎРєРѕРїРёСЂРѕРІР°С‚СЊ РЅРѕРјРµСЂ Р·Р°РєР°Р·Р°", self.card_fn,
+                      "Button В«РЎРєРѕРїРёСЂРѕРІР°С‚СЊ РЅРѕРјРµСЂ Р·Р°РєР°Р·Р°В» must be in renderClientPaymentCard")
 
     def test_05_order_number_is_dynamic(self):
         # The card function must use safeAcct (derived from pi.erip_account_number)
@@ -93,20 +93,20 @@ class TestEripInstructionContent(unittest.TestCase):
                          "Literal 9748998260715 must not be hardcoded in frontend source")
 
     def test_07_full_navigation_path_present(self):
-        self.assertIn("Образование и развитие", self.card_fn)
-        self.assertIn("Дополнительное образование и развитие", self.card_fn)
-        self.assertIn("Обучение ИТ", self.card_fn)
-        self.assertIn("Минск", self.card_fn)
-        self.assertIn("Еллоу клаб", self.card_fn)
-        self.assertIn("Обучение", self.card_fn)
+        self.assertIn("РћР±СЂР°Р·РѕРІР°РЅРёРµ Рё СЂР°Р·РІРёС‚РёРµ", self.card_fn)
+        self.assertIn("Р”РѕРїРѕР»РЅРёС‚РµР»СЊРЅРѕРµ РѕР±СЂР°Р·РѕРІР°РЅРёРµ Рё СЂР°Р·РІРёС‚РёРµ", self.card_fn)
+        self.assertIn("РћР±СѓС‡РµРЅРёРµ РРў", self.card_fn)
+        self.assertIn("РњРёРЅСЃРє", self.card_fn)
+        self.assertIn("Р•Р»Р»РѕСѓ РєР»Р°Р±", self.card_fn)
+        self.assertIn("РћР±СѓС‡РµРЅРёРµ", self.card_fn)
 
     def test_08_correct_terminology_order_number(self):
-        self.assertIn("Номер заказа", self.card_fn,
-                      "Must use term «Номер заказа»")
+        self.assertIn("РќРѕРјРµСЂ Р·Р°РєР°Р·Р°", self.card_fn,
+                      "Must use term В«РќРѕРјРµСЂ Р·Р°РєР°Р·Р°В»")
 
     def test_09_old_text_removed(self):
-        self.assertNotIn("введите номер платежа", self.js,
-                         "Old text «введите номер платежа» must be removed")
+        self.assertNotIn("РІРІРµРґРёС‚Рµ РЅРѕРјРµСЂ РїР»Р°С‚РµР¶Р°", self.js,
+                         "Old text В«РІРІРµРґРёС‚Рµ РЅРѕРјРµСЂ РїР»Р°С‚РµР¶Р°В» must be removed")
 
 
 class TestCopyFunctions(unittest.TestCase):

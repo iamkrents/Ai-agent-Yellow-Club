@@ -12409,19 +12409,39 @@ class MiniAppContext:
             "message": msg,
         }
 
-    # ── v7.0.94.0 — Invoice Automation API handlers ──────────────────────────
+    # ── v7.0.94.1 — Invoice Automation API handlers ──────────────────────────
+    # Role is always resolved server-side via _role_for_user(); the role field
+    # in the auth payload is ignored so stale/spoofed values cannot grant access.
+
+    def _automation_effective_role(self, auth: dict[str, Any]) -> str:
+        """Return the canonical effective role for automation access checks.
+
+        Uses _role_for_user() which honours test-role mode, same as all other
+        handlers in this codebase.  Never trusts auth["role"] from the frontend.
+        """
+        try:
+            return self._role_for_user(int(auth["user_id"]))
+        except (KeyError, TypeError, ValueError):
+            return "other"
+
+    def _automation_deny(self, action: str, uid: Any, role: str, required: str) -> dict[str, Any]:
+        log.warning("invoice automation access denied: uid=%s role=%s action=%s required=%s",
+                    uid, role, action, required)
+        return {"ok": False, "error": "Нет доступа"}
 
     def automation_get_settings(self, auth: dict[str, Any]) -> dict[str, Any]:
-        if auth.get("role") not in AUTOMATION_VIEW_ROLES:
-            return {"ok": False, "error": "Нет доступа"}
+        role = self._automation_effective_role(auth)
+        if role not in AUTOMATION_VIEW_ROLES:
+            return self._automation_deny("get_settings", auth.get("user_id"), role, "view")
         settings = self.storage.get_automation_settings()
         runs = self.storage.list_automation_runs(limit=5)
         running = self.storage.get_running_automation_run()
         return {"ok": True, "settings": settings, "recent_runs": runs, "running": running}
 
     def automation_update_settings(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
-        if auth.get("role") not in AUTOMATION_ADMIN_ROLES:
-            return {"ok": False, "error": "Нет доступа. Требуется роль owner или admin."}
+        role = self._automation_effective_role(auth)
+        if role not in AUTOMATION_ADMIN_ROLES:
+            return self._automation_deny("update_settings", auth.get("user_id"), role, "admin")
         discovery_enabled = bool(body.get("discovery_enabled", True))
         create_payment_options_enabled = bool(body.get("create_payment_options_enabled", False))
         publish_to_parent_enabled = bool(body.get("publish_to_parent_enabled", False))
@@ -12448,16 +12468,18 @@ class MiniAppContext:
         return {"ok": True, "settings": settings}
 
     def automation_manual_scan(self, auth: dict[str, Any]) -> dict[str, Any]:
-        if auth.get("role") not in AUTOMATION_ADMIN_ROLES:
-            return {"ok": False, "error": "Нет доступа"}
+        role = self._automation_effective_role(auth)
+        if role not in AUTOMATION_ADMIN_ROLES:
+            return self._automation_deny("manual_scan", auth.get("user_id"), role, "admin")
         result = self.process_new_moyklass_invoices(
             trigger="manual", started_by=str(auth.get("user_id") or "")
         )
         return result
 
     def automation_get_status(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
-        if auth.get("role") not in AUTOMATION_VIEW_ROLES:
-            return {"ok": False, "error": "Нет доступа"}
+        role = self._automation_effective_role(auth)
+        if role not in AUTOMATION_VIEW_ROLES:
+            return self._automation_deny("get_status", auth.get("user_id"), role, "view")
         settings = self.storage.get_automation_settings()
         running = self.storage.get_running_automation_run()
         runs = self.storage.list_automation_runs(limit=10)
@@ -12476,8 +12498,9 @@ class MiniAppContext:
         }
 
     def automation_list_items(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
-        if auth.get("role") not in AUTOMATION_VIEW_ROLES:
-            return {"ok": False, "error": "Нет доступа"}
+        role = self._automation_effective_role(auth)
+        if role not in AUTOMATION_VIEW_ROLES:
+            return self._automation_deny("list_items", auth.get("user_id"), role, "view")
         stage = params.get("stage") or "all"
         limit = min(int(params.get("limit") or 50), 200)
         offset = int(params.get("offset") or 0)
@@ -12492,8 +12515,9 @@ class MiniAppContext:
     def automation_item_action(
         self, auth: dict[str, Any], item_id: str, action: str, body: dict[str, Any]
     ) -> dict[str, Any]:
-        if auth.get("role") not in AUTOMATION_ADMIN_ROLES:
-            return {"ok": False, "error": "Нет доступа"}
+        role = self._automation_effective_role(auth)
+        if role not in AUTOMATION_ADMIN_ROLES:
+            return self._automation_deny(f"item_action/{action}", auth.get("user_id"), role, "admin")
         try:
             iid = int(item_id)
         except (TypeError, ValueError):

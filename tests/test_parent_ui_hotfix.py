@@ -1,11 +1,11 @@
-"""Regression tests for v7.0.94.0 — parent payment UI/UX hotfix.
+﻿"""Regression tests for v7.0.94.0 вЂ” parent payment UI/UX hotfix.
 
 Fixes:
-  1. Role banner showed «Руководитель Ресторана: Родитель» on parent screen.
+  1. Role banner showed В«Р СѓРєРѕРІРѕРґРёС‚РµР»СЊ Р РµСЃС‚РѕСЂР°РЅР°: Р РѕРґРёС‚РµР»СЊВ» on parent screen.
      Root cause: loadMe() always called setNotice(displayName + ": " + roleText).
      displayName came from resolvedDisplayName / mkTeacherName (MK DB field) which
      stored the old restaurant-role label. Fix: for parent role, clear the notice
-     (badge already shows «Родитель»).
+     (badge already shows В«Р РѕРґРёС‚РµР»СЊВ»).
 
   2. In Telegram light theme (data-theme="light") when OS is dark mode,
      cp-card-name and cp-card-amount turned white (#f0f0f0) on a white card.
@@ -18,7 +18,7 @@ Tests:
   Role banner (app.js):
     1.  loadMe parent guard suppresses notice
     2.  client-payments click clears notice
-    3.  «Руководитель Ресторана» absent from parent guard code
+    3.  В«Р СѓРєРѕРІРѕРґРёС‚РµР»СЊ Р РµСЃС‚РѕСЂР°РЅР°В» absent from parent guard code
     4.  restaurant/kitchen absent from parent payments context
     5.  Role-banner suppression is parent-only (other roles unaffected)
     6.  Non-parent setNotice still present for other roles
@@ -56,7 +56,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 STYLES_CSS = ROOT / "miniapp" / "styles.css"
 
-CURRENT_VERSION = "7.0.94.0"
+CURRENT_VERSION = "7.0.94.1"
 
 
 # ---------------------------------------------------------------------------
@@ -128,11 +128,11 @@ class Test01RoleBanner(unittest.TestCase):
                       "Parent guard must call setNotice('', '') so no legacy name is displayed")
 
     def test_04_click_handler_does_not_set_kitchen_title(self):
-        """Click handler must never set title to «Кухня · Yellow Club» for parent payments."""
-        # The handler sets "Оплаты · Yellow Club"; ensure it doesn't override with kitchen title.
-        self.assertNotIn("Кухня · Yellow Club", self.click_block)
+        """Click handler must never set title to В«РљСѓС…РЅСЏ В· Yellow ClubВ» for parent payments."""
+        # The handler sets "РћРїР»Р°С‚С‹ В· Yellow Club"; ensure it doesn't override with kitchen title.
+        self.assertNotIn("РљСѓС…РЅСЏ В· Yellow Club", self.click_block)
         # Handler must set the correct parent-facing title
-        self.assertIn("Оплаты · Yellow Club", self.click_block)
+        self.assertIn("РћРїР»Р°С‚С‹ В· Yellow Club", self.click_block)
 
     def test_05_parent_guard_uses_setnotice_empty(self):
         """Parent guard block must call setNotice with empty string (clearing the banner)."""
@@ -167,8 +167,8 @@ class Test01RoleBanner(unittest.TestCase):
 
     def test_08_click_handler_also_sets_title_and_badge(self):
         """Click handler must still set the title and badge (context guard intact)."""
-        self.assertIn("Оплаты · Yellow Club", self.click_block)
-        self.assertIn("Родитель", self.click_block)
+        self.assertIn("РћРїР»Р°С‚С‹ В· Yellow Club", self.click_block)
+        self.assertIn("Р РѕРґРёС‚РµР»СЊ", self.click_block)
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.94.0 — bePaid recovery queue.
+﻿"""Regression tests for v7.0.94.0 вЂ” bePaid recovery queue.
 
 Root cause:
   tx_id=163 was already matched to ycpi_202607_16 (intent_public_id set in DB),
@@ -8,19 +8,19 @@ Root cause:
 
 Tests:
   Storage layer (list_bepaid_recovery_queue):
-    1.  Successful, verified, matched, unpaid intent → appears in recovery queue.
-    2.  tx_163-like fixture (awaiting_payment intent) → appears in recovery queue.
-    3.  Ordinary no_match (intent_public_id=NULL) → NOT in recovery queue.
-    4.  Matched intent already paid → NOT in recovery queue.
-    5.  Matched intent posted_to_moyklass → NOT in recovery queue.
-    6.  Unverified transaction → NOT in recovery queue.
-    7.  test=True transaction → NOT in recovery queue.
-    8.  Pending (non-successful) transaction → NOT in recovery queue.
+    1.  Successful, verified, matched, unpaid intent в†’ appears in recovery queue.
+    2.  tx_163-like fixture (awaiting_payment intent) в†’ appears in recovery queue.
+    3.  Ordinary no_match (intent_public_id=NULL) в†’ NOT in recovery queue.
+    4.  Matched intent already paid в†’ NOT in recovery queue.
+    5.  Matched intent posted_to_moyklass в†’ NOT in recovery queue.
+    6.  Unverified transaction в†’ NOT in recovery queue.
+    7.  test=True transaction в†’ NOT in recovery queue.
+    8.  Pending (non-successful) transaction в†’ NOT in recovery queue.
   Reconcile endpoint (already-matched path):
     9.  reconcile uses stored intent_public_id when matcher would miss (fallback).
-    10. awaiting_payment → paid via reconcile endpoint.
-    11. Repeat reconcile on paid intent → idempotent.
-    12. Double payment (different tx_uid on paid intent) → blocked.
+    10. awaiting_payment в†’ paid via reconcile endpoint.
+    11. Repeat reconcile on paid intent в†’ idempotent.
+    12. Double payment (different tx_uid on paid intent) в†’ blocked.
   Frontend (app.js static analysis):
     13. loadRecoveryQueue function defined.
     14. reprocessRecoveryTransaction function defined.
@@ -53,7 +53,7 @@ sys.path.insert(0, str(ROOT))
 from storage import Storage
 from utils import now_iso
 
-CURRENT_VERSION = "7.0.94.0"
+CURRENT_VERSION = "7.0.94.1"
 APP_JS = ROOT / "miniapp" / "app.js"
 
 
@@ -75,7 +75,7 @@ def _make_intent(
 ) -> dict:
     pi = storage.create_payment_intent({
         "mk_user_id": 8875658,
-        "student_name": "Тест Тестович",
+        "student_name": "РўРµСЃС‚ РўРµСЃС‚РѕРІРёС‡",
         "amount_minor": amount_minor,
         "amount_byn": amount_minor / 100,
         "currency": "BYN",
@@ -130,14 +130,14 @@ def _insert_bepaid_tx(
 
 
 # ---------------------------------------------------------------------------
-# Tests 1-8: Storage — list_bepaid_recovery_queue
+# Tests 1-8: Storage вЂ” list_bepaid_recovery_queue
 # ---------------------------------------------------------------------------
 
 class Test01RecoveryQueueStorage(unittest.TestCase):
     """Storage-layer filtering for the recovery queue."""
 
     def test_01_matched_unpaid_intent_in_queue(self):
-        """Successful, verified, matched, awaiting_payment intent → in recovery queue."""
+        """Successful, verified, matched, awaiting_payment intent в†’ in recovery queue."""
         s = _make_storage()
         pi = _make_intent(s, status="awaiting_payment")
         _insert_bepaid_tx(s, intent_public_id=pi["public_id"], tx_uid="rq-tx-001")
@@ -171,7 +171,7 @@ class Test01RecoveryQueueStorage(unittest.TestCase):
                         "No-match tx must not appear in recovery queue")
 
     def test_04_paid_intent_not_in_queue(self):
-        """Matched intent already paid → NOT in recovery queue."""
+        """Matched intent already paid в†’ NOT in recovery queue."""
         s = _make_storage()
         pi = _make_intent(s, status="awaiting_payment")
         _insert_bepaid_tx(s, intent_public_id=pi["public_id"], tx_uid="paid-tx-001")
@@ -184,7 +184,7 @@ class Test01RecoveryQueueStorage(unittest.TestCase):
         self.assertNotIn(pi["public_id"], pub_ids)
 
     def test_05_posted_to_moyklass_not_in_queue(self):
-        """posted_to_moyklass intent → NOT in recovery queue."""
+        """posted_to_moyklass intent в†’ NOT in recovery queue."""
         s = _make_storage()
         pi = _make_intent(s, status="awaiting_payment")
         _insert_bepaid_tx(s, intent_public_id=pi["public_id"], tx_uid="mk-tx-001")
@@ -195,7 +195,7 @@ class Test01RecoveryQueueStorage(unittest.TestCase):
         self.assertFalse(any(r["intent_public_id"] == pi["public_id"] for r in queue))
 
     def test_06_unverified_tx_not_in_queue(self):
-        """Unverified transaction → NOT in recovery queue."""
+        """Unverified transaction в†’ NOT in recovery queue."""
         s = _make_storage()
         pi = _make_intent(s, status="awaiting_payment")
         _insert_bepaid_tx(s, intent_public_id=pi["public_id"], tx_uid="unverified-tx-001",
@@ -204,7 +204,7 @@ class Test01RecoveryQueueStorage(unittest.TestCase):
         self.assertFalse(any(r["transaction_uid"] == "unverified-tx-001" for r in queue))
 
     def test_07_test_tx_not_in_queue(self):
-        """test=True transaction → NOT in recovery queue."""
+        """test=True transaction в†’ NOT in recovery queue."""
         s = _make_storage()
         pi = _make_intent(s, status="awaiting_payment")
         _insert_bepaid_tx(s, intent_public_id=pi["public_id"], tx_uid="test-tx-001", test=1)
@@ -212,7 +212,7 @@ class Test01RecoveryQueueStorage(unittest.TestCase):
         self.assertFalse(any(r["transaction_uid"] == "test-tx-001" for r in queue))
 
     def test_08_pending_tx_not_in_queue(self):
-        """Non-successful (pending) transaction → NOT in recovery queue."""
+        """Non-successful (pending) transaction в†’ NOT in recovery queue."""
         s = _make_storage()
         pi = _make_intent(s, status="awaiting_payment")
         _insert_bepaid_tx(s, intent_public_id=pi["public_id"], tx_uid="pending-tx-001",
@@ -222,7 +222,7 @@ class Test01RecoveryQueueStorage(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Tests 9-12: Reconcile endpoint — already-matched path
+# Tests 9-12: Reconcile endpoint вЂ” already-matched path
 # ---------------------------------------------------------------------------
 
 class Test02ReconcileAlreadyMatched(unittest.TestCase):
@@ -268,7 +268,7 @@ class Test02ReconcileAlreadyMatched(unittest.TestCase):
         self.assertEqual(after["paid_channel"], "erip")
 
     def test_10_awaiting_payment_to_paid_via_reconcile(self):
-        """awaiting_payment → paid completes via reconcile (end-to-end)."""
+        """awaiting_payment в†’ paid completes via reconcile (end-to-end)."""
         s, pi, tx_id = self._setup_163_like()
         result = s.payment_intent_mark_paid(
             pi["public_id"],
@@ -292,7 +292,7 @@ class Test02ReconcileAlreadyMatched(unittest.TestCase):
         self.assertEqual(after["paid_at"], "2026-07-16T08:30:00+03:00")
 
     def test_11_repeat_reconcile_is_idempotent(self):
-        """Repeat reconcile on already-paid intent → idempotent=True."""
+        """Repeat reconcile on already-paid intent в†’ idempotent=True."""
         s, pi, tx_id = self._setup_163_like()
         tx_uid = "7bf1c1ce-test-163-rq"
         # First
@@ -309,7 +309,7 @@ class Test02ReconcileAlreadyMatched(unittest.TestCase):
         self.assertTrue(result.get("idempotent"), f"Expected idempotent=True; got {result}")
 
     def test_12_double_payment_blocked(self):
-        """Different tx_uid on paid intent → conflict (double payment protection)."""
+        """Different tx_uid on paid intent в†’ conflict (double payment protection)."""
         s, pi, tx_id = self._setup_163_like()
         first_uid = "7bf1c1ce-test-163-rq"
         s.payment_intent_mark_paid(

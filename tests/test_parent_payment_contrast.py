@@ -1,10 +1,10 @@
-"""Regression tests for v7.0.94.0 — parent payment contrast & header hotfix.
+﻿"""Regression tests for v7.0.94.0 вЂ” parent payment contrast & header hotfix.
 
 Root causes fixed:
-  1. appTitle showed "Питание · Yellow Club" for parent role — now "Оплаты · Yellow Club".
-  2. In Telegram dark mode, cp-card had background: rgba(255,255,255,.06) — nearly
-     transparent — while the page body stays light (#f7f8fb). Text was #f0f0f0
-     (light) → invisible on a cream background. Fixed: solid dark card background.
+  1. appTitle showed "РџРёС‚Р°РЅРёРµ В· Yellow Club" for parent role вЂ” now "РћРїР»Р°С‚С‹ В· Yellow Club".
+  2. In Telegram dark mode, cp-card had background: rgba(255,255,255,.06) вЂ” nearly
+     transparent вЂ” while the page body stays light (#f7f8fb). Text was #f0f0f0
+     (light) в†’ invisible on a cream background. Fixed: solid dark card background.
   3. Global `details > summary:hover { opacity: 0.75 }` faded the ERIP accordion
      summary. Fixed: .cp-erip-details > summary:hover { opacity: 1 }.
   4. No explicit opacity:1 guard on active cp-buttons against global button:disabled
@@ -14,12 +14,12 @@ Root causes fixed:
 
 Tests:
   Frontend header (app.js):
-    1.  Parent role block sets "Оплаты · Yellow Club"
-    2.  "Питание · Yellow Club" NOT in parent role block
-    3.  "Руководитель Ресторана" NOT in parent or payments header context
+    1.  Parent role block sets "РћРїР»Р°С‚С‹ В· Yellow Club"
+    2.  "РџРёС‚Р°РЅРёРµ В· Yellow Club" NOT in parent role block
+    3.  "Р СѓРєРѕРІРѕРґРёС‚РµР»СЊ Р РµСЃС‚РѕСЂР°РЅР°" NOT in parent or payments header context
     4.  Restaurant/kitchen legacy strings absent from parent header code
-    5.  Client-payments tab click sets "Оплаты · Yellow Club"
-    6.  Client-payments tab click sets "Родитель" badge
+    5.  Client-payments tab click sets "РћРїР»Р°С‚С‹ В· Yellow Club"
+    6.  Client-payments tab click sets "Р РѕРґРёС‚РµР»СЊ" badge
     7.  Context guard comment present
 
   CSS contrast (styles.css):
@@ -35,8 +35,8 @@ Tests:
     15. cp-erip-details > summary:hover overrides global opacity to 1
 
   Header string guard (app.js):
-    16. "Оплаты · Yellow Club" appears at least twice
-    17. "Питание · Yellow Club" does NOT appear in parent/payments context
+    16. "РћРїР»Р°С‚С‹ В· Yellow Club" appears at least twice
+    17. "РџРёС‚Р°РЅРёРµ В· Yellow Club" does NOT appear in parent/payments context
 
   Existing suite guards:
     18. test_parent_payments importable
@@ -56,7 +56,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 STYLES_CSS = ROOT / "miniapp" / "styles.css"
 
-CURRENT_VERSION = "7.0.94.0"
+CURRENT_VERSION = "7.0.94.1"
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +69,7 @@ def _parent_role_block(js: str) -> str:
     setupRoleUi contains the canonical block that sets appTitle and roleBadge for
     the parent role. We anchor to the parentAllowed array which is unique to that block.
     """
-    # The setupRoleUi parent block contains 'parentAllowed' — use that as anchor
+    # The setupRoleUi parent block contains 'parentAllowed' вЂ” use that as anchor
     anchor = "parentAllowed"
     anchor_idx = js.find(anchor)
     if anchor_idx == -1:
@@ -104,30 +104,30 @@ class Test01Header(unittest.TestCase):
         cls.click_block = _client_payments_click_block(cls.js)
 
     def test_01_parent_role_sets_oplaty_title(self):
-        """Parent role block must set appTitle to Оплаты · Yellow Club."""
-        self.assertIn("Оплаты · Yellow Club", self.parent_block)
+        """Parent role block must set appTitle to РћРїР»Р°С‚С‹ В· Yellow Club."""
+        self.assertIn("РћРїР»Р°С‚С‹ В· Yellow Club", self.parent_block)
 
     def test_02_pitanie_not_in_parent_role_block(self):
-        """Parent role block must NOT reference Питание · Yellow Club."""
-        self.assertNotIn("Питание · Yellow Club", self.parent_block)
+        """Parent role block must NOT reference РџРёС‚Р°РЅРёРµ В· Yellow Club."""
+        self.assertNotIn("РџРёС‚Р°РЅРёРµ В· Yellow Club", self.parent_block)
 
     def test_03_rukovoditel_not_in_parent_or_payments_header(self):
-        """Руководитель Ресторана must not appear in parent header or payments click handler."""
-        self.assertNotIn("Руководитель Ресторана", self.parent_block)
-        self.assertNotIn("Руководитель Ресторана", self.click_block)
+        """Р СѓРєРѕРІРѕРґРёС‚РµР»СЊ Р РµСЃС‚РѕСЂР°РЅР° must not appear in parent header or payments click handler."""
+        self.assertNotIn("Р СѓРєРѕРІРѕРґРёС‚РµР»СЊ Р РµСЃС‚РѕСЂР°РЅР°", self.parent_block)
+        self.assertNotIn("Р СѓРєРѕРІРѕРґРёС‚РµР»СЊ Р РµСЃС‚РѕСЂР°РЅР°", self.click_block)
 
     def test_04_restaurant_kitchen_not_in_parent_payments_header(self):
         """Kitchen/restaurant role strings must not appear in parent payments header context."""
         combined = self.parent_block + "\n" + self.click_block
-        self.assertNotIn("Кухня · Yellow Club", combined)
+        self.assertNotIn("РљСѓС…РЅСЏ В· Yellow Club", combined)
 
     def test_05_click_handler_sets_oplaty_title(self):
-        """client-payments tab click handler must force appTitle to Оплаты · Yellow Club."""
-        self.assertIn("Оплаты · Yellow Club", self.click_block)
+        """client-payments tab click handler must force appTitle to РћРїР»Р°С‚С‹ В· Yellow Club."""
+        self.assertIn("РћРїР»Р°С‚С‹ В· Yellow Club", self.click_block)
 
     def test_06_click_handler_sets_roditel_badge(self):
-        """client-payments tab click handler must force roleBadge to Родитель."""
-        self.assertIn("Родитель", self.click_block)
+        """client-payments tab click handler must force roleBadge to Р РѕРґРёС‚РµР»СЊ."""
+        self.assertIn("Р РѕРґРёС‚РµР»СЊ", self.click_block)
 
     def test_07_context_guard_comment_in_click_handler(self):
         """Click handler must have a context guard comment."""
@@ -258,23 +258,23 @@ class Test04HeaderStringGuard(unittest.TestCase):
         cls.js = APP_JS.read_text(encoding="utf-8")
 
     def test_16_oplaty_appears_at_least_twice(self):
-        """Оплаты · Yellow Club must appear in both role block and click handler."""
-        count = self.js.count("Оплаты · Yellow Club")
+        """РћРїР»Р°С‚С‹ В· Yellow Club must appear in both role block and click handler."""
+        count = self.js.count("РћРїР»Р°С‚С‹ В· Yellow Club")
         self.assertGreaterEqual(
             count, 2,
-            f"Expected >=2 occurrences of 'Оплаты · Yellow Club', found {count}"
+            f"Expected >=2 occurrences of 'РћРїР»Р°С‚С‹ В· Yellow Club', found {count}"
         )
 
     def test_17_pitanie_not_in_parent_payments_context(self):
-        """Питание · Yellow Club must NOT appear in parent-role or client-payments context."""
+        """РџРёС‚Р°РЅРёРµ В· Yellow Club must NOT appear in parent-role or client-payments context."""
         parent_idx = self.js.find('role === "parent"')
-        pitanie_idx = self.js.find("Питание · Yellow Club")
+        pitanie_idx = self.js.find("РџРёС‚Р°РЅРёРµ В· Yellow Club")
         if pitanie_idx == -1:
-            return  # Not found at all — pass
+            return  # Not found at all вЂ” pass
         # If it exists, ensure it's far from the parent role block (> 2000 chars away)
         self.assertGreater(
             abs(pitanie_idx - parent_idx), 2000,
-            "'Питание · Yellow Club' must not appear near the parent role block"
+            "'РџРёС‚Р°РЅРёРµ В· Yellow Club' must not appear near the parent role block"
         )
 
 
