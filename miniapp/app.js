@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.93.2.9");
+console.log("MiniApp version: v7.0.93.3.0");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -6025,10 +6025,16 @@ async function loadMe() {
   const data = await apiGet("/api/me");
   state.me = data.me;
   setupRoleUi();
-  const roleText = state.me.roleLabel || roleLabel(state.me.role);
-  const testText = state.me.testMode?.enabled ? " · тестовая роль" : "";
-  const displayName = state.me.resolvedDisplayName || state.me.mkTeacherName || state.me.fullName || "Сотрудник";
-  setNotice(`${displayName}: ${roleText}${testText}${data.me.devMode ? " · dev" : ""}`, "ok");
+  if (state.me.role === "parent") {
+    // Parent: badge already shows "Родитель" — clear the notice so legacy DB display
+    // names from old roles never appear on the payments screen.
+    setNotice("", "");
+  } else {
+    const roleText = state.me.roleLabel || roleLabel(state.me.role);
+    const testText = state.me.testMode?.enabled ? " · тестовая роль" : "";
+    const displayName = state.me.resolvedDisplayName || state.me.mkTeacherName || state.me.fullName || "Сотрудник";
+    setNotice(`${displayName}: ${roleText}${testText}${data.me.devMode ? " · dev" : ""}`, "ok");
+  }
 }
 async function loadLessons() {
   if (!canUseLessons()) {
@@ -13831,6 +13837,8 @@ document.addEventListener("DOMContentLoaded", () => {
       // regardless of legacy DB role (restaurant/kitchen/food).
       const _t = $("appTitle"); if (_t) _t.textContent = "Оплаты · Yellow Club";
       const _b = $("roleBadge"); if (_b) _b.textContent = "Родитель";
+      // Clear role-notice on every navigation to client-payments — badge already shows role.
+      const _n = $("notice"); if (_n) { _n.textContent = ""; _n.className = "notice"; }
       if (isParent()) loadClientPayments();
     });
   });

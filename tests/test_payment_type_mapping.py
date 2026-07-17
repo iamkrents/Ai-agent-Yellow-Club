@@ -1,4 +1,4 @@
-﻿"""Regression tests for v7.0.93.2.9 — bePaid MoyKlass payment type exact name matching.
+﻿"""Regression tests for v7.0.93.3.0 — bePaid MoyKlass payment type exact name matching.
 
 Covers:
   Backend constants and helpers:
@@ -30,7 +30,7 @@ Covers:
     20. paid_channel="erip" (default) selects ERIP type ID
 
   Frontend _renderPaymentTypeBlock:
-    21. Version marker is v7.0.93.2.9
+    21. Version marker is v7.0.93.3.0
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ sys.path.insert(0, str(ROOT))
 APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 
-CURRENT_VERSION = "7.0.93.2.9"
+CURRENT_VERSION = "7.0.93.3.0"
 
 
 def _load_server_constants():

@@ -8213,3 +8213,30 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
 .cp-copy-btn { opacity: 1; }
 .cp-copy-btn:disabled { opacity: 1; }
 .cp-card-pay-btn { opacity: 1; }
+
+/* ── v7.0.93.3.0 — Light-theme explicit text overrides for cp-cards ───────────
+ * Root cause: @media (prefers-color-scheme: dark) sets .cp-card-name/.cp-card-amount
+ * to #f0f0f0. When OS is dark but Telegram sets data-theme="light", the card
+ * gets a white background (via :root[data-theme="light"] .cp-card) but no override
+ * existed for text colors → white text on white card. Fix: explicit [data-theme="light"]
+ * rules that defeat the media-query values for every cp- text element.
+ * ──────────────────────────────────────────────────────────────────────────── */
+:root[data-theme="light"] .cp-card { background: #fff; border-color: #ece9dd; box-shadow: 0 4px 18px rgba(26,38,66,.07); }
+:root[data-theme="light"] .cp-card-name { color: #172033; }
+:root[data-theme="light"] .cp-card-amount { color: #172033; }
+:root[data-theme="light"] .cp-period { color: #657089; }
+:root[data-theme="light"] .cp-card-comment { color: #657089; }
+:root[data-theme="light"] .cp-card-date { color: #8e9ab3; }
+:root[data-theme="light"] .cp-pay-method { background: #f6f7fb; border-color: #e8ecf4; }
+:root[data-theme="light"] .cp-pay-method-title { color: #172033; }
+:root[data-theme="light"] .cp-erip-value { color: #172033; }
+:root[data-theme="light"] .cp-erip-label { color: #657089; }
+:root[data-theme="light"] .cp-erip-steps li { color: #172033; opacity: 1; }
+:root[data-theme="light"] .cp-erip-hint-label { color: #172033; }
+:root[data-theme="light"] .cp-erip-path { background: rgba(255,216,77,.15); color: #4a3900; }
+:root[data-theme="light"] .cp-erip-details { background: #fff; border-color: rgba(255,216,77,.40); }
+:root[data-theme="light"] .cp-erip-details > summary { color: #172033; background: rgba(255,248,210,.60); }
+:root[data-theme="light"] .cp-paid-amt { color: #172033; }
+:root[data-theme="light"] .cp-paid-date { color: #657089; }
+:root[data-theme="light"] .cp-card-paid-block { background: rgba(31,165,107,.08); border-left-color: #1fa56b; }
+:root[data-theme="light"] .cp-methods-divider { background: #f0eee6; }
