@@ -5760,6 +5760,41 @@ class Storage:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def list_bepaid_recovery_queue(self, limit: int = 50) -> list[dict]:
+        """Transactions matched to an intent but the intent is still unpaid.
+
+        These are successful, verified, non-test transactions that have
+        intent_public_id set but whose intent has NOT been marked paid yet.
+        Added in v7.0.93.2.9: covers the case where a webhook previously
+        failed with cannot_mark_paid_from_status (bug fixed in v7.0.93.2.8)
+        but the transaction already had intent_public_id stored.
+
+        Returns rows joined with payment_intents so the caller gets both the
+        transaction fields and intent_status / intent_amount_minor.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT bt.*,
+                       pi.status          AS intent_status,
+                       pi.amount_minor    AS intent_amount_minor,
+                       pi.paid_transaction_uid AS intent_paid_uid
+                FROM bepaid_transactions bt
+                JOIN payment_intents pi
+                  ON pi.public_id = bt.intent_public_id
+                WHERE bt.status = 'successful'
+                  AND bt.test = 0
+                  AND (bt.webhook_verified = 1 OR bt.provider_verified = 1)
+                  AND (bt.transaction_uid IS NOT NULL AND bt.transaction_uid != '')
+                  AND (bt.intent_public_id IS NOT NULL AND bt.intent_public_id != '')
+                  AND pi.status NOT IN ('paid', 'posted_to_moyklass', 'cancelled')
+                ORDER BY bt.received_at DESC
+                LIMIT ?
+                """,
+                (max(1, min(int(limit), 200)),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def payment_intent_mark_paid(
         self,
         public_id: str,

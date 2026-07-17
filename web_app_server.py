@@ -8695,14 +8695,49 @@ class MiniAppContext:
         log.info("bePaid unmatched list count=%d", len(safe))
         return {"ok": True, "items": safe, "count": len(safe)}
 
+    def bepaid_list_recovery_queue(self, auth: dict[str, Any]) -> dict[str, Any]:
+        """GET /api/payments/bepaid/recovery-queue
+
+        Successful, verified, non-test transactions already matched to an intent
+        but whose intent is still not paid. Owner/admin only.
+        Added in v7.0.93.2.9.
+        """
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in {"owner", "admin"}:
+            return {"ok": False, "error": "access_denied"}
+        rows = self.storage.list_bepaid_recovery_queue(limit=50)
+        safe = []
+        for r in rows:
+            safe.append({
+                "id": r.get("id"),
+                "shop_type": r.get("shop_type"),
+                "channel": r.get("shop_type"),
+                "transaction_uid": r.get("transaction_uid"),
+                "tracking_id": r.get("tracking_id"),
+                "status": r.get("status"),
+                "amount_minor": r.get("amount_minor"),
+                "amount_byn": r.get("amount_byn"),
+                "currency": r.get("currency"),
+                "paid_at": r.get("paid_at"),
+                "received_at": r.get("received_at"),
+                "signature_verified": bool(r.get("webhook_verified")),
+                "provider_verified": bool(r.get("provider_verified")),
+                "test": bool(r.get("test")),
+                "intent_public_id": r.get("intent_public_id"),
+                "intent_status": r.get("intent_status"),
+                "reason": "previous_mark_paid_failed",
+            })
+        log.info("bePaid recovery queue count=%d", len(safe))
+        return {"ok": True, "items": safe, "count": len(safe)}
+
     def bepaid_reconcile_stored_transaction(
         self, auth: dict[str, Any], tx_id_str: str, body: dict[str, Any]
     ) -> dict[str, Any]:
         """POST /api/payments/bepaid/transactions/{id}/reconcile
 
-        Re-processes a stored verified-signature successful transaction that was previously
-        unmatched (no_match). Runs the option-aware matcher and atomically marks the intent paid.
-        No external API calls are made. Owner/admin only.
+        Re-processes a stored verified-signature successful transaction. Handles
+        both previously unmatched (no_match) and already-matched transactions
+        whose intent was not yet marked paid. No external API calls. Owner/admin only.
         """
         role = self._role_for_user(int(auth["user_id"]))
         if role not in {"owner", "admin"}:
@@ -8786,18 +8821,35 @@ class MiniAppContext:
         match = self.storage.match_bepaid_transaction_to_payment_target(extracted, shop_type)
 
         if not match.get("matched") or match.get("confidence") != "strong":
-            self.storage.log_payment_webhook_audit(
-                "stored_transaction_reconcile_blocked",
-                bepaid_tx_id=tx_id,
-                transaction_uid=tx_uid or None,
-                shop_type=shop_type,
-                amount_minor=amount_minor,
-                reason=f"no_match:{match.get('reason')}",
-            )
-            return {
-                "ok": False, "error": "no_match_found",
-                "reason": match.get("reason"),
-            }
+            # Fallback for already-matched transactions: if the transaction already has
+            # intent_public_id stored (e.g. tx_id=163 after webhook ran but mark_paid failed),
+            # use that stored match directly rather than requiring the matcher to re-find it.
+            if existing_pub_id:
+                fallback_pi = self.storage.get_payment_intent(existing_pub_id)
+                if fallback_pi and fallback_pi.get("status") not in ("paid", "posted_to_moyklass", "cancelled"):
+                    match = {
+                        "matched": True, "target_type": "legacy_intent",
+                        "intent_public_id": existing_pub_id,
+                        "intent_id": fallback_pi.get("id"),
+                        "option_id": None, "payment_intent_id": fallback_pi.get("id"),
+                        "confidence": "strong",
+                        "method": "stored_intent_match",
+                        "reason": "fallback_to_stored_intent_public_id",
+                        "conflicts": [],
+                    }
+            if not match.get("matched") or match.get("confidence") != "strong":
+                self.storage.log_payment_webhook_audit(
+                    "stored_transaction_reconcile_blocked",
+                    bepaid_tx_id=tx_id,
+                    transaction_uid=tx_uid or None,
+                    shop_type=shop_type,
+                    amount_minor=amount_minor,
+                    reason=f"no_match:{match.get('reason')}",
+                )
+                return {
+                    "ok": False, "error": "no_match_found",
+                    "reason": match.get("reason"),
+                }
 
         target_type = match.get("target_type") or "none"
         if target_type == "payment_option":
@@ -12543,6 +12595,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.bepaid_reconcile(auth, params))
                 if path == "/api/payments/bepaid/unmatched":
                     return self._send_json(CTX.bepaid_list_unmatched_transactions(auth))
+                if path == "/api/payments/bepaid/recovery-queue":
+                    return self._send_json(CTX.bepaid_list_recovery_queue(auth))
                 if path == "/api/client/payments":
                     return self._send_json(CTX.client_payments_list(auth))
                 if path == "/api/client/children":

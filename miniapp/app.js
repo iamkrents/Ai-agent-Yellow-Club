@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.93.2.8");
+console.log("MiniApp version: v7.0.93.2.9");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12056,8 +12056,7 @@ window.reconcileTransaction = async function reconcileTransaction(txId) {
       const intentId = result.intent_public_id || result.parent_public_id || "";
       const msg = intentId ? `Оплата сопоставлена: ${intentId}` : "Оплата успешно сопоставлена";
       alert(msg);
-      await loadUnmatchedTransactions();
-      await loadPaymentIntents();
+      await Promise.all([loadUnmatchedTransactions(), loadRecoveryQueue(), loadPaymentIntents()]);
     } else {
       const reason = result.reason || result.error || "неизвестная ошибка";
       const msg = reason === "webhook_not_verified"
@@ -12069,6 +12068,89 @@ window.reconcileTransaction = async function reconcileTransaction(txId) {
   } catch (e) {
     alert(`Ошибка: ${String(e)}`);
     if (btn) { btn.disabled = false; btn.textContent = "Повторно сопоставить оплату"; }
+  }
+};
+
+// ── Recovery queue — v7.0.93.2.9 ─────────────────────────────────────────────
+
+async function loadRecoveryQueue() {
+  const section = $("recoveryQueueSection");
+  const listEl = $("recoveryQueueList");
+  const debugEl = $("recoveryQueueDebug");
+  const refreshBtn = $("refreshRecoveryQueue");
+  if (!listEl) return;
+  if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.textContent = "Загрузка..."; }
+  if (listEl) listEl.innerHTML = `<div style="color:var(--muted);font-size:13px">Загрузка...</div>`;
+  if (debugEl) debugEl.textContent = "";
+  try {
+    const data = await apiGet("/api/payments/bepaid/recovery-queue");
+    if (!data.ok) throw new Error(data.error || "access_denied");
+    const txs = Array.isArray(data.items) ? data.items : [];
+    if (section) section.style.display = txs.length > 0 ? "" : "none";
+    if (debugEl) debugEl.textContent = txs.length > 0 ? `Требуют обработки: ${txs.length}` : "";
+    if (refreshBtn) refreshBtn.textContent = txs.length > 0 ? `Обновить (${txs.length})` : "Обновить";
+    if (txs.length === 0) {
+      listEl.innerHTML = `<div style="color:var(--muted);font-size:13px">Нет транзакций, требующих повторной обработки</div>`;
+      return;
+    }
+    listEl.innerHTML = txs.map(tx => {
+      const channelLabel = tx.channel === "acquiring" ? "Эквайринг" : tx.channel === "erip" ? "ЕРИП" : escapeHtml(String(tx.channel || ""));
+      const amountByn = tx.amount_byn != null ? fmtByn(tx.amount_byn) : (tx.amount_minor != null ? fmtByn(tx.amount_minor / 100) : "—");
+      const receivedAt = tx.received_at ? String(tx.received_at).slice(0, 19) : "—";
+      const intentStatus = tx.intent_status ? escapeHtml(String(tx.intent_status)) : "—";
+      const verifiedBadge = tx.signature_verified
+        ? `<span style="color:var(--green,#27ae60);font-size:11px">&#10003; подпись проверена</span>`
+        : `<span style="color:var(--muted);font-size:11px">&#10003; провайдер подтверждён</span>`;
+      return `<div class="pi-card" style="margin-bottom:10px;padding:12px;border:2px solid var(--orange,#e67e22);border-radius:8px;background:var(--orange-soft,rgba(230,126,34,0.07))">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:4px">
+          <div>
+            <span style="font-weight:600;font-size:13px">Транзакция #${escapeHtml(String(tx.id))}</span>
+            <span style="margin-left:8px;font-size:12px;color:var(--muted)">${escapeHtml(receivedAt)}</span>
+          </div>
+          <span style="font-size:12px;background:rgba(230,126,34,0.15);color:var(--orange,#e67e22);border-radius:4px;padding:2px 7px;font-weight:600">Требует повторной обработки</span>
+        </div>
+        <div style="margin-top:6px;font-size:12px;display:grid;grid-template-columns:auto 1fr;gap:2px 10px">
+          <span style="color:var(--muted)">Канал:</span><span>${escapeHtml(channelLabel)}</span>
+          <span style="color:var(--muted)">Сумма:</span><span style="font-weight:600">${escapeHtml(amountByn)}</span>
+          <span style="color:var(--muted)">Intent:</span><span style="font-family:monospace">${escapeHtml(String(tx.intent_public_id || "—"))}</span>
+          <span style="color:var(--muted)">Статус intent:</span><span style="color:var(--orange,#e67e22);font-weight:600">${intentStatus}</span>
+          <span style="color:var(--muted)">Причина:</span><span style="font-size:11px">webhook ранее завершился с ошибкой mark_paid</span>
+        </div>
+        <div style="margin-top:6px">${verifiedBadge}</div>
+        <div style="margin-top:10px">
+          <button class="primary small" onclick="reprocessRecoveryTransaction(${Number(tx.id)}, '${escapeHtml(String(tx.intent_public_id || ""))}')">Повторно обработать оплату</button>
+        </div>
+      </div>`;
+    }).join("");
+  } catch (e) {
+    if (section) section.style.display = "";
+    if (listEl) listEl.innerHTML = `<div style="color:var(--red);font-size:13px">Ошибка: ${escapeHtml(String(e))}</div>`;
+    if (refreshBtn) refreshBtn.textContent = "Обновить";
+  } finally {
+    if (refreshBtn) { refreshBtn.disabled = false; if (refreshBtn.textContent === "Загрузка...") refreshBtn.textContent = "Обновить"; }
+  }
+}
+
+window.reprocessRecoveryTransaction = async function reprocessRecoveryTransaction(txId, intentPublicId) {
+  if (!txId) return;
+  const selector = `button[onclick="reprocessRecoveryTransaction(${txId}, '${intentPublicId}')"]`;
+  const btn = document.querySelector(selector);
+  if (btn && btn.disabled) return; // double-click guard
+  if (btn) { btn.disabled = true; btn.textContent = "Обработка..."; }
+  try {
+    const result = await _apiPostRaw(`/api/payments/bepaid/transactions/${txId}/reconcile`, {});
+    if (result.ok) {
+      const pid = result.intent_public_id || intentPublicId || "";
+      alert(pid ? `Оплата обработана: ${pid}` : "Оплата успешно обработана");
+      await Promise.all([loadRecoveryQueue(), loadPaymentIntents()]);
+    } else {
+      const reason = result.reason || result.error || "неизвестная ошибка";
+      alert(`Не удалось обработать: ${reason}`);
+      if (btn) { btn.disabled = false; btn.textContent = "Повторно обработать оплату"; }
+    }
+  } catch (e) {
+    alert(`Ошибка: ${String(e)}`);
+    if (btn) { btn.disabled = false; btn.textContent = "Повторно обработать оплату"; }
   }
 };
 
@@ -13692,12 +13774,13 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.target.open && canUsePaymentIntents()) {
       initMonthPicker($("piMonthFilter"), "");
       loadPaymentIntents();
-      if (canPostToMoyklass()) { loadMkPaymentTypes(); loadUnmatchedTransactions(); }
+      if (canPostToMoyklass()) { loadMkPaymentTypes(); loadUnmatchedTransactions(); loadRecoveryQueue(); }
     }
   });
 
   $("loadPaymentIntents")?.addEventListener("click", loadPaymentIntents);
   $("refreshUnmatchedTx")?.addEventListener("click", loadUnmatchedTransactions);
+  $("refreshRecoveryQueue")?.addEventListener("click", loadRecoveryQueue);
   $("openCreateIntent")?.addEventListener("click", () => openCreateIntentModal());
   $("piMonthFilter")?.addEventListener("change", loadPaymentIntents);
   $("piStatusFilter")?.addEventListener("change", loadPaymentIntents);

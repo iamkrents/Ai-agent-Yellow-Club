@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.93.2.8 — ERIP awaiting_payment → paid state machine.
+"""Regression tests for v7.0.93.2.9 — ERIP awaiting_payment → paid state machine.
 
 Root cause fixed:
   payment_intent_mark_paid (legacy path) previously only allowed bepaid_created
@@ -46,7 +46,7 @@ Tests:
     23. test_bepaid_webhook importable
     24. test_unmatched_transactions importable
   Version:
-    25. Version marker is v7.0.93.2.8
+    25. Version marker is v7.0.93.2.9
 """
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ sys.path.insert(0, str(ROOT))
 from storage import Storage
 from utils import now_iso
 
-CURRENT_VERSION = "7.0.93.2.8"
+CURRENT_VERSION = "7.0.93.2.9"
 
 APP_JS = ROOT / "miniapp" / "app.js"
 
@@ -545,7 +545,7 @@ class Test11ExistingGuards(unittest.TestCase):
 
 class Test12Version(unittest.TestCase):
     def test_25_version_marker(self):
-        """Full suite guard — version marker is v7.0.93.2.8."""
+        """Full suite guard — version marker is v7.0.93.2.9."""
         js = APP_JS.read_text(encoding="utf-8")
         self.assertIn(
             f'console.log("MiniApp version: v{CURRENT_VERSION}")',

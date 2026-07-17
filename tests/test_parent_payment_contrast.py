@@ -1,4 +1,4 @@
-﻿"""Regression tests for v7.0.93.2.8 — parent payment contrast & header hotfix.
+﻿"""Regression tests for v7.0.93.2.9 — parent payment contrast & header hotfix.
 
 Root causes fixed:
   1. appTitle showed "Питание · Yellow Club" for parent role — now "Оплаты · Yellow Club".
@@ -43,7 +43,7 @@ Tests:
     19. test_client_payments importable
     20. test_client_parent_links importable
     21. test_payment_restyle importable
-    22. Version marker is v7.0.93.2.8
+    22. Version marker is v7.0.93.2.9
 """
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 STYLES_CSS = ROOT / "miniapp" / "styles.css"
 
-CURRENT_VERSION = "7.0.93.2.8"
+CURRENT_VERSION = "7.0.93.2.9"
 
 
 # ---------------------------------------------------------------------------

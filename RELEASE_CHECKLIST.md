@@ -1,9 +1,10 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.93.2.8**
+**Cache version: v7.0.93.2.9**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.93.2.9 | 2026-07-17 | Recovery queue for matched-but-unpaid bePaid transactions. list_bepaid_recovery_queue storage method, /api/payments/bepaid/recovery-queue endpoint, admin UI block «Транзакции, требующие повторной обработки». Reconcile fallback for already-matched transactions (stored_intent_public_id). tx_id=163 now appears in recovery queue and can be reprocessed via existing reconcile endpoint. 21 new tests. |
 | v7.0.93.2.8 | 2026-07-16 | Critical hotfix: ERIP awaiting_payment → paid state machine. payment_intent_mark_paid (legacy path) now allows awaiting_payment and partial_ready as source states (matching via_option path). Added channel param for paid_channel field. Production fix for tx_id=163 (ycpi_202607_16). 25 new tests. 910 OK. |
 | v7.0.93.2.7 | 2026-07-16 | UI/UX hotfix: parent payment contrast (dark-mode card solid bg #1b2236), header «Оплаты · Yellow Club», client-payments tab context guard (blocks legacy restaurant role from header), details summary hover opacity fix, copy button opacity guard. 22 new tests. |
 | v7.0.93.2.6 | 2026-07-16 | Enforce exact MoyKlass payment type name matching for bePaid channels. Fail-closed name validation before posting. 21 new tests. |
