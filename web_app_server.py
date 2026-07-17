@@ -91,6 +91,8 @@ BEPAID_RECONCILE_ROLES = {"owner", "admin", "director", "operations", "client_ma
 PAYMENT_INTENT_ROLES = {"owner", "admin", "director", "operations", "client_manager"}
 PAYMENT_MK_POST_ROLES = {"owner", "admin"}  # only senior roles may post to MoyKlass
 CLIENT_LINK_ADMIN_ROLES = {"owner", "admin", "operations"}
+AUTOMATION_ADMIN_ROLES = {"owner", "admin"}       # v7.0.94.0
+AUTOMATION_VIEW_ROLES = {"owner", "admin", "operations"}  # v7.0.94.0
 
 ADMIN_TABS_BY_ROLE = {
     "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links"],
@@ -1177,6 +1179,42 @@ class FoodAutoReminderWatcher:
             "sentCount": sent_total,
             "errors": errors,
         }
+
+
+class InvoiceAutomationScheduler:
+    """Background scheduler for the MoyKlass invoice automation pipeline (v7.0.94.0)."""
+
+    def __init__(self, ctx: "MiniAppContext") -> None:
+        self._ctx = ctx
+        self._thread = threading.Thread(
+            target=self._loop, name="invoice-automation", daemon=True
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _loop(self) -> None:
+        import time as _time
+        _time.sleep(90)  # startup delay
+        while True:
+            try:
+                settings = self._ctx.storage.get_automation_settings()
+                interval = max(5, int(settings.get("scan_interval_minutes", 10))) * 60
+                discovery_on = bool(settings.get("discovery_enabled", 1))
+                # Global kill switch: if env var is false, skip automatic runs
+                if not getattr(self._ctx.settings, "payment_invoice_automation_enabled", False):
+                    _time.sleep(interval)
+                    continue
+                if discovery_on:
+                    try:
+                        self._ctx.process_new_moyklass_invoices(
+                            trigger="scheduled", started_by="scheduler"
+                        )
+                    except Exception:
+                        log.exception("InvoiceAutomationScheduler: run error")
+            except Exception:
+                log.exception("InvoiceAutomationScheduler: loop error")
+            _time.sleep(interval)
 
 
 class MiniAppContext:
@@ -9689,6 +9727,9 @@ class MiniAppContext:
     _PI_VALID_STATUSES_CANCEL = {"draft", "ready"}
 
     def _require_payment_intent_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
+        # Internal automation bypass — only used by process_new_moyklass_invoices pipeline
+        if auth.get("_internal") is True and auth.get("role") in PAYMENT_INTENT_ROLES:
+            return None
         role = self._role_for_user(int(auth["user_id"]))
         if role not in PAYMENT_INTENT_ROLES:
             return {"ok": False, "error": "Доступ к платёжным черновикам ограничен: owner, admin, director, operations, client_manager."}
@@ -12368,6 +12409,571 @@ class MiniAppContext:
             "message": msg,
         }
 
+    # ── v7.0.94.0 — Invoice Automation API handlers ──────────────────────────
+
+    def automation_get_settings(self, auth: dict[str, Any]) -> dict[str, Any]:
+        if auth.get("role") not in AUTOMATION_VIEW_ROLES:
+            return {"ok": False, "error": "Нет доступа"}
+        settings = self.storage.get_automation_settings()
+        runs = self.storage.list_automation_runs(limit=5)
+        running = self.storage.get_running_automation_run()
+        return {"ok": True, "settings": settings, "recent_runs": runs, "running": running}
+
+    def automation_update_settings(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        if auth.get("role") not in AUTOMATION_ADMIN_ROLES:
+            return {"ok": False, "error": "Нет доступа. Требуется роль owner или admin."}
+        discovery_enabled = bool(body.get("discovery_enabled", True))
+        create_payment_options_enabled = bool(body.get("create_payment_options_enabled", False))
+        publish_to_parent_enabled = bool(body.get("publish_to_parent_enabled", False))
+        scan_interval_minutes = max(5, min(int(body.get("scan_interval_minutes", 10) or 10), 1440))
+        now = now_iso()
+        updated_by = str(auth.get("user_id") or "")
+        settings = self.storage.update_automation_settings(
+            discovery_enabled=discovery_enabled,
+            create_payment_options_enabled=create_payment_options_enabled,
+            publish_to_parent_enabled=publish_to_parent_enabled,
+            scan_interval_minutes=scan_interval_minutes,
+            updated_by=updated_by,
+            now=now,
+        )
+        self.storage.log_payment_webhook_audit(
+            "automation_settings_updated",
+            details={
+                "discovery_enabled": discovery_enabled,
+                "create_payment_options_enabled": create_payment_options_enabled,
+                "publish_to_parent_enabled": publish_to_parent_enabled,
+                "by": updated_by,
+            },
+        )
+        return {"ok": True, "settings": settings}
+
+    def automation_manual_scan(self, auth: dict[str, Any]) -> dict[str, Any]:
+        if auth.get("role") not in AUTOMATION_ADMIN_ROLES:
+            return {"ok": False, "error": "Нет доступа"}
+        result = self.process_new_moyklass_invoices(
+            trigger="manual", started_by=str(auth.get("user_id") or "")
+        )
+        return result
+
+    def automation_get_status(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        if auth.get("role") not in AUTOMATION_VIEW_ROLES:
+            return {"ok": False, "error": "Нет доступа"}
+        settings = self.storage.get_automation_settings()
+        running = self.storage.get_running_automation_run()
+        runs = self.storage.list_automation_runs(limit=10)
+        items_counts: dict[str, int] = {}
+        for stage in [
+            "discovered", "ready_for_creation", "missing_parent_link", "ambiguous_parent_link",
+            "payment_options_created", "published", "requires_check", "error", "ignored",
+        ]:
+            items_counts[stage] = len(self.storage.list_automation_items(stage_filter=stage, limit=1000))
+        return {
+            "ok": True,
+            "settings": settings,
+            "running": running,
+            "recent_runs": runs,
+            "items_by_stage": items_counts,
+        }
+
+    def automation_list_items(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        if auth.get("role") not in AUTOMATION_VIEW_ROLES:
+            return {"ok": False, "error": "Нет доступа"}
+        stage = params.get("stage") or "all"
+        limit = min(int(params.get("limit") or 50), 200)
+        offset = int(params.get("offset") or 0)
+        items = self.storage.list_automation_items(stage_filter=stage, limit=limit, offset=offset)
+        safe_items = []
+        for item in items:
+            d = dict(item)
+            d.pop("invoice_snapshot_json", None)
+            safe_items.append(d)
+        return {"ok": True, "items": safe_items, "stage": stage, "limit": limit, "offset": offset}
+
+    def automation_item_action(
+        self, auth: dict[str, Any], item_id: str, action: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        if auth.get("role") not in AUTOMATION_ADMIN_ROLES:
+            return {"ok": False, "error": "Нет доступа"}
+        try:
+            iid = int(item_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid item id"}
+
+        item = self.storage.get_automation_item_by_id(iid)
+        if not item:
+            return {"ok": False, "error": "automation item not found"}
+
+        now = now_iso()
+
+        if action == "ignore":
+            self.storage.update_automation_item_stage(
+                iid, "ignored",
+                reason_code="manually_ignored",
+                readable_reason="Manually ignored by admin",
+                now=now,
+            )
+            return {"ok": True, "stage": "ignored"}
+
+        if action == "unignore":
+            self.storage.update_automation_item_stage(
+                iid, "discovered",
+                reason_code=None,
+                readable_reason="Restored by admin",
+                now=now,
+            )
+            return {"ok": True, "stage": "discovered"}
+
+        if action in ("create-payment", "retry"):
+            result = self._process_single_automation_item(item, now=now)
+            return result
+
+        if action == "publish":
+            intent_public_id = item.get("intent_public_id")
+            if not intent_public_id:
+                return {"ok": False, "error": "No intent associated with this item"}
+            pi = self.storage.get_payment_intent(intent_public_id)
+            if not pi:
+                return {"ok": False, "error": "Payment intent not found"}
+            if pi.get("status") in ("paid", "posted_to_moyklass", "cancelled"):
+                return {"ok": False, "error": f"Intent status is {pi['status']}, cannot publish"}
+            parents = self.storage.get_parents_for_child(str(item.get("mk_user_id", "")))
+            if len(parents) != 1:
+                return {"ok": False, "error": "No single active parent link"}
+            pub = self.storage.publish_payment_intent_to_client(intent_public_id, "admin_manual", now)
+            if pub.get("ok"):
+                self.storage.update_automation_item_stage(
+                    iid, "published",
+                    reason_code="manual_publish",
+                    readable_reason="Published manually by admin",
+                    now=now,
+                )
+            return pub
+
+        return {"ok": False, "error": f"Unknown action: {action}"}
+
+    # ── v7.0.94.0 — Invoice Automation pipeline ──────────────────────────────
+
+    def process_new_moyklass_invoices(
+        self, trigger: str = "manual", started_by: Optional[str] = None
+    ) -> dict[str, Any]:
+        """Canonical invoice automation pipeline. Used by scheduler and manual trigger.
+
+        Returns dict with run summary.
+        Stages: discovery → parent_check → create_payment_options → publish_to_parent
+        """
+        import uuid
+        from datetime import datetime, timezone, timedelta
+
+        now = now_iso()
+
+        # Expire stale leases first
+        self.storage.expire_stale_automation_run(timeout_minutes=30, now=now)
+
+        # Check if already running
+        running = self.storage.get_running_automation_run()
+        if running:
+            return {"ok": False, "error": "already_running", "run_id": running.get("run_id")}
+
+        run_id = (
+            f"auto_{int(datetime.now(timezone.utc).timestamp())}_{uuid.uuid4().hex[:8]}"
+        )
+        self.storage.start_automation_run(run_id, trigger, started_by, now)
+
+        counts: dict[str, int] = {
+            "scanned": 0, "discovered": 0, "created": 0, "published": 0,
+            "missing_parent": 0, "requires_check": 0, "skipped": 0, "error": 0,
+        }
+        errors: list[str] = []
+
+        try:
+            settings = self.storage.get_automation_settings()
+            discovery_enabled = bool(settings.get("discovery_enabled", 1))
+            create_enabled = bool(settings.get("create_payment_options_enabled", 0))
+            publish_enabled = bool(settings.get("publish_to_parent_enabled", 0))
+
+            if not discovery_enabled:
+                self.storage.finish_automation_run(
+                    run_id, status="ok", finished_at=now_iso(),
+                    skipped_count=1, error_summary="discovery_disabled",
+                )
+                result = {"ok": True, "run_id": run_id}
+                result.update(counts)
+                result["skipped"] = "discovery_disabled"
+                return result
+
+            # Date window: current month start OR 14 days ago, whichever is earlier
+            today = datetime.now(timezone.utc).date()
+            month_start = today.replace(day=1)
+            two_weeks_ago = today - timedelta(days=14)
+            from_date = min(month_start, two_weeks_ago)
+            to_date = today
+
+            # Fetch invoices from MK
+            mk_invoices: list[dict] = []
+            try:
+                params = {
+                    "createdAt": [from_date.isoformat(), to_date.isoformat()],
+                    "includeUserSubscriptions": "true",
+                    "limit": 100,
+                }
+                raw_items, diag = _mk_fetch_invoices_paginated(self.moyklass, params, max_pages=10)
+                mk_invoices = raw_items
+                log.info(
+                    "process_new_moyklass_invoices: fetched %d invoices, diag=%s",
+                    len(mk_invoices), diag,
+                )
+            except Exception as exc:
+                log.exception("process_new_moyklass_invoices: MK fetch error")
+                errors.append(f"mk_fetch: {exc}")
+
+            counts["scanned"] = len(mk_invoices)
+
+            # Process each invoice (max 50 per run)
+            for inv in mk_invoices[:50]:
+                try:
+                    result = self._process_single_automation_item_from_invoice(
+                        inv, now=now_iso(),
+                        create_enabled=create_enabled,
+                        publish_enabled=publish_enabled,
+                    )
+                    _automation_update_counts(counts, result)
+                except Exception as exc:
+                    log.exception(
+                        "process_new_moyklass_invoices: error for invoice %s",
+                        inv.get("id"),
+                    )
+                    counts["error"] += 1
+                    errors.append(f"invoice_{inv.get('id')}: {type(exc).__name__}: {exc}")
+
+            self.storage.update_automation_last_scan(now_iso())
+
+            status = "ok" if not errors else "ok_with_errors"
+            self.storage.finish_automation_run(
+                run_id, status=status, finished_at=now_iso(),
+                scanned_count=counts["scanned"],
+                discovered_count=counts["discovered"],
+                created_count=counts["created"],
+                published_count=counts["published"],
+                missing_parent_count=counts["missing_parent"],
+                requires_check_count=counts["requires_check"],
+                skipped_count=counts["skipped"],
+                error_count=counts["error"],
+                error_summary="; ".join(errors[:5]) if errors else None,
+            )
+
+            return {
+                "ok": True, "run_id": run_id, "trigger": trigger,
+                **counts, "errors": errors[:5] if errors else [],
+            }
+
+        except Exception as exc:
+            log.exception("process_new_moyklass_invoices: fatal error")
+            self.storage.finish_automation_run(
+                run_id, status="error", finished_at=now_iso(),
+                scanned_count=counts["scanned"],
+                error_count=counts["error"] + 1,
+                error_summary=f"fatal: {type(exc).__name__}: {exc}",
+            )
+            return {"ok": False, "run_id": run_id, "error": str(exc)}
+
+    def _process_single_automation_item_from_invoice(
+        self,
+        inv: dict[str, Any],
+        now: str,
+        create_enabled: bool,
+        publish_enabled: bool,
+    ) -> dict[str, Any]:
+        """Process a single MK invoice in the automation pipeline. Returns count-update dict."""
+        inv_id = str(inv.get("id") or "")
+        if not inv_id:
+            return {"skip": True}
+
+        mk_user_id = str(inv.get("userId") or "")
+        if not mk_user_id or mk_user_id == "0":
+            return {"skip": True}
+
+        price = float(inv.get("price") or 0)
+        payed = float(inv.get("payed") or 0)
+        remaining = max(0.0, price - payed)
+
+        # Skip: already paid or zero/negative
+        if price <= 0 or remaining <= 0.01:
+            return {"skip": True}
+
+        student_name: Optional[str] = None
+        try:
+            sub = inv.get("userSubscription")
+            if isinstance(sub, dict):
+                student_name = (
+                    str(sub.get("clientName") or sub.get("name") or "").strip() or None
+                )
+        except Exception:
+            pass
+
+        import json as _json
+        snapshot = _json.dumps(inv, ensure_ascii=False)[:4000]
+
+        # Upsert item (INSERT OR IGNORE — won't overwrite existing stage)
+        item = self.storage.upsert_automation_item(inv_id, mk_user_id, student_name, snapshot, now)
+        item_id = item.get("id")
+        stage = item.get("current_stage", "discovered")
+
+        # Skip ignored items
+        if stage == "ignored":
+            return {"skip": True}
+
+        # Skip already completed
+        if stage in ("published", "completed"):
+            return {"skip": True}
+
+        is_new = stage == "discovered"
+
+        # Check for existing payment intent
+        existing_intent = self.storage.find_active_intent_by_invoice(inv_id)
+        if existing_intent:
+            if stage not in ("payment_options_created", "published"):
+                self.storage.update_automation_item_stage(
+                    item_id, "payment_options_created",
+                    intent_public_id=existing_intent["public_id"],
+                    readable_reason="Intent already exists",
+                    now=now,
+                )
+            if not publish_enabled:
+                return {"discovered": is_new}
+            return self._try_publish_automation_item(item_id, existing_intent, mk_user_id, now, is_new)
+
+        # Check parent link
+        parents = self.storage.get_parents_for_child(mk_user_id)
+        if len(parents) == 0:
+            self.storage.update_automation_item_stage(
+                item_id, "missing_parent_link",
+                reason_code="no_parent_link",
+                readable_reason="Нет активной привязки родителя (CL-код)",
+                now=now,
+            )
+            return {"missing_parent": True, "discovered": is_new}
+
+        if len(parents) > 1:
+            self.storage.update_automation_item_stage(
+                item_id, "ambiguous_parent_link",
+                reason_code="multiple_parents",
+                readable_reason=f"Несколько родителей ({len(parents)}), требуется ручная проверка",
+                now=now,
+            )
+            return {"requires_check": True, "discovered": is_new}
+
+        parent_tg_id = str(parents[0].get("parent_telegram_user_id") or "")
+
+        if not create_enabled:
+            if stage == "discovered":
+                self.storage.update_automation_item_stage(
+                    item_id, "ready_for_creation",
+                    linked_parent_tg_id=parent_tg_id,
+                    readable_reason="Parent linked, awaiting create toggle",
+                    now=now,
+                )
+            return {"discovered": is_new}
+
+        # Create payment intent
+        try:
+            intent = self._automation_create_intent(
+                inv, inv_id, mk_user_id, student_name, now
+            )
+            if not intent:
+                self.storage.update_automation_item_stage(
+                    item_id, "requires_check",
+                    reason_code="intent_create_failed",
+                    readable_reason="Failed to create payment intent",
+                    now=now,
+                )
+                return {"requires_check": True, "discovered": is_new}
+
+            public_id = intent["public_id"]
+            self.storage.update_automation_item_stage(
+                item_id, "payment_options_created",
+                intent_public_id=public_id,
+                linked_parent_tg_id=parent_tg_id,
+                readable_reason="Intent and payment options created",
+                now=now,
+            )
+
+            if publish_enabled:
+                pub = self.storage.publish_payment_intent_to_client(public_id, "automation", now)
+                if pub.get("ok"):
+                    self.storage.update_automation_item_stage(
+                        item_id, "published",
+                        readable_reason="Auto-published to parent",
+                        now=now,
+                    )
+                    return {"created": True, "published": True, "discovered": is_new}
+
+            return {"created": True, "discovered": is_new}
+
+        except Exception as exc:
+            log.exception("_process_single: create error for invoice %s", inv_id)
+            self.storage.update_automation_item_stage(
+                item_id, "error",
+                reason_code="create_exception",
+                readable_reason=f"Error: {type(exc).__name__}: {str(exc)[:200]}",
+                now=now,
+            )
+            return {"error": True, "discovered": is_new}
+
+    def _process_single_automation_item(
+        self, item: dict[str, Any], now: str
+    ) -> dict[str, Any]:
+        """Re-run pipeline for an existing automation item (used by manual actions)."""
+        inv_id = str(item.get("mk_invoice_id") or "")
+        if not inv_id:
+            return {"ok": False, "error": "no invoice id"}
+
+        # Fetch current invoice state from MK
+        inv = _mk_invoice_by_id(self.moyklass, inv_id)
+        if inv is None:
+            return {"ok": False, "error": f"Invoice {inv_id} not found in MoyKlass"}
+
+        settings = self.storage.get_automation_settings()
+        create_enabled = bool(settings.get("create_payment_options_enabled", 0))
+        publish_enabled = bool(settings.get("publish_to_parent_enabled", 0))
+
+        # Force-reset stage to allow re-processing
+        self.storage.update_automation_item_stage(
+            item["id"], "discovered",
+            reason_code="manual_retry",
+            readable_reason="Manual retry by admin",
+            now=now,
+        )
+
+        try:
+            result = self._process_single_automation_item_from_invoice(
+                inv, now=now, create_enabled=True, publish_enabled=publish_enabled,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+        return {"ok": True, **result}
+
+    def _try_publish_automation_item(
+        self,
+        item_id: int,
+        existing_intent: dict[str, Any],
+        mk_user_id: str,
+        now: str,
+        is_new: bool,
+    ) -> dict[str, Any]:
+        """Try to publish an already-created intent to parent."""
+        pi_status = existing_intent.get("status", "")
+        if pi_status in ("paid", "posted_to_moyklass", "cancelled"):
+            return {"skip": True, "discovered": is_new}
+        if existing_intent.get("client_visibility") == "published":
+            self.storage.update_automation_item_stage(item_id, "published", now=now)
+            return {"skip": True, "discovered": is_new}
+
+        parents = self.storage.get_parents_for_child(mk_user_id)
+        if len(parents) != 1:
+            return {"skip": True, "discovered": is_new}
+
+        pub = self.storage.publish_payment_intent_to_client(
+            existing_intent["public_id"], "automation", now
+        )
+        if pub.get("ok"):
+            self.storage.update_automation_item_stage(item_id, "published", now=now)
+            return {"published": True, "discovered": is_new}
+        return {"skip": True, "discovered": is_new}
+
+    def _automation_create_intent(
+        self,
+        inv: dict[str, Any],
+        inv_id: str,
+        mk_user_id: str,
+        student_name: Optional[str],
+        now: str,
+    ) -> Optional[dict[str, Any]]:
+        """Create payment intent directly via storage (not via HTTP handler)."""
+        import json as _json
+
+        price = float(inv.get("price") or 0)
+        payed = float(inv.get("payed") or 0)
+        remaining = max(0.0, price - payed)
+        amount_minor = round(remaining * 100)
+        amount_byn = round(remaining, 2)
+
+        user_sub_id = str(inv.get("userSubscriptionId") or "").strip() or None
+
+        # Derive period_month from subscription or payUntil
+        period_month: Optional[str] = None
+        sub = inv.get("userSubscription")
+        if isinstance(sub, dict):
+            begin = str(sub.get("beginDate") or "")[:7]
+            if len(begin) == 7:
+                period_month = begin
+        if not period_month:
+            pay_until = str(inv.get("payUntil") or "")[:7]
+            if len(pay_until) == 7:
+                period_month = pay_until
+
+        intent = self.storage.create_payment_intent({
+            "mk_user_id": int(mk_user_id),
+            "student_name": student_name,
+            "amount_minor": amount_minor,
+            "amount_byn": amount_byn,
+            "currency": "BYN",
+            "purpose": "subscription",
+            "period_month": period_month,
+            "payment_method": "erip",
+            "status": "draft",
+            "comment": str(inv.get("comment") or "").strip() or None,
+            "created_by_tg_id": None,
+            "created_by_name": "automation",
+            "created_at": now,
+            "mk_invoice_id": inv_id,
+            "mk_user_subscription_id": user_sub_id,
+            "source": "moyklass_invoice_automation",
+            "source_reference": f"mk_invoice_{inv_id}",
+            "invoice_amount_minor": round(price * 100),
+            "invoice_remaining_minor": amount_minor,
+            "invoice_snapshot_json": _json.dumps(inv, ensure_ascii=False)[:4000],
+            "verified_mk_user_at": now,
+            "verified_invoice_at": now,
+        })
+
+        if not intent:
+            return None
+
+        public_id = intent["public_id"]
+
+        # Create payment options (ERIP + acquiring) — internal bypass auth
+        _auto_auth: dict[str, Any] = {
+            "role": "owner",
+            "user_id": 0,
+            "_internal": True,
+        }
+        try:
+            self.payment_intent_prepare_options(_auto_auth, public_id)
+        except Exception:
+            log.exception("_automation_create_intent: prepare_options error for %s", public_id)
+
+        return intent
+
+
+def _automation_update_counts(counts: dict[str, int], result: dict[str, Any]) -> None:
+    """Update automation run counters from a per-invoice result dict."""
+    if result.get("skip"):
+        counts["skipped"] += 1
+        return
+    if result.get("discovered"):
+        counts["discovered"] += 1
+    if result.get("created"):
+        counts["created"] += 1
+    if result.get("published"):
+        counts["published"] += 1
+    if result.get("missing_parent"):
+        counts["missing_parent"] += 1
+    if result.get("requires_check"):
+        counts["requires_check"] += 1
+    if result.get("error"):
+        counts["error"] += 1
+
 
 CTX = MiniAppContext()
 
@@ -12611,6 +13217,13 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.moyklass_invoices_list(auth, params))
                 if path == "/api/payments/moyklass/payment-types":
                     return self._send_json(CTX.moyklass_payment_types(auth))
+                # ── v7.0.94.0 — Invoice automation ──────────────────────────
+                if path == "/api/payments/automation/settings":
+                    return self._send_json(CTX.automation_get_settings(auth))
+                if path == "/api/payments/automation/status":
+                    return self._send_json(CTX.automation_get_status(auth, params))
+                if path == "/api/payments/automation/items":
+                    return self._send_json(CTX.automation_list_items(auth, params))
                 if path.startswith("/api/payments/intents/"):
                     _pi_rest = path[len("/api/payments/intents/"):]
                     _pi_parts = _pi_rest.split("/")
@@ -12712,6 +13325,16 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 return self._send_json(CTX.payment_intent_create(auth, body))
             if path == "/api/payments/intents/from-moyklass-invoice":
                 return self._send_json(CTX.payment_intent_from_mk_invoice(auth, body))
+            # ── v7.0.94.0 — Invoice automation ──────────────────────────────
+            if path == "/api/payments/automation/settings":
+                return self._send_json(CTX.automation_update_settings(auth, body))
+            if path == "/api/payments/automation/scan":
+                return self._send_json(CTX.automation_manual_scan(auth))
+            if path.startswith("/api/payments/automation/items/"):
+                _auto_rest = path[len("/api/payments/automation/items/"):]
+                _auto_parts = _auto_rest.split("/")
+                if len(_auto_parts) == 2:
+                    return self._send_json(CTX.automation_item_action(auth, _auto_parts[0], _auto_parts[1], body))
             if path.startswith("/api/payments/intents/"):
                 _pi_rest = path[len("/api/payments/intents/"):]
                 _pi_parts = _pi_rest.split("/")
@@ -12908,6 +13531,10 @@ def run_server() -> None:
             getattr(CTX.settings, "food_auto_reminder_check_interval_minutes", 15),
             getattr(CTX.settings, "food_auto_reminder_minutes_before_deadline", 120),
         )
+    # v7.0.94.0 — Invoice automation scheduler (always starts; runs only if env enabled)
+    InvoiceAutomationScheduler(CTX).start()
+    log.info("InvoiceAutomationScheduler started (kill switch: PAYMENT_INVOICE_AUTOMATION_ENABLED=%s)",
+             getattr(CTX.settings, "payment_invoice_automation_enabled", False))
     httpd = ThreadingHTTPServer((host, port), MiniAppHandler)
     log.info("Yellow Club Mini App server started: http://%s:%s", host, port)
     log.info("For Telegram Mini App set WEB_APP_URL to an HTTPS URL pointing to this server.")

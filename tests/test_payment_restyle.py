@@ -1,4 +1,4 @@
-﻿"""Regression tests for v7.0.93.2.5 — client payment page Yellow Club rebrand.
+"""Regression tests for v7.0.93.2.5 — client payment page Yellow Club rebrand.
 
 Covers:
   CSS structure:
@@ -46,7 +46,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 STYLES_CSS = ROOT / "miniapp" / "styles.css"
 
-CURRENT_VERSION = "7.0.93.3.0"
+CURRENT_VERSION = "7.0.94.0"
 PURPLE_HEX = "#6366f1"
 PURPLE_RGBA = "rgba(99,102,241"
 YELLOW_HEX = "#ffd84d"

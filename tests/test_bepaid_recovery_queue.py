@@ -1,4 +1,4 @@
-﻿"""Regression tests for v7.0.93.3.0 — bePaid recovery queue.
+"""Regression tests for v7.0.94.0 — bePaid recovery queue.
 
 Root cause:
   tx_id=163 was already matched to ycpi_202607_16 (intent_public_id set in DB),
@@ -37,7 +37,7 @@ Tests:
     19b. test_unmatched_transactions importable.
     20b. test_erip_awaiting_payment importable.
   Version:
-    21b. Version marker is v7.0.93.3.0.
+    21b. Version marker is v7.0.94.0.
 """
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ sys.path.insert(0, str(ROOT))
 from storage import Storage
 from utils import now_iso
 
-CURRENT_VERSION = "7.0.93.3.0"
+CURRENT_VERSION = "7.0.94.0"
 APP_JS = ROOT / "miniapp" / "app.js"
 
 
@@ -432,7 +432,7 @@ class Test05ExistingGuards(unittest.TestCase):
 
 class Test06Version(unittest.TestCase):
     def test_25_version_marker(self):
-        """Version marker is v7.0.93.3.0."""
+        """Version marker is v7.0.94.0."""
         js = APP_JS.read_text(encoding="utf-8")
         self.assertIn(
             f'console.log("MiniApp version: v{CURRENT_VERSION}")', js,

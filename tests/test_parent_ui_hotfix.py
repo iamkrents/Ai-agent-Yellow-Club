@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.93.3.0 — parent payment UI/UX hotfix.
+"""Regression tests for v7.0.94.0 — parent payment UI/UX hotfix.
 
 Fixes:
   1. Role banner showed «Руководитель Ресторана: Родитель» on parent screen.
@@ -43,7 +43,7 @@ Tests:
     19. test_parent_payment_contrast importable
     20. test_client_payments importable
     21. test_bepaid_recovery_queue importable
-    22. Version marker is v7.0.93.3.0
+    22. Version marker is v7.0.94.0
 """
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 STYLES_CSS = ROOT / "miniapp" / "styles.css"
 
-CURRENT_VERSION = "7.0.93.3.0"
+CURRENT_VERSION = "7.0.94.0"
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +314,7 @@ class Test05Version(unittest.TestCase):
         cls.html = INDEX_HTML.read_text(encoding="utf-8")
 
     def test_22_version_marker(self):
-        """app.js and index.html must reference v7.0.93.3.0."""
+        """app.js and index.html must reference v7.0.94.0."""
         self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}")', self.js)
         self.assertIn(f"v={CURRENT_VERSION}", self.html)
 

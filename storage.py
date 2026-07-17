@@ -595,6 +595,7 @@ class Storage:
             self._init_bepaid_tables(conn)
             self._init_payment_intent_tables(conn)
             self._init_client_link_tables(conn)
+            self._init_automation_tables(conn)
 
     def _init_payment_intent_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -1089,6 +1090,283 @@ class Storage:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cpcl_parent ON client_parent_child_links(parent_telegram_user_id, status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cpcl_mk_user ON client_parent_child_links(mk_user_id, status)")
+
+    # ── v7.0.94.0 — Invoice Automation tables ────────────────────────────────
+
+    def _init_automation_tables(self, conn: sqlite3.Connection) -> None:
+        """Create tables for the MoyKlass invoice automation pipeline (v7.0.94.0)."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS invoice_automation_settings (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                discovery_enabled INTEGER NOT NULL DEFAULT 1,
+                create_payment_options_enabled INTEGER NOT NULL DEFAULT 0,
+                publish_to_parent_enabled INTEGER NOT NULL DEFAULT 0,
+                scan_interval_minutes INTEGER NOT NULL DEFAULT 10,
+                last_scan_at TEXT,
+                updated_at TEXT NOT NULL DEFAULT '',
+                updated_by TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        conn.execute(
+            "INSERT OR IGNORE INTO invoice_automation_settings (id, updated_at) VALUES (1, '')"
+        )
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS invoice_automation_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mk_invoice_id TEXT NOT NULL,
+                mk_user_id TEXT NOT NULL,
+                student_name TEXT,
+                current_stage TEXT NOT NULL DEFAULT 'discovered',
+                reason_code TEXT,
+                readable_reason TEXT,
+                intent_public_id TEXT,
+                linked_parent_tg_id TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_attempt_at TEXT,
+                next_retry_at TEXT,
+                invoice_snapshot_json TEXT,
+                action_result_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(mk_invoice_id)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_iai_stage ON invoice_automation_items(current_stage, id)"
+        )
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS invoice_automation_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL UNIQUE,
+                trigger TEXT NOT NULL DEFAULT 'scheduled',
+                started_by TEXT,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL DEFAULT 'running',
+                scanned_count INTEGER NOT NULL DEFAULT 0,
+                discovered_count INTEGER NOT NULL DEFAULT 0,
+                created_count INTEGER NOT NULL DEFAULT 0,
+                published_count INTEGER NOT NULL DEFAULT 0,
+                missing_parent_count INTEGER NOT NULL DEFAULT 0,
+                requires_check_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0,
+                error_count INTEGER NOT NULL DEFAULT 0,
+                error_summary TEXT,
+                lease_token TEXT
+            )
+        """)
+
+    # ── v7.0.94.0 — Invoice Automation methods ───────────────────────────────
+
+    def get_automation_settings(self) -> dict:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM invoice_automation_settings WHERE id=1"
+            ).fetchone()
+        return dict(row) if row else {
+            "id": 1, "discovery_enabled": 1, "create_payment_options_enabled": 0,
+            "publish_to_parent_enabled": 0, "scan_interval_minutes": 10,
+            "last_scan_at": None, "updated_at": "", "updated_by": "",
+        }
+
+    def update_automation_settings(
+        self,
+        *,
+        discovery_enabled: bool,
+        create_payment_options_enabled: bool,
+        publish_to_parent_enabled: bool,
+        scan_interval_minutes: int,
+        updated_by: str,
+        now: str,
+    ) -> dict:
+        interval = max(5, min(int(scan_interval_minutes), 1440))
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE invoice_automation_settings SET
+                   discovery_enabled=?, create_payment_options_enabled=?,
+                   publish_to_parent_enabled=?, scan_interval_minutes=?,
+                   updated_at=?, updated_by=? WHERE id=1""",
+                (
+                    int(discovery_enabled), int(create_payment_options_enabled),
+                    int(publish_to_parent_enabled), interval, now, str(updated_by)[:200],
+                ),
+            )
+        return self.get_automation_settings()
+
+    def update_automation_last_scan(self, now: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE invoice_automation_settings SET last_scan_at=? WHERE id=1",
+                (now,),
+            )
+
+    def get_automation_item_by_invoice(self, mk_invoice_id: str) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM invoice_automation_items WHERE mk_invoice_id=?",
+                (str(mk_invoice_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_automation_item_by_id(self, item_id: int) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM invoice_automation_items WHERE id=?",
+                (int(item_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def upsert_automation_item(
+        self,
+        mk_invoice_id: str,
+        mk_user_id: str,
+        student_name: Optional[str],
+        invoice_snapshot_json: str,
+        now: str,
+    ) -> dict:
+        """INSERT OR IGNORE then return the row. Does not overwrite existing stage."""
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO invoice_automation_items
+                   (mk_invoice_id, mk_user_id, student_name, invoice_snapshot_json, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (
+                    str(mk_invoice_id), str(mk_user_id), student_name,
+                    invoice_snapshot_json, now, now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM invoice_automation_items WHERE mk_invoice_id=?",
+                (str(mk_invoice_id),),
+            ).fetchone()
+        return dict(row) if row else {}
+
+    def update_automation_item_stage(
+        self,
+        item_id: int,
+        stage: str,
+        *,
+        reason_code: Optional[str] = None,
+        readable_reason: Optional[str] = None,
+        intent_public_id: Optional[str] = None,
+        linked_parent_tg_id: Optional[str] = None,
+        action_result_json: Optional[str] = None,
+        now: str = "",
+    ) -> None:
+        sets = ["current_stage=?", "updated_at=?", "last_attempt_at=?", "attempts=attempts+1"]
+        vals: list = [stage, now, now]
+        if reason_code is not None:
+            sets.append("reason_code=?"); vals.append(str(reason_code)[:100])
+        if readable_reason is not None:
+            sets.append("readable_reason=?"); vals.append(str(readable_reason)[:500])
+        if intent_public_id is not None:
+            sets.append("intent_public_id=?"); vals.append(str(intent_public_id))
+        if linked_parent_tg_id is not None:
+            sets.append("linked_parent_tg_id=?"); vals.append(str(linked_parent_tg_id))
+        if action_result_json is not None:
+            sets.append("action_result_json=?"); vals.append(str(action_result_json)[:2000])
+        vals.append(int(item_id))
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE invoice_automation_items SET {', '.join(sets)} WHERE id=?",
+                vals,
+            )
+
+    def list_automation_items(
+        self,
+        stage_filter: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict]:
+        with self._connect() as conn:
+            if stage_filter and stage_filter != "all":
+                rows = conn.execute(
+                    "SELECT * FROM invoice_automation_items WHERE current_stage=? ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (stage_filter, limit, offset),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM invoice_automation_items ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def start_automation_run(
+        self, run_id: str, trigger: str, started_by: Optional[str], now: str
+    ) -> dict:
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO invoice_automation_runs
+                   (run_id, trigger, started_by, started_at, status, lease_token)
+                   VALUES (?,?,?,?,'running',?)""",
+                (run_id, trigger, started_by, now, run_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM invoice_automation_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+        return dict(row) if row else {}
+
+    def finish_automation_run(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        finished_at: str,
+        scanned_count: int = 0,
+        discovered_count: int = 0,
+        created_count: int = 0,
+        published_count: int = 0,
+        missing_parent_count: int = 0,
+        requires_check_count: int = 0,
+        skipped_count: int = 0,
+        error_count: int = 0,
+        error_summary: Optional[str] = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE invoice_automation_runs SET
+                   status=?, finished_at=?, lease_token=NULL,
+                   scanned_count=?, discovered_count=?, created_count=?,
+                   published_count=?, missing_parent_count=?, requires_check_count=?,
+                   skipped_count=?, error_count=?, error_summary=?
+                   WHERE run_id=?""",
+                (
+                    status, finished_at, scanned_count, discovered_count, created_count,
+                    published_count, missing_parent_count, requires_check_count,
+                    skipped_count, error_count,
+                    str(error_summary)[:1000] if error_summary else None, run_id,
+                ),
+            )
+
+    def get_running_automation_run(self) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM invoice_automation_runs WHERE status='running' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return dict(row) if row else None
+
+    def expire_stale_automation_run(self, timeout_minutes: int = 30, now: str = "") -> None:
+        """Mark a stale running run as error so the next scan can start."""
+        from datetime import datetime, timezone, timedelta
+        if not now:
+            now = datetime.now(timezone.utc).isoformat()
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE invoice_automation_runs SET status='error', finished_at=?,
+                   error_summary='lease_timeout' WHERE status='running' AND started_at < ?""",
+                (now, cutoff),
+            )
+
+    def list_automation_runs(self, limit: int = 20) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM invoice_automation_runs ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     # --- Food module: camp children ---
 

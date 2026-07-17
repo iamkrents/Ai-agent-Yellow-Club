@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.0.93.3.0" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.0.94.0" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -349,6 +349,60 @@
               </div>
               <div id="recoveryQueueDebug" style="font-size:11px;color:var(--muted);min-height:14px"></div>
               <div id="recoveryQueueList"></div>
+            </div>
+
+            <!-- Автоматизация счетов МойКласс — v7.0.94.0 -->
+            <div id="automationSection" style="margin-top:20px">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                <span style="font-weight:700;font-size:15px">&#9889; Автоматизация счетов</span>
+                <button class="secondary small" id="autoRefreshStatusBtn" type="button">Обновить</button>
+                <button class="secondary small" id="autoRunScanBtn" type="button">Проверить новые счета сейчас</button>
+                <button class="secondary small" id="autoOpenQueueBtn" type="button">Открыть очередь</button>
+              </div>
+              <div id="automationStatus" style="font-size:13px;color:var(--muted);min-height:14px">Загрузка...</div>
+              <div id="automationRunsList" style="margin-top:8px"></div>
+
+              <!-- Settings -->
+              <div style="margin-top:12px;padding:12px;background:var(--bg-secondary,#f5f5f5);border-radius:12px;border:1px solid var(--border-color,#e0e0e0)">
+                <div style="font-weight:600;font-size:13px;margin-bottom:8px">Настройки автоматизации</div>
+                <label style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:13px">
+                  <input type="checkbox" id="autoToggleDiscovery"> Автоматически искать новые счета
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:13px">
+                  <input type="checkbox" id="autoToggleCreate"> Автоматически создавать способы оплаты
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:13px">
+                  <input type="checkbox" id="autoTogglePublish"> Автоматически публиковать родителю
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:13px">
+                  <input type="checkbox" disabled> Автоматически вносить в МойКласс: <b>выключено</b>
+                  <span style="color:var(--muted);font-size:11px">(вручную после проверки)</span>
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13px">
+                  Интервал (мин): <input type="number" id="autoIntervalInput" min="5" max="1440" value="10" style="width:60px;padding:4px 8px;border:1px solid var(--border-color,#e0e0e0);border-radius:6px">
+                </label>
+                <button class="primary small" id="autoSaveSettingsBtn" type="button">Сохранить</button>
+              </div>
+
+              <!-- Queue -->
+              <div id="automationQueueSection" style="display:none;margin-top:12px">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                  <span style="font-weight:600;font-size:13px">Очередь автоматизации</span>
+                  <select id="autoQueueStageFilter" style="font-size:12px;padding:3px 6px;border:1px solid var(--border-color,#e0e0e0);border-radius:6px">
+                    <option value="all">Все</option>
+                    <option value="discovered">Новые</option>
+                    <option value="ready_for_creation">Готовы к созданию</option>
+                    <option value="payment_options_created">Реквизиты созданы</option>
+                    <option value="published">Опубликованы</option>
+                    <option value="missing_parent_link">Нет родителя</option>
+                    <option value="requires_check">Требуют проверки</option>
+                    <option value="error">Ошибки</option>
+                    <option value="ignored">Пропущены</option>
+                  </select>
+                </div>
+                <div id="automationQueueDebug" style="font-size:11px;color:var(--muted);min-height:14px"></div>
+                <div id="automationQueueList"></div>
+              </div>
             </div>
 
             <!-- Несопоставленные транзакции bePaid — v7.0.92.5 -->
@@ -929,6 +983,6 @@
 
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.0.93.3.0"></script>
+  <script src="/static/app.js?v=7.0.94.0"></script>
 </body>
 </html>

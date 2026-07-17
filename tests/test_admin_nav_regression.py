@@ -1,4 +1,4 @@
-﻿"""Frontend regression tests for v7.0.93.2.3 — admin tab visibility and nav fixes.
+"""Frontend regression tests for v7.0.93.2.3 — admin tab visibility and nav fixes.
 
 Covers:
   Root cause analysis:
@@ -58,7 +58,7 @@ INDEX_HTML = ROOT / "miniapp" / "index.html"
 SERVER_PY = ROOT / "web_app_server.py"
 STYLES_CSS = ROOT / "miniapp" / "styles.css"
 
-CURRENT_VERSION = "7.0.93.3.0"
+CURRENT_VERSION = "7.0.94.0"
 
 
 class Test01RootCause(unittest.TestCase):

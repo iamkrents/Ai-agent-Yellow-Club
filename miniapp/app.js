@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.93.3.0");
+console.log("MiniApp version: v7.0.94.0");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -13772,6 +13772,222 @@ window.withdrawIntentFromParent = async function(publicId) {
   }
 };
 
+// ── v7.0.94.0 — Invoice Automation ───────────────────────────────────────────
+
+async function loadAutomationStatus() {
+  const statusEl = $("automationStatus");
+  const runsEl = $("automationRunsList");
+  if (!statusEl) return;
+  try {
+    const data = await apiGet("/api/payments/automation/status");
+    if (!data.ok) {
+      statusEl.innerHTML = `<div class="error-msg">${escapeHtml(data.error || "Ошибка")}</div>`;
+      return;
+    }
+    const s = data.settings || {};
+    const r = data.running;
+    const runs = data.recent_runs || [];
+    const byStage = data.items_by_stage || {};
+
+    const lastScan = s.last_scan_at
+      ? escapeHtml(String(s.last_scan_at).slice(0, 16).replace("T", " "))
+      : "—";
+    const interval = s.scan_interval_minutes || 10;
+    const isRunning = !!r;
+
+    statusEl.innerHTML = `
+      <div class="auto-stat-grid">
+        <div class="auto-stat"><span>Последнее сканирование</span><b>${lastScan}</b></div>
+        <div class="auto-stat"><span>Интервал</span><b>${interval} мин</b></div>
+        <div class="auto-stat ${isRunning ? "auto-stat-running" : ""}"><span>Статус</span><b>${isRunning ? "&#128260; Выполняется" : "&#10003; Готово"}</b></div>
+        <div class="auto-stat"><span>Новые</span><b>${byStage.discovered || 0}</b></div>
+        <div class="auto-stat"><span>Созданы</span><b>${byStage.payment_options_created || 0}</b></div>
+        <div class="auto-stat"><span>Опубликованы</span><b>${byStage.published || 0}</b></div>
+        <div class="auto-stat"><span>Нет родителя</span><b>${byStage.missing_parent_link || 0}</b></div>
+        <div class="auto-stat"><span>Требуют проверки</span><b>${(byStage.requires_check || 0) + (byStage.ambiguous_parent_link || 0)}</b></div>
+        <div class="auto-stat"><span>Ошибки</span><b>${byStage.error || 0}</b></div>
+      </div>`;
+
+    if (runsEl) {
+      runsEl.innerHTML = runs.length
+        ? runs.slice(0, 5).map(run => {
+          const st = run.started_at
+            ? escapeHtml(String(run.started_at).slice(0, 16).replace("T", " "))
+            : "—";
+          const statusCls = run.status === "ok" ? "auto-run-ok"
+            : run.status === "running" ? "auto-run-running" : "auto-run-error";
+          return `<div class="auto-run ${statusCls}">
+            <span class="auto-run-time">${st}</span>
+            <span class="auto-run-trigger">${escapeHtml(run.trigger || "")}</span>
+            <span class="auto-run-status">${escapeHtml(run.status || "")}</span>
+            <span class="auto-run-counts">&#128065; ${run.scanned_count || 0} &middot; &#128;&#10006; ${run.discovered_count || 0} &middot; &#10003; ${run.published_count || 0}</span>
+          </div>`;
+        }).join("")
+        : '<div style="color:var(--muted);font-size:13px">Запусков пока не было.</div>';
+    }
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = `<div class="error-msg">Ошибка: ${escapeHtml(String(e))}</div>`;
+  }
+}
+
+async function loadAutomationSettings() {
+  const data = await apiGet("/api/payments/automation/settings");
+  if (!data.ok) return;
+  const s = data.settings || {};
+  const toggleDiscovery = $("autoToggleDiscovery");
+  const toggleCreate = $("autoToggleCreate");
+  const togglePublish = $("autoTogglePublish");
+  const intervalInput = $("autoIntervalInput");
+  if (toggleDiscovery) toggleDiscovery.checked = !!s.discovery_enabled;
+  if (toggleCreate) { toggleCreate.checked = !!s.create_payment_options_enabled; toggleCreate._prevChecked = !!s.create_payment_options_enabled; }
+  if (togglePublish) { togglePublish.checked = !!s.publish_to_parent_enabled; togglePublish._prevChecked = !!s.publish_to_parent_enabled; }
+  if (intervalInput) intervalInput.value = s.scan_interval_minutes || 10;
+}
+
+async function saveAutomationSettings() {
+  const btn = $("autoSaveSettingsBtn");
+  if (btn && btn.disabled) return;
+  if (btn) btn.disabled = true;
+  try {
+    const toggleDiscovery = $("autoToggleDiscovery");
+    const toggleCreate = $("autoToggleCreate");
+    const togglePublish = $("autoTogglePublish");
+    const intervalInput = $("autoIntervalInput");
+
+    const createEnabled = !!(toggleCreate?.checked);
+    const publishEnabled = !!(togglePublish?.checked);
+
+    if (createEnabled && toggleCreate && !toggleCreate._prevChecked) {
+      const ok = window.confirm("Будут создаваться реальные платёжные реквизиты bePaid для новых проверенных счетов. Продолжить?");
+      if (!ok) { if (btn) btn.disabled = false; return; }
+    }
+    if (publishEnabled && togglePublish && !togglePublish._prevChecked) {
+      const ok = window.confirm("Новые подготовленные счета будут автоматически показываться связанным родителям. Продолжить?");
+      if (!ok) { if (btn) btn.disabled = false; return; }
+    }
+
+    const result = await _apiPostRaw("/api/payments/automation/settings", {
+      discovery_enabled: !!(toggleDiscovery?.checked),
+      create_payment_options_enabled: createEnabled,
+      publish_to_parent_enabled: publishEnabled,
+      scan_interval_minutes: parseInt(intervalInput?.value || "10", 10),
+    });
+    if (result.ok) {
+      setNotice("Настройки автоматизации сохранены", "ok");
+      if (toggleCreate) toggleCreate._prevChecked = createEnabled;
+      if (togglePublish) togglePublish._prevChecked = publishEnabled;
+      loadAutomationStatus();
+    } else {
+      setNotice(result.error || "Ошибка сохранения", "error");
+    }
+  } catch (e) {
+    setNotice(safeUserError(e), "error");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function runAutomationScan() {
+  const btn = $("autoRunScanBtn");
+  if (btn && btn.disabled) return;
+  if (btn) { btn.disabled = true; btn.textContent = "Выполняется..."; }
+  try {
+    const result = await _apiPostRaw("/api/payments/automation/scan", {});
+    if (result.ok) {
+      const msg = `Проверено: ${result.scanned || 0} · Новых: ${result.discovered || 0} · Создано: ${result.created || 0} · Опубликовано: ${result.published || 0}`;
+      setNotice(msg, "ok");
+    } else if (result.error === "already_running") {
+      setNotice("Сканирование уже выполняется.", "");
+    } else {
+      setNotice(result.error || "Ошибка", "error");
+    }
+    await loadAutomationStatus();
+  } catch (e) {
+    setNotice(safeUserError(e), "error");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Проверить новые счета сейчас"; }
+  }
+}
+
+async function loadAutomationQueue(stage) {
+  const listEl = $("automationQueueList");
+  const debugEl = $("automationQueueDebug");
+  if (!listEl) return;
+  listEl.innerHTML = '<div style="color:var(--muted);font-size:13px">Загрузка...</div>';
+  try {
+    const stageParam = encodeURIComponent(stage || "all");
+    const data = await apiGet(`/api/payments/automation/items?stage=${stageParam}&limit=50`);
+    if (!data.ok) {
+      listEl.innerHTML = `<div class="error-msg">${escapeHtml(data.error || "Ошибка")}</div>`;
+      return;
+    }
+    const items = data.items || [];
+    if (debugEl) debugEl.textContent = `Загружено: ${items.length}`;
+    if (!items.length) {
+      listEl.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:8px">Нет элементов.</div>';
+      return;
+    }
+    listEl.innerHTML = items.map(item => {
+      const stageLabel = {
+        discovered: "Обнаружен",
+        ready_for_creation: "Готов к созданию",
+        missing_parent_link: "Нет родителя",
+        ambiguous_parent_link: "Неоднозначная привязка",
+        payment_options_created: "Реквизиты созданы",
+        published: "Опубликован",
+        requires_check: "Требует проверки",
+        error: "Ошибка",
+        ignored: "Пропущен",
+      }[item.current_stage] || item.current_stage;
+      const isPub = item.current_stage === "published";
+      const canCreate = ["discovered", "ready_for_creation", "missing_parent_link"].includes(item.current_stage);
+      const canPublish = item.current_stage === "payment_options_created" && item.intent_public_id;
+      const canRetry = ["error", "requires_check"].includes(item.current_stage);
+      const isIgnored = item.current_stage === "ignored";
+      return `<div class="auto-queue-card" id="autoq-${item.id}">
+        <div class="auto-queue-head">
+          <span class="auto-queue-name">${escapeHtml(item.student_name || "Ученик")}</span>
+          <span class="auto-queue-badge auto-stage-${item.current_stage}">${escapeHtml(stageLabel)}</span>
+        </div>
+        <div class="auto-queue-meta">
+          <span>Счёт МК: <b>#${escapeHtml(String(item.mk_invoice_id))}</b></span>
+          ${item.intent_public_id ? `<span>Intent: ${escapeHtml(item.intent_public_id)}</span>` : ""}
+          ${item.readable_reason ? `<span class="auto-queue-reason">${escapeHtml(item.readable_reason)}</span>` : ""}
+          ${item.last_attempt_at ? `<span>Попытка: ${escapeHtml(String(item.last_attempt_at).slice(0, 16).replace("T", " "))}</span>` : ""}
+        </div>
+        <div class="auto-queue-actions">
+          ${canCreate ? `<button class="secondary small" onclick="automationItemAction(${item.id},'create-payment',event)">Создать оплату</button>` : ""}
+          ${canPublish ? `<button class="secondary small" onclick="automationItemAction(${item.id},'publish',event)">Опубликовать</button>` : ""}
+          ${canRetry ? `<button class="secondary small" onclick="automationItemAction(${item.id},'retry',event)">Повторить</button>` : ""}
+          ${!isIgnored ? `<button class="secondary small muted" onclick="automationItemAction(${item.id},'ignore',event)">Пропустить</button>` : `<button class="secondary small" onclick="automationItemAction(${item.id},'unignore',event)">Восстановить</button>`}
+        </div>
+      </div>`;
+    }).join("");
+  } catch (e) {
+    listEl.innerHTML = `<div class="error-msg">Ошибка: ${escapeHtml(String(e))}</div>`;
+  }
+}
+
+window.automationItemAction = async function(itemId, action, evOrBtn) {
+  const btn = evOrBtn instanceof Event ? evOrBtn.target : (evOrBtn || null);
+  if (btn && btn.disabled) return;
+  if (btn) btn.disabled = true;
+  try {
+    const result = await _apiPostRaw(`/api/payments/automation/items/${Number(itemId)}/${action}`, {});
+    if (result.ok) {
+      setNotice(`Действие выполнено: ${action}`, "ok");
+      const stageFilter = $("autoQueueStageFilter")?.value || "all";
+      await Promise.all([loadAutomationQueue(stageFilter), loadAutomationStatus()]);
+    } else {
+      setNotice(result.error || "Ошибка", "error");
+      if (btn) btn.disabled = false;
+    }
+  } catch (e) {
+    setNotice(safeUserError(e), "error");
+    if (btn) btn.disabled = false;
+  }
+};
+
 // ── Wire up event listeners ───────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -13780,13 +13996,33 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.target.open && canUsePaymentIntents()) {
       initMonthPicker($("piMonthFilter"), "");
       loadPaymentIntents();
-      if (canPostToMoyklass()) { loadMkPaymentTypes(); loadUnmatchedTransactions(); loadRecoveryQueue(); }
+      if (canPostToMoyklass()) {
+        loadMkPaymentTypes();
+        loadUnmatchedTransactions();
+        loadRecoveryQueue();
+        loadAutomationStatus();
+        loadAutomationSettings();
+      }
     }
   });
 
   $("loadPaymentIntents")?.addEventListener("click", loadPaymentIntents);
   $("refreshUnmatchedTx")?.addEventListener("click", loadUnmatchedTransactions);
   $("refreshRecoveryQueue")?.addEventListener("click", loadRecoveryQueue);
+
+  // v7.0.94.0 — Automation listeners
+  $("autoRunScanBtn")?.addEventListener("click", runAutomationScan);
+  $("autoRefreshStatusBtn")?.addEventListener("click", () => {
+    loadAutomationStatus();
+    loadAutomationQueue($("autoQueueStageFilter")?.value || "all");
+  });
+  $("autoSaveSettingsBtn")?.addEventListener("click", saveAutomationSettings);
+  $("autoQueueStageFilter")?.addEventListener("change", e => loadAutomationQueue(e.target.value));
+  $("autoOpenQueueBtn")?.addEventListener("click", () => {
+    const qs = $("automationQueueSection");
+    if (qs) qs.style.display = "block";
+    loadAutomationQueue("all");
+  });
   $("openCreateIntent")?.addEventListener("click", () => openCreateIntentModal());
   $("piMonthFilter")?.addEventListener("change", loadPaymentIntents);
   $("piStatusFilter")?.addEventListener("change", loadPaymentIntents);

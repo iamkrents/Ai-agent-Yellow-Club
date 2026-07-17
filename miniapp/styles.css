@@ -8240,3 +8240,36 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
 :root[data-theme="light"] .cp-paid-date { color: #657089; }
 :root[data-theme="light"] .cp-card-paid-block { background: rgba(31,165,107,.08); border-left-color: #1fa56b; }
 :root[data-theme="light"] .cp-methods-divider { background: #f0eee6; }
+
+/* v7.0.94.0 — hide empty notice strip */
+.notice:empty { display: none; }
+
+/* Invoice automation UI */
+.auto-stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; margin-top: 6px; }
+.auto-stat { background: var(--bg-card, #fff); border: 1px solid var(--border-color, #e0e0e0); border-radius: 8px; padding: 8px 10px; font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
+.auto-stat span { color: var(--color-text-secondary, #888); }
+.auto-stat b { font-size: 15px; font-weight: 700; color: var(--color-text, #172033); }
+.auto-stat-running { border-color: #e67e22; }
+.auto-run { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; padding: 5px 0; border-bottom: 1px solid var(--border-color-light, #f0f0f0); }
+.auto-run:last-child { border-bottom: none; }
+.auto-run-ok .auto-run-status { color: #1fa56b; font-weight: 700; }
+.auto-run-running .auto-run-status { color: #e67e22; font-weight: 700; }
+.auto-run-error .auto-run-status { color: #a82d2d; font-weight: 700; }
+.auto-run-time { color: var(--color-text-secondary, #888); }
+.auto-run-counts { color: var(--color-text-secondary, #666); }
+.auto-queue-card { background: var(--bg-card, #fff); border: 1px solid var(--border-color, #e0e0e0); border-radius: 12px; padding: 12px 14px; margin-bottom: 8px; }
+.auto-queue-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 6px; }
+.auto-queue-name { font-weight: 700; font-size: 14px; color: var(--color-text, #172033); }
+.auto-queue-badge { font-size: 11px; font-weight: 700; border-radius: 6px; padding: 2px 8px; white-space: nowrap; }
+.auto-stage-discovered { background: rgba(255,216,77,.30); color: #6b4e00; }
+.auto-stage-ready_for_creation { background: rgba(31,165,107,.15); color: #116643; }
+.auto-stage-payment_options_created { background: rgba(31,165,107,.25); color: #0b5c38; }
+.auto-stage-published { background: rgba(31,165,107,.35); color: #0b5c38; }
+.auto-stage-missing_parent_link { background: rgba(230,126,34,.20); color: #8b4800; }
+.auto-stage-ambiguous_parent_link { background: rgba(230,126,34,.20); color: #8b4800; }
+.auto-stage-requires_check { background: rgba(216,76,76,.15); color: #a82d2d; }
+.auto-stage-error { background: rgba(216,76,76,.20); color: #a82d2d; }
+.auto-stage-ignored { background: rgba(0,0,0,.07); color: #888; }
+.auto-queue-meta { font-size: 12px; color: var(--color-text-secondary, #657089); display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.auto-queue-reason { color: #a85000; }
+.auto-queue-actions { display: flex; gap: 6px; flex-wrap: wrap; }
