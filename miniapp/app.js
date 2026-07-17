@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.94.2");
+console.log("MiniApp version: v7.0.94.3");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12337,8 +12337,13 @@ function renderPaymentIntentCard(pi) {
        </div>`
     : "";
 
+  const isDuplicateCancelled = pi.status === "cancelled"
+    && (pi.cancel_reason || "").startsWith("duplicate_automation_intent");
   const cancelInfo = pi.status === "cancelled" && pi.cancel_reason
     ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">Причина: ${escapeHtml(pi.cancel_reason)}</div>`
+    : "";
+  const duplicateBadge = isDuplicateCancelled
+    ? `<div class="pi-duplicate-badge">Дубликат — оплата заблокирована</div>`
     : "";
 
   const _paidChannelLabel = pi.paid_channel === "acquiring" ? "Оплачено банковской картой (эквайринг)"
@@ -12402,6 +12407,7 @@ function renderPaymentIntentCard(pi) {
       ${statusChip}${purposeChip}${period}${method}
     </div>
     ${sourceBadge}
+    ${duplicateBadge}
     ${comment}${cancelInfo}${bePaidCreatingBlock}${bePaidRequiresCheckBlock}${bePaidInfo}${acqReadyBadge}${bePaidPaidBlock}${mkPostedBlock}
     ${publishedBadge}
     <div class="pi-card-footer">${bePaidBtn}${acquiringBtn}${verifyAcquiringBtn}${mkPostBtn}${cancelBtn}${publishToParentBtn}${withdrawFromParentBtn}</div>
@@ -13947,25 +13953,31 @@ async function loadAutomationQueue(stage) {
       const canRetry = ["error", "requires_check"].includes(item.current_stage);
       const isIgnored = item.current_stage === "ignored";
       const needsRepair = !item.student_name && !!item.intent_public_id;
+      const isDuplicateItem = item.reason_code === "duplicate_invoice_intents";
       const queueNameHtml = item.student_name
         ? escapeHtml(item.student_name)
         : `<span style="color:var(--muted)">Имя ученика не определено</span><br><span style="font-size:10px;color:var(--muted)">MK user ID: ${escapeHtml(String(item.mk_user_id || "?"))}</span>`;
-      return `<div class="auto-queue-card" id="autoq-${item.id}">
+      const duplicateWarning = isDuplicateItem
+        ? `<div class="auto-queue-duplicate-warning">Обнаружено несколько платёжных черновиков для одного счёта МойКласс. Создание новых способов оплаты остановлено.<br>Счёт МК: <b>${escapeHtml(String(item.mk_invoice_id))}</b> · ${escapeHtml(item.readable_reason || "")}</div>`
+        : "";
+      return `<div class="auto-queue-card${isDuplicateItem ? " auto-queue-card-duplicate" : ""}" id="autoq-${item.id}">
         <div class="auto-queue-head">
           <span class="auto-queue-name">${queueNameHtml}</span>
           <span class="auto-queue-badge auto-stage-${item.current_stage}">${escapeHtml(stageLabel)}</span>
         </div>
+        ${duplicateWarning}
         <div class="auto-queue-meta">
           <span>Счёт МК: <b>#${escapeHtml(String(item.mk_invoice_id))}</b></span>
           ${item.intent_public_id ? `<span>Intent: ${escapeHtml(item.intent_public_id)}</span>` : ""}
-          ${item.readable_reason ? `<span class="auto-queue-reason">${escapeHtml(item.readable_reason)}</span>` : ""}
+          ${item.readable_reason && !isDuplicateItem ? `<span class="auto-queue-reason">${escapeHtml(item.readable_reason)}</span>` : ""}
           ${item.last_attempt_at ? `<span>Попытка: ${escapeHtml(String(item.last_attempt_at).slice(0, 16).replace("T", " "))}</span>` : ""}
         </div>
         <div class="auto-queue-actions">
-          ${canCreate ? `<button class="secondary small" onclick="automationItemAction(${item.id},'create-payment',event)">Создать оплату</button>` : ""}
-          ${canPublish ? `<button class="secondary small" onclick="automationItemAction(${item.id},'publish',event)">Опубликовать</button>` : ""}
-          ${canRetry ? `<button class="secondary small" onclick="automationItemAction(${item.id},'retry',event)">Повторить</button>` : ""}
-          ${needsRepair ? `<button class="secondary small" onclick="automationItemAction(${item.id},'repair-metadata',event)">Исправить имя</button>` : ""}
+          ${canCreate && !isDuplicateItem ? `<button class="secondary small" onclick="automationItemAction(${item.id},'create-payment',event)">Создать оплату</button>` : ""}
+          ${canPublish && !isDuplicateItem ? `<button class="secondary small" onclick="automationItemAction(${item.id},'publish',event)">Опубликовать</button>` : ""}
+          ${canRetry && !isDuplicateItem ? `<button class="secondary small" onclick="automationItemAction(${item.id},'retry',event)">Повторить</button>` : ""}
+          ${needsRepair && !isDuplicateItem ? `<button class="secondary small" onclick="automationItemAction(${item.id},'repair-metadata',event)">Исправить имя</button>` : ""}
+          ${isDuplicateItem ? `<button class="secondary small danger" onclick="automationItemAction(${item.id},'resolve-duplicate',event)">Восстановить (выбрать канонический)</button>` : ""}
           ${!isIgnored ? `<button class="secondary small muted" onclick="automationItemAction(${item.id},'ignore',event)">Пропустить</button>` : `<button class="secondary small" onclick="automationItemAction(${item.id},'unignore',event)">Восстановить</button>`}
         </div>
       </div>`;

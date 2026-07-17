@@ -297,10 +297,10 @@ class TestFrontend(unittest.TestCase):
         cls.html = INDEX_HTML.read_text(encoding="utf-8")
 
     def test_17_version_marker_v7_0_93_2_1(self):
-        self.assertIn('console.log("MiniApp version: v7.0.94.2")', self.js)
+        self.assertIn('console.log("MiniApp version: v7.0.94.3")', self.js)
 
     def test_18_cache_bust_v7_0_93_2_1(self):
-        self.assertIn("v=7.0.94.2", self.html)
+        self.assertIn("v=7.0.94.3", self.html)
         self.assertNotIn("v=7.0.92", self.html)
 
     def test_19_loadClientPayments_exists(self):

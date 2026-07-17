@@ -12592,6 +12592,9 @@ class MiniAppContext:
                 )
             return pub
 
+        if action == "resolve-duplicate":
+            return self._resolve_duplicate_automation_intent(item, iid, auth, now)
+
         if action == "repair-metadata":
             intent_public_id = item.get("intent_public_id")
             if not intent_public_id:
@@ -12629,6 +12632,125 @@ class MiniAppContext:
             return {"ok": True, **repair}
 
         return {"ok": False, "error": f"Unknown action: {action}"}
+
+    def _resolve_duplicate_automation_intent(
+        self,
+        item: dict[str, Any],
+        item_id: int,
+        auth: dict[str, Any],
+        now: str,
+    ) -> dict[str, Any]:
+        """Safe recovery for duplicate automation intents for the same MK invoice.
+
+        Identifies canonical (oldest) intent, repairs its metadata, relinks automation item,
+        marks duplicate(s) as cancelled with reason duplicate_automation_intent_for_mk_invoice.
+        Never deletes rows, never creates new intents, never calls bePaid.
+        """
+        inv_id = str(item.get("mk_invoice_id") or "")
+        if not inv_id:
+            return {"ok": False, "error": "no mk_invoice_id on item"}
+
+        mk_user_id = str(item.get("mk_user_id") or "")
+        all_intents = self.storage.find_all_active_intents_by_invoice(inv_id)
+
+        if len(all_intents) < 2:
+            return {"ok": False, "error": "no_duplicate_found", "count": len(all_intents)}
+
+        # Canonical = oldest (lowest id)
+        canonical = min(all_intents, key=lambda x: x["id"])
+        duplicates = [i for i in all_intents if i["id"] != canonical["id"]]
+
+        # Pre-flight safety checks on canonical
+        _hard_block = {"paid", "posted_to_moyklass"}
+        if canonical.get("status") in _hard_block:
+            return {"ok": False, "error": "canonical_is_paid_or_posted", "public_id": canonical["public_id"]}
+
+        # Safety checks on duplicates
+        for dup in duplicates:
+            if dup.get("status") in _hard_block:
+                return {"ok": False, "error": "duplicate_is_paid_or_posted", "public_id": dup["public_id"]}
+            if dup.get("paid_at"):
+                return {"ok": False, "error": "duplicate_has_paid_at", "public_id": dup["public_id"]}
+
+        # Fetch student name from MK
+        fetched_name: Optional[str] = None
+        if mk_user_id:
+            try:
+                fetched_name = self._fetch_mk_student_name(int(mk_user_id))
+            except (ValueError, TypeError):
+                pass
+
+        # Repair canonical metadata
+        repair = self.storage.repair_intent_metadata(
+            canonical["public_id"],
+            student_name=fetched_name,
+            source="moyklass_invoice_automation",
+            source_reference=f"mk_invoice_{inv_id}",
+            now=now,
+        )
+
+        # Update canonical student_name on automation item too
+        if fetched_name:
+            self.storage.update_automation_item_student_name(inv_id, fetched_name, now)
+
+        # Relink automation item to canonical intent
+        self.storage.relink_automation_item_intent(item_id, canonical["public_id"], now)
+
+        # Advance stage to payment_options_created pointing at canonical
+        self.storage.update_automation_item_stage(
+            item_id, "payment_options_created",
+            intent_public_id=canonical["public_id"],
+            readable_reason=f"Recovered: canonical={canonical['public_id']}",
+            now=now,
+        )
+
+        # Cancel duplicate intents
+        cancelled_pids: list[str] = []
+        cancel_errors: list[str] = []
+        for dup in duplicates:
+            cancel_result = self.storage.cancel_payment_intent_for_cleanup(
+                dup["public_id"],
+                reason="duplicate_automation_intent_for_mk_invoice",
+                now=now,
+            )
+            if cancel_result.get("ok"):
+                cancelled_pids.append(dup["public_id"])
+            else:
+                cancel_errors.append(f"{dup['public_id']}:{cancel_result.get('error')}")
+
+        initiator = f"admin:{auth.get('user_id')}"
+        self.storage.create_automation_audit_event({
+            "created_at": now,
+            "event_type": "automation_duplicate_resolved",
+            "automation_item_id": item_id,
+            "intent_public_id": canonical["public_id"],
+            "mk_invoice_id": inv_id,
+            "mk_user_id": mk_user_id,
+            "old_source": canonical.get("source"),
+            "new_source": "moyklass_invoice_automation",
+            "name_updated": repair.get("name_updated", False),
+            "initiator": initiator,
+            "details_json": __import__("json").dumps({
+                "canonical": canonical["public_id"],
+                "cancelled": cancelled_pids,
+                "cancel_errors": cancel_errors,
+                "fetched_name": fetched_name,
+            }),
+        })
+
+        log.info(
+            "resolve_duplicate: canonical=%s cancelled=%s errors=%s initiator=%s",
+            canonical["public_id"], cancelled_pids, cancel_errors, initiator,
+        )
+        return {
+            "ok": True,
+            "canonical_public_id": canonical["public_id"],
+            "cancelled_public_ids": cancelled_pids,
+            "cancel_errors": cancel_errors,
+            "name_repaired": repair.get("name_updated", False),
+            "fetched_name": fetched_name,
+            "repair": repair,
+        }
 
     # ── v7.0.94.0 — Invoice Automation pipeline ──────────────────────────────
 
@@ -12818,12 +12940,51 @@ class MiniAppContext:
 
         is_new = stage == "discovered"
 
-        # Check for existing payment intent
-        existing_intent = self.storage.find_active_intent_by_invoice(inv_id)
+        # Deduplication guard: find ALL active intents for this invoice BEFORE creating anything
+        existing_intents = self.storage.find_all_active_intents_by_invoice(inv_id)
+
+        # Multiple existing intents — stop immediately, do not create anything
+        if len(existing_intents) > 1:
+            all_pids = [i["public_id"] for i in existing_intents]
+            log.warning(
+                "automation: duplicate intents detected for mk_invoice_id=%s pids=%s",
+                inv_id, all_pids,
+            )
+            self.storage.update_automation_item_stage(
+                item_id, "requires_check",
+                reason_code="duplicate_invoice_intents",
+                readable_reason=(
+                    f"Обнаружено несколько платёжных черновиков для счёта МойКласс {inv_id}: "
+                    + ", ".join(all_pids)
+                    + ". Создание новых способов оплаты остановлено."
+                ),
+                now=now,
+            )
+            self.storage.create_automation_audit_event({
+                "created_at": now,
+                "event_type": "automation_duplicate_intents_detected",
+                "automation_item_id": item_id,
+                "mk_invoice_id": inv_id,
+                "mk_user_id": mk_user_id,
+                "details_json": __import__("json").dumps({"duplicate_pids": all_pids}),
+                "initiator": "scheduled",
+            })
+            return {"requires_check": True, "discovered": is_new}
+
+        existing_intent = existing_intents[0] if existing_intents else None
         if existing_intent:
+            # Relink automation item if it points to a different/missing intent
+            if item.get("intent_public_id") != existing_intent["public_id"]:
+                self.storage.relink_automation_item_intent(
+                    item_id, existing_intent["public_id"], now
+                )
+                log.info(
+                    "automation: relinked item %s → %s (was: %s)",
+                    item_id, existing_intent["public_id"], item.get("intent_public_id"),
+                )
             # Idempotent metadata repair: fix student_name and source on existing intents
             _needs_repair = (
-                (student_name and not existing_intent.get("student_name"))
+                (student_name and not (existing_intent.get("student_name") or "").strip())
                 or (student_name and (existing_intent.get("student_name") or "").startswith("userId="))
                 or existing_intent.get("source") == "manual"
             )
@@ -12963,6 +13124,15 @@ class MiniAppContext:
         if not inv_id:
             return {"ok": False, "error": "no invoice id"}
 
+        # Deduplication pre-check: if an active intent already exists, do repair only (no bePaid)
+        existing_intents = self.storage.find_all_active_intents_by_invoice(inv_id)
+        if len(existing_intents) > 1:
+            return {
+                "ok": False,
+                "error": "duplicate_invoice_intents",
+                "duplicate_pids": [i["public_id"] for i in existing_intents],
+            }
+
         # Fetch current invoice state from MK
         inv = _mk_invoice_by_id(self.moyklass, inv_id)
         if inv is None:
@@ -12972,17 +13142,18 @@ class MiniAppContext:
         create_enabled = bool(settings.get("create_payment_options_enabled", 0))
         publish_enabled = bool(settings.get("publish_to_parent_enabled", 0))
 
-        # Force-reset stage to allow re-processing
-        self.storage.update_automation_item_stage(
-            item["id"], "discovered",
-            reason_code="manual_retry",
-            readable_reason="Manual retry by admin",
-            now=now,
-        )
+        # Force-reset stage to allow re-processing only when no existing intent
+        if not existing_intents:
+            self.storage.update_automation_item_stage(
+                item["id"], "discovered",
+                reason_code="manual_retry",
+                readable_reason="Manual retry by admin",
+                now=now,
+            )
 
         try:
             result = self._process_single_automation_item_from_invoice(
-                inv, now=now, create_enabled=True, publish_enabled=publish_enabled,
+                inv, now=now, create_enabled=create_enabled, publish_enabled=publish_enabled,
             )
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
@@ -13048,30 +13219,42 @@ class MiniAppContext:
             if len(pay_until) == 7:
                 period_month = pay_until
 
-        intent = self.storage.create_payment_intent({
-            "mk_user_id": int(mk_user_id),
-            "student_name": student_name,
-            "amount_minor": amount_minor,
-            "amount_byn": amount_byn,
-            "currency": "BYN",
-            "purpose": "subscription",
-            "period_month": period_month,
-            "payment_method": "erip",
-            "status": "draft",
-            "comment": str(inv.get("comment") or "").strip() or None,
-            "created_by_tg_id": None,
-            "created_by_name": "automation",
-            "created_at": now,
-            "mk_invoice_id": inv_id,
-            "mk_user_subscription_id": user_sub_id,
-            "source": "moyklass_invoice_automation",
-            "source_reference": f"mk_invoice_{inv_id}",
-            "invoice_amount_minor": round(price * 100),
-            "invoice_remaining_minor": amount_minor,
-            "invoice_snapshot_json": _json.dumps(inv, ensure_ascii=False)[:4000],
-            "verified_mk_user_at": now,
-            "verified_invoice_at": now,
-        })
+        try:
+            intent = self.storage.create_payment_intent({
+                "mk_user_id": int(mk_user_id),
+                "student_name": student_name,
+                "amount_minor": amount_minor,
+                "amount_byn": amount_byn,
+                "currency": "BYN",
+                "purpose": "subscription",
+                "period_month": period_month,
+                "payment_method": "erip",
+                "status": "draft",
+                "comment": str(inv.get("comment") or "").strip() or None,
+                "created_by_tg_id": None,
+                "created_by_name": "automation",
+                "created_at": now,
+                "mk_invoice_id": inv_id,
+                "mk_user_subscription_id": user_sub_id,
+                "source": "moyklass_invoice_automation",
+                "source_reference": f"mk_invoice_{inv_id}",
+                "invoice_amount_minor": round(price * 100),
+                "invoice_remaining_minor": amount_minor,
+                "invoice_snapshot_json": _json.dumps(inv, ensure_ascii=False)[:4000],
+                "verified_mk_user_at": now,
+                "verified_invoice_at": now,
+            })
+        except ValueError as _dup_err:
+            _dup_str = str(_dup_err)
+            if _dup_str.startswith("duplicate_mk_invoice_intent:"):
+                _existing_pid = _dup_str.split(":", 1)[1]
+                log.warning(
+                    "_automation_create_intent: storage guard blocked duplicate for inv=%s existing=%s",
+                    inv_id, _existing_pid,
+                )
+            else:
+                log.exception("_automation_create_intent: unexpected ValueError for inv=%s", inv_id)
+            return None
 
         if not intent:
             return None

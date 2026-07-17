@@ -1305,6 +1305,16 @@ class Storage:
                 (student_name, now, str(mk_invoice_id)),
             )
 
+    def relink_automation_item_intent(
+        self, item_id: int, intent_public_id: str, now: str
+    ) -> None:
+        """Update intent_public_id on an automation item (used in deduplication recovery)."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE invoice_automation_items SET intent_public_id=?, updated_at=? WHERE id=?",
+                (intent_public_id, now, int(item_id)),
+            )
+
     def repair_intent_metadata(
         self,
         public_id: str,
@@ -1316,11 +1326,13 @@ class Storage:
     ) -> dict:
         """Idempotent repair of safe metadata fields on a payment intent.
 
-        Allowed to change: student_name (if NULL or userId= placeholder), source (if 'manual'),
+        Allowed to change: student_name (if NULL, empty, or userId= placeholder), source (if 'manual'),
         source_reference (only when source is also being corrected).
         Never changes: amount, mk_invoice_id, mk_user_id, bepaid fields, paid/posted fields.
         Returns a dict with ok, changed, old_*/new_* fields for audit logging.
         """
+        # Normalise: empty string → None so callers don't need to pre-strip
+        student_name = (student_name or "").strip() or None
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT public_id, student_name, source, source_reference, status, paid_at, mk_posted_at"
@@ -1338,7 +1350,7 @@ class Storage:
         name_updated = False
         source_updated = False
 
-        if student_name and (not old_name or old_name.startswith("userId=")):
+        if student_name and (not old_name or not old_name.strip() or old_name.startswith("userId=")):
             sets.append("student_name=?")
             vals.append(student_name)
             name_updated = True
@@ -5197,6 +5209,14 @@ class Storage:
     # ── payment_intents ───────────────────────────────────────────────────────
 
     def create_payment_intent(self, data: dict) -> dict:
+        # Guard: reject duplicate mk_invoice_id before any INSERT or bePaid call.
+        # Raises ValueError("duplicate_mk_invoice_intent:<public_id>") if active intent exists.
+        _mk_inv_guard = str(data.get("mk_invoice_id") or "").strip()
+        if _mk_inv_guard:
+            _existing = self.find_active_intent_by_invoice(_mk_inv_guard)
+            if _existing:
+                raise ValueError(f"duplicate_mk_invoice_intent:{_existing['public_id']}")
+
         import uuid as _uuid
         now = data.get("created_at") or __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
         with self._connect() as conn:
@@ -5756,6 +5776,7 @@ class Storage:
 
     _PI_ACTIVE_STATUSES = (
         "draft", "ready", "bepaid_creating", "bepaid_created",
+        "awaiting_payment", "partial_ready",
         "paid", "posted_to_moyklass", "bepaid_requires_check",
     )
 
@@ -5773,6 +5794,24 @@ class Storage:
                 (str(mk_invoice_id), *self._PI_ACTIVE_STATUSES),
             ).fetchone()
         return dict(row) if row else None
+
+    def find_all_active_intents_by_invoice(self, mk_invoice_id: str) -> list[dict]:
+        """Return ALL active intents for this MK invoice, oldest first. Used for duplicate detection.
+
+        Returns 0 items if none exist, 1 if unique (normal), 2+ if duplicates detected.
+        """
+        placeholders = ",".join("?" * len(self._PI_ACTIVE_STATUSES))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM payment_intents
+                WHERE mk_invoice_id = ?
+                  AND status IN ({placeholders})
+                ORDER BY id ASC
+                """,
+                (str(mk_invoice_id), *self._PI_ACTIVE_STATUSES),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def payment_intents_stats(self, month: Optional[str] = None) -> dict:
         with self._connect() as conn:
