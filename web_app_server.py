@@ -142,6 +142,12 @@ _ACQ_KEYWORDS = ("ЭКВАЙРИНГ", "ACQUIRING", "БАНКОВСКАЯ КАР
 _REQUIRED_ACQUIRING_TYPE_NAME = "BePaid эквайринг"
 _REQUIRED_ERIP_TYPE_NAME = "BePaid ЕРИП"
 
+# v7.0.94.6 — canonical sources that identify a MoyKlass invoice-backed intent
+MOYKLASS_INVOICE_INTENT_SOURCES: frozenset[str] = frozenset({
+    "moyklass_invoice",
+    "moyklass_invoice_automation",
+})
+
 
 def _normalize_mk_type_name(name: str | None) -> str:
     return (name or "").strip().lower()
@@ -10200,7 +10206,7 @@ class MiniAppContext:
         _check("auto_post_to_moyklass_disabled",
                not getattr(cfg, "bepaid_auto_post_to_moyklass", True),
                "disabled" if not getattr(cfg, "bepaid_auto_post_to_moyklass", True) else "WARNING:enabled")
-        if intent.get("source") == "moyklass_invoice":
+        if intent.get("source") in MOYKLASS_INVOICE_INTENT_SOURCES:
             _check("has_mk_user_id",
                    bool(intent.get("mk_user_id")),
                    f"mk_user_id={intent.get('mk_user_id')}")
@@ -10354,8 +10360,16 @@ class MiniAppContext:
                int(intent.get("paid_amount_minor") or 0) == int(intent.get("amount_minor") or -1),
                "Сумма bePaid = сумме intent",
                f"paid={intent.get('paid_amount_minor')}_expected={intent.get('amount_minor')}")
-        _check("source_is_invoice", intent.get("source") == "moyklass_invoice",
+        _check("source_is_invoice", intent.get("source") in MOYKLASS_INVOICE_INTENT_SOURCES,
                "Источник — счёт МойКласс", f"source={intent.get('source')}")
+        if intent.get("source") == "moyklass_invoice_automation":
+            _inv_id_ref = str(intent.get("mk_invoice_id") or "")
+            _expected_ref = f"mk_invoice_{_inv_id_ref}" if _inv_id_ref else ""
+            _actual_ref = str(intent.get("source_reference") or "")
+            _check("source_reference_valid",
+                   bool(_inv_id_ref) and _actual_ref == _expected_ref,
+                   "source_reference совпадает с mk_invoice_id",
+                   f"source_reference={_actual_ref}")
         _check("has_mk_user_id", bool(intent.get("mk_user_id")),
                "mk_user_id присутствует", f"mk_user_id={intent.get('mk_user_id')}")
         _check("has_mk_invoice_id", bool(intent.get("mk_invoice_id")),

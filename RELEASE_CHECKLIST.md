@@ -1,9 +1,10 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.94.5**
+**Cache version: v7.0.94.6**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.94.6 | 2026-07-18 | Hotfix: allow moyklass_invoice_automation source in MK posting readiness. Add MOYKLASS_INVOICE_INTENT_SOURCES constant. source_is_invoice check now accepts both moyklass_invoice and moyklass_invoice_automation. Add source_reference_valid check for automation intents. 20 new tests. |
 | v7.0.94.5 | 2026-07-18 | Hotfix: remove [:50] hard cap from process_new_moyklass_invoices. Sort invoices newest-first (createdAt DESC, id DESC). Fix accounting gap: existing items now return {"existing": True} and increment existing_count instead of falling through unaccounted. _automation_update_counts returns terminal outcome string for reconciliation. New DB columns: existing_count, filtered_count, processed_count, unaccounted_count (additive ALTER TABLE migration). UI: run row shows existing/filtered/discovered/created/published counts + unaccounted warning. 50 new tests. |
 | v7.0.94.4 | 2026-07-18 | Hotfix: clear stale reason_code=duplicate_invoice_intents after successful resolve-duplicate. update_automation_item_stage gains clear_reason=True param (sets NULL atomically). _resolve_duplicate_automation_intent now clears reason_code/readable_reason. Auto-repair on scan: if payment_options_created + stale reason_code + only 1 active intent → clear + audit event. UI fix: isDuplicateItem now checks current_stage===requires_check AND reason_code, so resolved items no longer show duplicate warning. 10 new tests. |
 | v7.0.94.3 | 2026-07-18 | Critical hotfix: prevent duplicate automation intents per MK invoice. Root cause: awaiting_payment missing from _PI_ACTIVE_STATUSES → find_active_intent_by_invoice returned None for ycpi_202607_17 → ycpi_202607_18 created. Fix: add awaiting_payment+partial_ready to _PI_ACTIVE_STATUSES; find_all_active_intents_by_invoice; storage guard in create_payment_intent (duplicate_mk_invoice_intent ValueError); _process_single_automation_item no longer hardcodes create_enabled=True; _resolve_duplicate_automation_intent recovery action; relink_automation_item_intent; duplicate badge + warning UI; .pi-duplicate-badge CSS. 41 new tests. |
