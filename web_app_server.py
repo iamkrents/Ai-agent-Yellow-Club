@@ -12696,11 +12696,11 @@ class MiniAppContext:
         # Relink automation item to canonical intent
         self.storage.relink_automation_item_intent(item_id, canonical["public_id"], now)
 
-        # Advance stage to payment_options_created pointing at canonical
+        # Advance stage to payment_options_created pointing at canonical; clear stale reason_code
         self.storage.update_automation_item_stage(
             item_id, "payment_options_created",
             intent_public_id=canonical["public_id"],
-            readable_reason=f"Recovered: canonical={canonical['public_id']}",
+            clear_reason=True,
             now=now,
         )
 
@@ -12973,6 +12973,30 @@ class MiniAppContext:
 
         existing_intent = existing_intents[0] if existing_intents else None
         if existing_intent:
+            # Auto-repair: stale reason_code left over after a successful resolve-duplicate
+            if (
+                item.get("reason_code") == "duplicate_invoice_intents"
+                and stage == "payment_options_created"
+            ):
+                self.storage.update_automation_item_stage(
+                    item_id, "payment_options_created",
+                    clear_reason=True,
+                    now=now,
+                )
+                self.storage.create_automation_audit_event({
+                    "created_at": now,
+                    "event_type": "automation_stale_reason_cleared",
+                    "automation_item_id": item_id,
+                    "intent_public_id": existing_intent["public_id"],
+                    "mk_invoice_id": inv_id,
+                    "mk_user_id": mk_user_id,
+                    "initiator": "auto_repair",
+                })
+                log.info(
+                    "automation: cleared stale duplicate_invoice_intents reason for item %s",
+                    item_id,
+                )
+
             # Relink automation item if it points to a different/missing intent
             if item.get("intent_public_id") != existing_intent["public_id"]:
                 self.storage.relink_automation_item_intent(

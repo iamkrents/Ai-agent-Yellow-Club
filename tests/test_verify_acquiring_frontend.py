@@ -1,4 +1,4 @@
-"""Frontend hotfix tests — v7.0.92.5.4.
+﻿"""Frontend hotfix tests — v7.0.92.5.4.
 
 Verifies that verifyAcquiringPayment and reconcileTransaction in app.js
 use existing helpers (_apiPostRaw) instead of the undefined apiFetch,
@@ -219,11 +219,11 @@ class Test05VersionAndCacheBust(unittest.TestCase):
 
     def test_18_version_is_current(self):
         """app.js version marker is v7.0.94.1."""
-        self.assertIn("v7.0.94.3", self.js)
+        self.assertIn("v7.0.94.4", self.js)
 
     def test_19_cache_bust_is_current(self):
         """index.html cache-bust parameter is v=7.0.94.1."""
-        self.assertIn("v=7.0.94.3", self.html)
+        self.assertIn("v=7.0.94.4", self.html)
 
     def test_20_old_version_not_in_js(self):
         """Old version marker v7.0.92.5.3 is gone from version log line."""

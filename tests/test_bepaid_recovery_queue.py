@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.94.1 — bePaid recovery queue.
+﻿"""Regression tests for v7.0.94.1 — bePaid recovery queue.
 
 Root cause:
   tx_id=163 was already matched to ycpi_202607_16 (intent_public_id set in DB),
@@ -53,7 +53,7 @@ sys.path.insert(0, str(ROOT))
 from storage import Storage
 from utils import now_iso
 
-CURRENT_VERSION = "7.0.94.3"
+CURRENT_VERSION = "7.0.94.4"
 APP_JS = ROOT / "miniapp" / "app.js"
 
 

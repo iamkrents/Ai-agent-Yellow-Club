@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.94.3");
+console.log("MiniApp version: v7.0.94.4");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -13953,7 +13953,8 @@ async function loadAutomationQueue(stage) {
       const canRetry = ["error", "requires_check"].includes(item.current_stage);
       const isIgnored = item.current_stage === "ignored";
       const needsRepair = !item.student_name && !!item.intent_public_id;
-      const isDuplicateItem = item.reason_code === "duplicate_invoice_intents";
+      const isDuplicateItem = item.current_stage === "requires_check"
+        && item.reason_code === "duplicate_invoice_intents";
       const queueNameHtml = item.student_name
         ? escapeHtml(item.student_name)
         : `<span style="color:var(--muted)">Имя ученика не определено</span><br><span style="font-size:10px;color:var(--muted)">MK user ID: ${escapeHtml(String(item.mk_user_id || "?"))}</span>`;

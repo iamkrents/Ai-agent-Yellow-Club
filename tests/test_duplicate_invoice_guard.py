@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.94.3 — deduplication guard for automation invoice intents.
+﻿"""Regression tests for v7.0.94.3 — deduplication guard for automation invoice intents.
 
 Covers:
   1-3.   find_all_active_intents_by_invoice includes awaiting_payment/partial_ready
@@ -33,7 +33,7 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-CURRENT_VERSION = "7.0.94.3"
+CURRENT_VERSION = "7.0.94.4"
 
 from storage import Storage
 
@@ -664,8 +664,8 @@ class TestVersionAndCSS(unittest.TestCase):
         self.html = INDEX_HTML.read_text(encoding="utf-8")
         self.css = STYLES_CSS.read_text(encoding="utf-8")
 
-    def test_40_version_is_v7094_3(self):
-        """app.js and index.html reference v7.0.94.3."""
+    def test_40_version_is_current(self):
+        """app.js and index.html reference current version."""
         self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}")', self.js)
         self.assertIn(f"v={CURRENT_VERSION}", self.html)
 
@@ -673,6 +673,158 @@ class TestVersionAndCSS(unittest.TestCase):
         """styles.css defines .pi-duplicate-badge and .auto-queue-duplicate-warning."""
         self.assertIn(".pi-duplicate-badge", self.css)
         self.assertIn(".auto-queue-duplicate-warning", self.css)
+
+
+# ===========================================================================
+# 42-51: v7.0.94.4 — clear_reason and post-recovery state
+# ===========================================================================
+
+class TestClearReasonAfterResolve(unittest.TestCase):
+    """Tests for update_automation_item_stage(clear_reason=True) and post-resolve state."""
+
+    def setUp(self):
+        self.st = _make_storage()
+        self.now = _now()
+        # Build: canonical (awaiting_payment), item in requires_check + duplicate_invoice_intents
+        self.canonical = _create_intent(self.st, mk_invoice_id="19075076", status="awaiting_payment")
+        self.duplicate = _create_intent(self.st, mk_invoice_id="19075076", status="draft")
+        self.item = _create_auto_item(self.st, inv_id="19075076",
+                                      intent_public_id=self.duplicate["public_id"])
+        self.st.update_automation_item_stage(
+            self.item["id"], "requires_check",
+            reason_code="duplicate_invoice_intents",
+            readable_reason="Обнаружено несколько черновиков",
+            now=self.now,
+        )
+
+    def test_42_clear_reason_sets_reason_code_null(self):
+        """update_automation_item_stage(clear_reason=True) sets reason_code to NULL."""
+        self.st.update_automation_item_stage(
+            self.item["id"], "payment_options_created",
+            clear_reason=True,
+            now=self.now,
+        )
+        after = self.st.get_automation_item_by_id(self.item["id"])
+        self.assertIsNone(after.get("reason_code"))
+
+    def test_43_clear_reason_sets_readable_reason_null(self):
+        """update_automation_item_stage(clear_reason=True) sets readable_reason to NULL."""
+        self.st.update_automation_item_stage(
+            self.item["id"], "payment_options_created",
+            clear_reason=True,
+            now=self.now,
+        )
+        after = self.st.get_automation_item_by_id(self.item["id"])
+        self.assertIsNone(after.get("readable_reason"))
+
+    def test_44_clear_reason_sets_correct_stage(self):
+        """Stage is set to payment_options_created when clear_reason=True."""
+        self.st.update_automation_item_stage(
+            self.item["id"], "payment_options_created",
+            clear_reason=True,
+            now=self.now,
+        )
+        after = self.st.get_automation_item_by_id(self.item["id"])
+        self.assertEqual(after["current_stage"], "payment_options_created")
+
+    def test_45_item_relinked_to_canonical_after_resolve(self):
+        """After resolve steps, automation item points to canonical intent."""
+        self.st.relink_automation_item_intent(
+            self.item["id"], self.canonical["public_id"], self.now
+        )
+        self.st.update_automation_item_stage(
+            self.item["id"], "payment_options_created",
+            intent_public_id=self.canonical["public_id"],
+            clear_reason=True,
+            now=self.now,
+        )
+        after = self.st.get_automation_item_by_id(self.item["id"])
+        self.assertEqual(after["intent_public_id"], self.canonical["public_id"])
+
+    def test_46_duplicate_remains_cancelled_after_resolve(self):
+        """Cancelled duplicate keeps status=cancelled after resolve (not altered again)."""
+        self.st.cancel_payment_intent_for_cleanup(
+            self.duplicate["public_id"],
+            "duplicate_automation_intent_for_mk_invoice",
+            self.now,
+        )
+        # Simulate second resolve attempt — storage find returns only 1 active intent now
+        found = self.st.find_all_active_intents_by_invoice("19075076")
+        self.assertEqual(len(found), 1)
+        dup_after = self.st.get_payment_intent(self.duplicate["public_id"])
+        self.assertEqual(dup_after["status"], "cancelled")
+
+    def test_47_second_resolve_returns_no_duplicate(self):
+        """After duplicate cancelled, find_all_active returns 1 — server would reject second resolve."""
+        self.st.cancel_payment_intent_for_cleanup(
+            self.duplicate["public_id"],
+            "duplicate_automation_intent_for_mk_invoice",
+            self.now,
+        )
+        found = self.st.find_all_active_intents_by_invoice("19075076")
+        # Server checks len < 2 and returns no_duplicate_found — verify storage side
+        self.assertLess(len(found), 2)
+
+    def test_48_ui_is_duplicate_item_requires_both_conditions(self):
+        """isDuplicateItem checks current_stage===requires_check AND reason_code."""
+        js = APP_JS.read_text(encoding="utf-8")
+        self.assertIn('item.current_stage === "requires_check"', js)
+        self.assertIn('item.reason_code === "duplicate_invoice_intents"', js)
+
+    def test_49_ui_duplicate_warning_not_shown_for_payment_options_created(self):
+        """isDuplicateItem is false when stage != requires_check (no single-condition check)."""
+        js = APP_JS.read_text(encoding="utf-8")
+        # The old single-condition guard must not be present alone
+        self.assertNotIn(
+            'const isDuplicateItem = item.reason_code === "duplicate_invoice_intents";',
+            js,
+        )
+
+    def test_50_resolve_duplicate_method_makes_no_bepaid_calls(self):
+        """_resolve_duplicate_automation_intent does not call bePaid API."""
+        src = (ROOT / "web_app_server.py").read_text(encoding="utf-8")
+        import re
+        # Extract method body
+        match = re.search(
+            r'def _resolve_duplicate_automation_intent\(.*?(?=\n    def |\Z)',
+            src, re.DOTALL
+        )
+        self.assertIsNotNone(match, "method not found")
+        body = match.group(0)
+        self.assertNotIn("bepaid_client", body)
+        self.assertNotIn("_bepaid", body)
+        self.assertNotIn("create_bepaid", body)
+
+    def test_51_resolve_duplicate_creates_no_new_payment_intents(self):
+        """Recovery path writes no new rows to payment_intents table."""
+        before_count = 0
+        with self.st._connect() as conn:
+            before_count = conn.execute("SELECT COUNT(*) FROM payment_intents").fetchone()[0]
+        # Simulate resolve: repair metadata + relink + cancel — no INSERT
+        self.st.repair_intent_metadata(
+            self.canonical["public_id"],
+            student_name="Кренть Александр Александрович",
+            source="moyklass_invoice_automation",
+            now=self.now,
+        )
+        self.st.relink_automation_item_intent(
+            self.item["id"], self.canonical["public_id"], self.now
+        )
+        self.st.update_automation_item_stage(
+            self.item["id"], "payment_options_created",
+            intent_public_id=self.canonical["public_id"],
+            clear_reason=True,
+            now=self.now,
+        )
+        self.st.cancel_payment_intent_for_cleanup(
+            self.duplicate["public_id"],
+            "duplicate_automation_intent_for_mk_invoice",
+            self.now,
+        )
+        after_count = 0
+        with self.st._connect() as conn:
+            after_count = conn.execute("SELECT COUNT(*) FROM payment_intents").fetchone()[0]
+        self.assertEqual(before_count, after_count)
 
 
 if __name__ == "__main__":

@@ -1270,6 +1270,7 @@ class Storage:
         *,
         reason_code: Optional[str] = None,
         readable_reason: Optional[str] = None,
+        clear_reason: bool = False,
         intent_public_id: Optional[str] = None,
         linked_parent_tg_id: Optional[str] = None,
         action_result_json: Optional[str] = None,
@@ -1277,10 +1278,14 @@ class Storage:
     ) -> None:
         sets = ["current_stage=?", "updated_at=?", "last_attempt_at=?", "attempts=attempts+1"]
         vals: list = [stage, now, now]
-        if reason_code is not None:
-            sets.append("reason_code=?"); vals.append(str(reason_code)[:100])
-        if readable_reason is not None:
-            sets.append("readable_reason=?"); vals.append(str(readable_reason)[:500])
+        if clear_reason:
+            sets.append("reason_code=NULL")
+            sets.append("readable_reason=NULL")
+        else:
+            if reason_code is not None:
+                sets.append("reason_code=?"); vals.append(str(reason_code)[:100])
+            if readable_reason is not None:
+                sets.append("readable_reason=?"); vals.append(str(readable_reason)[:500])
         if intent_public_id is not None:
             sets.append("intent_public_id=?"); vals.append(str(intent_public_id))
         if linked_parent_tg_id is not None:

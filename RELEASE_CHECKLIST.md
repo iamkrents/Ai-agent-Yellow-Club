@@ -1,9 +1,10 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.94.3**
+**Cache version: v7.0.94.4**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.94.4 | 2026-07-18 | Hotfix: clear stale reason_code=duplicate_invoice_intents after successful resolve-duplicate. update_automation_item_stage gains clear_reason=True param (sets NULL atomically). _resolve_duplicate_automation_intent now clears reason_code/readable_reason. Auto-repair on scan: if payment_options_created + stale reason_code + only 1 active intent → clear + audit event. UI fix: isDuplicateItem now checks current_stage===requires_check AND reason_code, so resolved items no longer show duplicate warning. 10 new tests. |
 | v7.0.94.3 | 2026-07-18 | Critical hotfix: prevent duplicate automation intents per MK invoice. Root cause: awaiting_payment missing from _PI_ACTIVE_STATUSES → find_active_intent_by_invoice returned None for ycpi_202607_17 → ycpi_202607_18 created. Fix: add awaiting_payment+partial_ready to _PI_ACTIVE_STATUSES; find_all_active_intents_by_invoice; storage guard in create_payment_intent (duplicate_mk_invoice_intent ValueError); _process_single_automation_item no longer hardcodes create_enabled=True; _resolve_duplicate_automation_intent recovery action; relink_automation_item_intent; duplicate badge + warning UI; .pi-duplicate-badge CSS. 41 new tests. |
 | v7.0.94.2 | 2026-07-17 | Hotfix: automation intent student name + source badge. _fetch_mk_student_name() API fallback for NULL student_name. repair_intent_metadata() idempotent repair (name only if NULL or userId= prefix, source only if 'manual'). automation_audit_log table + create_automation_audit_event(). update_automation_item_student_name(). requires_check guard for unresolvable name. repair-metadata admin action. UI: 'Автоматизация счетов' badge for moyklass_invoice_automation source, 'Имя ученика не определено' fallback in queue, 'Исправить имя' button. .pi-source-badge-auto CSS. 45 new tests. |
 | v7.0.94.1 | 2026-07-17 | Critical hotfix: invoice automation role resolution. All automation handlers now call _role_for_user() server-side instead of trusting auth["role"] from frontend. Added _automation_effective_role() + _automation_deny() helpers. Diagnostic access-denied log. 22 new role regression tests. |

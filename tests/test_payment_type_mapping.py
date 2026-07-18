@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.94.1 — bePaid MoyKlass payment type exact name matching.
+﻿"""Regression tests for v7.0.94.1 — bePaid MoyKlass payment type exact name matching.
 
 Covers:
   Backend constants and helpers:
@@ -45,7 +45,7 @@ sys.path.insert(0, str(ROOT))
 APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 
-CURRENT_VERSION = "7.0.94.3"
+CURRENT_VERSION = "7.0.94.4"
 
 
 def _load_server_constants():
