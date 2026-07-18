@@ -27,7 +27,7 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-CURRENT_VERSION = "7.0.94.4"
+CURRENT_VERSION = "7.0.94.5"
 
 from storage import Storage
 
@@ -487,14 +487,15 @@ class TestPipelineBasic(unittest.TestCase):
         self.assertIsNotNone(item)
         self.assertEqual(item["current_stage"], "payment_options_created")
 
-    def test_max_50_invoices_per_run(self):
+    def test_all_invoices_processed_no_cap(self):
         invoices = [_mk_invoice(inv_id=5000 + i, user_id=6000 + i, price=50.0) for i in range(60)]
         ctx = _make_ctx_with_mocks(self.st, invoices)
         result = ctx.process_new_moyklass_invoices()
-        # scanned is 60, but only 50 processed
+        # all 60 invoices must be scanned and processed (no hard cap)
         self.assertEqual(result.get("scanned"), 60)
+        self.assertEqual(result.get("processed"), 60)
         items = self.st.list_automation_items(limit=200)
-        self.assertLessEqual(len(items), 50)
+        self.assertEqual(len(items), 60)
 
     def test_run_updates_last_scan_at(self):
         ctx = _make_ctx_with_mocks(self.st, [])

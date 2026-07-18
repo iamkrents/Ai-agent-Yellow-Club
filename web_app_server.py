@@ -12783,6 +12783,7 @@ class MiniAppContext:
         counts: dict[str, int] = {
             "scanned": 0, "discovered": 0, "created": 0, "published": 0,
             "missing_parent": 0, "requires_check": 0, "skipped": 0, "error": 0,
+            "existing": 0, "processed": 0, "unaccounted": 0,
         }
         errors: list[str] = []
 
@@ -12829,15 +12830,23 @@ class MiniAppContext:
 
             counts["scanned"] = len(mk_invoices)
 
-            # Process each invoice (max 50 per run)
-            for inv in mk_invoices[:50]:
+            # Sort newest first: largest createdAt, then largest id (both confirmed in OpenAPI)
+            mk_invoices.sort(
+                key=lambda x: (str(x.get("createdAt") or ""), int(x.get("id") or 0)),
+                reverse=True,
+            )
+
+            _n_counted = 0
+            for inv in mk_invoices:
                 try:
                     result = self._process_single_automation_item_from_invoice(
                         inv, now=now_iso(),
                         create_enabled=create_enabled,
                         publish_enabled=publish_enabled,
                     )
-                    _automation_update_counts(counts, result)
+                    outcome = _automation_update_counts(counts, result)
+                    if outcome != "unaccounted":
+                        _n_counted += 1
                 except Exception as exc:
                     log.exception(
                         "process_new_moyklass_invoices: error for invoice %s",
@@ -12845,6 +12854,10 @@ class MiniAppContext:
                     )
                     counts["error"] += 1
                     errors.append(f"invoice_{inv.get('id')}: {type(exc).__name__}: {exc}")
+                    _n_counted += 1
+
+            counts["processed"] = len(mk_invoices)
+            counts["unaccounted"] = counts["processed"] - _n_counted
 
             self.storage.update_automation_last_scan(now_iso())
 
@@ -12860,6 +12873,10 @@ class MiniAppContext:
                 skipped_count=counts["skipped"],
                 error_count=counts["error"],
                 error_summary="; ".join(errors[:5]) if errors else None,
+                existing_count=counts["existing"],
+                filtered_count=counts["skipped"],
+                processed_count=counts["processed"],
+                unaccounted_count=counts["unaccounted"],
             )
 
             return {
@@ -13047,7 +13064,9 @@ class MiniAppContext:
                     now=now,
                 )
             if not publish_enabled:
-                return {"discovered": is_new}
+                if is_new:
+                    return {"discovered": True}
+                return {"existing": True}
             return self._try_publish_automation_item(item_id, existing_intent, mk_user_id, now, is_new)
 
         # Check parent link
@@ -13080,7 +13099,9 @@ class MiniAppContext:
                     readable_reason="Parent linked, awaiting create toggle",
                     now=now,
                 )
-            return {"discovered": is_new}
+            if is_new:
+                return {"discovered": True}
+            return {"existing": True}
 
         # Guard: student name required before creating bePaid options
         if not student_name:
@@ -13195,14 +13216,14 @@ class MiniAppContext:
         """Try to publish an already-created intent to parent."""
         pi_status = existing_intent.get("status", "")
         if pi_status in ("paid", "posted_to_moyklass", "cancelled"):
-            return {"skip": True, "discovered": is_new}
+            return {"existing": True}
         if existing_intent.get("client_visibility") == "published":
             self.storage.update_automation_item_stage(item_id, "published", now=now)
-            return {"skip": True, "discovered": is_new}
+            return {"existing": True}
 
         parents = self.storage.get_parents_for_child(mk_user_id)
         if len(parents) != 1:
-            return {"skip": True, "discovered": is_new}
+            return {"existing": True}
 
         pub = self.storage.publish_payment_intent_to_client(
             existing_intent["public_id"], "automation", now
@@ -13210,7 +13231,7 @@ class MiniAppContext:
         if pub.get("ok"):
             self.storage.update_automation_item_stage(item_id, "published", now=now)
             return {"published": True, "discovered": is_new}
-        return {"skip": True, "discovered": is_new}
+        return {"existing": True}
 
     def _automation_create_intent(
         self,
@@ -13299,23 +13320,45 @@ class MiniAppContext:
         return intent
 
 
-def _automation_update_counts(counts: dict[str, int], result: dict[str, Any]) -> None:
-    """Update automation run counters from a per-invoice result dict."""
+def _automation_update_counts(counts: dict[str, int], result: dict[str, Any]) -> str:
+    """Update automation run counters. Returns terminal outcome string for reconciliation."""
     if result.get("skip"):
         counts["skipped"] += 1
-        return
-    if result.get("discovered"):
-        counts["discovered"] += 1
-    if result.get("created"):
-        counts["created"] += 1
-    if result.get("published"):
-        counts["published"] += 1
-    if result.get("missing_parent"):
-        counts["missing_parent"] += 1
-    if result.get("requires_check"):
-        counts["requires_check"] += 1
+        return "filtered"
+    if result.get("existing"):
+        counts["existing"] += 1
+        return "existing"
     if result.get("error"):
         counts["error"] += 1
+        if result.get("discovered"):
+            counts["discovered"] += 1
+        return "error"
+    if result.get("published"):
+        counts["published"] += 1
+        if result.get("created"):
+            counts["created"] += 1
+        if result.get("discovered"):
+            counts["discovered"] += 1
+        return "published"
+    if result.get("created"):
+        counts["created"] += 1
+        if result.get("discovered"):
+            counts["discovered"] += 1
+        return "created"
+    if result.get("missing_parent"):
+        counts["missing_parent"] += 1
+        if result.get("discovered"):
+            counts["discovered"] += 1
+        return "missing_parent"
+    if result.get("requires_check"):
+        counts["requires_check"] += 1
+        if result.get("discovered"):
+            counts["discovered"] += 1
+        return "requires_check"
+    if result.get("discovered"):
+        counts["discovered"] += 1
+        return "discovered"
+    return "unaccounted"
 
 
 CTX = MiniAppContext()

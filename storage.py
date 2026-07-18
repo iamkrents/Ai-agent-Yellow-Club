@@ -1157,6 +1157,20 @@ class Storage:
                 lease_token TEXT
             )
         """)
+        # v7.0.94.5 — additive columns for terminal outcome accounting
+        for _col, _type in [
+            ("existing_count",    "INTEGER NOT NULL DEFAULT 0"),
+            ("filtered_count",    "INTEGER NOT NULL DEFAULT 0"),
+            ("processed_count",   "INTEGER NOT NULL DEFAULT 0"),
+            ("unaccounted_count", "INTEGER NOT NULL DEFAULT 0"),
+        ]:
+            try:
+                conn.execute(
+                    f"ALTER TABLE invoice_automation_runs ADD COLUMN {_col} {_type}"
+                )
+            except Exception:
+                pass
+
         # v7.0.94.2 — automation metadata audit log
         conn.execute("""
             CREATE TABLE IF NOT EXISTS automation_audit_log (
@@ -1461,6 +1475,10 @@ class Storage:
         skipped_count: int = 0,
         error_count: int = 0,
         error_summary: Optional[str] = None,
+        existing_count: int = 0,
+        filtered_count: int = 0,
+        processed_count: int = 0,
+        unaccounted_count: int = 0,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -1468,13 +1486,16 @@ class Storage:
                    status=?, finished_at=?, lease_token=NULL,
                    scanned_count=?, discovered_count=?, created_count=?,
                    published_count=?, missing_parent_count=?, requires_check_count=?,
-                   skipped_count=?, error_count=?, error_summary=?
+                   skipped_count=?, error_count=?, error_summary=?,
+                   existing_count=?, filtered_count=?, processed_count=?, unaccounted_count=?
                    WHERE run_id=?""",
                 (
                     status, finished_at, scanned_count, discovered_count, created_count,
                     published_count, missing_parent_count, requires_check_count,
                     skipped_count, error_count,
-                    str(error_summary)[:1000] if error_summary else None, run_id,
+                    str(error_summary)[:1000] if error_summary else None,
+                    existing_count, filtered_count, processed_count, unaccounted_count,
+                    run_id,
                 ),
             )
 

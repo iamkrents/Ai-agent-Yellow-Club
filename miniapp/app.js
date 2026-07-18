@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.94.4");
+console.log("MiniApp version: v7.0.94.5");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -13828,7 +13828,7 @@ async function loadAutomationStatus() {
             <span class="auto-run-time">${st}</span>
             <span class="auto-run-trigger">${escapeHtml(run.trigger || "")}</span>
             <span class="auto-run-status">${escapeHtml(run.status || "")}</span>
-            <span class="auto-run-counts">&#128065; ${run.scanned_count || 0} &middot; &#128;&#10006; ${run.discovered_count || 0} &middot; &#10003; ${run.published_count || 0}</span>
+            <span class="auto-run-counts">&#128065; ${run.scanned_count || 0} &middot; &#128336; ${run.existing_count || 0} &middot; &#10006; ${run.filtered_count || 0} &middot; &#43; ${run.discovered_count || 0} &middot; &#9881; ${run.created_count || 0} &middot; &#10003; ${run.published_count || 0}${(run.unaccounted_count > 0) ? ` <span style="color:var(--error,#c0392b);font-weight:600">&#9888; ${run.unaccounted_count}</span>` : ''}</span>
           </div>`;
         }).join("")
         : '<div style="color:var(--muted);font-size:13px">Запусков пока не было.</div>';
