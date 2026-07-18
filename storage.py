@@ -6,6 +6,15 @@ from pathlib import Path
 from typing import Any, Optional
 
 from utils import now_iso
+from payment_domain import (
+    PAYMENT_INTENT_ACTIVE_STATUSES as _DOMAIN_ACTIVE_STATUSES,
+    MOYKLASS_INVOICE_INTENT_SOURCES,
+    is_moyklass_invoice_intent as _is_mk_invoice_intent,
+    is_posted_to_moyklass as _is_posted,
+    resolve_effective_payment_channel as _resolve_channel,
+    is_source_reference_valid as _is_src_ref_valid,
+    build_invoice_deduplication_key as _dedup_key,
+)
 
 
 _ONLINE_INDICATORS = frozenset(("онлайн", "online", "yc0", "remote", "дистанционно", "дистанц"))
@@ -5800,11 +5809,7 @@ class Storage:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    _PI_ACTIVE_STATUSES = (
-        "draft", "ready", "bepaid_creating", "bepaid_created",
-        "awaiting_payment", "partial_ready",
-        "paid", "posted_to_moyklass", "bepaid_requires_check",
-    )
+    _PI_ACTIVE_STATUSES = tuple(_DOMAIN_ACTIVE_STATUSES)
 
     def find_active_intent_by_invoice(self, mk_invoice_id: str) -> Optional[dict]:
         """Return the most recent active intent for this MK invoice (excludes cancelled/error)."""
@@ -5865,6 +5870,152 @@ class Storage:
             "posted_to_moyklass": stats.get("posted_to_moyklass", 0),
             "cancelled": stats.get("cancelled", 0),
             "error": stats.get("error", 0),
+        }
+
+    def audit_payment_integrity(self) -> dict:
+        """Read-only audit of payment intent data integrity.
+
+        Returns {"checked": N, "critical": [...], "warning": [...], "info": [...]}
+        Performs NO writes, NO external API calls.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM payment_intents ORDER BY id ASC"
+            ).fetchall()
+        intents = [dict(r) for r in rows]
+
+        critical: list[dict] = []
+        warning: list[dict] = []
+        info: list[dict] = []
+
+        def _issue(severity: str, intent: dict, code: str, desc: str) -> None:
+            entry = {
+                "code": code,
+                "description": desc,
+                "public_id": str(intent.get("public_id") or ""),
+                "mk_invoice_id": str(intent.get("mk_invoice_id") or ""),
+            }
+            if severity == "critical":
+                critical.append(entry)
+            elif severity == "warning":
+                warning.append(entry)
+            else:
+                info.append(entry)
+
+        # Group by mk_invoice_id for duplicate detection
+        from collections import defaultdict
+        by_invoice: dict[str, list[dict]] = defaultdict(list)
+        by_tx_uid: dict[str, list[dict]] = defaultdict(list)
+
+        for pi in intents:
+            mk_id = str(pi.get("mk_invoice_id") or "").strip()
+            if mk_id and str(pi.get("status") or "") in _DOMAIN_ACTIVE_STATUSES:
+                by_invoice[mk_id].append(pi)
+            tx_uid = str(pi.get("paid_transaction_uid") or "").strip()
+            if tx_uid:
+                by_tx_uid[tx_uid].append(pi)
+
+        # Duplicate active intents per invoice
+        for mk_id, pis in by_invoice.items():
+            if len(pis) > 1:
+                for pi in pis:
+                    _issue("critical", pi, "duplicate_active_intent",
+                           f"Несколько активных intent для mk_invoice_id={mk_id} "
+                           f"({len(pis)} шт.)")
+
+        # Duplicate paid_transaction_uid
+        for tx_uid, pis in by_tx_uid.items():
+            paid_with_uid = [p for p in pis if str(p.get("status") or "") in ("paid", "posted_to_moyklass")]
+            if len(paid_with_uid) > 1:
+                for pi in paid_with_uid:
+                    _issue("critical", pi, "duplicate_tx_uid",
+                           f"Несколько paid intent с одинаковым transaction_uid (prefix {tx_uid[:8]}...)")
+
+        for pi in intents:
+            status = str(pi.get("status") or "")
+            mk_payment_id = pi.get("mk_payment_id")
+            mk_posting_status = str(pi.get("mk_posting_status") or "")
+            paid_tx_uid = str(pi.get("paid_transaction_uid") or "").strip()
+            paid_at = pi.get("paid_at")
+            paid_amount_minor = pi.get("paid_amount_minor")
+            webhook_verified = bool(pi.get("webhook_verified"))
+            paid_channel = str(pi.get("paid_channel") or "").strip()
+            source = str(pi.get("source") or "")
+            mk_invoice_id = str(pi.get("mk_invoice_id") or "").strip()
+
+            # posted without mk_payment_id
+            if status == "posted_to_moyklass" and not mk_payment_id:
+                _issue("critical", pi, "posted_no_mk_payment_id",
+                       "status=posted_to_moyklass, но mk_payment_id отсутствует")
+
+            # mk_posting_status=posted without mk_payment_id
+            if mk_posting_status == "posted" and not mk_payment_id:
+                _issue("critical", pi, "posting_status_posted_no_id",
+                       "mk_posting_status=posted, но mk_payment_id отсутствует")
+
+            # mk_payment_id exists but status not final
+            if mk_payment_id and status not in ("posted_to_moyklass", "cancelled", "error"):
+                _issue("warning", pi, "mk_payment_id_wrong_status",
+                       f"mk_payment_id={mk_payment_id} есть, но status={status!r} (ожидается posted_to_moyklass)")
+
+            # webhook_verified without tx_uid
+            if webhook_verified and not paid_tx_uid:
+                _issue("critical", pi, "verified_no_tx_uid",
+                       "webhook_verified=1, но paid_transaction_uid отсутствует")
+
+            # paid_at without paid_amount_minor
+            if paid_at and not paid_amount_minor:
+                _issue("warning", pi, "paid_at_no_amount",
+                       "paid_at установлен, но paid_amount_minor отсутствует или 0")
+
+            # paid intent missing paid_channel
+            if status in ("paid", "posted_to_moyklass") and not paid_channel:
+                _issue("warning", pi, "paid_no_channel",
+                       "Оплаченный intent без paid_channel")
+
+            # source_reference mismatch for automation intents
+            if source == "moyklass_invoice_automation" and not _is_src_ref_valid(pi):
+                src_ref = str(pi.get("source_reference") or "")
+                _issue("warning", pi, "source_reference_mismatch",
+                       f"source_reference={src_ref!r} не совпадает с mk_invoice_id={mk_invoice_id!r}")
+
+            # automation intent without mk_invoice_id
+            if source == "moyklass_invoice_automation" and not mk_invoice_id:
+                _issue("critical", pi, "automation_no_mk_invoice_id",
+                       "source=moyklass_invoice_automation, но mk_invoice_id отсутствует")
+
+            # cancelled but parent published (if field exists)
+            if status in ("cancelled", "error") and bool(pi.get("parent_published")):
+                _issue("warning", pi, "cancelled_parent_published",
+                       "Intent отменён, но опубликован родителю")
+
+            # paid intent with awaiting_payment status (stale state)
+            if paid_tx_uid and paid_at and status == "awaiting_payment":
+                _issue("critical", pi, "paid_but_awaiting",
+                       "paid_at и paid_transaction_uid установлены, но status=awaiting_payment")
+
+            # posting_error with status=posted_to_moyklass
+            if status == "posted_to_moyklass" and str(pi.get("mk_posting_error") or "").strip():
+                _issue("warning", pi, "posted_with_error",
+                       "status=posted_to_moyklass, но mk_posting_error не пустой")
+
+            # stale claiming state (mk_posting_status=claiming, no mk_payment_id)
+            if mk_posting_status == "claiming" and not mk_payment_id and status not in ("paid",):
+                _issue("warning", pi, "stale_posting_claim",
+                       f"mk_posting_status=claiming, но status={status!r} — возможно зависший claim")
+
+            # informational: payment_method/paid_channel mismatch (not an error)
+            pm = str(pi.get("payment_method") or "").strip()
+            if pm and paid_channel and pm != paid_channel and status in ("paid", "posted_to_moyklass"):
+                _issue("info", pi, "channel_method_mismatch",
+                       f"payment_method={pm!r} отличается от фактического paid_channel={paid_channel!r} "
+                       f"— это ожидаемо, если оплата прошла другим способом (например, acquiring вместо erip)")
+
+        return {
+            "checked": len(intents),
+            "critical": critical,
+            "warning": warning,
+            "info": info,
         }
 
     def payment_intent_claim_bepaid_creation(

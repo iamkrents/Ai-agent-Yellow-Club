@@ -44,6 +44,23 @@ from llm import OllamaClient
 from agent_core import AgentCore, AnswerContext
 from query_tools import build_query_profile
 from utils import now_iso
+from payment_domain import (
+    MOYKLASS_INVOICE_INTENT_SOURCES as _MK_INVOICE_SOURCES,
+    PAYMENT_INTENT_ACTIVE_STATUSES,
+    PAYMENT_INTENT_PAID_STATUSES,
+    PAYMENT_INTENT_FINAL_STATUSES,
+    PAYMENT_INTENT_CANCELLED_STATUSES,
+    PAYMENT_CHANNEL_ERIP,
+    PAYMENT_CHANNEL_ACQUIRING,
+    is_moyklass_invoice_intent,
+    is_payment_verified,
+    is_posted_to_moyklass as _is_posted_to_mk,
+    is_cancelled_intent,
+    resolve_effective_payment_channel,
+    can_post_to_moyklass as _can_post_to_mk,
+    build_invoice_deduplication_key,
+    build_posting_idempotency_key,
+)
 
 log = logging.getLogger("yellow_club_miniapp")
 WEB_DIR = BASE_DIR / "miniapp"
@@ -142,11 +159,8 @@ _ACQ_KEYWORDS = ("ЭКВАЙРИНГ", "ACQUIRING", "БАНКОВСКАЯ КАР
 _REQUIRED_ACQUIRING_TYPE_NAME = "BePaid эквайринг"
 _REQUIRED_ERIP_TYPE_NAME = "BePaid ЕРИП"
 
-# v7.0.94.6 — canonical sources that identify a MoyKlass invoice-backed intent
-MOYKLASS_INVOICE_INTENT_SOURCES: frozenset[str] = frozenset({
-    "moyklass_invoice",
-    "moyklass_invoice_automation",
-})
+# v7.0.94.6 — canonical sources, now imported from payment_domain
+MOYKLASS_INVOICE_INTENT_SOURCES: frozenset[str] = _MK_INVOICE_SOURCES
 
 
 def _normalize_mk_type_name(name: str | None) -> str:
@@ -8603,8 +8617,9 @@ class MiniAppContext:
 
             if mark_result.get("idempotent"):
                 log.info(
-                    "bePaid webhook duplicate_ignored: tx_id=%s intent=%s uid=%s",
-                    tx_id, intent_public_id, tx_uid,
+                    "payment_event=webhook_duplicate intent=%s transaction_uid=%s "
+                    "result=blocked reason=duplicate_tx_uid tx_id=%s",
+                    intent_public_id, tx_uid, tx_id,
                 )
                 self.storage.log_payment_webhook_audit(
                     "duplicate_webhook_ignored",
@@ -8624,8 +8639,11 @@ class MiniAppContext:
 
             if mark_result.get("ok") and mark_result.get("marked_paid"):
                 log.info(
-                    "bePaid webhook intent_marked_paid: tx_id=%s intent=%s uid=%s amount=%s",
-                    tx_id, intent_public_id, tx_uid, amount_minor,
+                    "payment_event=payment_marked_paid intent=%s mk_invoice_id=%s "
+                    "transaction_uid=%s channel=%s status=paid result=success tx_id=%s amount=%s",
+                    intent_public_id,
+                    str((self.storage.get_payment_intent(intent_public_id) or {}).get("mk_invoice_id") or ""),
+                    tx_uid, shop_type or "", tx_id, amount_minor,
                 )
                 self.storage.log_payment_webhook_audit(
                     "payment_option_marked_paid" if target_type == "payment_option" else "intent_marked_paid",
@@ -10313,6 +10331,26 @@ class MiniAppContext:
             },
         }
 
+    def payment_integrity_audit(self, auth: dict[str, Any]) -> dict[str, Any]:
+        """GET /api/payments/integrity-audit — read-only data integrity check.
+
+        Owner/admin only. Makes NO writes, NO external API calls.
+        v7.0.95.0
+        """
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in PAYMENT_MK_POST_ROLES:
+            return {"ok": False, "error": "Аудит доступен только owner и admin."}
+        result = self.storage.audit_payment_integrity()
+        log.info(
+            "payment_event=integrity_audit_completed intent=all "
+            "checked=%d critical=%d warning=%d info=%d",
+            result["checked"],
+            len(result["critical"]),
+            len(result["warning"]),
+            len(result["info"]),
+        )
+        return {"ok": True, **result}
+
     def _require_moyklass_post_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
         role = self._role_for_user(int(auth["user_id"]))
         if role not in PAYMENT_MK_POST_ROLES:
@@ -10391,7 +10429,7 @@ class MiniAppContext:
                "disabled" if not getattr(cfg, "bepaid_auto_post_to_moyklass", True) else "WARNING:enabled")
 
         # — Payment type config check (channel-specific, v7.0.93.2.6) —
-        paid_channel = str(intent.get("paid_channel") or "erip").strip().lower() or "erip"
+        paid_channel = resolve_effective_payment_channel(intent)
         if paid_channel == "acquiring":
             payment_type_id = int(getattr(cfg, "moyklass_acquiring_payment_type_id", 0) or 0)
             _pt_env_key = "MOYKLASS_ACQUIRING_PAYMENT_TYPE_ID"
@@ -10590,6 +10628,11 @@ class MiniAppContext:
 
         # 2. Idempotency: already posted
         if intent.get("status") == "posted_to_moyklass" and intent.get("mk_payment_id"):
+            log.info(
+                "payment_event=posting_blocked intent=%s mk_invoice_id=%s "
+                "mk_payment_id=%s result=blocked reason=already_posted",
+                public_id, str(intent.get("mk_invoice_id") or ""), intent.get("mk_payment_id"),
+            )
             self.storage.log_moyklass_post_audit(
                 "moyklass_post_already_done",
                 intent_public_id=public_id,
@@ -10631,7 +10674,7 @@ class MiniAppContext:
         mk_invoice_id_str = str(intent.get("mk_invoice_id") or "")
         mk_sub_id_str = str(intent.get("mk_user_subscription_id") or "")
         paid_amount_minor = int(intent.get("paid_amount_minor") or 0)
-        paid_channel = str(intent.get("paid_channel") or "erip").strip().lower() or "erip"
+        paid_channel = resolve_effective_payment_channel(intent)
         if paid_channel == "acquiring":
             payment_type_id = int(getattr(cfg, "moyklass_acquiring_payment_type_id", 0) or 0)
             _missing_env = "MOYKLASS_ACQUIRING_PAYMENT_TYPE_ID"
@@ -10712,6 +10755,12 @@ class MiniAppContext:
             }
 
         # 6. Atomic claim
+        log.info(
+            "payment_event=posting_started intent=%s mk_invoice_id=%s "
+            "channel=%s transaction_uid=%s status=paid result=started",
+            public_id, mk_invoice_id_str, paid_channel,
+            str(intent.get("paid_transaction_uid") or ""),
+        )
         claimed = self.storage.payment_intent_claim_moyklass_post(public_id, user_id_str)
         if not claimed:
             self.storage.log_moyklass_post_audit(
@@ -10926,8 +10975,10 @@ class MiniAppContext:
                 result="success",
             )
             log.info(
-                "MoyKlass payment post succeeded intent=%s mk_payment_id=%s",
-                public_id, mk_payment_id,
+                "payment_event=posting_succeeded intent=%s mk_invoice_id=%s "
+                "mk_payment_id=%s channel=%s transaction_uid=%s status=posted_to_moyklass result=success",
+                public_id, mk_invoice_id_str, mk_payment_id,
+                paid_channel, str(intent.get("paid_transaction_uid") or ""),
             )
             intent_after = self.storage.get_payment_intent(public_id) or {}
             return {
@@ -11908,7 +11959,7 @@ class MiniAppContext:
             }
 
         # ── Preflight: re-verify MoyKlass invoice before claiming ─────────────────
-        if pi.get("source") == "moyklass_invoice" and pi.get("mk_invoice_id"):
+        if is_moyklass_invoice_intent(pi) and pi.get("mk_invoice_id"):
             mk_check = self._preflight_mk_invoice(pi)
             if not mk_check["ok"]:
                 return mk_check
@@ -12298,7 +12349,7 @@ class MiniAppContext:
             }
 
         # Preflight: verify MK invoice still exists before creating any options
-        if pi.get("source") == "moyklass_invoice" and pi.get("mk_invoice_id"):
+        if is_moyklass_invoice_intent(pi) and pi.get("mk_invoice_id"):
             mk_check = self._preflight_mk_invoice(pi)
             if not mk_check["ok"]:
                 return mk_check
@@ -13617,6 +13668,9 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.moyklass_invoices_list(auth, params))
                 if path == "/api/payments/moyklass/payment-types":
                     return self._send_json(CTX.moyklass_payment_types(auth))
+                # ── v7.0.95.0 — Payment integrity audit ─────────────────────
+                if path == "/api/payments/integrity-audit":
+                    return self._send_json(CTX.payment_integrity_audit(auth))
                 # ── v7.0.94.0 — Invoice automation ──────────────────────────
                 if path == "/api/payments/automation/settings":
                     return self._send_json(CTX.automation_get_settings(auth))

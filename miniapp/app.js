@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.94.6");
+console.log("MiniApp version: v7.0.95.0");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -13780,6 +13780,55 @@ window.withdrawIntentFromParent = async function(publicId) {
   }
 };
 
+// ── v7.0.95.0 — Payment integrity audit ───────────────────────────────────────
+
+async function loadPaymentIntegrity() {
+  const statusEl = $("payIntegrityStatus");
+  const resultEl = $("payIntegrityResult");
+  const btn = $("payIntegrityRefreshBtn");
+  if (!statusEl) return;
+  if (btn) btn.disabled = true;
+  statusEl.textContent = "Проверка…";
+  if (resultEl) resultEl.innerHTML = "";
+  try {
+    const data = await apiGet("/api/payments/integrity-audit");
+    if (!data.ok) {
+      statusEl.textContent = data.error || "Ошибка аудита";
+      return;
+    }
+    const { checked = 0, critical = [], warning = [], info = [] } = data;
+    statusEl.innerHTML =
+      `Проверено: <b>${checked}</b> &nbsp;` +
+      (critical.length ? `<span style="color:#d32f2f">&#10006; Критичных: <b>${critical.length}</b></span> &nbsp;` : `<span style="color:#388e3c">&#10004; Критичных: 0</span> &nbsp;`) +
+      (warning.length ? `<span style="color:#f57c00">Предупреждений: <b>${warning.length}</b></span> &nbsp;` : `Предупреждений: 0 &nbsp;`) +
+      `Инфо: ${info.length}`;
+    if (!resultEl) return;
+    const fmtIssue = m => {
+      const desc = typeof m === "string" ? m : (m.description || JSON.stringify(m));
+      const pid = typeof m === "object" && m.public_id ? ` [${m.public_id}]` : "";
+      return escapeHtml(desc + pid);
+    };
+    const allIssues = [
+      ...critical.map(m => ({ sev: "critical", msg: m })),
+      ...warning.map(m => ({ sev: "warning", msg: m })),
+      ...info.map(m => ({ sev: "info", msg: m })),
+    ];
+    if (!allIssues.length) {
+      resultEl.innerHTML = `<div style="color:#388e3c;font-size:13px">Нарушений не обнаружено.</div>`;
+      return;
+    }
+    const colors = { critical: "#d32f2f", warning: "#f57c00", info: "#1565c0" };
+    resultEl.innerHTML = allIssues.map(({ sev, msg }) =>
+      `<div style="font-size:12px;color:${colors[sev]};margin:2px 0">` +
+      `<b>[${sev.toUpperCase()}]</b> ${fmtIssue(msg)}</div>`
+    ).join("");
+  } catch (e) {
+    statusEl.textContent = safeUserError(e);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 // ── v7.0.94.0 — Invoice Automation ───────────────────────────────────────────
 
 async function loadAutomationStatus() {
@@ -14022,6 +14071,7 @@ document.addEventListener("DOMContentLoaded", () => {
         loadRecoveryQueue();
         loadAutomationStatus();
         loadAutomationSettings();
+        loadPaymentIntegrity();
       }
     }
   });
@@ -14029,6 +14079,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("loadPaymentIntents")?.addEventListener("click", loadPaymentIntents);
   $("refreshUnmatchedTx")?.addEventListener("click", loadUnmatchedTransactions);
   $("refreshRecoveryQueue")?.addEventListener("click", loadRecoveryQueue);
+
+  // v7.0.95.0 — Integrity audit listener
+  $("payIntegrityRefreshBtn")?.addEventListener("click", loadPaymentIntegrity);
 
   // v7.0.94.0 — Automation listeners
   $("autoRunScanBtn")?.addEventListener("click", runAutomationScan);

@@ -38,7 +38,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 STYLES_CSS = ROOT / "miniapp" / "styles.css"
 
-CURRENT_VERSION = "7.0.94.6"
+CURRENT_VERSION = "7.0.95.0"
 ERIP_CODE_EXPECTED = "7485856"
 
 

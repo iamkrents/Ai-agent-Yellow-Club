@@ -1,9 +1,10 @@
 # Yellow Club Mini App — MVP Release Checklist
-**Cache version: v7.0.94.6**
+**Cache version: v7.0.95.0**
 
 ## История версий (последние)
 | Версия | Дата | Описание |
 |--------|------|----------|
+| v7.0.95.0 | 2026-07-18 | Stabilize payment automation domain rules. New payment_domain.py canonical module (constants + pure functions). Storage wired to domain: _PI_ACTIVE_STATUSES, audit_payment_integrity(). web_app_server wired to domain: resolve_effective_payment_channel, is_moyklass_invoice_intent, MOYKLASS_INVOICE_INTENT_SOURCES. Structured logs payment_event=*. Integrity audit endpoint + admin UI block. UI label acquiring→«Оплачено банковской картой». 62 new tests (test_payment_domain + test_payment_integrity_audit). |
 | v7.0.94.6 | 2026-07-18 | Hotfix: allow moyklass_invoice_automation source in MK posting readiness. Add MOYKLASS_INVOICE_INTENT_SOURCES constant. source_is_invoice check now accepts both moyklass_invoice and moyklass_invoice_automation. Add source_reference_valid check for automation intents. 20 new tests. |
 | v7.0.94.5 | 2026-07-18 | Hotfix: remove [:50] hard cap from process_new_moyklass_invoices. Sort invoices newest-first (createdAt DESC, id DESC). Fix accounting gap: existing items now return {"existing": True} and increment existing_count instead of falling through unaccounted. _automation_update_counts returns terminal outcome string for reconciliation. New DB columns: existing_count, filtered_count, processed_count, unaccounted_count (additive ALTER TABLE migration). UI: run row shows existing/filtered/discovered/created/published counts + unaccounted warning. 50 new tests. |
 | v7.0.94.4 | 2026-07-18 | Hotfix: clear stale reason_code=duplicate_invoice_intents after successful resolve-duplicate. update_automation_item_stage gains clear_reason=True param (sets NULL atomically). _resolve_duplicate_automation_intent now clears reason_code/readable_reason. Auto-repair on scan: if payment_options_created + stale reason_code + only 1 active intent → clear + audit event. UI fix: isDuplicateItem now checks current_stage===requires_check AND reason_code, so resolved items no longer show duplicate warning. 10 new tests. |
