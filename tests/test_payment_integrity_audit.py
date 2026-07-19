@@ -1,6 +1,6 @@
 """
 Tests for Storage.audit_payment_integrity() — read-only integrity audit.
-v7.0.95.0
+v7.0.95.1
 """
 import sys
 import tempfile
@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.0.95.0"
+CURRENT_VERSION = "7.0.95.1"
 
 _NOW = "2026-07-18T10:00:00"
 _MK_USER = 9748998

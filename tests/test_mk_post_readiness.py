@@ -1,7 +1,7 @@
-"""Tests for MoyKlass posting readiness — v7.0.95.0.
+"""Tests for MoyKlass posting readiness — v7.0.95.1.
 
 Covers:
-- moyklass_invoice_automation source passes readiness (was blocked before v7.0.95.0)
+- moyklass_invoice_automation source passes readiness (was blocked before v7.0.95.1)
 - MOYKLASS_INVOICE_INTENT_SOURCES constant
 - source_reference_valid check for automation intents
 - Payment type routing: acquiring → 111861, ERIP → 55948
@@ -33,7 +33,7 @@ from web_app_server import (
     _REQUIRED_ERIP_TYPE_NAME,
 )
 
-CURRENT_VERSION = "7.0.95.0"
+CURRENT_VERSION = "7.0.95.1"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -435,14 +435,14 @@ class TestURLCorrectness(unittest.TestCase):
         )
 
     def test_25_version_is_7_0_94_6(self):
-        """app.js must log version v7.0.95.0."""
+        """app.js must log version v7.0.95.1."""
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v7.0.95.0", js)
+        self.assertIn("v7.0.95.1", js)
 
     def test_26_cache_bust_is_7_0_94_6(self):
-        """index.html cache-bust must be v=7.0.95.0."""
+        """index.html cache-bust must be v=7.0.95.1."""
         html = (ROOT / "miniapp" / "index.html").read_bytes().decode("utf-8-sig")
-        self.assertIn("v=7.0.95.0", html)
+        self.assertIn("v=7.0.95.1", html)
 
 
 # ---------------------------------------------------------------------------

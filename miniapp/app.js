@@ -79,7 +79,7 @@ const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 
-console.log("MiniApp version: v7.0.95.0");
+console.log("MiniApp version: v7.0.95.1");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -13780,7 +13780,7 @@ window.withdrawIntentFromParent = async function(publicId) {
   }
 };
 
-// ── v7.0.95.0 — Payment integrity audit ───────────────────────────────────────
+// ── v7.0.95.1 — Payment integrity audit ───────────────────────────────────────
 
 async function loadPaymentIntegrity() {
   const statusEl = $("payIntegrityStatus");
@@ -14080,7 +14080,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("refreshUnmatchedTx")?.addEventListener("click", loadUnmatchedTransactions);
   $("refreshRecoveryQueue")?.addEventListener("click", loadRecoveryQueue);
 
-  // v7.0.95.0 — Integrity audit listener
+  // v7.0.95.1 — Integrity audit listener
   $("payIntegrityRefreshBtn")?.addEventListener("click", loadPaymentIntegrity);
 
   // v7.0.94.0 — Automation listeners

@@ -27,7 +27,7 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-CURRENT_VERSION = "7.0.95.0"
+CURRENT_VERSION = "7.0.95.1"
 
 from storage import Storage
 
@@ -888,15 +888,41 @@ class TestAutomationCSSStatic(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestConfigAutomation(unittest.TestCase):
+    """Isolated config tests — override env vars so production .env does not affect results."""
+
     def test_settings_has_automation_field(self):
+        """Field exists and loads correctly; isolated from real .env via env override."""
+        import os
+        from unittest.mock import patch
         from config import load_settings
-        s = load_settings()
+        # Force a controlled value regardless of what the real .env contains
+        with patch.dict(os.environ, {"PAYMENT_INVOICE_AUTOMATION_ENABLED": "false"}, clear=False):
+            s = load_settings()
         self.assertIsNotNone(s)
-        self.assertFalse(getattr(s, "payment_invoice_automation_enabled", None))
+        self.assertFalse(s.payment_invoice_automation_enabled)
+
+    def test_settings_field_true_when_env_true(self):
+        """Field reads True when env var is 'true', isolated from real .env."""
+        import os
+        from unittest.mock import patch
+        from config import load_settings
+        with patch.dict(os.environ, {"PAYMENT_INVOICE_AUTOMATION_ENABLED": "true"}, clear=False):
+            s = load_settings()
+        self.assertTrue(s.payment_invoice_automation_enabled)
+
+    def test_settings_field_false_when_env_absent(self):
+        """Field defaults to False when env var is absent."""
+        import os
+        from unittest.mock import patch
+        env_without = {k: v for k, v in os.environ.items()
+                       if k != "PAYMENT_INVOICE_AUTOMATION_ENABLED"}
+        with patch.dict(os.environ, env_without, clear=True):
+            from config import load_settings
+            s = load_settings()
+        self.assertFalse(s.payment_invoice_automation_enabled)
 
     def test_settings_is_bool(self):
         from config import Settings
-        import inspect
         hints = {}
         for cls in Settings.__mro__:
             if hasattr(cls, "__annotations__"):

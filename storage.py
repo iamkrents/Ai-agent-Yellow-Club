@@ -1201,6 +1201,18 @@ class Storage:
             "CREATE INDEX IF NOT EXISTS idx_aal_intent ON automation_audit_log(intent_public_id)"
         )
 
+        # v7.0.95.1 — explicit per-item auto-publish eligibility flag
+        for _col, _type in [
+            ("auto_publish_eligible", "INTEGER NOT NULL DEFAULT 0"),
+            ("auto_publish_eligible_at", "TEXT"),
+        ]:
+            try:
+                conn.execute(
+                    f"ALTER TABLE invoice_automation_items ADD COLUMN {_col} {_type}"
+                )
+            except Exception:
+                pass
+
     # ── v7.0.94.0 — Invoice Automation methods ───────────────────────────────
 
     def get_automation_settings(self) -> dict:
@@ -1268,16 +1280,19 @@ class Storage:
         student_name: Optional[str],
         invoice_snapshot_json: str,
         now: str,
+        *,
+        auto_publish_eligible: int = 0,
     ) -> dict:
-        """INSERT OR IGNORE then return the row. Does not overwrite existing stage."""
+        """INSERT OR IGNORE then return the row. Does not overwrite existing stage or eligibility."""
         with self._connect() as conn:
             conn.execute(
                 """INSERT OR IGNORE INTO invoice_automation_items
-                   (mk_invoice_id, mk_user_id, student_name, invoice_snapshot_json, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?)""",
+                   (mk_invoice_id, mk_user_id, student_name, invoice_snapshot_json,
+                    auto_publish_eligible, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?)""",
                 (
                     str(mk_invoice_id), str(mk_user_id), student_name,
-                    invoice_snapshot_json, now, now,
+                    invoice_snapshot_json, auto_publish_eligible, now, now,
                 ),
             )
             row = conn.execute(

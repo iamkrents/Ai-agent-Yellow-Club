@@ -10335,7 +10335,7 @@ class MiniAppContext:
         """GET /api/payments/integrity-audit — read-only data integrity check.
 
         Owner/admin only. Makes NO writes, NO external API calls.
-        v7.0.95.0
+        v7.0.95.1
         """
         role = self._role_for_user(int(auth["user_id"]))
         if role not in PAYMENT_MK_POST_ROLES:
@@ -13003,8 +13003,13 @@ class MiniAppContext:
         import json as _json
         snapshot = _json.dumps(inv, ensure_ascii=False)[:4000]
 
-        # Upsert item (INSERT OR IGNORE — won't overwrite existing stage)
-        item = self.storage.upsert_automation_item(inv_id, mk_user_id, student_name, snapshot, now)
+        # Upsert item (INSERT OR IGNORE — won't overwrite existing stage or eligibility).
+        # auto_publish_eligible=1 only if publish_to_parent_enabled=True at the moment this
+        # specific invoice is first processed. Historical rows keep their default 0.
+        item = self.storage.upsert_automation_item(
+            inv_id, mk_user_id, student_name, snapshot, now,
+            auto_publish_eligible=1 if publish_enabled else 0,
+        )
         item_id = item.get("id")
         stage = item.get("current_stage", "discovered")
 
@@ -13132,7 +13137,10 @@ class MiniAppContext:
                 if is_new:
                     return {"discovered": True}
                 return {"existing": True}
-            return self._try_publish_automation_item(item_id, existing_intent, mk_user_id, now, is_new)
+            return self._try_publish_automation_item(
+                item_id, existing_intent, mk_user_id, now, is_new,
+                auto_publish_eligible=item.get("auto_publish_eligible", 0),
+            )
 
         # Check parent link
         parents = self.storage.get_parents_for_child(mk_user_id)
@@ -13205,6 +13213,11 @@ class MiniAppContext:
             )
 
             if publish_enabled:
+                log.info(
+                    "payment_event=parent_auto_publish_candidate intent=%s mk_invoice_id=%s "
+                    "auto_publish_eligible=1 client_visibility=hidden publish_setting_enabled=True",
+                    public_id, inv_id,
+                )
                 pub = self.storage.publish_payment_intent_to_client(public_id, "automation", now)
                 if pub.get("ok"):
                     self.storage.update_automation_item_stage(
@@ -13212,7 +13225,17 @@ class MiniAppContext:
                         readable_reason="Auto-published to parent",
                         now=now,
                     )
+                    log.info(
+                        "payment_event=parent_auto_publish_succeeded intent=%s mk_invoice_id=%s "
+                        "result=published_successfully",
+                        public_id, inv_id,
+                    )
                     return {"created": True, "published": True, "discovered": is_new}
+                log.warning(
+                    "payment_event=parent_auto_publish_failed intent=%s mk_invoice_id=%s "
+                    "reason_code=publish_failed result=failed",
+                    public_id, inv_id,
+                )
 
             return {"created": True, "discovered": is_new}
 
@@ -13277,25 +13300,90 @@ class MiniAppContext:
         mk_user_id: str,
         now: str,
         is_new: bool,
+        *,
+        auto_publish_eligible: int = 0,
     ) -> dict[str, Any]:
-        """Try to publish an already-created intent to parent."""
+        """Try to publish an already-created intent to parent.
+
+        Guards (all must pass):
+          1. intent not in terminal status (paid/posted/cancelled)
+          2. client_visibility != 'published' (already done)
+          3. client_visibility != 'withdrawn' (manual admin decision — permanent block)
+          4. auto_publish_eligible == 1 (set only when publish_enabled was True at item creation)
+          5. exactly one parent linked
+        """
+        intent_id = existing_intent.get("public_id", "")
+        mk_inv_id = existing_intent.get("mk_invoice_id", "")
+        vis = existing_intent.get("client_visibility", "")
         pi_status = existing_intent.get("status", "")
+
         if pi_status in ("paid", "posted_to_moyklass", "cancelled"):
+            log.info(
+                "payment_event=parent_auto_publish_skipped intent=%s mk_invoice_id=%s "
+                "auto_publish_eligible=%s client_visibility=%s reason_code=invalid_status",
+                intent_id, mk_inv_id, auto_publish_eligible, vis,
+            )
             return {"existing": True}
-        if existing_intent.get("client_visibility") == "published":
+
+        if vis == "published":
             self.storage.update_automation_item_stage(item_id, "published", now=now)
+            log.info(
+                "payment_event=parent_auto_publish_skipped intent=%s mk_invoice_id=%s "
+                "reason_code=already_published",
+                intent_id, mk_inv_id,
+            )
+            return {"existing": True}
+
+        # Withdrawn = permanent manual admin decision; scheduler must never override it
+        if vis == "withdrawn":
+            log.info(
+                "payment_event=parent_auto_publish_blocked_withdrawn intent=%s mk_invoice_id=%s "
+                "auto_publish_eligible=%s client_visibility=withdrawn "
+                "publish_setting_enabled=True reason_code=manually_withdrawn result=blocked",
+                intent_id, mk_inv_id, auto_publish_eligible,
+            )
+            return {"existing": True}
+
+        # Explicit eligibility check: item must have been created while publish_enabled=True
+        if not auto_publish_eligible:
+            log.info(
+                "payment_event=parent_auto_publish_skipped intent=%s mk_invoice_id=%s "
+                "auto_publish_eligible=0 client_visibility=%s "
+                "publish_setting_enabled=True reason_code=not_eligible result=skipped",
+                intent_id, mk_inv_id, vis,
+            )
             return {"existing": True}
 
         parents = self.storage.get_parents_for_child(mk_user_id)
         if len(parents) != 1:
+            log.info(
+                "payment_event=parent_auto_publish_skipped intent=%s mk_invoice_id=%s "
+                "reason_code=missing_parent result=skipped",
+                intent_id, mk_inv_id,
+            )
             return {"existing": True}
 
+        log.info(
+            "payment_event=parent_auto_publish_candidate intent=%s mk_invoice_id=%s "
+            "auto_publish_eligible=1 client_visibility=%s publish_setting_enabled=True",
+            intent_id, mk_inv_id, vis,
+        )
         pub = self.storage.publish_payment_intent_to_client(
-            existing_intent["public_id"], "automation", now
+            intent_id, "automation", now
         )
         if pub.get("ok"):
             self.storage.update_automation_item_stage(item_id, "published", now=now)
+            log.info(
+                "payment_event=parent_auto_publish_succeeded intent=%s mk_invoice_id=%s "
+                "result=published_successfully",
+                intent_id, mk_inv_id,
+            )
             return {"published": True, "discovered": is_new}
+        log.warning(
+            "payment_event=parent_auto_publish_failed intent=%s mk_invoice_id=%s "
+            "reason_code=publish_failed result=failed",
+            intent_id, mk_inv_id,
+        )
         return {"existing": True}
 
     def _automation_create_intent(
@@ -13668,7 +13756,7 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.moyklass_invoices_list(auth, params))
                 if path == "/api/payments/moyklass/payment-types":
                     return self._send_json(CTX.moyklass_payment_types(auth))
-                # ── v7.0.95.0 — Payment integrity audit ─────────────────────
+                # ── v7.0.95.1 — Payment integrity audit ─────────────────────
                 if path == "/api/payments/integrity-audit":
                     return self._send_json(CTX.payment_integrity_audit(auth))
                 # ── v7.0.94.0 — Invoice automation ──────────────────────────
