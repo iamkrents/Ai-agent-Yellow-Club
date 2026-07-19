@@ -58,7 +58,7 @@ INDEX_HTML = ROOT / "miniapp" / "index.html"
 SERVER_PY = ROOT / "web_app_server.py"
 STYLES_CSS = ROOT / "miniapp" / "styles.css"
 
-CURRENT_VERSION = "7.0.95.1"
+CURRENT_VERSION = "7.0.96.0"
 
 
 class Test01RootCause(unittest.TestCase):

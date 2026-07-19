@@ -1,7 +1,7 @@
-"""Tests for MoyKlass posting readiness — v7.0.95.1.
+﻿"""Tests for MoyKlass posting readiness — v7.0.96.0.
 
 Covers:
-- moyklass_invoice_automation source passes readiness (was blocked before v7.0.95.1)
+- moyklass_invoice_automation source passes readiness (was blocked before v7.0.96.0)
 - MOYKLASS_INVOICE_INTENT_SOURCES constant
 - source_reference_valid check for automation intents
 - Payment type routing: acquiring → 111861, ERIP → 55948
@@ -33,7 +33,7 @@ from web_app_server import (
     _REQUIRED_ERIP_TYPE_NAME,
 )
 
-CURRENT_VERSION = "7.0.95.1"
+CURRENT_VERSION = "7.0.96.0"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -352,7 +352,7 @@ class TestPaymentTypeRouting(unittest.TestCase):
 class TestAutoPostAndReadOnly(unittest.TestCase):
 
     def test_19_auto_post_check_passes_when_disabled(self):
-        """auto_post_disabled check must pass when bepaid_auto_post_to_moyklass=False."""
+        """v7.0.96.0: auto_post_disabled check removed; manual posting unaffected when flag=False."""
         storage = _mem_storage()
         ctx = _make_ctx(storage, auto_post=False, mk_configured=False)
         pid = _create_and_pay(
@@ -363,8 +363,11 @@ class TestAutoPostAndReadOnly(unittest.TestCase):
         )
         result = _run_readiness(storage, ctx, pid)
         chk = _get_check(result, "auto_post_disabled")
-        self.assertIsNotNone(chk)
-        self.assertTrue(chk["ok"], "auto_post_disabled must be ok when BEPAID_AUTO_POST_TO_MOYKLASS=false")
+        self.assertIsNone(chk, "auto_post_disabled check was removed in v7.0.96.0 (now informational warning)")
+        self.assertFalse(
+            any("auto_post" in c["code"] for c in result.get("checks", [])),
+            "No auto_post-related check must block manual posting",
+        )
 
     def test_20_readiness_does_not_call_create_payment(self):
         """Readiness endpoint must not call moyklass.create_payment."""
@@ -435,14 +438,14 @@ class TestURLCorrectness(unittest.TestCase):
         )
 
     def test_25_version_is_7_0_94_6(self):
-        """app.js must log version v7.0.95.1."""
+        """app.js must log version v7.0.96.0."""
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v7.0.95.1", js)
+        self.assertIn("v7.0.96.0", js)
 
     def test_26_cache_bust_is_7_0_94_6(self):
-        """index.html cache-bust must be v=7.0.95.1."""
+        """index.html cache-bust must be v=7.0.96.0."""
         html = (ROOT / "miniapp" / "index.html").read_bytes().decode("utf-8-sig")
-        self.assertIn("v=7.0.95.1", html)
+        self.assertIn("v=7.0.96.0", html)
 
 
 # ---------------------------------------------------------------------------
@@ -527,11 +530,10 @@ class TestProductionFixture(unittest.TestCase):
         self.assertEqual(result.get("preview", {}).get("payment_type_id"), 111861)
 
     def test_31_fixture_no_autopost(self):
-        """ycpi_202607_19 fixture: auto_post_disabled check must be ok."""
+        """ycpi_202607_19 fixture: v7.0.96.0 removed auto_post_disabled check."""
         result = _run_readiness(self.storage, self.ctx, self.pid)
         chk = _get_check(result, "auto_post_disabled")
-        self.assertIsNotNone(chk)
-        self.assertTrue(chk["ok"])
+        self.assertIsNone(chk, "auto_post_disabled check was removed in v7.0.96.0 (now a warning)")
 
     def test_32_fixture_moyklass_not_called_during_readiness_only(self):
         """Readiness must not call moyklass.create_payment on the fixture."""

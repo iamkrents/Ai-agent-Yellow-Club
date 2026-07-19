@@ -10335,7 +10335,7 @@ class MiniAppContext:
         """GET /api/payments/integrity-audit — read-only data integrity check.
 
         Owner/admin only. Makes NO writes, NO external API calls.
-        v7.0.95.1
+        v7.0.96.0
         """
         role = self._role_for_user(int(auth["user_id"]))
         if role not in PAYMENT_MK_POST_ROLES:
@@ -10352,6 +10352,8 @@ class MiniAppContext:
         return {"ok": True, **result}
 
     def _require_moyklass_post_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
+        if auth.get("_is_automation"):
+            return None
         role = self._role_for_user(int(auth["user_id"]))
         if role not in PAYMENT_MK_POST_ROLES:
             return {"ok": False, "error": "Внесение оплаты в МойКласс доступно только owner и admin."}
@@ -10423,10 +10425,9 @@ class MiniAppContext:
         _check("no_active_claim",
                intent.get("mk_posting_status") not in ("claiming", "ambiguous"),
                "Нет активного claim", f"mk_posting_status={intent.get('mk_posting_status')}")
-        _check("auto_post_disabled",
-               not getattr(cfg, "bepaid_auto_post_to_moyklass", True),
-               "BEPAID_AUTO_POST_TO_MOYKLASS=false",
-               "disabled" if not getattr(cfg, "bepaid_auto_post_to_moyklass", True) else "WARNING:enabled")
+        # v7.0.96.0 — informational only; global flag does not block manual posting
+        if getattr(cfg, "bepaid_auto_post_to_moyklass", False):
+            warnings.append("Глобальный авто-постинг включён (BEPAID_AUTO_POST_TO_MOYKLASS)")
 
         # — Payment type config check (channel-specific, v7.0.93.2.6) —
         paid_channel = resolve_effective_payment_channel(intent)
@@ -12529,6 +12530,7 @@ class MiniAppContext:
         discovery_enabled = bool(body.get("discovery_enabled", True))
         create_payment_options_enabled = bool(body.get("create_payment_options_enabled", False))
         publish_to_parent_enabled = bool(body.get("publish_to_parent_enabled", False))
+        post_to_moyklass_enabled = bool(body.get("post_to_moyklass_enabled", False))
         scan_interval_minutes = max(5, min(int(body.get("scan_interval_minutes", 10) or 10), 1440))
         now = now_iso()
         updated_by = str(auth.get("user_id") or "")
@@ -12536,6 +12538,7 @@ class MiniAppContext:
             discovery_enabled=discovery_enabled,
             create_payment_options_enabled=create_payment_options_enabled,
             publish_to_parent_enabled=publish_to_parent_enabled,
+            post_to_moyklass_enabled=post_to_moyklass_enabled,
             scan_interval_minutes=scan_interval_minutes,
             updated_by=updated_by,
             now=now,
@@ -12546,6 +12549,7 @@ class MiniAppContext:
                 "discovery_enabled": discovery_enabled,
                 "create_payment_options_enabled": create_payment_options_enabled,
                 "publish_to_parent_enabled": publish_to_parent_enabled,
+                "post_to_moyklass_enabled": post_to_moyklass_enabled,
                 "by": updated_by,
             },
         )
@@ -12570,7 +12574,8 @@ class MiniAppContext:
         items_counts: dict[str, int] = {}
         for stage in [
             "discovered", "ready_for_creation", "missing_parent_link", "ambiguous_parent_link",
-            "payment_options_created", "published", "requires_check", "error", "ignored",
+            "payment_options_created", "published", "posted_to_moyklass", "requires_check",
+            "error", "ignored",
         ]:
             items_counts[stage] = len(self.storage.list_automation_items(stage_filter=stage, limit=1000))
         return {
@@ -12846,7 +12851,7 @@ class MiniAppContext:
         self.storage.start_automation_run(run_id, trigger, started_by, now)
 
         counts: dict[str, int] = {
-            "scanned": 0, "discovered": 0, "created": 0, "published": 0,
+            "scanned": 0, "discovered": 0, "created": 0, "published": 0, "posted": 0,
             "missing_parent": 0, "requires_check": 0, "skipped": 0, "error": 0,
             "existing": 0, "processed": 0, "unaccounted": 0,
         }
@@ -12857,6 +12862,10 @@ class MiniAppContext:
             discovery_enabled = bool(settings.get("discovery_enabled", 1))
             create_enabled = bool(settings.get("create_payment_options_enabled", 0))
             publish_enabled = bool(settings.get("publish_to_parent_enabled", 0))
+            # Two-level protection: global env var AND DB setting must both be on
+            _global_post = bool(getattr(self.settings, "bepaid_auto_post_to_moyklass", False))
+            _db_post = bool(settings.get("post_to_moyklass_enabled", 0))
+            post_enabled = _global_post and _db_post
 
             if not discovery_enabled:
                 self.storage.finish_automation_run(
@@ -12908,6 +12917,7 @@ class MiniAppContext:
                         inv, now=now_iso(),
                         create_enabled=create_enabled,
                         publish_enabled=publish_enabled,
+                        post_enabled=post_enabled,
                     )
                     outcome = _automation_update_counts(counts, result)
                     if outcome != "unaccounted":
@@ -12965,6 +12975,7 @@ class MiniAppContext:
         now: str,
         create_enabled: bool,
         publish_enabled: bool,
+        post_enabled: bool = False,
     ) -> dict[str, Any]:
         """Process a single MK invoice in the automation pipeline. Returns count-update dict."""
         inv_id = str(inv.get("id") or "")
@@ -13004,11 +13015,12 @@ class MiniAppContext:
         snapshot = _json.dumps(inv, ensure_ascii=False)[:4000]
 
         # Upsert item (INSERT OR IGNORE — won't overwrite existing stage or eligibility).
-        # auto_publish_eligible=1 only if publish_to_parent_enabled=True at the moment this
-        # specific invoice is first processed. Historical rows keep their default 0.
+        # auto_*_eligible=1 only if respective setting was True at first-ever processing.
+        # Historical rows keep their default 0.
         item = self.storage.upsert_automation_item(
             inv_id, mk_user_id, student_name, snapshot, now,
             auto_publish_eligible=1 if publish_enabled else 0,
+            auto_post_eligible=1 if post_enabled else 0,
         )
         item_id = item.get("id")
         stage = item.get("current_stage", "discovered")
@@ -13022,7 +13034,10 @@ class MiniAppContext:
             return {"skip": True}
 
         # Skip already completed
-        if stage in ("published", "completed"):
+        if stage in ("completed", "posted_to_moyklass"):
+            return {"skip": True}
+        # Published items are re-evaluated only when auto-post is active
+        if stage == "published" and not post_enabled:
             return {"skip": True}
 
         is_new = stage == "discovered"
@@ -13126,13 +13141,20 @@ class MiniAppContext:
                         "name_updated": _repair.get("name_updated", False),
                         "initiator": "scheduled",
                     })
-            if stage not in ("payment_options_created", "published"):
+            if stage not in ("payment_options_created", "published", "posted_to_moyklass"):
                 self.storage.update_automation_item_stage(
                     item_id, "payment_options_created",
                     intent_public_id=existing_intent["public_id"],
                     readable_reason="Intent already exists",
                     now=now,
                 )
+            # Auto-post stage: intent paid → try to post to MoyKlass
+            if post_enabled and item.get("auto_post_eligible", 0):
+                _pi_status = existing_intent.get("status", "")
+                if _pi_status == "paid":
+                    return self._try_auto_post_automation_item(
+                        item_id, existing_intent, now, is_new,
+                    )
             if not publish_enabled:
                 if is_new:
                     return {"discovered": True}
@@ -13292,6 +13314,178 @@ class MiniAppContext:
             return {"ok": False, "error": str(exc)}
 
         return {"ok": True, **result}
+
+    def _try_auto_post_automation_item(
+        self,
+        item_id: int,
+        existing_intent: dict[str, Any],
+        now: str,
+        is_new: bool,
+    ) -> dict[str, Any]:
+        """Try to auto-post a paid intent to MoyKlass via the canonical posting pipeline.
+
+        Guards (all must pass):
+          1. intent.status == 'paid'
+          2. mk_posting_status not in (claiming, ambiguous, posted)
+          3. mk_payment_id absent (not already posted)
+          4. readiness check all_ok=True
+          5. snapshot_fingerprint present and matches re-fetch
+        """
+        _AUTO_AUTH: dict[str, Any] = {"user_id": "automation", "_is_automation": True}
+        intent_id = existing_intent.get("public_id", "")
+        mk_inv_id = str(existing_intent.get("mk_invoice_id") or "")
+        pi_status = existing_intent.get("status", "")
+        mk_posting_status = str(existing_intent.get("mk_posting_status") or "")
+
+        if pi_status != "paid":
+            log.info(
+                "payment_event=auto_post_skipped intent=%s mk_invoice_id=%s "
+                "reason_code=not_paid status=%s",
+                intent_id, mk_inv_id, pi_status,
+            )
+            return {"existing": True}
+
+        if existing_intent.get("mk_payment_id"):
+            log.info(
+                "payment_event=auto_post_already_completed intent=%s mk_invoice_id=%s "
+                "mk_payment_id=%s",
+                intent_id, mk_inv_id, existing_intent.get("mk_payment_id"),
+            )
+            self.storage.update_automation_item_stage(item_id, "posted_to_moyklass", now=now)
+            return {"existing": True}
+
+        if mk_posting_status in ("claiming", "ambiguous"):
+            log.info(
+                "payment_event=auto_post_skipped intent=%s mk_invoice_id=%s "
+                "reason_code=claim_in_progress mk_posting_status=%s",
+                intent_id, mk_inv_id, mk_posting_status,
+            )
+            return {"existing": True}
+
+        log.info(
+            "payment_event=auto_post_candidate intent=%s mk_invoice_id=%s "
+            "auto_post_eligible=1 status=paid",
+            intent_id, mk_inv_id,
+        )
+
+        readiness = self.payment_intent_moyklass_readiness(_AUTO_AUTH, intent_id)
+        if not readiness.get("ok"):
+            log.warning(
+                "payment_event=auto_post_readiness_error intent=%s mk_invoice_id=%s "
+                "error=%s",
+                intent_id, mk_inv_id, str(readiness.get("error") or "")[:200],
+            )
+            self.storage.update_automation_item_stage(
+                item_id, "requires_check",
+                reason_code="auto_post_readiness_error",
+                readable_reason=f"Ошибка проверки готовности: {str(readiness.get('error') or '')[:200]}",
+                now=now,
+            )
+            return {"requires_check": True}
+
+        if not readiness.get("ready"):
+            failed = [c["code"] for c in readiness.get("checks", []) if not c.get("ok")]
+            reason_codes = ", ".join(failed[:5])
+            log.info(
+                "payment_event=auto_post_requires_check intent=%s mk_invoice_id=%s "
+                "failed_checks=%s",
+                intent_id, mk_inv_id, reason_codes,
+            )
+            self.storage.update_automation_item_stage(
+                item_id, "requires_check",
+                reason_code="auto_post_not_ready",
+                readable_reason=f"Не готово к автовнесению: {reason_codes}",
+                now=now,
+            )
+            return {"requires_check": True}
+
+        fingerprint = str(readiness.get("snapshot_fingerprint") or "").strip()
+        if not fingerprint:
+            log.warning(
+                "payment_event=auto_post_no_fingerprint intent=%s mk_invoice_id=%s",
+                intent_id, mk_inv_id,
+            )
+            self.storage.update_automation_item_stage(
+                item_id, "requires_check",
+                reason_code="auto_post_no_fingerprint",
+                readable_reason="Не удалось вычислить fingerprint для автовнесения",
+                now=now,
+            )
+            return {"requires_check": True}
+
+        log.info(
+            "payment_event=auto_post_started intent=%s mk_invoice_id=%s "
+            "fingerprint_prefix=%s",
+            intent_id, mk_inv_id, fingerprint[:12],
+        )
+        result = self.payment_intent_post_to_moyklass(
+            _AUTO_AUTH, intent_id,
+            {"confirm": True, "snapshot_fingerprint": fingerprint},
+        )
+
+        if result.get("ok") and result.get("idempotent"):
+            self.storage.update_automation_item_stage(item_id, "posted_to_moyklass", now=now)
+            log.info(
+                "payment_event=auto_post_already_completed intent=%s mk_invoice_id=%s",
+                intent_id, mk_inv_id,
+            )
+            return {"existing": True}
+
+        if result.get("ok"):
+            self.storage.update_automation_item_stage(
+                item_id, "posted_to_moyklass",
+                readable_reason="Автоматически внесено в МойКласс",
+                now=now,
+            )
+            log.info(
+                "payment_event=auto_post_succeeded intent=%s mk_invoice_id=%s "
+                "mk_payment_id=%s result=posted_successfully",
+                intent_id, mk_inv_id, result.get("mk_payment_id"),
+            )
+            return {"posted": True, "discovered": is_new}
+
+        block_reason = str(result.get("block_reason") or "")
+        error_code = str(result.get("error_code") or "")
+        err_text = str(result.get("error") or "")[:200]
+
+        if block_reason == "ambiguous_requires_reconciliation":
+            self.storage.update_automation_item_stage(
+                item_id, "requires_check",
+                reason_code="auto_post_ambiguous",
+                readable_reason="Неопределённый статус внесения в МойКласс. Требуется проверка.",
+                now=now,
+            )
+            log.warning(
+                "payment_event=auto_post_ambiguous intent=%s mk_invoice_id=%s",
+                intent_id, mk_inv_id,
+            )
+            return {"requires_check": True}
+
+        if error_code == "invoice_changed_after_preview":
+            self.storage.update_automation_item_stage(
+                item_id, "requires_check",
+                reason_code="auto_post_invoice_changed",
+                readable_reason="Счёт изменился между проверкой и внесением. Требуется проверка.",
+                now=now,
+            )
+            log.warning(
+                "payment_event=auto_post_invoice_changed intent=%s mk_invoice_id=%s",
+                intent_id, mk_inv_id,
+            )
+            return {"requires_check": True}
+
+        log.warning(
+            "payment_event=auto_post_failed intent=%s mk_invoice_id=%s "
+            "error=%s error_code=%s",
+            intent_id, mk_inv_id, err_text, error_code,
+        )
+        self.storage.update_automation_item_stage(
+            item_id, "requires_check",
+            reason_code="auto_post_failed",
+            readable_reason=f"Ошибка автовнесения: {err_text}",
+            now=now,
+        )
+        return {"requires_check": True}
 
     def _try_publish_automation_item(
         self,
@@ -13486,6 +13680,11 @@ def _automation_update_counts(counts: dict[str, int], result: dict[str, Any]) ->
         if result.get("discovered"):
             counts["discovered"] += 1
         return "error"
+    if result.get("posted"):
+        counts["posted"] += 1
+        if result.get("discovered"):
+            counts["discovered"] += 1
+        return "posted"
     if result.get("published"):
         counts["published"] += 1
         if result.get("created"):
@@ -13756,7 +13955,7 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.moyklass_invoices_list(auth, params))
                 if path == "/api/payments/moyklass/payment-types":
                     return self._send_json(CTX.moyklass_payment_types(auth))
-                # ── v7.0.95.1 — Payment integrity audit ─────────────────────
+                # ── v7.0.96.0 — Payment integrity audit ─────────────────────
                 if path == "/api/payments/integrity-audit":
                     return self._send_json(CTX.payment_integrity_audit(auth))
                 # ── v7.0.94.0 — Invoice automation ──────────────────────────

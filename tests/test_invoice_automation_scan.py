@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.94.5 — Process all fetched MoyKlass invoices.
+﻿"""Regression tests for v7.0.94.5 — Process all fetched MoyKlass invoices.
 
 Covers:
 - Hard cap [:50] removal: all invoices processed, no silent truncation
@@ -25,7 +25,7 @@ from unittest.mock import MagicMock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-CURRENT_VERSION = "7.0.95.1"
+CURRENT_VERSION = "7.0.96.0"
 
 from storage import Storage
 

@@ -1213,6 +1213,25 @@ class Storage:
             except Exception:
                 pass
 
+        # v7.0.96.0 — per-item auto-post eligibility flag + DB-level post toggle
+        for _col, _type in [
+            ("auto_post_eligible", "INTEGER NOT NULL DEFAULT 0"),
+            ("auto_post_eligible_at", "TEXT"),
+        ]:
+            try:
+                conn.execute(
+                    f"ALTER TABLE invoice_automation_items ADD COLUMN {_col} {_type}"
+                )
+            except Exception:
+                pass
+        try:
+            conn.execute(
+                "ALTER TABLE invoice_automation_settings ADD COLUMN "
+                "post_to_moyklass_enabled INTEGER NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            pass
+
     # ── v7.0.94.0 — Invoice Automation methods ───────────────────────────────
 
     def get_automation_settings(self) -> dict:
@@ -1222,7 +1241,8 @@ class Storage:
             ).fetchone()
         return dict(row) if row else {
             "id": 1, "discovery_enabled": 1, "create_payment_options_enabled": 0,
-            "publish_to_parent_enabled": 0, "scan_interval_minutes": 10,
+            "publish_to_parent_enabled": 0, "post_to_moyklass_enabled": 0,
+            "scan_interval_minutes": 10,
             "last_scan_at": None, "updated_at": "", "updated_by": "",
         }
 
@@ -1232,6 +1252,7 @@ class Storage:
         discovery_enabled: bool,
         create_payment_options_enabled: bool,
         publish_to_parent_enabled: bool,
+        post_to_moyklass_enabled: bool = False,
         scan_interval_minutes: int,
         updated_by: str,
         now: str,
@@ -1241,11 +1262,12 @@ class Storage:
             conn.execute(
                 """UPDATE invoice_automation_settings SET
                    discovery_enabled=?, create_payment_options_enabled=?,
-                   publish_to_parent_enabled=?, scan_interval_minutes=?,
-                   updated_at=?, updated_by=? WHERE id=1""",
+                   publish_to_parent_enabled=?, post_to_moyklass_enabled=?,
+                   scan_interval_minutes=?, updated_at=?, updated_by=? WHERE id=1""",
                 (
                     int(discovery_enabled), int(create_payment_options_enabled),
-                    int(publish_to_parent_enabled), interval, now, str(updated_by)[:200],
+                    int(publish_to_parent_enabled), int(post_to_moyklass_enabled),
+                    interval, now, str(updated_by)[:200],
                 ),
             )
         return self.get_automation_settings()
@@ -1282,17 +1304,23 @@ class Storage:
         now: str,
         *,
         auto_publish_eligible: int = 0,
+        auto_post_eligible: int = 0,
     ) -> dict:
         """INSERT OR IGNORE then return the row. Does not overwrite existing stage or eligibility."""
         with self._connect() as conn:
             conn.execute(
                 """INSERT OR IGNORE INTO invoice_automation_items
                    (mk_invoice_id, mk_user_id, student_name, invoice_snapshot_json,
-                    auto_publish_eligible, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?)""",
+                    auto_publish_eligible, auto_publish_eligible_at,
+                    auto_post_eligible, auto_post_eligible_at,
+                    created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (
                     str(mk_invoice_id), str(mk_user_id), student_name,
-                    invoice_snapshot_json, auto_publish_eligible, now, now,
+                    invoice_snapshot_json,
+                    auto_publish_eligible, now if auto_publish_eligible else None,
+                    auto_post_eligible, now if auto_post_eligible else None,
+                    now, now,
                 ),
             )
             row = conn.execute(

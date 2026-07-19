@@ -27,7 +27,7 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-CURRENT_VERSION = "7.0.95.1"
+CURRENT_VERSION = "7.0.96.0"
 
 from storage import Storage
 
@@ -824,8 +824,9 @@ class TestAutomationHTMLStatic(unittest.TestCase):
         self.assertIn('id="autoQueueStageFilter"', self.html)
 
     def test_moyklass_auto_post_disabled_label(self):
-        # "always disabled" checkbox for posting to MK is present in HTML
-        self.assertIn("вручную после проверки", self.html)
+        # v7.0.96.0: functional auto-post toggle replaces old disabled placeholder
+        self.assertIn('id="autoTogglePost"', self.html)
+        self.assertNotIn('id="autoTogglePost" disabled', self.html)
 
 
 # ---------------------------------------------------------------------------

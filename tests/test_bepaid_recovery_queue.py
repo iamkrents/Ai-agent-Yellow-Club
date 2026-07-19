@@ -53,7 +53,7 @@ sys.path.insert(0, str(ROOT))
 from storage import Storage
 from utils import now_iso
 
-CURRENT_VERSION = "7.0.95.1"
+CURRENT_VERSION = "7.0.96.0"
 APP_JS = ROOT / "miniapp" / "app.js"
 
 
