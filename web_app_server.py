@@ -10,7 +10,7 @@ import re
 import threading
 import time
 import urllib.parse
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -270,6 +270,12 @@ def _extract_mk_invoices(payload: Any) -> list:
 
 _MK_INVOICE_PAGE_LIMIT: int = 100   # items per MK API request
 _MK_INVOICE_MAX_PAGES: int = 100    # hard cap against infinite loops
+
+# ── MoyKlass auto-post retry constants ───────────────────────────────────────
+_AUTO_POST_BACKOFF_MINUTES: tuple[int, ...] = (5, 15, 30, 60)
+_AUTO_POST_MAX_ATTEMPTS: int = 5
+_RETRYABLE_MK_ERROR_CODES: frozenset[str] = frozenset({"mk_408", "mk_425", "mk_429"})
+_TRANSIENT_MK_HTTP_STATUSES: frozenset[int] = frozenset({0, 408, 425, 429, 500, 502, 503, 504})
 
 # ── MoyKlass invoice list cache (single-flight, 5-min TTL) ──────────────────
 _MK_INVOICES_CACHE_TTL: float = 300.0   # seconds
@@ -10456,6 +10462,7 @@ class MiniAppContext:
         invoice: dict = {}
         invoice_remaining_minor: int = -1
         invoice_error: str = ""
+        _invoice_error_class: str = ""
         paid_amount_minor = int(intent.get("paid_amount_minor") or 0)
         mk_invoice_id_str = str(intent.get("mk_invoice_id") or "")
         mk_user_id = int(intent.get("mk_user_id") or 0)
@@ -10538,10 +10545,13 @@ class MiniAppContext:
                                "Счёт МойКласс доступен",
                                f"status={inv_result.status} error={inv_result.error[:100]}")
                         invoice_error = f"Ошибка получения счёта: HTTP {inv_result.status}"
+                        if inv_result.status in _TRANSIENT_MK_HTTP_STATUSES:
+                            _invoice_error_class = "transient"
                 except Exception as e:
                     _check("invoice_fetch_ok", False, "Счёт МойКласс доступен",
                            f"exception={str(e)[:100]}")
                     invoice_error = f"Исключение при получении счёта: {str(e)[:200]}"
+                    _invoice_error_class = "transient"
         elif not self.moyklass.is_configured:
             _check("moyklass_configured", False, "МойКласс API настроен", "MOYKLASS_API_KEY не задан")
 
@@ -10596,6 +10606,7 @@ class MiniAppContext:
             "preview": preview,
             "snapshot_fingerprint": fingerprint,
             "invoice_error": invoice_error or None,
+            "error_class": _invoice_error_class or None,
         }
 
     def payment_intent_post_to_moyklass(
@@ -12853,7 +12864,7 @@ class MiniAppContext:
         counts: dict[str, int] = {
             "scanned": 0, "discovered": 0, "created": 0, "published": 0, "posted": 0,
             "missing_parent": 0, "requires_check": 0, "skipped": 0, "error": 0,
-            "existing": 0, "processed": 0, "unaccounted": 0,
+            "existing": 0, "processed": 0, "unaccounted": 0, "retry_scheduled": 0,
         }
         errors: list[str] = []
 
@@ -13315,6 +13326,42 @@ class MiniAppContext:
 
         return {"ok": True, **result}
 
+    def _schedule_auto_post_retry(
+        self,
+        item_id: int,
+        *,
+        attempt_count: int,
+        intent_id: str,
+        mk_inv_id: str,
+        error_text: str,
+        reason_code: str,
+        readable_reason: str,
+        now: str,
+    ) -> dict[str, Any]:
+        """Schedule backoff retry for a transient auto-post failure.
+
+        Keeps current_stage='published'; sets next_retry_at from backoff schedule.
+        Returns {"retry_scheduled": True}.
+        """
+        backoff_idx = min(attempt_count, len(_AUTO_POST_BACKOFF_MINUTES) - 1)
+        delay_minutes = _AUTO_POST_BACKOFF_MINUTES[backoff_idx]
+        next_retry_dt = datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)
+        next_retry_at = next_retry_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.storage.update_automation_item_auto_post_retry(
+            item_id,
+            reason_code=reason_code,
+            readable_reason=readable_reason,
+            auto_post_last_error=error_text,
+            next_retry_at=next_retry_at,
+            now=now,
+        )
+        log.info(
+            "payment_event=auto_post_retry_scheduled intent=%s mk_invoice_id=%s "
+            "attempt=%d next_retry_at=%s delay_minutes=%d",
+            intent_id, mk_inv_id, attempt_count + 1, next_retry_at, delay_minutes,
+        )
+        return {"retry_scheduled": True}
+
     def _try_auto_post_automation_item(
         self,
         item_id: int,
@@ -13322,14 +13369,11 @@ class MiniAppContext:
         now: str,
         is_new: bool,
     ) -> dict[str, Any]:
-        """Try to auto-post a paid intent to MoyKlass via the canonical posting pipeline.
+        """Try to auto-post a paid intent to MoyKlass with safe retry logic.
 
-        Guards (all must pass):
-          1. intent.status == 'paid'
-          2. mk_posting_status not in (claiming, ambiguous, posted)
-          3. mk_payment_id absent (not already posted)
-          4. readiness check all_ok=True
-          5. snapshot_fingerprint present and matches re-fetch
+        Defense-in-depth: re-reads item from DB, checks guards, classifies errors
+        as transient (schedule retry) or permanent (requires_check).
+        v7.0.96.1
         """
         _AUTO_AUTH: dict[str, Any] = {"user_id": "automation", "_is_automation": True}
         intent_id = existing_intent.get("public_id", "")
@@ -13337,6 +13381,53 @@ class MiniAppContext:
         pi_status = existing_intent.get("status", "")
         mk_posting_status = str(existing_intent.get("mk_posting_status") or "")
 
+        # ── Defense-in-depth: re-read item from DB ──────────────────────────
+        item = self.storage.get_automation_item_by_id(item_id)
+        if not item:
+            log.warning(
+                "payment_event=auto_post_skipped intent=%s mk_invoice_id=%s "
+                "reason_code=item_not_found",
+                intent_id, mk_inv_id,
+            )
+            return {"existing": True}
+
+        attempt_count = int(item.get("auto_post_attempt_count") or 0)
+
+        # ── Guard: retry limit exhausted ────────────────────────────────────
+        if attempt_count >= _AUTO_POST_MAX_ATTEMPTS:
+            if item.get("reason_code") != "auto_post_retry_exhausted":
+                self.storage.update_automation_item_exhaust_auto_post(
+                    item_id,
+                    readable_reason=(
+                        f"Превышен лимит попыток ({_AUTO_POST_MAX_ATTEMPTS}) авто-внесения"
+                    ),
+                    now=now,
+                )
+                log.warning(
+                    "payment_event=auto_post_exhausted intent=%s mk_invoice_id=%s "
+                    "attempt_count=%d",
+                    intent_id, mk_inv_id, attempt_count,
+                )
+            return {"requires_check": True}
+
+        # ── Guard: backoff window not yet elapsed ────────────────────────────
+        next_retry_at = str(item.get("next_retry_at") or "")
+        if next_retry_at:
+            try:
+                next_retry_dt = datetime.fromisoformat(
+                    next_retry_at.replace("Z", "+00:00")
+                )
+                if datetime.now(timezone.utc) < next_retry_dt:
+                    log.info(
+                        "payment_event=auto_post_retry_skipped intent=%s "
+                        "mk_invoice_id=%s next_retry_at=%s",
+                        intent_id, mk_inv_id, next_retry_at,
+                    )
+                    return {"existing": True}
+            except (ValueError, TypeError):
+                pass
+
+        # ── Guard: intent must be paid ───────────────────────────────────────
         if pi_status != "paid":
             log.info(
                 "payment_event=auto_post_skipped intent=%s mk_invoice_id=%s "
@@ -13345,6 +13436,7 @@ class MiniAppContext:
             )
             return {"existing": True}
 
+        # ── Guard: already posted (mk_payment_id present) ───────────────────
         if existing_intent.get("mk_payment_id"):
             log.info(
                 "payment_event=auto_post_already_completed intent=%s mk_invoice_id=%s "
@@ -13354,43 +13446,95 @@ class MiniAppContext:
             self.storage.update_automation_item_stage(item_id, "posted_to_moyklass", now=now)
             return {"existing": True}
 
-        if mk_posting_status in ("claiming", "ambiguous"):
+        # ── Guard: stale claim (claiming > 30 min) ───────────────────────────
+        if mk_posting_status == "claiming":
+            mk_posting_at = str(existing_intent.get("mk_posting_at") or "")
+            is_stale = False
+            if mk_posting_at:
+                try:
+                    claim_dt = datetime.fromisoformat(
+                        mk_posting_at.replace("Z", "+00:00")
+                    )
+                    is_stale = (
+                        datetime.now(timezone.utc) - claim_dt
+                    ).total_seconds() > 1800
+                except (ValueError, TypeError):
+                    pass
+            if not is_stale:
+                log.info(
+                    "payment_event=auto_post_skipped intent=%s mk_invoice_id=%s "
+                    "reason_code=claim_in_progress mk_posting_status=claiming",
+                    intent_id, mk_inv_id,
+                )
+                return {"existing": True}
+            log.warning(
+                "payment_event=auto_post_stale_claim intent=%s mk_invoice_id=%s "
+                "claiming_since=%s",
+                intent_id, mk_inv_id, mk_posting_at,
+            )
+            self.storage.update_automation_item_stage(
+                item_id, "requires_check",
+                reason_code="auto_post_stale_claim",
+                readable_reason="Зависший claim (claiming > 30 мин). Требуется проверка.",
+                now=now,
+            )
+            return {"requires_check": True}
+
+        # ── Guard: ambiguous posting status — do not retry ──────────────────
+        if mk_posting_status == "ambiguous":
             log.info(
                 "payment_event=auto_post_skipped intent=%s mk_invoice_id=%s "
-                "reason_code=claim_in_progress mk_posting_status=%s",
-                intent_id, mk_inv_id, mk_posting_status,
+                "reason_code=ambiguous mk_posting_status=ambiguous",
+                intent_id, mk_inv_id,
             )
             return {"existing": True}
 
         log.info(
             "payment_event=auto_post_candidate intent=%s mk_invoice_id=%s "
-            "auto_post_eligible=1 status=paid",
-            intent_id, mk_inv_id,
+            "auto_post_eligible=1 status=paid attempt=%d",
+            intent_id, mk_inv_id, attempt_count + 1,
         )
 
+        # ── Readiness check ──────────────────────────────────────────────────
         readiness = self.payment_intent_moyklass_readiness(_AUTO_AUTH, intent_id)
         if not readiness.get("ok"):
+            err_text = str(readiness.get("error") or "")[:200]
             log.warning(
                 "payment_event=auto_post_readiness_error intent=%s mk_invoice_id=%s "
                 "error=%s",
-                intent_id, mk_inv_id, str(readiness.get("error") or "")[:200],
+                intent_id, mk_inv_id, err_text,
             )
-            self.storage.update_automation_item_stage(
-                item_id, "requires_check",
+            return self._schedule_auto_post_retry(
+                item_id,
+                attempt_count=attempt_count,
+                intent_id=intent_id,
+                mk_inv_id=mk_inv_id,
+                error_text=err_text,
                 reason_code="auto_post_readiness_error",
-                readable_reason=f"Ошибка проверки готовности: {str(readiness.get('error') or '')[:200]}",
+                readable_reason=f"Ошибка проверки готовности (временная): {err_text}",
                 now=now,
             )
-            return {"requires_check": True}
 
         if not readiness.get("ready"):
             failed = [c["code"] for c in readiness.get("checks", []) if not c.get("ok")]
             reason_codes = ", ".join(failed[:5])
+            error_class = readiness.get("error_class")
             log.info(
                 "payment_event=auto_post_requires_check intent=%s mk_invoice_id=%s "
-                "failed_checks=%s",
-                intent_id, mk_inv_id, reason_codes,
+                "failed_checks=%s error_class=%s",
+                intent_id, mk_inv_id, reason_codes, error_class,
             )
+            if error_class == "transient":
+                return self._schedule_auto_post_retry(
+                    item_id,
+                    attempt_count=attempt_count,
+                    intent_id=intent_id,
+                    mk_inv_id=mk_inv_id,
+                    error_text=f"Временная ошибка: {reason_codes}",
+                    reason_code="auto_post_transient_readiness",
+                    readable_reason=f"Временная ошибка доступности (retry): {reason_codes}",
+                    now=now,
+                )
             self.storage.update_automation_item_stage(
                 item_id, "requires_check",
                 reason_code="auto_post_not_ready",
@@ -13415,8 +13559,8 @@ class MiniAppContext:
 
         log.info(
             "payment_event=auto_post_started intent=%s mk_invoice_id=%s "
-            "fingerprint_prefix=%s",
-            intent_id, mk_inv_id, fingerprint[:12],
+            "fingerprint_prefix=%s attempt=%d",
+            intent_id, mk_inv_id, fingerprint[:12], attempt_count + 1,
         )
         result = self.payment_intent_post_to_moyklass(
             _AUTO_AUTH, intent_id,
@@ -13448,6 +13592,7 @@ class MiniAppContext:
         error_code = str(result.get("error_code") or "")
         err_text = str(result.get("error") or "")[:200]
 
+        # Never retry after possible POST — outcome unknown
         if block_reason == "ambiguous_requires_reconciliation":
             self.storage.update_automation_item_stage(
                 item_id, "requires_check",
@@ -13461,6 +13606,15 @@ class MiniAppContext:
             )
             return {"requires_check": True}
 
+        # Concurrent claim — skip silently, next scan will retry
+        if block_reason == "claim_conflict":
+            log.info(
+                "payment_event=auto_post_claim_conflict intent=%s mk_invoice_id=%s",
+                intent_id, mk_inv_id,
+            )
+            return {"existing": True}
+
+        # Fingerprint mismatch — invoice changed, requires human review
         if error_code == "invoice_changed_after_preview":
             self.storage.update_automation_item_stage(
                 item_id, "requires_check",
@@ -13474,6 +13628,20 @@ class MiniAppContext:
             )
             return {"requires_check": True}
 
+        # Transient 4xx from MK API — safe to retry
+        if error_code in _RETRYABLE_MK_ERROR_CODES:
+            return self._schedule_auto_post_retry(
+                item_id,
+                attempt_count=attempt_count,
+                intent_id=intent_id,
+                mk_inv_id=mk_inv_id,
+                error_text=f"error_code={error_code} {err_text}",
+                reason_code="auto_post_transient_mk",
+                readable_reason=f"Временная ошибка МойКласс (retry): {error_code}",
+                now=now,
+            )
+
+        # Permanent / validation error
         log.warning(
             "payment_event=auto_post_failed intent=%s mk_invoice_id=%s "
             "error=%s error_code=%s",
@@ -13685,6 +13853,9 @@ def _automation_update_counts(counts: dict[str, int], result: dict[str, Any]) ->
         if result.get("discovered"):
             counts["discovered"] += 1
         return "posted"
+    if result.get("retry_scheduled"):
+        counts["retry_scheduled"] += 1
+        return "retry_scheduled"
     if result.get("published"):
         counts["published"] += 1
         if result.get("created"):

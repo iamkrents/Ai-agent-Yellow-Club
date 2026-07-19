@@ -1232,6 +1232,19 @@ class Storage:
         except Exception:
             pass
 
+        # v7.0.96.1 — auto-post retry tracking fields
+        for _col, _type in [
+            ("auto_post_attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("auto_post_last_attempt_at", "TEXT"),
+            ("auto_post_last_error", "TEXT"),
+        ]:
+            try:
+                conn.execute(
+                    f"ALTER TABLE invoice_automation_items ADD COLUMN {_col} {_type}"
+                )
+            except Exception:
+                pass
+
     # ── v7.0.94.0 — Invoice Automation methods ───────────────────────────────
 
     def get_automation_settings(self) -> dict:
@@ -1363,6 +1376,58 @@ class Storage:
             conn.execute(
                 f"UPDATE invoice_automation_items SET {', '.join(sets)} WHERE id=?",
                 vals,
+            )
+
+    def update_automation_item_auto_post_retry(
+        self,
+        item_id: int,
+        *,
+        reason_code: str,
+        readable_reason: str,
+        auto_post_last_error: str,
+        next_retry_at: str,
+        now: str,
+    ) -> None:
+        """Schedule retry: keeps current_stage='published', increments auto_post_attempt_count."""
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE invoice_automation_items SET
+                   reason_code=?, readable_reason=?,
+                   auto_post_attempt_count=COALESCE(auto_post_attempt_count, 0)+1,
+                   auto_post_last_attempt_at=?, auto_post_last_error=?,
+                   next_retry_at=?, updated_at=?
+                   WHERE id=?""",
+                (
+                    str(reason_code)[:100],
+                    str(readable_reason)[:500],
+                    now, str(auto_post_last_error)[:500],
+                    next_retry_at, now,
+                    int(item_id),
+                ),
+            )
+
+    def update_automation_item_exhaust_auto_post(
+        self,
+        item_id: int,
+        *,
+        readable_reason: str,
+        now: str,
+    ) -> None:
+        """Mark auto-post permanently exhausted: sets requires_check + clears auto_post_eligible."""
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE invoice_automation_items SET
+                   current_stage=?, reason_code=?, readable_reason=?,
+                   auto_post_eligible=0,
+                   last_attempt_at=?, attempts=attempts+1, updated_at=?
+                   WHERE id=?""",
+                (
+                    "requires_check",
+                    "auto_post_retry_exhausted",
+                    str(readable_reason)[:500],
+                    now, now,
+                    int(item_id),
+                ),
             )
 
     def update_automation_item_student_name(

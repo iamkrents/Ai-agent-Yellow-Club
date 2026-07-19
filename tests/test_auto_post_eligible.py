@@ -1,4 +1,4 @@
-"""Tests for v7.0.96.0 — auto_post_eligible eligibility guard.
+"""Tests for v7.0.96.1 — auto_post_eligible eligibility guard.
 
 Verifies that automatic posting of bePaid-confirmed payments to MoyKlass
 is gated by per-item auto_post_eligible flag (INSERT OR IGNORE pattern),
@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.0.96.0"
+CURRENT_VERSION = "7.0.96.1"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -513,18 +513,20 @@ class TestTryAutoPostItem(unittest.TestCase):
         self.assertFalse(result.get("posted"))
         self.assertEqual(result.get("existing"), True)
 
-    def test_21_readiness_error_sets_requires_check(self):
+    def test_21_readiness_error_schedules_retry(self):
+        # v7.0.96.1: readiness ok=False is a transient error → retry_scheduled (not requires_check)
         ctx = self._make_ctx()
         with patch.object(ctx, "payment_intent_moyklass_readiness",
                           return_value={"ok": False, "error": "MK API down"}):
             result = ctx._try_auto_post_automation_item(
                 self.item["id"], self.intent, self.now, False
             )
-        self.assertEqual(result.get("requires_check"), True)
+        self.assertTrue(result.get("retry_scheduled"), result)
         self.assertFalse(result.get("posted"))
         item = self.st.get_automation_item_by_invoice(self.inv_id)
-        self.assertEqual(item.get("current_stage"), "requires_check")
+        self.assertEqual(item.get("current_stage"), "published")
         self.assertEqual(item.get("reason_code"), "auto_post_readiness_error")
+        self.assertEqual(item.get("auto_post_attempt_count"), 1)
 
     def test_22_readiness_not_ready_sets_requires_check(self):
         ctx = self._make_ctx()
@@ -875,15 +877,15 @@ class TestPostedToMoyklassStageSkipped(unittest.TestCase):
 class TestVersion(unittest.TestCase):
 
     def test_39_version_string(self):
-        self.assertEqual(CURRENT_VERSION, "7.0.96.0")
+        self.assertEqual(CURRENT_VERSION, "7.0.96.1")
 
     def test_40_app_js_version(self):
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v7.0.96.0", js)
+        self.assertIn("v7.0.96.1", js)
 
     def test_41_index_html_cache_bust(self):
         html = (ROOT / "miniapp" / "index.html").read_bytes().decode("utf-8-sig")
-        self.assertIn("v=7.0.96.0", html)
+        self.assertIn("v=7.0.96.1", html)
 
     def test_42_auto_toggle_post_in_html(self):
         html = (ROOT / "miniapp" / "index.html").read_bytes().decode("utf-8-sig")
