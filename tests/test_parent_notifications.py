@@ -1,4 +1,4 @@
-"""Tests for v7.0.97.0 — automatic Telegram parent notifications for new invoices.
+﻿"""Tests for v7.0.98.0 — automatic Telegram parent notifications for new invoices.
 
 Covers:
   - Eligibility flag set at upsert time (two-level protection)
@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.0.97.0"
+CURRENT_VERSION = "7.0.98.0"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -231,7 +231,7 @@ class TestParentNotifyEligibility(unittest.TestCase):
         """Existing rows get DEFAULT 0 — no backfill, historical items stay at 0."""
         storage = _make_storage()
         now = _now()
-        # Simulate a pre-v7.0.97.0 row: insert without parent_notify_eligible
+        # Simulate a pre-v7.0.98.0 row: insert without parent_notify_eligible
         with storage._connect() as conn:
             conn.execute(
                 """INSERT OR IGNORE INTO invoice_automation_items
@@ -796,12 +796,12 @@ class TestPeriodLabel(unittest.TestCase):
     def test_35_period_label_august_2026(self):
         from web_app_server import MiniAppContext
         label = MiniAppContext._notify_parent_period_label("2026-08")
-        self.assertEqual(label, "Августа 2026")
+        self.assertEqual(label, "Август 2026")  # nominative (fixed in v7.0.98.0)
 
     def test_36_period_label_january(self):
         from web_app_server import MiniAppContext
         label = MiniAppContext._notify_parent_period_label("2026-01")
-        self.assertEqual(label, "Января 2026")
+        self.assertEqual(label, "Январь 2026")  # nominative (fixed in v7.0.98.0)
 
     def test_37_period_label_empty(self):
         from web_app_server import MiniAppContext
@@ -821,7 +821,7 @@ class TestPeriodLabel(unittest.TestCase):
 class TestAutoPostStillWorks(unittest.TestCase):
 
     def test_39_auto_post_eligible_column_still_present(self):
-        """v7.0.97.0 migration does not break auto_post_eligible column."""
+        """v7.0.98.0 migration does not break auto_post_eligible column."""
         storage = _make_storage()
         now = _now()
         item = storage.upsert_automation_item(
@@ -887,20 +887,20 @@ class TestFoodModuleIsolation(unittest.TestCase):
 class TestVersion(unittest.TestCase):
 
     def test_43_current_version(self):
-        self.assertEqual(CURRENT_VERSION, "7.0.97.0")
+        self.assertEqual(CURRENT_VERSION, "7.0.98.0")
 
     def test_44_payment_domain_version(self):
         import payment_domain
         src = Path(ROOT, "payment_domain.py").read_text(encoding="utf-8")
-        self.assertIn("7.0.97.0", src)
+        self.assertIn("7.0.98.0", src)
 
     def test_45_miniapp_version(self):
         src = Path(ROOT, "miniapp", "app.js").read_text(encoding="utf-8")
-        self.assertIn("v7.0.97.0", src)
+        self.assertIn("v7.0.98.0", src)
 
     def test_46_index_html_cache_bust(self):
         src = Path(ROOT, "miniapp", "index.html").read_text(encoding="utf-8")
-        self.assertIn("7.0.97.0", src)
+        self.assertIn("7.0.98.0", src)
 
 
 if __name__ == "__main__":

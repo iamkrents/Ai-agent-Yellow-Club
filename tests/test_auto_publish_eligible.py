@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.0.97.0"
+CURRENT_VERSION = "7.0.98.0"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -957,7 +957,7 @@ class TestRegressionImports(unittest.TestCase):
         self.assertTrue(hasattr(payment_domain, "can_publish_to_parent"))
 
     def test_version_string(self):
-        self.assertEqual(CURRENT_VERSION, "7.0.97.0")
+        self.assertEqual(CURRENT_VERSION, "7.0.98.0")
 
     def test_auto_publish_eligible_column_schema(self):
         """Schema must have auto_publish_eligible column with DEFAULT 0."""

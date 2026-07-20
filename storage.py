@@ -605,6 +605,7 @@ class Storage:
             self._init_payment_intent_tables(conn)
             self._init_client_link_tables(conn)
             self._init_automation_tables(conn)
+            self._init_withdrawal_tables(conn)
 
     def _init_payment_intent_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -1291,6 +1292,43 @@ class Storage:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_ppn_status "
             "ON payment_parent_notifications(status, next_retry_at)"
+        )
+
+    # ── v7.0.98.0 — Invoice Withdrawal table ─────────────────────────────────
+
+    def _init_withdrawal_tables(self, conn: sqlite3.Connection) -> None:
+        """Create payment_intent_withdrawals table (v7.0.98.0 — safe recall invoice)."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payment_intent_withdrawals (
+                id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+                intent_public_id            TEXT NOT NULL UNIQUE,
+                mk_invoice_id               TEXT NOT NULL DEFAULT '',
+                status                      TEXT NOT NULL DEFAULT 'processing',
+                reason                      TEXT NOT NULL DEFAULT '',
+                requested_by_telegram_id    TEXT NOT NULL DEFAULT '',
+                requested_by_name           TEXT NOT NULL DEFAULT '',
+                requested_at                TEXT NOT NULL,
+                completed_at                TEXT,
+                payment_status_at_request   TEXT NOT NULL DEFAULT '',
+                erip_cancel_status          TEXT,
+                erip_cancelled_at           TEXT,
+                erip_cancel_error           TEXT,
+                card_checkout_blocked_at    TEXT,
+                telegram_update_status      TEXT,
+                telegram_updated_at         TEXT,
+                telegram_update_error       TEXT,
+                requires_check_reason       TEXT,
+                created_at                  TEXT NOT NULL,
+                updated_at                  TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_piw_intent "
+            "ON payment_intent_withdrawals(intent_public_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_piw_status "
+            "ON payment_intent_withdrawals(status, created_at)"
         )
 
     # ── v7.0.94.0 — Invoice Automation methods ───────────────────────────────
@@ -7456,3 +7494,154 @@ class Storage:
             "intent": dict(row_after) if row_after else {},
             "siblings_superseded": siblings_updated,
         }
+
+    # ── v7.0.98.0 — Invoice Withdrawal methods ───────────────────────────────
+
+    def create_withdrawal_record(
+        self,
+        *,
+        public_id: str,
+        mk_invoice_id: str,
+        reason: str,
+        requested_by_telegram_id: str,
+        requested_by_name: str,
+        payment_status_at_request: str,
+        now: str,
+    ) -> dict[str, Any]:
+        """Create a withdrawal audit record. INSERT OR IGNORE for idempotency."""
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO payment_intent_withdrawals
+                    (intent_public_id, mk_invoice_id, status, reason,
+                     requested_by_telegram_id, requested_by_name,
+                     requested_at, payment_status_at_request,
+                     created_at, updated_at)
+                    VALUES (?, ?, 'processing', ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(public_id), str(mk_invoice_id or ""),
+                        str(reason or ""),
+                        str(requested_by_telegram_id or ""),
+                        str(requested_by_name or ""),
+                        now, str(payment_status_at_request or ""),
+                        now, now,
+                    ),
+                )
+        except Exception:
+            pass
+        return self.get_withdrawal_by_intent(public_id) or {}
+
+    def get_withdrawal_by_intent(self, public_id: str) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM payment_intent_withdrawals WHERE intent_public_id=?",
+                (str(public_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_withdrawal_erip(
+        self,
+        withdrawal_id: int,
+        erip_cancel_status: str,
+        erip_cancelled_at: Optional[str],
+        erip_cancel_error: Optional[str],
+        now: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_intent_withdrawals
+                   SET erip_cancel_status=?, erip_cancelled_at=?,
+                       erip_cancel_error=?, updated_at=?
+                   WHERE id=?""",
+                (erip_cancel_status, erip_cancelled_at, erip_cancel_error, now, withdrawal_id),
+            )
+
+    def update_withdrawal_card(
+        self, withdrawal_id: int, card_checkout_blocked_at: str, now: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_intent_withdrawals
+                   SET card_checkout_blocked_at=?, updated_at=?
+                   WHERE id=?""",
+                (card_checkout_blocked_at, now, withdrawal_id),
+            )
+
+    def update_withdrawal_telegram(
+        self,
+        withdrawal_id: int,
+        telegram_update_status: str,
+        telegram_updated_at: Optional[str],
+        telegram_update_error: Optional[str],
+        now: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_intent_withdrawals
+                   SET telegram_update_status=?, telegram_updated_at=?,
+                       telegram_update_error=?, updated_at=?
+                   WHERE id=?""",
+                (telegram_update_status, telegram_updated_at, telegram_update_error, now, withdrawal_id),
+            )
+
+    def complete_withdrawal(
+        self, withdrawal_id: int, completed_at: str, now: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_intent_withdrawals
+                   SET status='withdrawn', completed_at=?, updated_at=?
+                   WHERE id=?""",
+                (completed_at, now, withdrawal_id),
+            )
+
+    def set_withdrawal_requires_check(
+        self, withdrawal_id: int, reason: str, now: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_intent_withdrawals
+                   SET status='requires_check', requires_check_reason=?, updated_at=?
+                   WHERE id=?""",
+                (str(reason or ""), now, withdrawal_id),
+            )
+
+    def set_withdrawal_failed(
+        self, withdrawal_id: int, reason: str, now: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_intent_withdrawals
+                   SET status='failed', requires_check_reason=?, updated_at=?
+                   WHERE id=?""",
+                (str(reason or ""), now, withdrawal_id),
+            )
+
+    def reset_automation_item_for_withdrawal(
+        self, mk_invoice_id: str, now: str,
+    ) -> None:
+        """Zero out auto_post_eligible and auto_publish_eligible for a withdrawn invoice."""
+        if not mk_invoice_id:
+            return
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE invoice_automation_items
+                   SET auto_post_eligible=0, auto_publish_eligible=0, updated_at=?
+                   WHERE mk_invoice_id=?""",
+                (now, str(mk_invoice_id)),
+            )
+
+    def get_confirmed_bepaid_transactions_for_intent(
+        self, public_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return bePaid transactions where webhook_verified=1 OR provider_verified=1."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM bepaid_transactions
+                   WHERE intent_public_id=?
+                     AND (webhook_verified=1 OR provider_verified=1)""",
+                (str(public_id),),
+            ).fetchall()
+        return [dict(r) for r in rows]

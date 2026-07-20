@@ -618,7 +618,7 @@ class TestCSS(unittest.TestCase):
 
 # ── Cache-bust ────────────────────────────────────────────────────────────────
 
-CURRENT_MINIAPP_VERSION = "7.0.97.0"
+CURRENT_MINIAPP_VERSION = "7.0.98.0"
 
 
 class TestCacheBust(unittest.TestCase):

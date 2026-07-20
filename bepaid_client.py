@@ -514,6 +514,24 @@ class BePaidClient:
                 candidate = mk_str[-max_mk:] + suffix if max_mk > 0 else suffix
         return candidate[:BEPAID_ACCOUNT_NUMBER_MAX_LEN]
 
+    def void_erip_payment(self, transaction_uid: str) -> "BePaidResult":
+        """Attempt to void an ERIP payment by transaction UID.
+
+        The bePaid ERIP void API endpoint is not confirmed in the current integration.
+        Returns ok=False with error='unsupported' so the caller applies local blocking.
+        """
+        uid = str(transaction_uid or "").strip()
+        if not uid:
+            return BePaidResult(ok=False, http_status=0, error="missing_transaction_uid")
+        log.info(
+            "bepaid void_erip_payment uid=%s: unsupported in current integration", uid
+        )
+        return BePaidResult(
+            ok=False,
+            http_status=0,
+            error="unsupported:ERIP_void_not_confirmed_in_current_bepaid_integration",
+        )
+
     @staticmethod
     def erip_order_id(pi_row_id: int) -> str:
         """Build a 12-digit numeric order_id that does NOT start with zero.

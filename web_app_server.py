@@ -110,6 +110,7 @@ PAYMENT_MK_POST_ROLES = {"owner", "admin"}  # only senior roles may post to MoyK
 CLIENT_LINK_ADMIN_ROLES = {"owner", "admin", "operations"}
 AUTOMATION_ADMIN_ROLES = {"owner", "admin"}       # v7.0.94.0
 AUTOMATION_VIEW_ROLES = {"owner", "admin", "operations"}  # v7.0.94.0
+WITHDRAW_INVOICE_ROLES = {"owner", "admin", "operations"}  # v7.0.98.0
 
 ADMIN_TABS_BY_ROLE = {
     "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links"],
@@ -1053,6 +1054,54 @@ def _telegram_send_parent_notification_msg(
             return False, f"TRANSIENT:{err[:300]}", None
         # Timeout or connection reset after potentially sending → ambiguous
         return False, f"AMBIGUOUS:{err[:300]}", None
+
+
+def _telegram_edit_parent_notification_msg(
+    bot_token: str,
+    user_id: int | None,
+    message_id: int,
+    text: str,
+) -> tuple[bool, str]:
+    """Edit an existing Telegram message. Returns (ok, error_text).
+
+    'message is not modified' from Telegram counts as success.
+    Ambiguous outcomes (timeout after possible delivery) use 'AMBIGUOUS:' prefix.
+    """
+    if not bot_token or not user_id or not message_id:
+        return False, "missing_token_user_id_or_message_id"
+    try:
+        import requests as _req
+        payload = {
+            "chat_id": int(user_id),
+            "message_id": int(message_id),
+            "text": text,
+            "parse_mode": "HTML",
+        }
+        resp = _req.post(
+            f"https://api.telegram.org/bot{bot_token}/editMessageText",
+            json=payload,
+            timeout=(10, 20),
+        )
+        if resp.status_code == 400:
+            body = {}
+            try:
+                body = resp.json()
+            except Exception:
+                pass
+            desc = str((body.get("description") or "")).lower()
+            if "message is not modified" in desc:
+                return True, ""
+            return False, resp.text[:500]
+        if resp.status_code >= 400:
+            return False, resp.text[:500]
+        return True, ""
+    except Exception as exc:
+        err = str(exc)
+        lower = err.lower()
+        if any(s in lower for s in ("connection refused", "name or service not known",
+                                    "failed to establish", "getaddrinfo failed")):
+            return False, f"TRANSIENT:{err[:300]}"
+        return False, f"AMBIGUOUS:{err[:300]}"
 
 
 def _course_has_explicit_key(text: str) -> bool:
@@ -10025,6 +10074,347 @@ class MiniAppContext:
             return result
         return {"ok": True, "idempotent": result.get("idempotent", False), "intent": self._normalize_payment_intent(result["intent"])}
 
+    # ── v7.0.98.0 — Safe Invoice Withdrawal ──────────────────────────────────
+
+    @staticmethod
+    def _format_withdrawal_notification_text(
+        student_name: str,
+        amount_byn: float,
+        currency: str,
+    ) -> str:
+        """Format the 'invoice withdrawn' edit text for parent notification."""
+        import html as _html
+        name_esc = _html.escape(str(student_name or "").strip() or "Ученик")
+        curr = str(currency or "BYN").strip().upper()
+        amount_str = f"{amount_byn:.2f}".replace(".", ",")
+        lines = [
+            "⚠️ <b>Yellow Club — счёт отозван</b>",
+            "",
+            f"Ученик: {name_esc}",
+            f"Сумма: {amount_str}\xa0{curr}",
+            "",
+            "Этот счёт больше не актуален.",
+            "Оплачивать его не нужно.",
+        ]
+        return "\n".join(lines)
+
+    def _try_edit_parent_notification_for_withdrawal(
+        self,
+        withdrawal_id: int,
+        public_id: str,
+        student_name: str,
+        amount_byn: float,
+        currency: str,
+        now: str,
+    ) -> None:
+        """Try to edit the parent Telegram notification to 'invoice withdrawn' text."""
+        notif = self.storage.get_parent_notification(public_id, "new_invoice")
+        if not notif:
+            self.storage.update_withdrawal_telegram(
+                withdrawal_id, "skipped_no_notification", None, None, now,
+            )
+            return
+
+        status = str(notif.get("status") or "")
+        if status not in ("sent",):
+            self.storage.update_withdrawal_telegram(
+                withdrawal_id, "skipped_not_sent", None, None, now,
+            )
+            return
+
+        already_updated = str(notif.get("notification_type") or "") == "invoice_withdrawn"
+        if already_updated:
+            self.storage.update_withdrawal_telegram(
+                withdrawal_id, "skipped_already_updated", now, None, now,
+            )
+            return
+
+        telegram_user_id = str(notif.get("telegram_user_id") or "").strip()
+        message_id = notif.get("telegram_message_id")
+        if not telegram_user_id or not message_id:
+            self.storage.update_withdrawal_telegram(
+                withdrawal_id, "skipped_missing_ids", None, None, now,
+            )
+            return
+
+        bot_token = getattr(self.settings, "telegram_bot_token", "") or ""
+        if not bot_token:
+            self.storage.update_withdrawal_telegram(
+                withdrawal_id, "skipped_no_token", None, None, now,
+            )
+            return
+
+        text = self._format_withdrawal_notification_text(student_name, amount_byn, currency)
+        ok, err = _telegram_edit_parent_notification_msg(
+            bot_token, int(telegram_user_id), int(message_id), text,
+        )
+        if ok:
+            self.storage.update_withdrawal_telegram(
+                withdrawal_id, "edited", now, None, now,
+            )
+            log.info(
+                "payment_event=withdrawal_telegram_edited intent=%s tg_user=%s msg_id=%s",
+                public_id, telegram_user_id, message_id,
+            )
+        elif err.startswith("AMBIGUOUS:"):
+            self.storage.update_withdrawal_telegram(
+                withdrawal_id, "requires_check", None, err[:500], now,
+            )
+            log.warning(
+                "payment_event=withdrawal_telegram_ambiguous intent=%s err=%s",
+                public_id, err,
+            )
+        else:
+            self.storage.update_withdrawal_telegram(
+                withdrawal_id, "failed", None, err[:500], now,
+            )
+            log.warning(
+                "payment_event=withdrawal_telegram_failed intent=%s err=%s",
+                public_id, err,
+            )
+
+    def withdraw_payment_intent(
+        self,
+        auth: dict[str, Any],
+        public_id: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        """POST /api/payments/intents/{id}/withdraw — safe withdrawal of an unpaid invoice.
+
+        Blocks payment, hides from parent, saves audit trail.
+        Does NOT delete payment_intent, automation item, or webhook history.
+        """
+        # ── Auth ──────────────────────────────────────────────────────────────
+        if auth.get("_internal") is True and auth.get("role") in WITHDRAW_INVOICE_ROLES:
+            role = auth["role"]
+        else:
+            role = self._role_for_user(int(auth.get("user_id") or 0))
+        if role not in WITHDRAW_INVOICE_ROLES:
+            return {"ok": False, "error": "Доступ запрещён. Требуется роль: owner, admin или operations."}
+
+        reason = str(body.get("reason") or "").strip()
+        if len(reason) < 5:
+            return {"ok": False, "error": "Укажите причину отзыва (минимум 5 символов)."}
+
+        now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+
+        # ── Load fresh intent ─────────────────────────────────────────────────
+        pi = self.storage.get_payment_intent(public_id)
+        if not pi:
+            return {"ok": False, "error": "Счёт не найден.", "public_id": public_id}
+
+        # ── Idempotency: already withdrawn ────────────────────────────────────
+        if pi.get("client_visibility") == "withdrawn":
+            existing = self.storage.get_withdrawal_by_intent(public_id)
+            return {
+                "ok": True,
+                "idempotent": True,
+                "status": (existing or {}).get("status", "withdrawn"),
+                "withdrawal": existing,
+            }
+
+        # ── Pre-checks: block if payment already received or ambiguous ────────
+        payment_status = str(pi.get("status") or "")
+        mk_payment_id = pi.get("mk_payment_id")
+        mk_posting_status = str(pi.get("mk_posting_status") or "")
+
+        confirmed_txs = self.storage.get_confirmed_bepaid_transactions_for_intent(public_id)
+
+        paid_or_ambiguous = (
+            payment_status in ("paid", "posted_to_moyklass")
+            or bool(mk_payment_id)
+            or mk_posting_status in ("posted", "claiming", "ambiguous")
+            or bool(confirmed_txs)
+        )
+
+        if paid_or_ambiguous:
+            wr = self.storage.create_withdrawal_record(
+                public_id=public_id,
+                mk_invoice_id=str(pi.get("mk_invoice_id") or ""),
+                reason=reason,
+                requested_by_telegram_id=str(auth.get("user_id") or ""),
+                requested_by_name=str(auth.get("full_name") or ""),
+                payment_status_at_request=payment_status,
+                now=now,
+            )
+            if wr and wr.get("id"):
+                self.storage.set_withdrawal_requires_check(
+                    wr["id"], "payment_already_received_or_ambiguous", now,
+                )
+            log.warning(
+                "payment_event=payment_withdrawal_requires_check intent=%s status=%s "
+                "mk_payment_id=%s mk_posting_status=%s confirmed_txs=%d",
+                public_id, payment_status, mk_payment_id, mk_posting_status, len(confirmed_txs),
+            )
+            return {
+                "ok": False,
+                "requires_check": True,
+                "error": (
+                    "По счёту уже получена оплата или её результат требует проверки. "
+                    "Нужен ручной разбор: возврат или зачёт."
+                ),
+            }
+
+        if payment_status in ("cancelled", "error"):
+            return {"ok": False, "error": f"Счёт в статусе '{payment_status}' — отзыв невозможен."}
+
+        # ── Create withdrawal audit record (INSERT OR IGNORE) ─────────────────
+        wr = self.storage.create_withdrawal_record(
+            public_id=public_id,
+            mk_invoice_id=str(pi.get("mk_invoice_id") or ""),
+            reason=reason,
+            requested_by_telegram_id=str(auth.get("user_id") or ""),
+            requested_by_name=str(auth.get("full_name") or ""),
+            payment_status_at_request=payment_status,
+            now=now,
+        )
+        if not wr or not wr.get("id"):
+            return {"ok": False, "error": "Не удалось создать запись отзыва."}
+        withdrawal_id = wr["id"]
+
+        log.info(
+            "payment_event=payment_withdrawal_started intent=%s reason=%s by=%s",
+            public_id, reason[:80], auth.get("user_id"),
+        )
+
+        # ── Atomic claim: set client_visibility='withdrawn' ───────────────────
+        withdrawn_by = str(auth.get("user_id") or "")
+        claim_result = self.storage.withdraw_payment_intent_from_client(
+            public_id, withdrawn_by, now,
+        )
+        if not claim_result.get("ok"):
+            self.storage.set_withdrawal_failed(withdrawal_id, "claim_failed", now)
+            return {"ok": False, "error": "Не удалось атомарно отозвать счёт (конкурентное изменение)."}
+
+        # ── Re-check after claim (race: payment arrived during withdrawal) ─────
+        pi_after = self.storage.get_payment_intent(public_id)
+        if pi_after and pi_after.get("status") in ("paid", "posted_to_moyklass"):
+            self.storage.set_withdrawal_requires_check(
+                withdrawal_id, "payment_arrived_during_withdrawal", now,
+            )
+            log.warning(
+                "payment_event=payment_arrived_during_withdrawal intent=%s",
+                public_id,
+            )
+            return {
+                "ok": False,
+                "requires_check": True,
+                "error": (
+                    "Оплата поступила в процессе отзыва. "
+                    "Требуется ручная проверка. Счёт уже скрыт у родителя."
+                ),
+            }
+
+        mk_invoice_id = str(pi.get("mk_invoice_id") or "")
+
+        # ── Reset automation item flags ────────────────────────────────────────
+        if mk_invoice_id:
+            self.storage.reset_automation_item_for_withdrawal(mk_invoice_id, now)
+
+        # ── ERIP: attempt void (currently unsupported — local block applied) ───
+        erip_uid = str(pi.get("bepaid_uid") or "").strip()
+        erip_option = self.storage.get_option_by_channel(public_id, "erip") if hasattr(self.storage, "get_option_by_channel") else None
+        if not erip_uid and erip_option:
+            erip_uid = str(erip_option.get("bepaid_uid") or "").strip()
+
+        if erip_uid and hasattr(self, "_bepaid_erip_client"):
+            try:
+                void_result = self._bepaid_erip_client().void_erip_payment(erip_uid)
+                err_txt = str(void_result.error or "")
+                if void_result.ok:
+                    self.storage.update_withdrawal_erip(
+                        withdrawal_id, "cancelled", now, None, now,
+                    )
+                elif "unsupported" in err_txt.lower():
+                    self.storage.update_withdrawal_erip(
+                        withdrawal_id, "unsupported", None, err_txt[:300], now,
+                    )
+                else:
+                    self.storage.update_withdrawal_erip(
+                        withdrawal_id, "failed", None, err_txt[:300], now,
+                    )
+            except Exception as exc:
+                self.storage.update_withdrawal_erip(
+                    withdrawal_id, "failed", None, str(exc)[:300], now,
+                )
+        else:
+            self.storage.update_withdrawal_erip(
+                withdrawal_id, "unsupported", None, "no_erip_uid_or_client", now,
+            )
+
+        # ── Card: block checkout (record blocked timestamp) ────────────────────
+        self.storage.update_withdrawal_card(withdrawal_id, now, now)
+
+        # ── Telegram: edit parent notification ────────────────────────────────
+        amount_minor = pi.get("amount_minor") or 0
+        amount_byn = round(int(amount_minor) / 100.0, 2) if amount_minor else 0.0
+        currency = str(pi.get("currency") or "BYN")
+        student_name = str(pi.get("student_name") or "")
+        self._try_edit_parent_notification_for_withdrawal(
+            withdrawal_id, public_id, student_name, amount_byn, currency, now,
+        )
+
+        # ── Complete withdrawal ────────────────────────────────────────────────
+        self.storage.complete_withdrawal(withdrawal_id, now, now)
+
+        final_wr = self.storage.get_withdrawal_by_intent(public_id) or {}
+        log.info(
+            "payment_event=payment_withdrawal_succeeded intent=%s erip=%s telegram=%s",
+            public_id,
+            final_wr.get("erip_cancel_status"),
+            final_wr.get("telegram_update_status"),
+        )
+        return {
+            "ok": True,
+            "status": "withdrawn",
+            "erip_cancel_status": final_wr.get("erip_cancel_status"),
+            "card_blocked": bool(final_wr.get("card_checkout_blocked_at")),
+            "telegram_update_status": final_wr.get("telegram_update_status"),
+            "requires_check_reason": final_wr.get("requires_check_reason"),
+            "intent": self._normalize_payment_intent(
+                self.storage.get_payment_intent(public_id) or {}
+            ),
+        }
+
+    def get_intent_withdrawal_info(
+        self, auth: dict[str, Any], public_id: str
+    ) -> dict[str, Any]:
+        """GET /api/payments/intents/{id}/withdrawal-status — admin read-only."""
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+        pi = self.storage.get_payment_intent(public_id)
+        if not pi:
+            return {"ok": False, "error": "not_found"}
+        wr = self.storage.get_withdrawal_by_intent(public_id)
+        can_withdraw = (
+            pi.get("client_visibility") not in ("withdrawn",)
+            and str(pi.get("status") or "") not in ("paid", "posted_to_moyklass", "cancelled", "error")
+            and not pi.get("mk_payment_id")
+            and str(pi.get("mk_posting_status") or "") not in ("posted", "claiming", "ambiguous")
+        )
+        result: dict[str, Any] = {
+            "ok": True,
+            "public_id": public_id,
+            "client_visibility": pi.get("client_visibility"),
+            "can_withdraw": can_withdraw,
+        }
+        if wr:
+            result["withdrawal"] = {
+                "status": wr.get("status"),
+                "reason": wr.get("reason"),
+                "requested_at": wr.get("requested_at"),
+                "requested_by_telegram_id": wr.get("requested_by_telegram_id"),
+                "requested_by_name": wr.get("requested_by_name"),
+                "completed_at": wr.get("completed_at"),
+                "erip_cancel_status": wr.get("erip_cancel_status"),
+                "card_blocked": bool(wr.get("card_checkout_blocked_at")),
+                "card_checkout_blocked_at": wr.get("card_checkout_blocked_at"),
+                "telegram_update_status": wr.get("telegram_update_status"),
+                "requires_check_reason": wr.get("requires_check_reason"),
+            }
+        return result
+
     def client_payments_list(self, auth: dict[str, Any]) -> dict[str, Any]:
         """GET /api/client/payments — parent-only, returns published intents for own children."""
         role = self._role_for_user(int(auth["user_id"]))
@@ -11981,6 +12371,13 @@ class MiniAppContext:
         if not pi:
             return {"ok": False, "error": "Черновик не найден", "public_id": public_id}
 
+        if pi.get("client_visibility") == "withdrawn":
+            return {
+                "ok": False,
+                "error": "Этот счёт отозван и больше не доступен для оплаты.",
+                "withdrawn": True,
+            }
+
         if not _bypass_method_check and pi.get("payment_method") != "erip":
             return {"ok": False, "error": "Выставление счёта bePaid доступно только для метода ERIP."}
 
@@ -12257,6 +12654,13 @@ class MiniAppContext:
         pi = self.storage.get_payment_intent(public_id)
         if not pi:
             return {"ok": False, "error": "Черновик не найден", "public_id": public_id}
+
+        if pi.get("client_visibility") == "withdrawn":
+            return {
+                "ok": False,
+                "error": "Этот счёт отозван и больше не доступен для оплаты.",
+                "withdrawn": True,
+            }
 
         status = pi["status"]
         allowed_statuses = {"draft", "ready", "bepaid_created", "partial_ready", "awaiting_payment"}
@@ -13463,14 +13867,13 @@ class MiniAppContext:
 
     @staticmethod
     def _notify_parent_period_label(period_month: str) -> str:
-        """Convert 'YYYY-MM' to human-readable Russian period, e.g. 'август 2026'."""
-        _MONTHS_RU = (
-            "", "январь", "февраль", "март", "апрель", "май", "июнь",
-            "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
-        )
-        _MONTHS_GENITIVE = (
-            "", "января", "февраля", "марта", "апреля", "мая", "июня",
-            "июля", "августа", "сентября", "октября", "ноября", "декабря",
+        """Convert 'YYYY-MM' to Russian nominative month, e.g. 'Август 2026'.
+
+        v7.0.98.0: Fixed from genitive ('Августа') to nominative ('Август').
+        """
+        _MONTHS_NOMINATIVE = (
+            "", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+            "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
         )
         if not period_month:
             return ""
@@ -13479,7 +13882,7 @@ class MiniAppContext:
             year = int(parts[0])
             month = int(parts[1])
             if 1 <= month <= 12:
-                return f"{_MONTHS_GENITIVE[month].capitalize()} {year}"
+                return f"{_MONTHS_NOMINATIVE[month]} {year}"
         except (ValueError, IndexError):
             pass
         return str(period_month)
@@ -14705,6 +15108,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                         return self._send_json(CTX.get_intent_publish_preview(auth, _pi_parts[0]))
                     if len(_pi_parts) == 2 and _pi_parts[1] == "notification-status":
                         return self._send_json(CTX.get_intent_notification_status(auth, _pi_parts[0]))
+                    if len(_pi_parts) == 2 and _pi_parts[1] == "withdrawal-status":
+                        return self._send_json(CTX.get_intent_withdrawal_info(auth, _pi_parts[0]))
                 if path.startswith("/api/food/kitchen/menus/"):
                     _krest = path[len("/api/food/kitchen/menus/"):]
                     _kparts = _krest.split("/")
@@ -14826,6 +15231,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.publish_intent_to_parent(auth, _pi_parts[0]))
                 if len(_pi_parts) == 2 and _pi_parts[1] == "withdraw-from-parent":
                     return self._send_json(CTX.withdraw_intent_from_parent(auth, _pi_parts[0]))
+                if len(_pi_parts) == 2 and _pi_parts[1] == "withdraw":
+                    return self._send_json(CTX.withdraw_payment_intent(auth, _pi_parts[0], body))
             if path.startswith("/api/payments/notifications/"):
                 _notif_rest = path[len("/api/payments/notifications/"):]
                 _notif_parts = _notif_rest.split("/")
