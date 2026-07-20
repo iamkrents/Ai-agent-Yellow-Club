@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.0.98.0" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.0.98.1" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -1002,8 +1002,36 @@
       </div>
     </div>
 
+    <!-- Invoice withdrawal modal (v7.0.98.1) -->
+    <div id="piWithdrawModal" class="pi-modal hidden">
+      <div class="pi-modal-sheet pi-modal-sheet-sm">
+        <div class="pi-modal-head">
+          <h3>Отозвать счёт</h3>
+          <button class="pi-modal-close" id="piWithdrawModalClose" type="button">✕</button>
+        </div>
+        <div class="pi-modal-body">
+          <div id="piWithdrawInfo" style="margin-bottom:12px;font-size:13px"></div>
+          <div id="piWithdrawWarning" style="background:var(--warn-bg,#fff3cd);border:1px solid var(--warn-border,#ffc107);border-radius:6px;padding:8px 10px;font-size:12px;color:var(--warn-text,#856404);margin-bottom:12px">
+            Счёт будет скрыт от родителя и заблокирован для оплаты в агенте. Счёт и абонемент в МойКласс не удаляются.
+          </div>
+          <div id="piWithdrawFields">
+            <label>
+              <span>Причина отзыва <span class="req">*</span></span>
+              <textarea id="piWithdrawReason" rows="2" placeholder="Минимум 5 символов" maxlength="500"></textarea>
+            </label>
+          </div>
+          <div id="piWithdrawResult" class="hidden"></div>
+          <div id="piWithdrawError" class="pi-form-error hidden"></div>
+        </div>
+        <div class="pi-modal-footer">
+          <button class="secondary" id="piWithdrawModalBack" type="button">Отмена</button>
+          <button class="danger" id="piWithdrawModalConfirm" type="button">Отозвать счёт</button>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.0.98.0"></script>
+  <script src="/static/app.js?v=7.0.98.1"></script>
 </body>
 </html>

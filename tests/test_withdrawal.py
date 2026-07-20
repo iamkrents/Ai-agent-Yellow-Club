@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.0.98.0"
+CURRENT_VERSION = "7.0.98.1"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -848,20 +848,20 @@ class TestPeriodLabelNominative(unittest.TestCase):
 class TestVersion(unittest.TestCase):
 
     def test_43_current_version(self):
-        self.assertEqual(CURRENT_VERSION, "7.0.98.0")
+        self.assertEqual(CURRENT_VERSION, "7.0.98.1")
 
     def test_44_payment_domain_version(self):
         import payment_domain
         src = Path(payment_domain.__file__).read_text(encoding="utf-8")
-        self.assertIn("7.0.98.0", src)
+        self.assertIn("7.0.98.1", src)
 
     def test_45_miniapp_js_version(self):
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('console.log("MiniApp version: v7.0.98.0")', js)
+        self.assertIn('console.log("MiniApp version: v7.0.98.1")', js)
 
     def test_46_index_html_cache_bust(self):
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("v=7.0.98.0", html)
+        self.assertIn("v=7.0.98.1", html)
 
     def test_47_withdrawal_table_exists_after_migration(self):
         """payment_intent_withdrawals table is created on Storage init."""
@@ -893,6 +893,188 @@ class TestVersion(unittest.TestCase):
         text = MiniAppContext._format_withdrawal_notification_text("<b>Вася</b>", 100.0, "BYN")
         self.assertNotIn("<b>Вася</b>", text)
         self.assertIn("&lt;b&gt;", text)
+
+
+# ---------------------------------------------------------------------------
+# 12 — Frontend/backend contract (v7.0.98.1)
+# ---------------------------------------------------------------------------
+
+class TestFrontendBackendContract(unittest.TestCase):
+    """Verify the API contract that the withdrawal frontend relies on."""
+
+    def _ctx(self):
+        storage = _make_storage()
+        return _make_context(storage, _make_settings()), storage
+
+    # ── can_withdraw field ────────────────────────────────────────────────────
+
+    def test_51_withdrawal_status_can_withdraw_true_for_eligible_intent(self):
+        """withdrawal-status returns can_withdraw=True for an unpaid, unposted intent."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_fc_01", status="awaiting_payment",
+                     client_visibility="published", mk_payment_id=None)
+        result = ctx.get_intent_withdrawal_info(_WITHDRAW_AUTH, "ycpi_fc_01")
+        self.assertTrue(result.get("ok"), result)
+        self.assertTrue(result.get("can_withdraw"), "Expected can_withdraw=True for eligible intent")
+
+    def test_52_withdrawal_status_can_withdraw_false_if_paid(self):
+        """withdrawal-status returns can_withdraw=False when intent is paid."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_fc_02", status="paid")
+        result = ctx.get_intent_withdrawal_info(_WITHDRAW_AUTH, "ycpi_fc_02")
+        self.assertFalse(result.get("can_withdraw"), "Paid intent must not be withdrawable")
+
+    def test_53_withdrawal_status_can_withdraw_false_if_already_withdrawn(self):
+        """withdrawal-status returns can_withdraw=False for already-withdrawn intent."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_fc_03", status="awaiting_payment",
+                     client_visibility="withdrawn")
+        result = ctx.get_intent_withdrawal_info(_WITHDRAW_AUTH, "ycpi_fc_03")
+        self.assertFalse(result.get("can_withdraw"), "Withdrawn intent must not be can_withdraw=True")
+
+    def test_54_withdrawal_status_can_withdraw_false_if_cancelled(self):
+        """withdrawal-status returns can_withdraw=False for cancelled intent."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_fc_04", status="cancelled")
+        result = ctx.get_intent_withdrawal_info(_WITHDRAW_AUTH, "ycpi_fc_04")
+        self.assertFalse(result.get("can_withdraw"))
+
+    def test_55_withdrawal_status_can_withdraw_false_if_has_mk_payment_id(self):
+        """withdrawal-status returns can_withdraw=False when mk_payment_id is set."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_fc_05", status="awaiting_payment", mk_payment_id=9876)
+        result = ctx.get_intent_withdrawal_info(_WITHDRAW_AUTH, "ycpi_fc_05")
+        self.assertFalse(result.get("can_withdraw"))
+
+    def test_56_withdrawal_status_returns_withdrawal_dict_if_record_exists(self):
+        """withdrawal-status response includes withdrawal dict after withdrawal."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_fc_06", status="awaiting_payment")
+        ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_fc_06", _WITHDRAW_BODY)
+        result = ctx.get_intent_withdrawal_info(_WITHDRAW_AUTH, "ycpi_fc_06")
+        self.assertIn("withdrawal", result)
+        wr = result["withdrawal"]
+        self.assertIn("status", wr)
+        self.assertIn("reason", wr)
+
+    # ── reason validation ─────────────────────────────────────────────────────
+
+    def test_57_reason_shorter_than_5_chars_rejected(self):
+        """Backend rejects withdrawal reason shorter than 5 characters."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_fc_07", status="awaiting_payment")
+        result = ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_fc_07", {"reason": "ab"})
+        self.assertFalse(result.get("ok"))
+        self.assertIn("5", result.get("error", ""))
+
+    def test_58_reason_exactly_5_chars_accepted(self):
+        """Backend accepts reason of exactly 5 characters."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_fc_08", status="awaiting_payment")
+        result = ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_fc_08", {"reason": "ошиб"})
+        # 4 chars → rejected
+        self.assertFalse(result.get("ok"))
+        result2 = ctx.withdraw_payment_intent(
+            _WITHDRAW_AUTH, "ycpi_fc_08", {"reason": "ошибк"}  # 5 chars
+        )
+        # second call is idempotent (already withdrawn by a would-be-success call)
+        # but first call should have been caught by the 4-char guard
+        # Re-seed a fresh intent for the 5-char positive test
+        _seed_intent(storage, "ycpi_fc_08b", status="awaiting_payment")
+        result3 = ctx.withdraw_payment_intent(
+            _WITHDRAW_AUTH, "ycpi_fc_08b", {"reason": "ошибк"}  # exactly 5 chars
+        )
+        self.assertTrue(result3.get("ok"), f"5-char reason must be accepted: {result3}")
+
+    # ── backend payment block for withdrawn intents ───────────────────────────
+
+    def test_59_withdrawn_intent_blocked_in_bepaid_create(self):
+        """Backend blocks bePaid ERIP checkout for withdrawn intent."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_fc_09", status="awaiting_payment",
+                     client_visibility="withdrawn")
+        with patch("web_app_server.MiniAppContext._require_payment_intent_access", return_value=None):
+            result = ctx.payment_intent_create_bepaid(
+                {"user_id": "9002", "_internal": True, "role": "parent"},
+                "ycpi_fc_09",
+                {},
+            )
+        self.assertFalse(result.get("ok"))
+        self.assertTrue(result.get("withdrawn"), f"Expected 'withdrawn' flag: {result}")
+
+    def test_60_withdrawn_intent_blocked_in_acquiring_create(self):
+        """Backend blocks acquiring checkout for withdrawn intent."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_fc_10", status="awaiting_payment",
+                     client_visibility="withdrawn")
+        with patch("web_app_server.MiniAppContext._require_payment_intent_access", return_value=None):
+            result = ctx.payment_intent_create_acquiring_option(
+                {"user_id": "9002", "_internal": True, "role": "parent"},
+                "ycpi_fc_10",
+            )
+        self.assertFalse(result.get("ok"))
+        self.assertTrue(result.get("withdrawn"), f"Expected 'withdrawn' flag: {result}")
+
+    # ── idempotency ───────────────────────────────────────────────────────────
+
+    def test_61_double_withdraw_is_idempotent(self):
+        """Second withdrawal request returns ok=True and idempotent=True."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_fc_11", status="awaiting_payment")
+        ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_fc_11", _WITHDRAW_BODY)
+        result2 = ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_fc_11", _WITHDRAW_BODY)
+        self.assertTrue(result2.get("ok"), f"Second call must succeed: {result2}")
+        self.assertTrue(result2.get("idempotent"), "Second call must be idempotent")
+
+    # ── role access control ───────────────────────────────────────────────────
+
+    def test_62_director_role_cannot_withdraw(self):
+        """director role is not in WITHDRAW_INVOICE_ROLES and must be denied."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_fc_12", status="awaiting_payment")
+        auth = {"_internal": True, "role": "director", "user_id": "9003", "full_name": "Dir Test"}
+        result = ctx.withdraw_payment_intent(auth, "ycpi_fc_12", _WITHDRAW_BODY)
+        self.assertFalse(result.get("ok"))
+        self.assertIn("роль", result.get("error", "").lower())
+
+    def test_63_app_js_contains_withdraw_modal_open_function(self):
+        """app.js contains openWithdrawModal function (frontend contract)."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("openWithdrawModal", js)
+        self.assertIn("piWithdrawModal", js)
+        self.assertIn("/withdraw", js)
+        self.assertNotIn("withdraw-from-parent", js.split("withdrawIntentFromParent")[0].split("openWithdrawModal")[-1])
+
+    def test_64_index_html_contains_withdraw_modal(self):
+        """index.html contains piWithdrawModal element."""
+        html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("piWithdrawModal", html)
+        self.assertIn("piWithdrawReason", html)
+        self.assertIn("piWithdrawModalConfirm", html)
+
+    def test_65_old_withdraw_from_parent_button_not_in_card_footer(self):
+        """app.js card footer no longer renders withdrawFromParentBtn."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        # The variable withdrawFromParentBtn must not appear in the template literal footer
+        self.assertNotIn("${withdrawFromParentBtn}", js)
+
+    def test_66_withdraw_endpoint_used_not_withdraw_from_parent(self):
+        """confirmWithdrawIntent calls /withdraw, not /withdraw-from-parent."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        # confirmWithdrawIntent must reference /withdraw endpoint
+        self.assertIn("confirmWithdrawIntent", js)
+        # Check the function body contains /withdraw (not /withdraw-from-parent)
+        fn_start = js.index("async function confirmWithdrawIntent")
+        fn_end = js.index("\nwindow.withdrawIntentFromParent", fn_start)
+        fn_body = js[fn_start:fn_end]
+        self.assertIn("/withdraw", fn_body)
+        self.assertNotIn("withdraw-from-parent", fn_body)
+
+    def test_67_can_withdraw_invoice_role_check(self):
+        """canWithdrawInvoice function exists and is defined for correct roles."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("canWithdrawInvoice", js)
+        self.assertIn('"operations"', js)
 
 
 if __name__ == "__main__":

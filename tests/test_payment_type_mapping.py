@@ -45,7 +45,7 @@ sys.path.insert(0, str(ROOT))
 APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 
-CURRENT_VERSION = "7.0.98.0"
+CURRENT_VERSION = "7.0.98.1"
 
 
 def _load_server_constants():

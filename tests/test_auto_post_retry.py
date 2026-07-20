@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.0.98.0"
+CURRENT_VERSION = "7.0.98.1"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -542,15 +542,15 @@ class TestCountsAndVersion(unittest.TestCase):
         self.assertEqual(counts["retry_scheduled"], 1)
 
     def test_29_version_string(self):
-        self.assertEqual(CURRENT_VERSION, "7.0.98.0")
+        self.assertEqual(CURRENT_VERSION, "7.0.98.1")
 
     def test_30_app_js_version(self):
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v7.0.98.0", js)
+        self.assertIn("v7.0.98.1", js)
 
     def test_31_index_html_cache_bust(self):
         html = (ROOT / "miniapp" / "index.html").read_bytes().decode("utf-8-sig")
-        self.assertIn("v=7.0.98.0", html)
+        self.assertIn("v=7.0.98.1", html)
 
 
 if __name__ == "__main__":

@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.0.98.0");
+console.log("MiniApp version: v7.0.98.1");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12391,8 +12391,20 @@ function renderPaymentIntentCard(pi) {
   const publishedBadge = isPublishedToParent
     ? `<span class="chip chip-pi-draft" style="font-size:10px">👁 Открыто родителю</span>`
     : "";
-  const withdrawFromParentBtn = isPublishedToParent && canUsePaymentIntents()
-    ? `<button class="secondary" style="font-size:12px;padding:4px 10px" data-withdraw-btn="${escapeHtml(pi.public_id)}" onclick="withdrawIntentFromParent('${escapeHtml(pi.public_id)}')">Скрыть от родителя</button>`
+  // "Скрыть от родителя" removed from card UI (v7.0.98.1) — replaced by "Отозвать счёт".
+  // Backend endpoint /withdraw-from-parent preserved for backward compatibility.
+
+  // ── Withdrawal (v7.0.98.1) ────────────────────────────────────────────────
+  const isWithdrawn = clientVis === "withdrawn";
+  const canWithdrawFrontend = canWithdrawInvoice()
+    && !isWithdrawn
+    && !["paid", "posted_to_moyklass", "cancelled", "error"].includes(pi.status || "")
+    && !pi.mk_payment_id;
+  const withdrawnBadge = isWithdrawn
+    ? `<span class="chip chip-pi-cancelled" style="font-size:10px;background:#fee2e2;color:#991b1b;border-color:#fca5a5">⊘ Отозван</span>`
+    : "";
+  const withdrawBtn = canWithdrawFrontend
+    ? `<button class="danger" style="font-size:12px;padding:4px 10px" data-pi-withdraw-btn="${escapeHtml(pi.public_id)}" onclick="openWithdrawModal('${escapeHtml(pi.public_id)}','${cancelSafeName}',${amountVal},'${escapeHtml(String(pi.mk_invoice_id||''))}')">Отозвать счёт</button>`
     : "";
 
   const extraCls = pi.status === "cancelled" ? " pi-card-cancelled"
@@ -12418,8 +12430,8 @@ function renderPaymentIntentCard(pi) {
     ${sourceBadge}
     ${duplicateBadge}
     ${comment}${cancelInfo}${bePaidCreatingBlock}${bePaidRequiresCheckBlock}${bePaidInfo}${acqReadyBadge}${bePaidPaidBlock}${mkPostedBlock}
-    ${publishedBadge}
-    <div class="pi-card-footer">${bePaidBtn}${acquiringBtn}${verifyAcquiringBtn}${mkPostBtn}${cancelBtn}${publishToParentBtn}${withdrawFromParentBtn}</div>
+    ${publishedBadge}${withdrawnBadge}
+    <div class="pi-card-footer">${bePaidBtn}${acquiringBtn}${verifyAcquiringBtn}${mkPostBtn}${cancelBtn}${publishToParentBtn}${withdrawBtn}</div>
     <div class="pi-card-id">${escapeHtml(pi.public_id)} · mk_user_id: ${pi.mk_user_id} · ${createdAt} ${createdBy}</div>
   </div>`;
 }
@@ -12882,6 +12894,11 @@ function renderMkPaymentTypes(data) {
 function canPostToMoyklass() {
   const r = state.me?.role || "";
   return ["owner", "admin"].includes(r);
+}
+
+function canWithdrawInvoice() {
+  const r = state.me?.role || "";
+  return ["owner", "admin", "operations"].includes(r);
 }
 
 let _piMkPostTarget = null;  // { publicId, name, amountByn }
@@ -13771,6 +13788,167 @@ function closePublishToParentModal() {
   $("publishToParentModal")?.classList.add("hidden");
 }
 
+// ── v7.0.98.1 — Invoice withdrawal modal ─────────────────────────────────────
+
+let _piWithdrawTarget = null;  // { publicId, name, amountByn, mkInvoiceId }
+let _piWithdrawPending = false;
+
+window.openWithdrawModal = async function(publicId, name, amountByn, mkInvoiceId) {
+  if (!canWithdrawInvoice()) return;
+  const btn = document.querySelector(`[data-pi-withdraw-btn="${escapeHtml(publicId)}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = "Проверка..."; }
+  try {
+    const data = await apiGet(`/api/payments/intents/${encodeURIComponent(publicId)}/withdrawal-status`);
+    if (!data.ok) {
+      alert(`Ошибка проверки: ${data.error || "нет доступа"}`);
+      return;
+    }
+    if (!data.can_withdraw) {
+      const wr = data.withdrawal;
+      if (wr && wr.status === "withdrawn") {
+        alert("Этот счёт уже отозван.");
+      } else {
+        alert("Счёт нельзя отозвать: возможно, он уже оплачен или имеет статус, не допускающий отзыва.");
+      }
+      return;
+    }
+    _piWithdrawTarget = { publicId, name, amountByn, mkInvoiceId };
+    _piWithdrawPending = false;
+
+    const infoEl = $("piWithdrawInfo");
+    const reasonEl = $("piWithdrawReason");
+    const errEl = $("piWithdrawError");
+    const confirmBtn = $("piWithdrawModalConfirm");
+    const resultEl = $("piWithdrawResult");
+    const fieldsEl = $("piWithdrawFields");
+    const backBtn = $("piWithdrawModalBack");
+
+    if (infoEl) {
+      infoEl.innerHTML =
+        `<div style="display:grid;gap:4px">` +
+        `<div><span style="color:var(--muted)">Ученик:&nbsp;</span><strong>${escapeHtml(name || "—")}</strong></div>` +
+        `<div><span style="color:var(--muted)">Сумма:&nbsp;</span><strong>${fmtByn(amountByn)}</strong></div>` +
+        (mkInvoiceId ? `<div><span style="color:var(--muted)">Счёт МК:&nbsp;</span><strong>#${escapeHtml(mkInvoiceId)}</strong></div>` : "") +
+        `<div><span style="color:var(--muted)">ID:&nbsp;</span><code style="font-size:11px">${escapeHtml(publicId)}</code></div>` +
+        `</div>`;
+    }
+    if (reasonEl) reasonEl.value = "";
+    if (errEl) { errEl.textContent = ""; errEl.classList.add("hidden"); }
+    if (resultEl) { resultEl.innerHTML = ""; resultEl.classList.add("hidden"); }
+    if (fieldsEl) fieldsEl.classList.remove("hidden");
+    if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = "Отозвать счёт"; confirmBtn.classList.remove("hidden"); }
+    if (backBtn) backBtn.textContent = "Отмена";
+
+    piModalOpen($("piWithdrawModal"));
+  } catch (err) {
+    alert(`Ошибка: ${err}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Отозвать счёт"; }
+  }
+};
+
+function closeWithdrawModal() {
+  _piWithdrawTarget = null;
+  _piWithdrawPending = false;
+  piModalClose($("piWithdrawModal"), () => {});
+}
+
+async function confirmWithdrawIntent() {
+  if (!_piWithdrawTarget || _piWithdrawPending) return;
+  const { publicId } = _piWithdrawTarget;
+  const reasonEl = $("piWithdrawReason");
+  const reason = (reasonEl?.value || "").trim();
+  const errEl = $("piWithdrawError");
+
+  if (reason.length < 5) {
+    if (errEl) { errEl.textContent = "Укажите причину отзыва (минимум 5 символов)."; errEl.classList.remove("hidden"); }
+    return;
+  }
+
+  const confirmBtn = $("piWithdrawModalConfirm");
+  const fieldsEl = $("piWithdrawFields");
+  _piWithdrawPending = true;
+  if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = "Отзываем..."; }
+  if (errEl) { errEl.textContent = ""; errEl.classList.add("hidden"); }
+
+  try {
+    const result = await _apiPostRaw(`/api/payments/intents/${encodeURIComponent(publicId)}/withdraw`, { reason });
+    if (result.ok || result.idempotent) {
+      const resultEl = $("piWithdrawResult");
+      if (resultEl) { resultEl.innerHTML = _renderWithdrawalResultBlock(result); resultEl.classList.remove("hidden"); }
+      if (fieldsEl) fieldsEl.classList.add("hidden");
+      if (confirmBtn) confirmBtn.classList.add("hidden");
+      const backBtn = $("piWithdrawModalBack");
+      if (backBtn) backBtn.textContent = "Закрыть";
+      loadPaymentIntents();
+    } else {
+      const msg = _withdrawalErrorMessage(result);
+      if (errEl) { errEl.textContent = msg; errEl.classList.remove("hidden"); }
+    }
+  } catch (err) {
+    if (errEl) { errEl.textContent = `Ошибка: ${err}`; errEl.classList.remove("hidden"); }
+  } finally {
+    _piWithdrawPending = false;
+    if (confirmBtn && !confirmBtn.classList.contains("hidden")) {
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = "Отозвать счёт";
+    }
+  }
+}
+
+function _withdrawalErrorMessage(result) {
+  if (result.requires_check) {
+    return "Требуется ручная проверка: " + (result.error || "оплата могла поступить во время отзыва.");
+  }
+  const err = result.error || "";
+  if (err.includes("уже оплачен") || err.includes("already_paid")) return "Счёт уже оплачен — отзыв невозможен.";
+  if (err.includes("posted_to_moyklass") || err.includes("already_posted")) return "Счёт уже внесён в МойКласс — отзыв невозможен.";
+  if (err.includes("payment_arrived_during")) return "Оплата поступила в процессе отзыва. Требуется ручная проверка.";
+  if (err.includes("минимум 5") || err.includes("insufficient_reason")) return "Укажите причину отзыва (минимум 5 символов).";
+  if (err.includes("не найден") || err.includes("not_found")) return "Счёт не найден.";
+  if (err.includes("Доступ") || err.includes("access_denied")) return "Нет доступа к этой операции.";
+  return err || "Неизвестная ошибка. Попробуйте ещё раз.";
+}
+
+function _renderWithdrawalResultBlock(result) {
+  const wr = result.withdrawal || {};
+  const status = result.status || wr.status || "withdrawn";
+  const statusLabel = status === "withdrawn" ? "✓ Счёт отозван"
+    : status === "requires_check" ? "⚠ Требует ручной проверки"
+    : escapeHtml(status);
+
+  const tgStatus = result.telegram_update_status || wr.telegram_update_status || "";
+  const tgLabel = tgStatus === "edited" ? "✓ Уведомление обновлено"
+    : tgStatus === "requires_check" ? "⚠ Результат неопределён (нужна проверка)"
+    : tgStatus === "skipped_no_notification" ? "— Уведомление не отправлялось"
+    : tgStatus === "skipped_already_updated" ? "— Уже обновлено ранее"
+    : tgStatus === "failed" ? "✗ Не удалось обновить"
+    : tgStatus ? escapeHtml(tgStatus) : "—";
+
+  const erpStatus = result.erip_cancel_status || wr.erip_cancel_status || "";
+  const erpLabel = erpStatus === "cancelled" ? "✓ ЕРИП отменён"
+    : erpStatus === "unsupported" ? "— Автоотмена ЕРИП недоступна (локальная блокировка применена)"
+    : erpStatus === "failed" ? "✗ Не удалось отменить ЕРИП"
+    : erpStatus ? escapeHtml(erpStatus) : "—";
+
+  const cardBlocked = result.card_blocked || wr.card_blocked;
+  const reqCheck = result.requires_check_reason || wr.requires_check_reason;
+
+  const bg = (status === "withdrawn") ? "var(--success-bg,#d1fae5)" : "var(--warn-bg,#fff3cd)";
+  const border = (status === "withdrawn") ? "var(--success-border,#6ee7b7)" : "var(--warn-border,#ffc107)";
+
+  let html = `<div style="margin-top:10px;padding:10px 12px;background:${bg};border:1px solid ${border};border-radius:6px;font-size:12px">`;
+  html += `<div style="font-weight:600;margin-bottom:8px;font-size:13px">${statusLabel}</div>`;
+  html += `<div style="margin-bottom:3px">Уведомление родителю: ${tgLabel}</div>`;
+  html += `<div style="margin-bottom:3px">ЕРИП: ${erpLabel}</div>`;
+  html += `<div style="margin-bottom:3px">Карта: ${cardBlocked ? "✓ Заблокирована" : "—"}</div>`;
+  if (reqCheck) {
+    html += `<div style="margin-top:8px;color:#92400e;font-size:11px">⚠ Требует проверки: <strong>${escapeHtml(reqCheck)}</strong></div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
 window.withdrawIntentFromParent = async function(publicId) {
   if (!canUsePaymentIntents()) return;
   const btn = document.querySelector(`[data-withdraw-btn="${escapeHtml(publicId)}"]`);
@@ -14167,6 +14345,12 @@ document.addEventListener("DOMContentLoaded", () => {
   $("publishToParentCancel")?.addEventListener("click", closePublishToParentModal);
   $("publishToParentClose")?.addEventListener("click", closePublishToParentModal);
   $("publishToParentModal")?.addEventListener("click", e => { if (e.target === $("publishToParentModal")) closePublishToParentModal(); });
+
+  // Invoice withdrawal modal (v7.0.98.1)
+  $("piWithdrawModalConfirm")?.addEventListener("click", confirmWithdrawIntent);
+  $("piWithdrawModalBack")?.addEventListener("click", closeWithdrawModal);
+  $("piWithdrawModalClose")?.addEventListener("click", closeWithdrawModal);
+  $("piWithdrawModal")?.addEventListener("click", e => { if (e.target === $("piWithdrawModal")) closeWithdrawModal(); });
 
   // Client payments tab: load when tab becomes active
   document.querySelectorAll('.tab[data-tab="client-payments"]').forEach(btn => {
