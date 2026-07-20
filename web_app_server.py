@@ -277,6 +277,19 @@ _AUTO_POST_MAX_ATTEMPTS: int = 5
 _RETRYABLE_MK_ERROR_CODES: frozenset[str] = frozenset({"mk_408", "mk_425", "mk_429"})
 _TRANSIENT_MK_HTTP_STATUSES: frozenset[int] = frozenset({0, 408, 425, 429, 500, 502, 503, 504})
 
+# ── Parent notification constants (v7.0.97.0) ────────────────────────────────
+_NOTIFY_BACKOFF_MINUTES: tuple[int, ...] = (5, 15, 30, 60)
+_NOTIFY_MAX_ATTEMPTS: int = 5
+_PERMANENT_TG_ERROR_FRAGMENTS: frozenset[str] = frozenset({
+    "bot was blocked by the user",
+    "user is deactivated",
+    "chat not found",
+    "forbidden",
+    "have no rights",
+    "user not found",
+    "bad request: chat not found",
+})
+
 # ── MoyKlass invoice list cache (single-flight, 5-min TTL) ──────────────────
 _MK_INVOICES_CACHE_TTL: float = 300.0   # seconds
 _mk_invoices_cache: "dict[str, Any]" = {}
@@ -986,6 +999,60 @@ def _telegram_send_document(bot_token: str, user_id: int | None, file_path: Path
         return True, ""
     except Exception as exc:
         return False, str(exc)[:500]
+
+
+def _telegram_send_parent_notification_msg(
+    bot_token: str,
+    user_id: int | None,
+    text: str,
+    webapp_url: str = "",
+    button_text: str = "💳 Открыть оплату",
+) -> tuple[bool, str, int | None]:
+    """Send HTML-formatted parent notification. Returns (ok, error_text, message_id|None).
+
+    Returns requires_check=True marker in error when outcome is ambiguous (timeout mid-request).
+    Caller should check error_text.startswith('AMBIGUOUS:') to detect this case.
+    """
+    import html as _html  # stdlib
+    if not bot_token or not user_id:
+        return False, "no_token_or_user_id", None
+    try:
+        import requests as _req
+        payload: dict = {
+            "chat_id": int(user_id),
+            "text": text,
+            "parse_mode": "HTML",
+        }
+        if webapp_url:
+            payload["reply_markup"] = {
+                "inline_keyboard": [[{
+                    "text": button_text,
+                    "web_app": {"url": webapp_url},
+                }]]
+            }
+        resp = _req.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json=payload,
+            timeout=(10, 20),
+        )
+        if resp.status_code == 429:
+            body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+            retry_after = int((body.get("parameters") or {}).get("retry_after") or 60)
+            return False, f"RATE_LIMITED:{retry_after}", None
+        if resp.status_code >= 400:
+            return False, resp.text[:500], None
+        data = resp.json()
+        message_id = int((data.get("result") or {}).get("message_id") or 0) or None
+        return True, "", message_id
+    except Exception as exc:
+        err = str(exc)
+        # Distinguish pre-connection failures (safe to retry) from mid-request ambiguity
+        lower = err.lower()
+        if any(s in lower for s in ("connection refused", "name or service not known",
+                                    "failed to establish", "getaddrinfo failed")):
+            return False, f"TRANSIENT:{err[:300]}", None
+        # Timeout or connection reset after potentially sending → ambiguous
+        return False, f"AMBIGUOUS:{err[:300]}", None
 
 
 def _course_has_explicit_key(text: str) -> bool:
@@ -9930,6 +9997,18 @@ class MiniAppContext:
         result = self.storage.publish_payment_intent_to_client(public_id, published_by, now)
         if not result.get("ok"):
             return result
+        # Notify parent if eligible (manual publish path)
+        if not result.get("idempotent"):
+            pi = result.get("intent") or {}
+            mk_invoice_id = str(pi.get("mk_invoice_id") or "")
+            mk_user_id = str(pi.get("mk_user_id") or "")
+            if mk_invoice_id:
+                automation_item = self.storage.get_automation_item_by_invoice(mk_invoice_id)
+                if automation_item and automation_item.get("parent_notify_eligible", 0):
+                    self._enqueue_and_send_parent_notification(
+                        automation_item, public_id, mk_invoice_id, mk_user_id, now,
+                        intent=pi,
+                    )
         return {"ok": True, "idempotent": result.get("idempotent", False), "intent": self._normalize_payment_intent(result["intent"])}
 
     def withdraw_intent_from_parent(
@@ -12542,6 +12621,7 @@ class MiniAppContext:
         create_payment_options_enabled = bool(body.get("create_payment_options_enabled", False))
         publish_to_parent_enabled = bool(body.get("publish_to_parent_enabled", False))
         post_to_moyklass_enabled = bool(body.get("post_to_moyklass_enabled", False))
+        notify_parent_enabled = bool(body.get("notify_parent_enabled", False))
         scan_interval_minutes = max(5, min(int(body.get("scan_interval_minutes", 10) or 10), 1440))
         now = now_iso()
         updated_by = str(auth.get("user_id") or "")
@@ -12550,6 +12630,7 @@ class MiniAppContext:
             create_payment_options_enabled=create_payment_options_enabled,
             publish_to_parent_enabled=publish_to_parent_enabled,
             post_to_moyklass_enabled=post_to_moyklass_enabled,
+            notify_parent_enabled=notify_parent_enabled,
             scan_interval_minutes=scan_interval_minutes,
             updated_by=updated_by,
             now=now,
@@ -12561,6 +12642,7 @@ class MiniAppContext:
                 "create_payment_options_enabled": create_payment_options_enabled,
                 "publish_to_parent_enabled": publish_to_parent_enabled,
                 "post_to_moyklass_enabled": post_to_moyklass_enabled,
+                "notify_parent_enabled": notify_parent_enabled,
                 "by": updated_by,
             },
         )
@@ -12877,6 +12959,10 @@ class MiniAppContext:
             _global_post = bool(getattr(self.settings, "bepaid_auto_post_to_moyklass", False))
             _db_post = bool(settings.get("post_to_moyklass_enabled", 0))
             post_enabled = _global_post and _db_post
+            # Two-level parent notification protection
+            _global_notify = bool(getattr(self.settings, "payment_parent_notifications_enabled", False))
+            _db_notify = bool(settings.get("notify_parent_enabled", 0))
+            notify_enabled = _global_notify and _db_notify
 
             if not discovery_enabled:
                 self.storage.finish_automation_run(
@@ -12929,6 +13015,7 @@ class MiniAppContext:
                         create_enabled=create_enabled,
                         publish_enabled=publish_enabled,
                         post_enabled=post_enabled,
+                        notify_enabled=notify_enabled,
                     )
                     outcome = _automation_update_counts(counts, result)
                     if outcome != "unaccounted":
@@ -12987,6 +13074,7 @@ class MiniAppContext:
         create_enabled: bool,
         publish_enabled: bool,
         post_enabled: bool = False,
+        notify_enabled: bool = False,
     ) -> dict[str, Any]:
         """Process a single MK invoice in the automation pipeline. Returns count-update dict."""
         inv_id = str(inv.get("id") or "")
@@ -13028,10 +13116,13 @@ class MiniAppContext:
         # Upsert item (INSERT OR IGNORE — won't overwrite existing stage or eligibility).
         # auto_*_eligible=1 only if respective setting was True at first-ever processing.
         # Historical rows keep their default 0.
+        # Two-level notify eligibility: both global env AND DB flag must be on at creation time
+        _notify_eligible = 1 if notify_enabled else 0
         item = self.storage.upsert_automation_item(
             inv_id, mk_user_id, student_name, snapshot, now,
             auto_publish_eligible=1 if publish_enabled else 0,
             auto_post_eligible=1 if post_enabled else 0,
+            parent_notify_eligible=_notify_eligible,
         )
         item_id = item.get("id")
         stage = item.get("current_stage", "discovered")
@@ -13173,6 +13264,7 @@ class MiniAppContext:
             return self._try_publish_automation_item(
                 item_id, existing_intent, mk_user_id, now, is_new,
                 auto_publish_eligible=item.get("auto_publish_eligible", 0),
+                parent_notify_eligible=item.get("parent_notify_eligible", 0),
             )
 
         # Check parent link
@@ -13263,6 +13355,11 @@ class MiniAppContext:
                         "result=published_successfully",
                         public_id, inv_id,
                     )
+                    if item.get("parent_notify_eligible", 0):
+                        self._enqueue_and_send_parent_notification(
+                            item, public_id, inv_id, mk_user_id, now,
+                            intent=pub.get("intent"),
+                        )
                     return {"created": True, "published": True, "discovered": is_new}
                 log.warning(
                     "payment_event=parent_auto_publish_failed intent=%s mk_invoice_id=%s "
@@ -13361,6 +13458,458 @@ class MiniAppContext:
             intent_id, mk_inv_id, attempt_count + 1, next_retry_at, delay_minutes,
         )
         return {"retry_scheduled": True}
+
+    # ── v7.0.97.0 — Parent notification methods ──────────────────────────────
+
+    @staticmethod
+    def _notify_parent_period_label(period_month: str) -> str:
+        """Convert 'YYYY-MM' to human-readable Russian period, e.g. 'август 2026'."""
+        _MONTHS_RU = (
+            "", "январь", "февраль", "март", "апрель", "май", "июнь",
+            "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
+        )
+        _MONTHS_GENITIVE = (
+            "", "января", "февраля", "марта", "апреля", "мая", "июня",
+            "июля", "августа", "сентября", "октября", "ноября", "декабря",
+        )
+        if not period_month:
+            return ""
+        try:
+            parts = str(period_month).split("-")
+            year = int(parts[0])
+            month = int(parts[1])
+            if 1 <= month <= 12:
+                return f"{_MONTHS_GENITIVE[month].capitalize()} {year}"
+        except (ValueError, IndexError):
+            pass
+        return str(period_month)
+
+    @staticmethod
+    def _format_parent_notification_text(
+        student_name: str,
+        period_label: str,
+        amount_byn: float,
+        currency: str,
+    ) -> str:
+        """Format HTML notification text for a new invoice."""
+        import html as _html
+        name_esc = _html.escape(str(student_name or "").strip() or "Ученик")
+        period_esc = _html.escape(str(period_label or "").strip())
+        curr = str(currency or "BYN").strip().upper()
+        amount_str = f"{amount_byn:.2f}".replace(".", ",") + f" {curr}"
+        lines = [f"💳 <b>Yellow Club — выставлен новый счёт</b>", ""]
+        lines.append(f"Ученик: {name_esc}")
+        if period_esc:
+            lines.append(f"Период: {period_esc}")
+        lines.append(f"Сумма: {amount_str}")
+        lines += ["", "Оплатить можно банковской картой или через ЕРИП."]
+        return "\n".join(lines)
+
+    def _schedule_notify_retry(
+        self,
+        notification_id: int,
+        attempt_count: int,
+        intent_public_id: str,
+        telegram_user_id: str,
+        error_text: str,
+        now: str,
+    ) -> None:
+        backoff_idx = min(attempt_count, len(_NOTIFY_BACKOFF_MINUTES) - 1)
+        delay_minutes = _NOTIFY_BACKOFF_MINUTES[backoff_idx]
+        next_retry_dt = datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)
+        next_retry_at = next_retry_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.storage.schedule_parent_notification_retry(
+            notification_id,
+            next_retry_at=next_retry_at,
+            last_error=error_text,
+            now=now,
+        )
+        log.info(
+            "payment_event=parent_notification_retry_scheduled intent=%s tg_user=%s "
+            "attempt=%d next_retry_at=%s delay_minutes=%d",
+            intent_public_id, telegram_user_id, attempt_count + 1, next_retry_at, delay_minutes,
+        )
+
+    def _try_deliver_parent_notification(
+        self,
+        notification_id: int,
+        intent_public_id: str,
+        mk_invoice_id: str,
+        telegram_user_id: str,
+        student_name: str,
+        amount_byn: float,
+        currency: str,
+        period_label: str,
+        attempt_count: int,
+        now: str,
+    ) -> dict[str, Any]:
+        """Claim → format → send → update status. Returns outcome dict."""
+        import uuid as _uuid
+        claim_token = _uuid.uuid4().hex
+        claimed = self.storage.claim_parent_notification(notification_id, claim_token, now)
+        if not claimed:
+            log.info(
+                "payment_event=parent_notification_skipped intent=%s "
+                "reason=claim_conflict notification_id=%d",
+                intent_public_id, notification_id,
+            )
+            return {"skipped": True, "reason": "claim_conflict"}
+
+        # Guard: max retries
+        if attempt_count >= _NOTIFY_MAX_ATTEMPTS:
+            self.storage.mark_parent_notification_requires_check(
+                notification_id,
+                last_error=f"max_attempts_reached ({_NOTIFY_MAX_ATTEMPTS})",
+                now=now,
+            )
+            log.warning(
+                "payment_event=parent_notification_requires_check intent=%s tg_user=%s "
+                "reason=max_attempts_reached attempt=%d",
+                intent_public_id, telegram_user_id, attempt_count,
+            )
+            return {"requires_check": True}
+
+        text = self._format_parent_notification_text(student_name, period_label, amount_byn, currency)
+        bot_token = getattr(self.settings, "telegram_bot_token", "") or ""
+        webapp_url = ""
+        base_url = getattr(self.settings, "web_app_url", "") or ""
+        if base_url:
+            webapp_url = base_url + "?tab=client-payments"
+
+        log.info(
+            "payment_event=parent_notification_started intent=%s mk_invoice_id=%s "
+            "tg_user=%s attempt=%d",
+            intent_public_id, mk_invoice_id, telegram_user_id, attempt_count + 1,
+        )
+
+        try:
+            tg_user_int = int(telegram_user_id)
+        except (ValueError, TypeError):
+            self.storage.mark_parent_notification_failed(
+                notification_id, last_error="invalid_telegram_user_id", now=now
+            )
+            log.warning(
+                "payment_event=parent_notification_failed intent=%s tg_user=%s "
+                "reason=invalid_telegram_user_id",
+                intent_public_id, telegram_user_id,
+            )
+            return {"failed": True, "reason": "invalid_telegram_user_id"}
+
+        ok, err, message_id = _telegram_send_parent_notification_msg(
+            bot_token, tg_user_int, text, webapp_url,
+        )
+
+        if ok:
+            self.storage.mark_parent_notification_sent(
+                notification_id,
+                telegram_message_id=message_id,
+                sent_at=now,
+                now=now,
+            )
+            log.info(
+                "payment_event=parent_notification_succeeded intent=%s mk_invoice_id=%s "
+                "tg_user=%s telegram_message_id=%s",
+                intent_public_id, mk_invoice_id, telegram_user_id, message_id,
+            )
+            return {"sent": True, "telegram_message_id": message_id}
+
+        # Classify error
+        err_lower = err.lower()
+
+        # Permanent Telegram errors
+        if any(frag in err_lower for frag in _PERMANENT_TG_ERROR_FRAGMENTS):
+            self.storage.mark_parent_notification_failed(
+                notification_id, last_error=err[:400], now=now
+            )
+            log.warning(
+                "payment_event=parent_notification_failed intent=%s tg_user=%s "
+                "reason=permanent_tg_error err=%s",
+                intent_public_id, telegram_user_id, err[:200],
+            )
+            return {"failed": True, "reason": "permanent_tg_error"}
+
+        # Rate limit — retry after delay
+        if err.startswith("RATE_LIMITED:"):
+            retry_seconds = max(60, int(err.split(":", 1)[1] or 60))
+            next_retry_dt = datetime.now(timezone.utc) + timedelta(seconds=retry_seconds)
+            next_retry_at = next_retry_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            self.storage.schedule_parent_notification_retry(
+                notification_id,
+                next_retry_at=next_retry_at,
+                last_error=err[:300],
+                now=now,
+            )
+            log.info(
+                "payment_event=parent_notification_retry_scheduled intent=%s tg_user=%s "
+                "reason=rate_limited retry_seconds=%d",
+                intent_public_id, telegram_user_id, retry_seconds,
+            )
+            return {"retry_scheduled": True}
+
+        # Ambiguous outcome — requires_check (no automatic retry, may have sent)
+        if err.startswith("AMBIGUOUS:"):
+            self.storage.mark_parent_notification_requires_check(
+                notification_id, last_error=err[:400], now=now
+            )
+            log.warning(
+                "payment_event=parent_notification_requires_check intent=%s tg_user=%s "
+                "reason=ambiguous_outcome err=%s",
+                intent_public_id, telegram_user_id, err[:200],
+            )
+            return {"requires_check": True}
+
+        # Transient error — schedule retry
+        self._schedule_notify_retry(
+            notification_id, attempt_count, intent_public_id, telegram_user_id, err, now
+        )
+        return {"retry_scheduled": True}
+
+    def _enqueue_and_send_parent_notification(
+        self,
+        item: dict[str, Any],
+        intent_public_id: str,
+        mk_invoice_id: str,
+        mk_user_id: str,
+        now: str,
+        *,
+        intent: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Enqueue and immediately attempt to send a parent notification for a new invoice.
+
+        Guards: env kill switch, DB flag, eligible flag on item, CL-link required.
+        Called right after a successful publish. Silently skips if not eligible.
+        """
+        if not item.get("parent_notify_eligible", 0):
+            return
+
+        # Two-level kill switch check
+        _global_notify = bool(getattr(self.settings, "payment_parent_notifications_enabled", False))
+        if not _global_notify:
+            log.info(
+                "payment_event=parent_notification_skipped intent=%s "
+                "reason=global_env_disabled",
+                intent_public_id,
+            )
+            return
+        _db_notify = bool(self.storage.get_automation_settings().get("notify_parent_enabled", 0))
+        if not _db_notify:
+            log.info(
+                "payment_event=parent_notification_skipped intent=%s "
+                "reason=db_flag_disabled",
+                intent_public_id,
+            )
+            return
+
+        # Get parent TG ID from CL-link
+        parents = self.storage.get_parents_for_child(str(mk_user_id))
+        if not parents:
+            log.info(
+                "payment_event=parent_notification_skipped intent=%s mk_invoice_id=%s "
+                "reason=no_cl_link",
+                intent_public_id, mk_invoice_id,
+            )
+            return
+        telegram_user_id = str(parents[0].get("parent_telegram_user_id") or "").strip()
+        if not telegram_user_id:
+            log.info(
+                "payment_event=parent_notification_skipped intent=%s mk_invoice_id=%s "
+                "reason=no_telegram_user_id",
+                intent_public_id, mk_invoice_id,
+            )
+            return
+
+        # Resolve notification text data from item and intent
+        student_name = str(item.get("student_name") or "").strip() or "Ученик"
+        if intent is None:
+            intent = self.storage.get_payment_intent(intent_public_id) or {}
+        amount_minor = int(intent.get("amount_minor") or 0)
+        amount_byn = round(amount_minor / 100.0, 2)
+        currency = str(intent.get("currency") or "BYN").strip().upper() or "BYN"
+        period_month = str(intent.get("period_month") or "").strip()
+        period_label = self._notify_parent_period_label(period_month)
+
+        log.info(
+            "payment_event=parent_notification_candidate intent=%s mk_invoice_id=%s "
+            "tg_user=%s",
+            intent_public_id, mk_invoice_id, telegram_user_id,
+        )
+
+        # Create outbox row (INSERT OR IGNORE — idempotent)
+        row = self.storage.create_parent_notification(
+            intent_public_id, mk_invoice_id, "new_invoice", telegram_user_id, now
+        )
+        if not row:
+            return
+
+        notification_id = row["id"]
+        existing_status = row.get("status", "pending")
+
+        # Skip if already sent
+        if existing_status == "sent":
+            log.info(
+                "payment_event=parent_notification_skipped intent=%s "
+                "reason=already_sent notification_id=%d",
+                intent_public_id, notification_id,
+            )
+            return
+
+        # Skip if requires_check / failed / sending — don't interfere
+        if existing_status in ("requires_check", "failed", "sending"):
+            return
+
+        attempt_count = int(row.get("attempt_count") or 0)
+
+        self._try_deliver_parent_notification(
+            notification_id, intent_public_id, mk_invoice_id,
+            telegram_user_id, student_name, amount_byn, currency, period_label,
+            attempt_count, now,
+        )
+
+    def process_pending_parent_notifications(
+        self, trigger: str = "scheduler"
+    ) -> dict[str, Any]:
+        """Process due parent notifications from the outbox table."""
+        now = now_iso()
+
+        # Reset stale claims (>10 min stuck in 'sending')
+        stale_before = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        reset_count = self.storage.reset_stale_parent_notification_claims(stale_before, now)
+        if reset_count:
+            log.info(
+                "payment_event=parent_notification_stale_claims_reset count=%d", reset_count
+            )
+
+        due = self.storage.list_due_parent_notifications(now)
+        counts = {"processed": 0, "sent": 0, "retry": 0, "failed": 0, "requires_check": 0, "skipped": 0}
+
+        for row in due:
+            notification_id = row["id"]
+            intent_public_id = row["intent_public_id"]
+            mk_invoice_id = row.get("mk_invoice_id") or ""
+            telegram_user_id = str(row.get("telegram_user_id") or "")
+            attempt_count = int(row.get("attempt_count") or 0)
+
+            # Reload intent for fresh data
+            intent = self.storage.get_payment_intent(intent_public_id) or {}
+            mk_user_id = str(intent.get("mk_user_id") or "")
+            student_name = str(intent.get("student_name") or "").strip() or "Ученик"
+            amount_minor = int(intent.get("amount_minor") or 0)
+            amount_byn = round(amount_minor / 100.0, 2)
+            currency = str(intent.get("currency") or "BYN").strip().upper() or "BYN"
+            period_month = str(intent.get("period_month") or "").strip()
+            period_label = self._notify_parent_period_label(period_month)
+
+            result = self._try_deliver_parent_notification(
+                notification_id, intent_public_id, mk_invoice_id,
+                telegram_user_id, student_name, amount_byn, currency, period_label,
+                attempt_count, now,
+            )
+            counts["processed"] += 1
+            if result.get("sent"):
+                counts["sent"] += 1
+            elif result.get("retry_scheduled"):
+                counts["retry"] += 1
+            elif result.get("failed"):
+                counts["failed"] += 1
+            elif result.get("requires_check"):
+                counts["requires_check"] += 1
+            else:
+                counts["skipped"] += 1
+
+        log.info(
+            "payment_event=parent_notifications_batch trigger=%s %s",
+            trigger, " ".join(f"{k}={v}" for k, v in counts.items()),
+        )
+        return {"ok": True, **counts}
+
+    def get_intent_notification_status(
+        self, auth: dict[str, Any], public_id: str
+    ) -> dict[str, Any]:
+        """GET /api/payments/intents/{id}/notification-status — admin view."""
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+        pi = self.storage.get_payment_intent(public_id)
+        if not pi:
+            return {"ok": False, "error": "Intent not found"}
+        # Get automation item for eligibility flag
+        item = self.storage.get_automation_item_by_invoice(
+            str(pi.get("mk_invoice_id") or "")
+        ) if pi.get("mk_invoice_id") else None
+        notify_eligible = bool(item.get("parent_notify_eligible", 0)) if item else False
+        notif = self.storage.get_parent_notification(public_id, "new_invoice")
+        return {
+            "ok": True,
+            "intent_public_id": public_id,
+            "parent_notify_eligible": notify_eligible,
+            "notification": notif,
+        }
+
+    def retry_parent_notification(
+        self, auth: dict[str, Any], notification_id: int
+    ) -> dict[str, Any]:
+        """POST /api/payments/notifications/{id}/retry — manual retry by admin."""
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+        now = now_iso()
+        row = self.storage.get_parent_notification_by_id(notification_id)
+        if not row:
+            return {"ok": False, "error": "Notification not found"}
+
+        # Only allow retry for clearly unambiguous failures
+        status = row.get("status", "")
+        if status == "sent":
+            return {"ok": False, "error": "already_sent"}
+        if status == "requires_check":
+            return {"ok": False, "error": "requires_check_manual_review_needed"}
+        if status not in ("failed", "retry"):
+            return {"ok": False, "error": f"cannot_retry_status_{status}"}
+
+        intent_public_id = row["intent_public_id"]
+        pi = self.storage.get_payment_intent(intent_public_id)
+        if not pi:
+            return {"ok": False, "error": "Intent not found"}
+
+        # Check intent is still accessible (not withdrawn/cancelled/hidden)
+        vis = pi.get("client_visibility", "hidden")
+        if vis in ("withdrawn", "hidden"):
+            return {"ok": False, "error": f"intent_not_visible:{vis}"}
+
+        # Check CL-link still active
+        mk_user_id = str(pi.get("mk_user_id") or "")
+        parents = self.storage.get_parents_for_child(mk_user_id)
+        if not parents:
+            return {"ok": False, "error": "no_active_cl_link"}
+
+        # Reset to pending for retry
+        self.storage.schedule_parent_notification_retry(
+            notification_id,
+            next_retry_at=now,
+            last_error="manual_retry_by_admin",
+            now=now,
+        )
+
+        # Immediately try to deliver
+        mk_invoice_id = row.get("mk_invoice_id") or ""
+        telegram_user_id = str(row.get("telegram_user_id") or "")
+        student_name = str(pi.get("student_name") or "").strip() or "Ученик"
+        amount_minor = int(pi.get("amount_minor") or 0)
+        amount_byn = round(amount_minor / 100.0, 2)
+        currency = str(pi.get("currency") or "BYN").strip().upper() or "BYN"
+        period_label = self._notify_parent_period_label(
+            str(pi.get("period_month") or "").strip()
+        )
+        attempt_count = int(row.get("attempt_count") or 0)
+
+        result = self._try_deliver_parent_notification(
+            notification_id, intent_public_id, mk_invoice_id,
+            telegram_user_id, student_name, amount_byn, currency, period_label,
+            attempt_count, now,
+        )
+        return {"ok": True, **result}
 
     def _try_auto_post_automation_item(
         self,
@@ -13664,6 +14213,7 @@ class MiniAppContext:
         is_new: bool,
         *,
         auto_publish_eligible: int = 0,
+        parent_notify_eligible: int = 0,
     ) -> dict[str, Any]:
         """Try to publish an already-created intent to parent.
 
@@ -13740,6 +14290,12 @@ class MiniAppContext:
                 "result=published_successfully",
                 intent_id, mk_inv_id,
             )
+            if parent_notify_eligible:
+                _item = self.storage.get_automation_item_by_id(item_id) or {}
+                self._enqueue_and_send_parent_notification(
+                    _item, intent_id, mk_inv_id, mk_user_id, now,
+                    intent=pub.get("intent"),
+                )
             return {"published": True, "discovered": is_new}
         log.warning(
             "payment_event=parent_auto_publish_failed intent=%s mk_invoice_id=%s "
@@ -14147,6 +14703,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                         return self._send_json(CTX.payment_intent_moyklass_readiness(auth, _pi_parts[0]))
                     if len(_pi_parts) == 2 and _pi_parts[1] == "publish-preview":
                         return self._send_json(CTX.get_intent_publish_preview(auth, _pi_parts[0]))
+                    if len(_pi_parts) == 2 and _pi_parts[1] == "notification-status":
+                        return self._send_json(CTX.get_intent_notification_status(auth, _pi_parts[0]))
                 if path.startswith("/api/food/kitchen/menus/"):
                     _krest = path[len("/api/food/kitchen/menus/"):]
                     _kparts = _krest.split("/")
@@ -14268,6 +14826,15 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.publish_intent_to_parent(auth, _pi_parts[0]))
                 if len(_pi_parts) == 2 and _pi_parts[1] == "withdraw-from-parent":
                     return self._send_json(CTX.withdraw_intent_from_parent(auth, _pi_parts[0]))
+            if path.startswith("/api/payments/notifications/"):
+                _notif_rest = path[len("/api/payments/notifications/"):]
+                _notif_parts = _notif_rest.split("/")
+                if len(_notif_parts) == 2 and _notif_parts[1] == "retry":
+                    try:
+                        _notif_id = int(_notif_parts[0])
+                    except (ValueError, TypeError):
+                        return self._send_json({"ok": False, "error": "invalid notification id"}, status=400)
+                    return self._send_json(CTX.retry_parent_notification(auth, _notif_id))
             if path.startswith("/api/payments/bepaid/transactions/"):
                 _btx_rest = path[len("/api/payments/bepaid/transactions/"):]
                 _btx_parts = _btx_rest.split("/")

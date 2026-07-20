@@ -129,6 +129,9 @@ class Settings:
     # Invoice automation (v7.0.94.0) — global kill switch for scheduled runs
     payment_invoice_automation_enabled: bool
 
+    # Parent notifications (v7.0.97.0) — global env kill switch (default off)
+    payment_parent_notifications_enabled: bool
+
     @property
     def bepaid_erip_enabled(self) -> bool:
         return bool(self.bepaid_erip_shop_id and self.bepaid_erip_secret_key)
@@ -249,4 +252,5 @@ def load_settings() -> Settings:
         moyklass_erip_payment_type_id=int(os.getenv("MOYKLASS_ERIP_PAYMENT_TYPE_ID", "0") or "0"),
         moyklass_acquiring_payment_type_id=int(os.getenv("MOYKLASS_ACQUIRING_PAYMENT_TYPE_ID", "0") or "0"),
         payment_invoice_automation_enabled=_bool(os.getenv("PAYMENT_INVOICE_AUTOMATION_ENABLED", "false"), False),
+        payment_parent_notifications_enabled=_bool(os.getenv("PAYMENT_PARENT_NOTIFICATIONS_ENABLED", "false"), False),
     )

@@ -78,8 +78,10 @@ const devUserId = urlParams.get("dev_user_id") || "";
 const launchUserId = urlParams.get("yc_user_id") || "";
 const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
+// v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
+const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.0.96.1");
+console.log("MiniApp version: v7.0.97.0");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -11937,6 +11939,13 @@ async function boot() {
   try {
     await loadMe();
     const role = state.me?.role || "";
+    // v7.0.97.0 — deep-link navigation from Telegram notification button (?tab=...)
+    if (launchTab) {
+      activateTab(launchTab);
+      if (launchTab === "client-payments" && isParent()) {
+        loadClientPayments();
+      }
+    }
     if (role === "kitchen" || role === "restaurant") {
       await loadKitchenMenus();
       return;
@@ -13780,7 +13789,7 @@ window.withdrawIntentFromParent = async function(publicId) {
   }
 };
 
-// ── v7.0.96.1 — Payment integrity audit ───────────────────────────────────────
+// ── v7.0.97.0 — Payment integrity audit ───────────────────────────────────────
 
 async function loadPaymentIntegrity() {
   const statusEl = $("payIntegrityStatus");
@@ -13895,11 +13904,13 @@ async function loadAutomationSettings() {
   const toggleCreate = $("autoToggleCreate");
   const togglePublish = $("autoTogglePublish");
   const togglePost = $("autoTogglePost");
+  const toggleNotify = $("autoToggleNotify");
   const intervalInput = $("autoIntervalInput");
   if (toggleDiscovery) toggleDiscovery.checked = !!s.discovery_enabled;
   if (toggleCreate) { toggleCreate.checked = !!s.create_payment_options_enabled; toggleCreate._prevChecked = !!s.create_payment_options_enabled; }
   if (togglePublish) { togglePublish.checked = !!s.publish_to_parent_enabled; togglePublish._prevChecked = !!s.publish_to_parent_enabled; }
   if (togglePost) { togglePost.checked = !!s.post_to_moyklass_enabled; togglePost._prevChecked = !!s.post_to_moyklass_enabled; }
+  if (toggleNotify) { toggleNotify.checked = !!s.notify_parent_enabled; toggleNotify._prevChecked = !!s.notify_parent_enabled; }
   if (intervalInput) intervalInput.value = s.scan_interval_minutes || 10;
 }
 
@@ -13912,11 +13923,13 @@ async function saveAutomationSettings() {
     const toggleCreate = $("autoToggleCreate");
     const togglePublish = $("autoTogglePublish");
     const togglePost = $("autoTogglePost");
+    const toggleNotify = $("autoToggleNotify");
     const intervalInput = $("autoIntervalInput");
 
     const createEnabled = !!(toggleCreate?.checked);
     const publishEnabled = !!(togglePublish?.checked);
     const postEnabled = !!(togglePost?.checked);
+    const notifyEnabled = !!(toggleNotify?.checked);
 
     if (createEnabled && toggleCreate && !toggleCreate._prevChecked) {
       const ok = window.confirm("Будут создаваться реальные платёжные реквизиты bePaid для новых проверенных счетов. Продолжить?");
@@ -13930,12 +13943,17 @@ async function saveAutomationSettings() {
       const ok = window.confirm("Новые подтверждённые оплаты bePaid будут автоматически вноситься в МойКласс. Убедитесь, что глобальный переключатель BEPAID_AUTO_POST_TO_MOYKLASS включён. Продолжить?");
       if (!ok) { if (btn) btn.disabled = false; return; }
     }
+    if (notifyEnabled && toggleNotify && !toggleNotify._prevChecked) {
+      const ok = window.confirm("Родители будут получать Telegram-уведомления о новых счетах. Применяется только к новым счетам при включённом глобальном переключателе PAYMENT_PARENT_NOTIFICATIONS_ENABLED. Продолжить?");
+      if (!ok) { if (btn) btn.disabled = false; return; }
+    }
 
     const result = await _apiPostRaw("/api/payments/automation/settings", {
       discovery_enabled: !!(toggleDiscovery?.checked),
       create_payment_options_enabled: createEnabled,
       publish_to_parent_enabled: publishEnabled,
       post_to_moyklass_enabled: postEnabled,
+      notify_parent_enabled: notifyEnabled,
       scan_interval_minutes: parseInt(intervalInput?.value || "10", 10),
     });
     if (result.ok) {
@@ -13943,6 +13961,7 @@ async function saveAutomationSettings() {
       if (toggleCreate) toggleCreate._prevChecked = createEnabled;
       if (togglePublish) togglePublish._prevChecked = publishEnabled;
       if (togglePost) togglePost._prevChecked = postEnabled;
+      if (toggleNotify) toggleNotify._prevChecked = notifyEnabled;
       loadAutomationStatus();
     } else {
       setNotice(result.error || "Ошибка сохранения", "error");
@@ -14090,7 +14109,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("refreshUnmatchedTx")?.addEventListener("click", loadUnmatchedTransactions);
   $("refreshRecoveryQueue")?.addEventListener("click", loadRecoveryQueue);
 
-  // v7.0.96.1 — Integrity audit listener
+  // v7.0.97.0 — Integrity audit listener
   $("payIntegrityRefreshBtn")?.addEventListener("click", loadPaymentIntegrity);
 
   // v7.0.94.0 — Automation listeners

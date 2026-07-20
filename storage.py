@@ -1245,6 +1245,54 @@ class Storage:
             except Exception:
                 pass
 
+        # v7.0.97.0 — parent notification eligibility flag on items
+        for _col, _type in [
+            ("parent_notify_eligible", "INTEGER NOT NULL DEFAULT 0"),
+            ("parent_notify_eligible_at", "TEXT"),
+        ]:
+            try:
+                conn.execute(
+                    f"ALTER TABLE invoice_automation_items ADD COLUMN {_col} {_type}"
+                )
+            except Exception:
+                pass
+
+        # v7.0.97.0 — notify_parent_enabled toggle on automation settings
+        try:
+            conn.execute(
+                "ALTER TABLE invoice_automation_settings ADD COLUMN "
+                "notify_parent_enabled INTEGER NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            pass
+
+        # v7.0.97.0 — outbox table for parent Telegram notifications
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payment_parent_notifications (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                intent_public_id    TEXT NOT NULL,
+                mk_invoice_id       TEXT NOT NULL DEFAULT '',
+                notification_type   TEXT NOT NULL DEFAULT 'new_invoice',
+                telegram_user_id    TEXT NOT NULL,
+                telegram_message_id INTEGER,
+                status              TEXT NOT NULL DEFAULT 'pending',
+                attempt_count       INTEGER NOT NULL DEFAULT 0,
+                next_retry_at       TEXT,
+                claim_token         TEXT,
+                claimed_at          TEXT,
+                sent_at             TEXT,
+                last_attempt_at     TEXT,
+                last_error          TEXT,
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL,
+                UNIQUE(intent_public_id, notification_type)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ppn_status "
+            "ON payment_parent_notifications(status, next_retry_at)"
+        )
+
     # ── v7.0.94.0 — Invoice Automation methods ───────────────────────────────
 
     def get_automation_settings(self) -> dict:
@@ -1255,6 +1303,7 @@ class Storage:
         return dict(row) if row else {
             "id": 1, "discovery_enabled": 1, "create_payment_options_enabled": 0,
             "publish_to_parent_enabled": 0, "post_to_moyklass_enabled": 0,
+            "notify_parent_enabled": 0,
             "scan_interval_minutes": 10,
             "last_scan_at": None, "updated_at": "", "updated_by": "",
         }
@@ -1266,6 +1315,7 @@ class Storage:
         create_payment_options_enabled: bool,
         publish_to_parent_enabled: bool,
         post_to_moyklass_enabled: bool = False,
+        notify_parent_enabled: bool = False,
         scan_interval_minutes: int,
         updated_by: str,
         now: str,
@@ -1276,10 +1326,12 @@ class Storage:
                 """UPDATE invoice_automation_settings SET
                    discovery_enabled=?, create_payment_options_enabled=?,
                    publish_to_parent_enabled=?, post_to_moyklass_enabled=?,
+                   notify_parent_enabled=?,
                    scan_interval_minutes=?, updated_at=?, updated_by=? WHERE id=1""",
                 (
                     int(discovery_enabled), int(create_payment_options_enabled),
                     int(publish_to_parent_enabled), int(post_to_moyklass_enabled),
+                    int(notify_parent_enabled),
                     interval, now, str(updated_by)[:200],
                 ),
             )
@@ -1318,6 +1370,7 @@ class Storage:
         *,
         auto_publish_eligible: int = 0,
         auto_post_eligible: int = 0,
+        parent_notify_eligible: int = 0,
     ) -> dict:
         """INSERT OR IGNORE then return the row. Does not overwrite existing stage or eligibility."""
         with self._connect() as conn:
@@ -1326,13 +1379,15 @@ class Storage:
                    (mk_invoice_id, mk_user_id, student_name, invoice_snapshot_json,
                     auto_publish_eligible, auto_publish_eligible_at,
                     auto_post_eligible, auto_post_eligible_at,
+                    parent_notify_eligible, parent_notify_eligible_at,
                     created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     str(mk_invoice_id), str(mk_user_id), student_name,
                     invoice_snapshot_json,
                     auto_publish_eligible, now if auto_publish_eligible else None,
                     auto_post_eligible, now if auto_post_eligible else None,
+                    parent_notify_eligible, now if parent_notify_eligible else None,
                     now, now,
                 ),
             )
@@ -1429,6 +1484,172 @@ class Storage:
                     int(item_id),
                 ),
             )
+
+    # ── v7.0.97.0 — Parent notification outbox ───────────────────────────────
+
+    def create_parent_notification(
+        self,
+        intent_public_id: str,
+        mk_invoice_id: str,
+        notification_type: str,
+        telegram_user_id: str,
+        now: str,
+    ) -> Optional[dict]:
+        """INSERT OR IGNORE notification row; return the row (existing or new)."""
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO payment_parent_notifications
+                   (intent_public_id, mk_invoice_id, notification_type,
+                    telegram_user_id, status, attempt_count, created_at, updated_at)
+                   VALUES (?,?,?,?,'pending',0,?,?)""",
+                (
+                    str(intent_public_id), str(mk_invoice_id),
+                    str(notification_type), str(telegram_user_id),
+                    now, now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM payment_parent_notifications "
+                "WHERE intent_public_id=? AND notification_type=?",
+                (str(intent_public_id), str(notification_type)),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_parent_notification(
+        self, intent_public_id: str, notification_type: str
+    ) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM payment_parent_notifications "
+                "WHERE intent_public_id=? AND notification_type=?",
+                (str(intent_public_id), str(notification_type)),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_parent_notification_by_id(self, notification_id: int) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM payment_parent_notifications WHERE id=?",
+                (int(notification_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def claim_parent_notification(
+        self, notification_id: int, claim_token: str, now: str
+    ) -> bool:
+        """Atomically claim a pending/retry notification for sending. Returns True if claimed."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """UPDATE payment_parent_notifications SET
+                   status='sending', claim_token=?, claimed_at=?, updated_at=?
+                   WHERE id=? AND status IN ('pending','retry')""",
+                (str(claim_token), now, now, int(notification_id)),
+            )
+            return cursor.rowcount > 0
+
+    def mark_parent_notification_sent(
+        self,
+        notification_id: int,
+        *,
+        telegram_message_id: Optional[int],
+        sent_at: str,
+        now: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_parent_notifications SET
+                   status='sent', telegram_message_id=?, sent_at=?,
+                   last_attempt_at=?, attempt_count=attempt_count+1,
+                   claim_token=NULL, updated_at=?
+                   WHERE id=?""",
+                (
+                    telegram_message_id, sent_at, now, now,
+                    int(notification_id),
+                ),
+            )
+
+    def schedule_parent_notification_retry(
+        self,
+        notification_id: int,
+        *,
+        next_retry_at: str,
+        last_error: str,
+        now: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_parent_notifications SET
+                   status='retry', next_retry_at=?,
+                   last_error=?, last_attempt_at=?,
+                   attempt_count=attempt_count+1,
+                   claim_token=NULL, updated_at=?
+                   WHERE id=?""",
+                (
+                    next_retry_at, str(last_error)[:500], now, now,
+                    int(notification_id),
+                ),
+            )
+
+    def mark_parent_notification_failed(
+        self, notification_id: int, *, last_error: str, now: str
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_parent_notifications SET
+                   status='failed', last_error=?, last_attempt_at=?,
+                   attempt_count=attempt_count+1,
+                   claim_token=NULL, updated_at=?
+                   WHERE id=?""",
+                (str(last_error)[:500], now, now, int(notification_id)),
+            )
+
+    def mark_parent_notification_requires_check(
+        self, notification_id: int, *, last_error: str, now: str
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_parent_notifications SET
+                   status='requires_check', last_error=?, last_attempt_at=?,
+                   attempt_count=attempt_count+1,
+                   claim_token=NULL, updated_at=?
+                   WHERE id=?""",
+                (str(last_error)[:500], now, now, int(notification_id)),
+            )
+
+    def mark_parent_notification_skipped(
+        self, notification_id: int, *, reason: str, now: str
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_parent_notifications SET
+                   status='skipped', last_error=?, updated_at=?
+                   WHERE id=?""",
+                (str(reason)[:500], now, int(notification_id)),
+            )
+
+    def list_due_parent_notifications(self, now: str) -> list:
+        """Return pending and retry-due notifications ordered by created_at."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM payment_parent_notifications
+                   WHERE status='pending'
+                      OR (status='retry' AND (next_retry_at IS NULL OR next_retry_at <= ?))
+                   ORDER BY created_at ASC LIMIT 50""",
+                (now,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def reset_stale_parent_notification_claims(self, stale_before: str, now: str) -> int:
+        """Reset stuck 'sending' rows whose claimed_at is older than stale_before."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """UPDATE payment_parent_notifications SET
+                   status='retry', claim_token=NULL, claimed_at=NULL,
+                   last_error='claim_stale_reset', updated_at=?
+                   WHERE status='sending' AND (claimed_at IS NULL OR claimed_at < ?)""",
+                (now, stale_before),
+            )
+        return cursor.rowcount
 
     def update_automation_item_student_name(
         self, mk_invoice_id: str, student_name: str, now: str
