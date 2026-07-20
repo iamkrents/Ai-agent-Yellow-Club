@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.0.98.1"
+CURRENT_VERSION = "7.0.98.2"
 
 _NOW = "2026-07-18T10:00:00"
 _MK_USER = 9748998

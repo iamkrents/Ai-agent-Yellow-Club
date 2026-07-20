@@ -7622,13 +7622,14 @@ class Storage:
     def reset_automation_item_for_withdrawal(
         self, mk_invoice_id: str, now: str,
     ) -> None:
-        """Zero out auto_post_eligible and auto_publish_eligible for a withdrawn invoice."""
+        """Zero out all automation eligibility flags and mark stage as withdrawn."""
         if not mk_invoice_id:
             return
         with self._connect() as conn:
             conn.execute(
                 """UPDATE invoice_automation_items
-                   SET auto_post_eligible=0, auto_publish_eligible=0, updated_at=?
+                   SET auto_post_eligible=0, auto_publish_eligible=0,
+                       parent_notify_eligible=0, current_stage='withdrawn', updated_at=?
                    WHERE mk_invoice_id=?""",
                 (now, str(mk_invoice_id)),
             )

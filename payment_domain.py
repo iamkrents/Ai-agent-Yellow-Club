@@ -1,5 +1,5 @@
 # payment_domain.py — Canonical payment domain rules for Yellow Club
-# v7.0.98.1
+# v7.0.98.2
 #
 # Pure constants and functions only.
 # No database writes, no external API calls.

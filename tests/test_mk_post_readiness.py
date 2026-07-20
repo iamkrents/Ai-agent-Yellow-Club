@@ -33,7 +33,7 @@ from web_app_server import (
     _REQUIRED_ERIP_TYPE_NAME,
 )
 
-CURRENT_VERSION = "7.0.98.1"
+CURRENT_VERSION = "7.0.98.2"
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.0.98.1"
+CURRENT_VERSION = "7.0.98.2"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -848,20 +848,20 @@ class TestPeriodLabelNominative(unittest.TestCase):
 class TestVersion(unittest.TestCase):
 
     def test_43_current_version(self):
-        self.assertEqual(CURRENT_VERSION, "7.0.98.1")
+        self.assertEqual(CURRENT_VERSION, "7.0.98.2")
 
     def test_44_payment_domain_version(self):
         import payment_domain
         src = Path(payment_domain.__file__).read_text(encoding="utf-8")
-        self.assertIn("7.0.98.1", src)
+        self.assertIn("7.0.98.2", src)
 
     def test_45_miniapp_js_version(self):
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('console.log("MiniApp version: v7.0.98.1")', js)
+        self.assertIn('console.log("MiniApp version: v7.0.98.2")', js)
 
     def test_46_index_html_cache_bust(self):
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("v=7.0.98.1", html)
+        self.assertIn("v=7.0.98.2", html)
 
     def test_47_withdrawal_table_exists_after_migration(self):
         """payment_intent_withdrawals table is created on Storage init."""
@@ -1075,6 +1075,226 @@ class TestFrontendBackendContract(unittest.TestCase):
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
         self.assertIn("canWithdrawInvoice", js)
         self.assertIn('"operations"', js)
+
+
+# ---------------------------------------------------------------------------
+# 13 — v7.0.98.2 hotfix: 5 production defects
+# ---------------------------------------------------------------------------
+
+class TestHotfix98_2(unittest.TestCase):
+    """Regression tests for v7.0.98.2 defects found in production test."""
+
+    def _ctx(self):
+        storage = _make_storage()
+        return _make_context(storage, _make_settings()), storage
+
+    # ── Fix 1: reset_automation_item_for_withdrawal resets all flags ─────────
+
+    def test_68_reset_automation_item_sets_parent_notify_eligible_zero(self):
+        """reset_automation_item_for_withdrawal must zero parent_notify_eligible."""
+        storage = _make_storage()
+        mk_invoice_id = "mk_inv_98_01"
+        _seed_automation_item(storage, mk_invoice_id, parent_notify_eligible=1)
+        now = _now()
+        storage.reset_automation_item_for_withdrawal(mk_invoice_id, now)
+        with storage._connect() as conn:
+            row = conn.execute(
+                "SELECT parent_notify_eligible FROM invoice_automation_items WHERE mk_invoice_id=?",
+                (mk_invoice_id,),
+            ).fetchone()
+        self.assertIsNotNone(row, "Automation item must exist after reset")
+        self.assertEqual(row[0], 0, "parent_notify_eligible must be 0 after withdrawal")
+
+    def test_69_reset_automation_item_sets_current_stage_withdrawn(self):
+        """reset_automation_item_for_withdrawal must set current_stage='withdrawn'."""
+        storage = _make_storage()
+        mk_invoice_id = "mk_inv_98_02"
+        _seed_automation_item(storage, mk_invoice_id)
+        now = _now()
+        storage.reset_automation_item_for_withdrawal(mk_invoice_id, now)
+        with storage._connect() as conn:
+            row = conn.execute(
+                "SELECT current_stage FROM invoice_automation_items WHERE mk_invoice_id=?",
+                (mk_invoice_id,),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], "withdrawn", "current_stage must be 'withdrawn' after reset")
+
+    def test_70_reset_automation_item_zeros_all_four_fields(self):
+        """All four eligibility/stage fields are set correctly after reset."""
+        storage = _make_storage()
+        mk_invoice_id = "mk_inv_98_03"
+        _seed_automation_item(
+            storage, mk_invoice_id,
+            auto_post_eligible=1, auto_publish_eligible=1, parent_notify_eligible=1,
+        )
+        now = _now()
+        storage.reset_automation_item_for_withdrawal(mk_invoice_id, now)
+        with storage._connect() as conn:
+            row = conn.execute(
+                """SELECT auto_post_eligible, auto_publish_eligible,
+                          parent_notify_eligible, current_stage
+                   FROM invoice_automation_items WHERE mk_invoice_id=?""",
+                (mk_invoice_id,),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], 0, "auto_post_eligible")
+        self.assertEqual(row[1], 0, "auto_publish_eligible")
+        self.assertEqual(row[2], 0, "parent_notify_eligible")
+        self.assertEqual(row[3], "withdrawn", "current_stage")
+
+    def test_71_after_full_withdrawal_automation_item_fully_reset(self):
+        """Full withdrawal flow zeroes all four automation fields via reset call."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_98_04", status="awaiting_payment",
+                     mk_invoice_id="mk_inv_98_04")
+        _seed_automation_item(storage, "mk_inv_98_04", parent_notify_eligible=1)
+        with patch("web_app_server.MiniAppContext._try_edit_parent_notification_for_withdrawal"):
+            ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_98_04", _WITHDRAW_BODY)
+        with storage._connect() as conn:
+            row = conn.execute(
+                """SELECT auto_post_eligible, auto_publish_eligible,
+                          parent_notify_eligible, current_stage
+                   FROM invoice_automation_items WHERE mk_invoice_id='mk_inv_98_04'""",
+            ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[2], 0, "parent_notify_eligible must be 0 after withdrawal")
+        self.assertEqual(row[3], "withdrawn", "current_stage must be 'withdrawn'")
+
+    # ── Fix 2: requested_by_name fallback chain ───────────────────────────────
+
+    def test_72_requested_by_name_uses_full_name_when_present(self):
+        """requested_by_name uses full_name when it is populated."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_98_05", status="awaiting_payment")
+        auth = {"_internal": True, "role": "owner", "user_id": "9010",
+                "full_name": "Иван Петров", "username": "ivanp"}
+        ctx.withdraw_payment_intent(auth, "ycpi_98_05", _WITHDRAW_BODY)
+        wr = storage.get_withdrawal_by_intent("ycpi_98_05")
+        self.assertIsNotNone(wr)
+        self.assertEqual(wr.get("requested_by_name"), "Иван Петров")
+
+    def test_73_requested_by_name_falls_back_to_username(self):
+        """requested_by_name falls back to username when full_name is empty."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_98_06", status="awaiting_payment")
+        auth = {"_internal": True, "role": "owner", "user_id": "9011",
+                "full_name": "", "username": "user_fallback"}
+        ctx.withdraw_payment_intent(auth, "ycpi_98_06", _WITHDRAW_BODY)
+        wr = storage.get_withdrawal_by_intent("ycpi_98_06")
+        self.assertIsNotNone(wr)
+        self.assertIn("user_fallback", wr.get("requested_by_name", ""))
+
+    def test_74_requested_by_name_uses_employee_id_when_all_names_empty(self):
+        """requested_by_name falls back to 'Сотрудник #<id>' when all names are empty."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_98_07", status="awaiting_payment")
+        auth = {"_internal": True, "role": "owner", "user_id": "9012",
+                "full_name": "", "username": ""}
+        ctx.withdraw_payment_intent(auth, "ycpi_98_07", _WITHDRAW_BODY)
+        wr = storage.get_withdrawal_by_intent("ycpi_98_07")
+        self.assertIsNotNone(wr)
+        name = wr.get("requested_by_name", "")
+        self.assertIn("9012", name, f"Must contain user_id in fallback name: {name!r}")
+        self.assertIn("Сотрудник", name, f"Must contain 'Сотрудник' prefix: {name!r}")
+
+    def test_75_requested_by_name_uses_tg_user_first_name_fallback(self):
+        """requested_by_name falls back to user.first_name when full_name is absent."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_98_08", status="awaiting_payment")
+        auth = {"_internal": True, "role": "owner", "user_id": "9013",
+                "full_name": "", "username": "",
+                "user": {"first_name": "Алексей", "username": ""}}
+        ctx.withdraw_payment_intent(auth, "ycpi_98_08", _WITHDRAW_BODY)
+        wr = storage.get_withdrawal_by_intent("ycpi_98_08")
+        self.assertIsNotNone(wr)
+        self.assertEqual(wr.get("requested_by_name"), "Алексей")
+
+    # ── Fix 3: frontend — isWithdrawn defined early, all buttons gated ────────
+
+    def test_76_app_js_is_withdrawn_defined_before_cancel_btn(self):
+        """isWithdrawn must be defined before cancelBtn in app.js."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        pos_withdrawn = js.index("const isWithdrawn = clientVis")
+        pos_cancel = js.index("const canCancel = ")
+        self.assertLess(pos_withdrawn, pos_cancel,
+                        "isWithdrawn must be defined before canCancel in card renderer")
+
+    def test_77_app_js_cancel_btn_gated_by_is_withdrawn(self):
+        """canCancel condition includes && !isWithdrawn."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        idx = js.index("const canCancel = ")
+        line_end = js.index("\n", idx)
+        line = js[idx:line_end]
+        self.assertIn("!isWithdrawn", line,
+                      f"canCancel must include !isWithdrawn check, got: {line!r}")
+
+    def test_78_app_js_acquiring_btn_gated_by_is_withdrawn(self):
+        """canOpenAcquiring condition includes && !isWithdrawn."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        idx = js.index("const canOpenAcquiring = ")
+        block_end = js.index("const acquiringBtn", idx)
+        block = js[idx:block_end]
+        self.assertIn("!isWithdrawn", block,
+                      "canOpenAcquiring must include !isWithdrawn check")
+
+    def test_79_app_js_verify_acquiring_btn_gated_by_is_withdrawn(self):
+        """canVerifyAcquiring condition includes && !isWithdrawn."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        idx = js.index("const canVerifyAcquiring = ")
+        block_end = js.index("const verifyAcquiringBtn", idx)
+        block = js[idx:block_end]
+        self.assertIn("!isWithdrawn", block,
+                      "canVerifyAcquiring must include !isWithdrawn check")
+
+    def test_80_app_js_mk_post_btn_gated_by_is_withdrawn(self):
+        """canMkPost condition includes && !isWithdrawn."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        idx = js.index("const canMkPost = ")
+        line_end = js.index("\n", idx)
+        line = js[idx:line_end]
+        self.assertIn("!isWithdrawn", line,
+                      f"canMkPost must include !isWithdrawn check, got: {line!r}")
+
+    def test_81_app_js_publish_to_parent_btn_gated_by_is_withdrawn(self):
+        """canPublishToParent condition includes && !isWithdrawn."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        idx = js.index("const canPublishToParent = ")
+        line_end = js.index("\n", idx)
+        line = js[idx:line_end]
+        self.assertIn("!isWithdrawn", line,
+                      f"canPublishToParent must include !isWithdrawn check, got: {line!r}")
+
+    def test_82_app_js_no_duplicate_is_withdrawn_definition(self):
+        """isWithdrawn must be defined only once in the card renderer."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        count = js.count("const isWithdrawn = clientVis")
+        self.assertEqual(count, 1, f"isWithdrawn defined {count} times; expected exactly 1")
+
+    # ── Fix 4: _renderWithdrawalResultBlock improvements ─────────────────────
+
+    def test_83_withdrawal_result_block_shows_agent_blocked_line(self):
+        """_renderWithdrawalResultBlock HTML includes 'Счёт заблокирован в агенте'."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("Счёт заблокирован в агенте", js,
+                      "Result block must include 'Счёт заблокирован в агенте' message")
+
+    def test_84_withdrawal_result_block_shows_moyklass_not_deleted_line(self):
+        """_renderWithdrawalResultBlock HTML includes МойКласс not-deleted note."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("не удалены", js,
+                      "Result block must clarify МойКласс invoice/subscription not deleted")
+
+    def test_85_withdrawal_result_block_erip_unsupported_human_readable(self):
+        """ERIP unsupported label is human-readable and mentions manual cancellation."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        idx = js.index("_renderWithdrawalResultBlock")
+        block_end = js.index("\nwindow.withdrawIntentFromParent", idx)
+        block = js[idx:block_end]
+        self.assertNotIn("локальная блокировка применена", block,
+                         "Old technical ERIP unsupported message must be replaced")
+        self.assertIn("bePaid", block,
+                      "ERIP unsupported message must mention bePaid for manual cancellation")
 
 
 if __name__ == "__main__":

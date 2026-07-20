@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.0.98.1");
+console.log("MiniApp version: v7.0.98.2");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12290,7 +12290,10 @@ function renderPaymentIntentCard(pi) {
   const createdBy = pi.created_by_name ? `<span style="font-size:10px;color:var(--muted)">создал: ${escapeHtml(pi.created_by_name)}</span>` : "";
   const createdAt = pi.created_at ? `<span style="font-size:10px;color:var(--muted)">${escapeHtml(String(pi.created_at).slice(0,10))}</span>` : "";
 
-  const canCancel = ["draft", "ready"].includes(pi.status);
+  const clientVis = pi.client_visibility || "hidden";
+  const isWithdrawn = clientVis === "withdrawn";
+
+  const canCancel = ["draft", "ready"].includes(pi.status) && !isWithdrawn;
   const cancelSafeName = escapeHtml(String(pi.student_name || pi.mk_user_id || "?"));
   const cancelBtn = canCancel
     ? `<button class="secondary" style="font-size:12px;padding:4px 10px" onclick="openCancelIntent('${escapeHtml(pi.public_id)}','${cancelSafeName}',${amountVal})">Отменить</button>`
@@ -12300,7 +12303,8 @@ function renderPaymentIntentCard(pi) {
     && ["draft", "ready"].includes(pi.status)
     && !pi.bepaid_uid
     && !["bepaid_creating", "bepaid_requires_check"].includes(pi.status)
-    && canUsePaymentIntents();
+    && canUsePaymentIntents()
+    && !isWithdrawn;
   const bePaidBtn = canCreateBePaid
     ? `<button class="primary" style="font-size:12px;padding:4px 10px" onclick="openBePaidConfirm('${escapeHtml(pi.public_id)}','${cancelSafeName}',${amountVal})">Выставить счёт bePaid</button>`
     : "";
@@ -12309,7 +12313,8 @@ function renderPaymentIntentCard(pi) {
   const acqOption = (pi.payment_options || []).find(o => o.channel === "acquiring");
   const canOpenAcquiring = !["paid", "posted_to_moyklass", "cancelled"].includes(pi.status)
     && canUsePaymentIntents()
-    && (pi.payment_method === "acquiring" || acqOption);
+    && (pi.payment_method === "acquiring" || acqOption)
+    && !isWithdrawn;
   const acquiringBtn = canOpenAcquiring
     ? `<button class="primary" style="font-size:12px;padding:4px 10px" onclick="openAcquiringCheckout('${escapeHtml(pi.public_id)}')">Открыть страницу оплаты картой</button>`
     : "";
@@ -12320,7 +12325,8 @@ function renderPaymentIntentCard(pi) {
 
   const canVerifyAcquiring = !["paid", "posted_to_moyklass", "cancelled"].includes(pi.status)
     && acqOption?.has_checkout
-    && canPostToMoyklass();
+    && canPostToMoyklass()
+    && !isWithdrawn;
   const verifyAcquiringBtn = canVerifyAcquiring
     ? `<button class="secondary" style="font-size:12px;padding:4px 10px" onclick="verifyAcquiringPayment('${escapeHtml(pi.public_id)}')">Подтвердить оплату через bePaid</button>`
     : "";
@@ -12377,13 +12383,12 @@ function renderPaymentIntentCard(pi) {
        </div>`
     : "";
 
-  const canMkPost = pi.status === "paid" && canPostToMoyklass();
+  const canMkPost = pi.status === "paid" && canPostToMoyklass() && !isWithdrawn;
   const mkPostBtn = canMkPost
     ? `<button class="primary" style="font-size:12px;padding:4px 10px" onclick="openMkPostModal('${escapeHtml(pi.public_id)}','${cancelSafeName}',${amountVal})">Внести в МойКласс</button>`
     : "";
 
-  const clientVis = pi.client_visibility || "hidden";
-  const canPublishToParent = canUsePaymentIntents() && !["cancelled"].includes(pi.status) && clientVis !== "published";
+  const canPublishToParent = canUsePaymentIntents() && !["cancelled"].includes(pi.status) && clientVis !== "published" && !isWithdrawn;
   const publishToParentBtn = canPublishToParent
     ? `<button class="secondary" style="font-size:12px;padding:4px 10px" data-publish-btn="${escapeHtml(pi.public_id)}" onclick="openPublishToParentModal('${escapeHtml(pi.public_id)}')">Открыть оплату родителю</button>`
     : "";
@@ -12395,7 +12400,6 @@ function renderPaymentIntentCard(pi) {
   // Backend endpoint /withdraw-from-parent preserved for backward compatibility.
 
   // ── Withdrawal (v7.0.98.1) ────────────────────────────────────────────────
-  const isWithdrawn = clientVis === "withdrawn";
   const canWithdrawFrontend = canWithdrawInvoice()
     && !isWithdrawn
     && !["paid", "posted_to_moyklass", "cancelled", "error"].includes(pi.status || "")
@@ -13926,8 +13930,8 @@ function _renderWithdrawalResultBlock(result) {
     : tgStatus ? escapeHtml(tgStatus) : "—";
 
   const erpStatus = result.erip_cancel_status || wr.erip_cancel_status || "";
-  const erpLabel = erpStatus === "cancelled" ? "✓ ЕРИП отменён"
-    : erpStatus === "unsupported" ? "— Автоотмена ЕРИП недоступна (локальная блокировка применена)"
+  const erpLabel = erpStatus === "cancelled" ? "✓ Отменён в ЕРИП"
+    : erpStatus === "unsupported" ? "— Автоотмена недоступна — отмените вручную в bePaid"
     : erpStatus === "failed" ? "✗ Не удалось отменить ЕРИП"
     : erpStatus ? escapeHtml(erpStatus) : "—";
 
@@ -13939,9 +13943,11 @@ function _renderWithdrawalResultBlock(result) {
 
   let html = `<div style="margin-top:10px;padding:10px 12px;background:${bg};border:1px solid ${border};border-radius:6px;font-size:12px">`;
   html += `<div style="font-weight:600;margin-bottom:8px;font-size:13px">${statusLabel}</div>`;
+  html += `<div style="margin-bottom:3px">Агент: ✓ Счёт заблокирован в агенте</div>`;
+  html += `<div style="margin-bottom:3px">МойКласс: Счёт и абонемент не удалены</div>`;
   html += `<div style="margin-bottom:3px">Уведомление родителю: ${tgLabel}</div>`;
   html += `<div style="margin-bottom:3px">ЕРИП: ${erpLabel}</div>`;
-  html += `<div style="margin-bottom:3px">Карта: ${cardBlocked ? "✓ Заблокирована" : "—"}</div>`;
+  html += `<div style="margin-bottom:3px">Карта: ${cardBlocked ? "✓ Заблокирована" : "— Не применимо"}</div>`;
   if (reqCheck) {
     html += `<div style="margin-top:8px;color:#92400e;font-size:11px">⚠ Требует проверки: <strong>${escapeHtml(reqCheck)}</strong></div>`;
   }

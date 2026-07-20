@@ -10233,7 +10233,12 @@ class MiniAppContext:
                 mk_invoice_id=str(pi.get("mk_invoice_id") or ""),
                 reason=reason,
                 requested_by_telegram_id=str(auth.get("user_id") or ""),
-                requested_by_name=str(auth.get("full_name") or ""),
+                requested_by_name=(
+                    str(auth.get("full_name") or "").strip()
+                    or str((auth.get("user") or {}).get("first_name") or "").strip()
+                    or str(auth.get("username") or (auth.get("user") or {}).get("username") or "").strip()
+                    or (f"Сотрудник #{str(auth.get('user_id') or '')}" if auth.get("user_id") else "Сотрудник")
+                ),
                 payment_status_at_request=payment_status,
                 now=now,
             )
@@ -10264,7 +10269,12 @@ class MiniAppContext:
             mk_invoice_id=str(pi.get("mk_invoice_id") or ""),
             reason=reason,
             requested_by_telegram_id=str(auth.get("user_id") or ""),
-            requested_by_name=str(auth.get("full_name") or ""),
+            requested_by_name=(
+                str(auth.get("full_name") or "").strip()
+                or str((auth.get("user") or {}).get("first_name") or "").strip()
+                or str(auth.get("username") or (auth.get("user") or {}).get("username") or "").strip()
+                or (f"Сотрудник #{str(auth.get('user_id') or '')}" if auth.get("user_id") else "Сотрудник")
+            ),
             payment_status_at_request=payment_status,
             now=now,
         )
