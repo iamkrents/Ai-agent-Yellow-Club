@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.0.98.2"
+CURRENT_VERSION = "7.0.98.3"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -887,20 +887,20 @@ class TestFoodModuleIsolation(unittest.TestCase):
 class TestVersion(unittest.TestCase):
 
     def test_43_current_version(self):
-        self.assertEqual(CURRENT_VERSION, "7.0.98.2")
+        self.assertEqual(CURRENT_VERSION, "7.0.98.3")
 
     def test_44_payment_domain_version(self):
         import payment_domain
         src = Path(ROOT, "payment_domain.py").read_text(encoding="utf-8")
-        self.assertIn("7.0.98.2", src)
+        self.assertIn("7.0.98.3", src)
 
     def test_45_miniapp_version(self):
         src = Path(ROOT, "miniapp", "app.js").read_text(encoding="utf-8")
-        self.assertIn("v7.0.98.2", src)
+        self.assertIn("v7.0.98.3", src)
 
     def test_46_index_html_cache_bust(self):
         src = Path(ROOT, "miniapp", "index.html").read_text(encoding="utf-8")
-        self.assertIn("7.0.98.2", src)
+        self.assertIn("7.0.98.3", src)
 
 
 if __name__ == "__main__":

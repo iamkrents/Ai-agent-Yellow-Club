@@ -46,7 +46,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 STYLES_CSS = ROOT / "miniapp" / "styles.css"
 
-CURRENT_VERSION = "7.0.98.2"
+CURRENT_VERSION = "7.0.98.3"
 PURPLE_HEX = "#6366f1"
 PURPLE_RGBA = "rgba(99,102,241"
 YELLOW_HEX = "#ffd84d"

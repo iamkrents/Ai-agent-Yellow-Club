@@ -27,7 +27,7 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-CURRENT_VERSION = "7.0.98.2"
+CURRENT_VERSION = "7.0.98.3"
 
 from storage import Storage
 

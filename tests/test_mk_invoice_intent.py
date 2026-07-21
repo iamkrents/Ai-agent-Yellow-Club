@@ -21,7 +21,7 @@ from typing import Optional
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-CURRENT_MINIAPP_VERSION = "7.0.98.2"
+CURRENT_MINIAPP_VERSION = "7.0.98.3"
 
 # Storage is importable standalone (only needs sqlite3 + utils)
 from storage import Storage

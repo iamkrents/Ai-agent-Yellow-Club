@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.0.98.2");
+console.log("MiniApp version: v7.0.98.3");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12399,7 +12399,10 @@ function renderPaymentIntentCard(pi) {
   // "Скрыть от родителя" removed from card UI (v7.0.98.1) — replaced by "Отозвать счёт".
   // Backend endpoint /withdraw-from-parent preserved for backward compatibility.
 
-  // ── Withdrawal (v7.0.98.1) ────────────────────────────────────────────────
+  // ── Withdrawal (v7.0.98.1 / v7.0.98.3) ──────────────────────────────────
+  const withdrawalInfoBlock = isWithdrawn && pi.withdrawal
+    ? _renderWithdrawalResultBlock(pi.withdrawal)
+    : "";
   const canWithdrawFrontend = canWithdrawInvoice()
     && !isWithdrawn
     && !["paid", "posted_to_moyklass", "cancelled", "error"].includes(pi.status || "")
@@ -12435,6 +12438,7 @@ function renderPaymentIntentCard(pi) {
     ${duplicateBadge}
     ${comment}${cancelInfo}${bePaidCreatingBlock}${bePaidRequiresCheckBlock}${bePaidInfo}${acqReadyBadge}${bePaidPaidBlock}${mkPostedBlock}
     ${publishedBadge}${withdrawnBadge}
+    ${withdrawalInfoBlock}
     <div class="pi-card-footer">${bePaidBtn}${acquiringBtn}${verifyAcquiringBtn}${mkPostBtn}${cancelBtn}${publishToParentBtn}${withdrawBtn}</div>
     <div class="pi-card-id">${escapeHtml(pi.public_id)} · mk_user_id: ${pi.mk_user_id} · ${createdAt} ${createdBy}</div>
   </div>`;
@@ -13915,13 +13919,17 @@ function _withdrawalErrorMessage(result) {
 }
 
 function _renderWithdrawalResultBlock(result) {
-  const wr = result.withdrawal || {};
-  const status = result.status || wr.status || "withdrawn";
+  // Handles three input shapes:
+  // (a) POST /withdraw response: flat {status, erip_cancel_status, card_blocked, ...}
+  // (b) GET /withdrawal-status response: {withdrawal:{...}, ...}
+  // (c) pi.withdrawal from list: flat withdrawal dict with reason, requested_at, etc.
+  const wr = result.withdrawal || result;
+  const status = wr.status || result.status || "withdrawn";
   const statusLabel = status === "withdrawn" ? "✓ Счёт отозван"
     : status === "requires_check" ? "⚠ Требует ручной проверки"
     : escapeHtml(status);
 
-  const tgStatus = result.telegram_update_status || wr.telegram_update_status || "";
+  const tgStatus = wr.telegram_update_status || result.telegram_update_status || "";
   const tgLabel = tgStatus === "edited" ? "✓ Уведомление обновлено"
     : tgStatus === "requires_check" ? "⚠ Результат неопределён (нужна проверка)"
     : tgStatus === "skipped_no_notification" ? "— Уведомление не отправлялось"
@@ -13929,21 +13937,32 @@ function _renderWithdrawalResultBlock(result) {
     : tgStatus === "failed" ? "✗ Не удалось обновить"
     : tgStatus ? escapeHtml(tgStatus) : "—";
 
-  const erpStatus = result.erip_cancel_status || wr.erip_cancel_status || "";
+  const erpStatus = wr.erip_cancel_status || result.erip_cancel_status || "";
   const erpLabel = erpStatus === "cancelled" ? "✓ Отменён в ЕРИП"
-    : erpStatus === "unsupported" ? "— Автоотмена недоступна — отмените вручную в bePaid"
+    : erpStatus === "unsupported"
+      ? "Отмена номера ЕРИП во внешней системе не поддерживается. Не используйте ранее сохранённые реквизиты."
     : erpStatus === "failed" ? "✗ Не удалось отменить ЕРИП"
     : erpStatus ? escapeHtml(erpStatus) : "—";
 
-  const cardBlocked = result.card_blocked || wr.card_blocked;
-  const reqCheck = result.requires_check_reason || wr.requires_check_reason;
+  const cardBlocked = wr.card_checkout_blocked_at || wr.card_blocked || result.card_blocked;
+  const reqCheck = wr.requires_check_reason || result.requires_check_reason;
+
+  // Optional enriched fields present in pi.withdrawal and /withdrawal-status
+  const reason = wr.reason || result.reason || "";
+  const requestedAt = wr.requested_at || result.requested_at || "";
+  const requestedByName = wr.requested_by_name || result.requested_by_name || "";
+  const requestedByTgId = wr.requested_by_telegram_id || result.requested_by_telegram_id || "";
+  const displayName = requestedByName || (requestedByTgId ? `Сотрудник #${escapeHtml(requestedByTgId)}` : "");
 
   const bg = (status === "withdrawn") ? "var(--success-bg,#d1fae5)" : "var(--warn-bg,#fff3cd)";
   const border = (status === "withdrawn") ? "var(--success-border,#6ee7b7)" : "var(--warn-border,#ffc107)";
 
   let html = `<div style="margin-top:10px;padding:10px 12px;background:${bg};border:1px solid ${border};border-radius:6px;font-size:12px">`;
   html += `<div style="font-weight:600;margin-bottom:8px;font-size:13px">${statusLabel}</div>`;
-  html += `<div style="margin-bottom:3px">Агент: ✓ Счёт заблокирован в агенте</div>`;
+  if (reason) html += `<div style="margin-bottom:3px">Причина: ${escapeHtml(reason)}</div>`;
+  if (requestedAt) html += `<div style="margin-bottom:3px">Дата: ${escapeHtml(String(requestedAt).slice(0,19).replace("T"," "))}</div>`;
+  if (displayName) html += `<div style="margin-bottom:3px">Отозвал: ${displayName}</div>`;
+  html += `<div style="margin-bottom:3px">Агент: ✓ Счёт заблокирован для оплаты в агенте</div>`;
   html += `<div style="margin-bottom:3px">МойКласс: Счёт и абонемент не удалены</div>`;
   html += `<div style="margin-bottom:3px">Уведомление родителю: ${tgLabel}</div>`;
   html += `<div style="margin-bottom:3px">ЕРИП: ${erpLabel}</div>`;

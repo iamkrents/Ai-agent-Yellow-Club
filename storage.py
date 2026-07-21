@@ -1330,6 +1330,22 @@ class Storage:
             "CREATE INDEX IF NOT EXISTS idx_piw_status "
             "ON payment_intent_withdrawals(status, created_at)"
         )
+        # Idempotent startup repair: zero automation flags for any historically
+        # withdrawn intents that were processed before v7.0.98.2.
+        import datetime as _dt
+        _now = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        conn.execute(
+            """UPDATE invoice_automation_items
+               SET auto_post_eligible=0, auto_publish_eligible=0,
+                   parent_notify_eligible=0, current_stage='withdrawn', updated_at=?
+               WHERE mk_invoice_id IN (
+                   SELECT mk_invoice_id FROM payment_intents
+                   WHERE client_visibility='withdrawn'
+                     AND mk_invoice_id IS NOT NULL AND mk_invoice_id != ''
+               )
+               AND current_stage != 'withdrawn'""",
+            (_now,),
+        )
 
     # ── v7.0.94.0 — Invoice Automation methods ───────────────────────────────
 
@@ -7540,6 +7556,37 @@ class Storage:
                 (str(public_id),),
             ).fetchone()
         return dict(row) if row else None
+
+    def get_withdrawals_for_intents(self, public_ids: list[str]) -> dict[str, dict]:
+        """Batch-fetch withdrawal records for multiple public_ids in one query (no N+1)."""
+        if not public_ids:
+            return {}
+        placeholders = ",".join("?" * len(public_ids))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM payment_intent_withdrawals WHERE intent_public_id IN ({placeholders})",
+                list(public_ids),
+            ).fetchall()
+        return {row["intent_public_id"]: dict(row) for row in rows}
+
+    def repair_withdrawn_automation_items(self, now: str) -> int:
+        """Idempotent repair: zero all automation flags for invoice_automation_items
+        whose payment_intent has client_visibility='withdrawn' but current_stage!='withdrawn'.
+        Safe to run on every startup — no-op when already repaired."""
+        with self._connect() as conn:
+            result = conn.execute(
+                """UPDATE invoice_automation_items
+                   SET auto_post_eligible=0, auto_publish_eligible=0,
+                       parent_notify_eligible=0, current_stage='withdrawn', updated_at=?
+                   WHERE mk_invoice_id IN (
+                       SELECT mk_invoice_id FROM payment_intents
+                       WHERE client_visibility='withdrawn'
+                         AND mk_invoice_id IS NOT NULL AND mk_invoice_id != ''
+                   )
+                   AND current_stage != 'withdrawn'""",
+                (now,),
+            )
+        return result.rowcount
 
     def update_withdrawal_erip(
         self,

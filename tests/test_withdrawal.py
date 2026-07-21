@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.0.98.2"
+CURRENT_VERSION = "7.0.98.3"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -848,20 +848,20 @@ class TestPeriodLabelNominative(unittest.TestCase):
 class TestVersion(unittest.TestCase):
 
     def test_43_current_version(self):
-        self.assertEqual(CURRENT_VERSION, "7.0.98.2")
+        self.assertEqual(CURRENT_VERSION, "7.0.98.3")
 
     def test_44_payment_domain_version(self):
         import payment_domain
         src = Path(payment_domain.__file__).read_text(encoding="utf-8")
-        self.assertIn("7.0.98.2", src)
+        self.assertIn("7.0.98.3", src)
 
     def test_45_miniapp_js_version(self):
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('console.log("MiniApp version: v7.0.98.2")', js)
+        self.assertIn('console.log("MiniApp version: v7.0.98.3")', js)
 
     def test_46_index_html_cache_bust(self):
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("v=7.0.98.2", html)
+        self.assertIn("v=7.0.98.3", html)
 
     def test_47_withdrawal_table_exists_after_migration(self):
         """payment_intent_withdrawals table is created on Storage init."""
@@ -1274,10 +1274,10 @@ class TestHotfix98_2(unittest.TestCase):
     # ── Fix 4: _renderWithdrawalResultBlock improvements ─────────────────────
 
     def test_83_withdrawal_result_block_shows_agent_blocked_line(self):
-        """_renderWithdrawalResultBlock HTML includes 'Счёт заблокирован в агенте'."""
+        """_renderWithdrawalResultBlock HTML includes 'Счёт заблокирован для оплаты в агенте'."""
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("Счёт заблокирован в агенте", js,
-                      "Result block must include 'Счёт заблокирован в агенте' message")
+        self.assertIn("Счёт заблокирован для оплаты в агенте", js,
+                      "Result block must include 'Счёт заблокирован для оплаты в агенте' message")
 
     def test_84_withdrawal_result_block_shows_moyklass_not_deleted_line(self):
         """_renderWithdrawalResultBlock HTML includes МойКласс not-deleted note."""
@@ -1295,6 +1295,216 @@ class TestHotfix98_2(unittest.TestCase):
                          "Old technical ERIP unsupported message must be replaced")
         self.assertIn("bePaid", block,
                       "ERIP unsupported message must mention bePaid for manual cancellation")
+
+
+# ---------------------------------------------------------------------------
+# 14 — v7.0.98.3: permanent withdrawal block in card + repair + batch fetch
+# ---------------------------------------------------------------------------
+
+class TestHotfix98_3(unittest.TestCase):
+    """v7.0.98.3: withdrawal details always shown in withdrawn card; historical repair."""
+
+    def _ctx(self):
+        storage = _make_storage()
+        return _make_context(storage, _make_settings()), storage
+
+    # ── Backend: withdrawal data in list endpoint ─────────────────────────────
+
+    def test_86_list_includes_withdrawal_for_withdrawn_intent(self):
+        """payment_intents_list attaches withdrawal dict to withdrawn intent."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_983_01", status="awaiting_payment",
+                     client_visibility="published")
+        ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_983_01", _WITHDRAW_BODY)
+        result = ctx.payment_intents_list(_WITHDRAW_AUTH, {})
+        self.assertTrue(result.get("ok"), result)
+        intent = next((i for i in result.get("intents", [])
+                       if i["public_id"] == "ycpi_983_01"), None)
+        self.assertIsNotNone(intent, "Withdrawn intent must appear in list")
+        self.assertIn("withdrawal", intent, "Withdrawn intent must have withdrawal key")
+        wr = intent["withdrawal"]
+        self.assertEqual(wr.get("status"), "withdrawn")
+        self.assertIn("reason", wr)
+        self.assertIn("requested_at", wr)
+        self.assertIn("erip_cancel_status", wr)
+        self.assertIn("telegram_update_status", wr)
+
+    def test_87_list_does_not_attach_withdrawal_to_active_intent(self):
+        """payment_intents_list must NOT add withdrawal key to non-withdrawn intents."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_983_02", status="awaiting_payment",
+                     client_visibility="published")
+        result = ctx.payment_intents_list(_WITHDRAW_AUTH, {})
+        self.assertTrue(result.get("ok"), result)
+        intent = next((i for i in result.get("intents", [])
+                       if i["public_id"] == "ycpi_983_02"), None)
+        self.assertIsNotNone(intent)
+        self.assertNotIn("withdrawal", intent, "Active intent must NOT have withdrawal key")
+
+    def test_88_batch_fetch_no_n_plus_1(self):
+        """get_withdrawals_for_intents returns all records in one call."""
+        storage = _make_storage()
+        _seed_intent(storage, "ycpi_983_b1", status="awaiting_payment")
+        _seed_intent(storage, "ycpi_983_b2", status="awaiting_payment")
+        _seed_intent(storage, "ycpi_983_b3", status="awaiting_payment")
+        now = _now()
+        storage.create_withdrawal_record(
+            public_id="ycpi_983_b1", mk_invoice_id="inv_b1",
+            reason="test reason b1", requested_by_telegram_id="9001",
+            requested_by_name="Admin", now=now,
+            payment_status_at_request="awaiting_payment",
+        )
+        storage.create_withdrawal_record(
+            public_id="ycpi_983_b2", mk_invoice_id="inv_b2",
+            reason="test reason b2", requested_by_telegram_id="9001",
+            requested_by_name="Admin", now=now,
+            payment_status_at_request="awaiting_payment",
+        )
+        withdrawals = storage.get_withdrawals_for_intents(
+            ["ycpi_983_b1", "ycpi_983_b2", "ycpi_983_b3"]
+        )
+        self.assertEqual(len(withdrawals), 2, "Must find exactly 2 records")
+        self.assertIn("ycpi_983_b1", withdrawals)
+        self.assertIn("ycpi_983_b2", withdrawals)
+        self.assertNotIn("ycpi_983_b3", withdrawals)
+
+    def test_89_batch_fetch_empty_list_returns_empty_dict(self):
+        """get_withdrawals_for_intents([]) must return {} without error."""
+        storage = _make_storage()
+        result = storage.get_withdrawals_for_intents([])
+        self.assertEqual(result, {})
+
+    def test_90_withdrawal_dict_in_list_has_required_fields(self):
+        """withdrawal dict in list contains all required safe fields."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_983_03", status="awaiting_payment")
+        ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_983_03", _WITHDRAW_BODY)
+        result = ctx.payment_intents_list(_WITHDRAW_AUTH, {})
+        intent = next((i for i in result.get("intents", [])
+                       if i["public_id"] == "ycpi_983_03"), None)
+        self.assertIsNotNone(intent)
+        wr = intent.get("withdrawal", {})
+        required = {
+            "status", "reason", "requested_by_telegram_id", "requested_by_name",
+            "requested_at", "completed_at", "erip_cancel_status",
+            "card_checkout_blocked_at", "card_blocked",
+            "telegram_update_status", "requires_check_reason",
+        }
+        for field in required:
+            self.assertIn(field, wr, f"withdrawal dict must contain '{field}'")
+
+    # ── Storage: repair of historical withdrawn automation items ──────────────
+
+    def test_91_repair_sets_withdrawn_stage_for_historical_items(self):
+        """repair_withdrawn_automation_items sets current_stage='withdrawn'."""
+        storage = _make_storage()
+        _seed_intent(storage, "ycpi_983_r1", status="awaiting_payment",
+                     mk_invoice_id="mk_inv_r1", client_visibility="withdrawn")
+        _seed_automation_item(storage, "mk_inv_r1", parent_notify_eligible=1)
+        now = _now()
+        count = storage.repair_withdrawn_automation_items(now)
+        self.assertGreater(count, 0, "Must repair at least one automation item")
+        with storage._connect() as conn:
+            row = conn.execute(
+                "SELECT current_stage, parent_notify_eligible "
+                "FROM invoice_automation_items WHERE mk_invoice_id='mk_inv_r1'"
+            ).fetchone()
+        self.assertEqual(row["current_stage"], "withdrawn")
+        self.assertEqual(row["parent_notify_eligible"], 0)
+
+    def test_92_repair_is_idempotent(self):
+        """Running repair twice is safe — second run returns rowcount 0."""
+        storage = _make_storage()
+        _seed_intent(storage, "ycpi_983_r2", status="awaiting_payment",
+                     mk_invoice_id="mk_inv_r2", client_visibility="withdrawn")
+        _seed_automation_item(storage, "mk_inv_r2")
+        now = _now()
+        count1 = storage.repair_withdrawn_automation_items(now)
+        count2 = storage.repair_withdrawn_automation_items(now)
+        self.assertGreater(count1, 0)
+        self.assertEqual(count2, 0, "Second repair run must be no-op")
+
+    def test_93_repair_does_not_affect_active_intents(self):
+        """repair must not change automation items for active (non-withdrawn) intents."""
+        storage = _make_storage()
+        _seed_intent(storage, "ycpi_983_r3", status="awaiting_payment",
+                     mk_invoice_id="mk_inv_r3", client_visibility="published")
+        _seed_automation_item(storage, "mk_inv_r3", auto_post_eligible=1)
+        now = _now()
+        storage.repair_withdrawn_automation_items(now)
+        with storage._connect() as conn:
+            row = conn.execute(
+                "SELECT auto_post_eligible, current_stage "
+                "FROM invoice_automation_items WHERE mk_invoice_id='mk_inv_r3'"
+            ).fetchone()
+        self.assertEqual(row["auto_post_eligible"], 1, "Active intent must be untouched")
+        self.assertNotEqual(row["current_stage"], "withdrawn")
+
+    def test_94_storage_init_runs_repair_for_historical_items(self):
+        """Storage init calls repair via _init_withdrawal_tables on startup."""
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        from pathlib import Path as _Path
+        from storage import Storage as _Storage
+        s1 = _Storage(_Path(tmp.name))
+        _seed_intent(s1, "ycpi_983_r4", status="awaiting_payment",
+                     mk_invoice_id="mk_inv_r4", client_visibility="withdrawn")
+        _seed_automation_item(s1, "mk_inv_r4", parent_notify_eligible=1)
+        # Re-open storage: _init runs again and triggers the startup repair
+        s2 = _Storage(_Path(tmp.name))
+        with s2._connect() as conn:
+            row = conn.execute(
+                "SELECT current_stage FROM invoice_automation_items "
+                "WHERE mk_invoice_id='mk_inv_r4'"
+            ).fetchone()
+        self.assertEqual(row["current_stage"], "withdrawn",
+                         "Startup repair must set current_stage='withdrawn'")
+
+    # ── Frontend: permanent withdrawal block in card ──────────────────────────
+
+    def test_95_app_js_withdrawal_info_block_defined_in_card_renderer(self):
+        """app.js defines withdrawalInfoBlock using pi.withdrawal in card renderer."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("withdrawalInfoBlock", js)
+        self.assertIn("pi.withdrawal", js)
+
+    def test_96_app_js_withdrawal_info_block_in_card_template(self):
+        """withdrawalInfoBlock is included in the card HTML template string."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        card_fn_start = js.index("function renderPaymentIntentCard(")
+        card_fn_end = js.index("\n// ──", card_fn_start)
+        card_fn = js[card_fn_start:card_fn_end]
+        self.assertIn("${withdrawalInfoBlock}", card_fn)
+
+    def test_97_render_withdrawal_result_block_reads_from_wr(self):
+        """_renderWithdrawalResultBlock reads reason/requested_at from wr (pi.withdrawal format)."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        idx = js.index("function _renderWithdrawalResultBlock")
+        block_end = js.index("\nwindow.withdrawIntentFromParent", idx)
+        block = js[idx:block_end]
+        self.assertIn("wr.reason", block)
+        self.assertIn("wr.requested_at", block)
+        self.assertIn("displayName", block)
+
+    def test_98_erip_unsupported_human_readable_text(self):
+        """ERIP unsupported shows full human-readable text with warning about saved details."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        self.assertIn(
+            "не поддерживается. "
+            "Не используйте "
+            "ранее сохранённые "
+            "реквизиты",
+            js,
+        )
+
+    def test_99_withdrawal_block_name_fallback(self):
+        """_renderWithdrawalResultBlock builds fallback display name from tg id."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        self.assertIn(
+            "Сотрудник #",
+            js,
+        )
 
 
 if __name__ == "__main__":

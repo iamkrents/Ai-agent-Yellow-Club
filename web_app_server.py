@@ -9925,6 +9925,32 @@ class MiniAppContext:
                 }
                 for o in opts
             ]
+        # Attach withdrawal details for withdrawn intents — one batch query, no N+1
+        withdrawn_ids = [
+            pi["public_id"] for pi in intents
+            if pi.get("client_visibility") == "withdrawn"
+        ]
+        if withdrawn_ids:
+            withdrawals = self.storage.get_withdrawals_for_intents(withdrawn_ids)
+            for pi in intents:
+                if pi.get("client_visibility") == "withdrawn":
+                    wr = withdrawals.get(pi["public_id"])
+                    if wr:
+                        pi["withdrawal"] = {
+                            "status": wr.get("status"),
+                            "reason": wr.get("reason"),
+                            "requested_by_telegram_id": wr.get("requested_by_telegram_id"),
+                            "requested_by_name": wr.get("requested_by_name"),
+                            "requested_at": wr.get("requested_at"),
+                            "completed_at": wr.get("completed_at"),
+                            "erip_cancel_status": wr.get("erip_cancel_status"),
+                            "erip_cancel_error": wr.get("erip_cancel_error"),
+                            "card_checkout_blocked_at": wr.get("card_checkout_blocked_at"),
+                            "card_blocked": bool(wr.get("card_checkout_blocked_at")),
+                            "telegram_update_status": wr.get("telegram_update_status"),
+                            "telegram_updated_at": wr.get("telegram_updated_at"),
+                            "requires_check_reason": wr.get("requires_check_reason"),
+                        }
         pi_stats = self.storage.payment_intents_stats(month=month or None)
         return {
             "ok": True,
