@@ -7342,8 +7342,9 @@ class Storage:
             ).fetchone()
         return {"ok": True, "marked_failed": True, "option": dict(row_after) if row_after else {}}
 
-    def mark_option_expired(self, option_id: int) -> dict:
-        now = now_iso()
+    def mark_option_expired(self, option_id: int, now: str = None) -> dict:
+        if now is None:
+            now = now_iso()
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM payment_intent_options WHERE id=?", (option_id,)
@@ -7841,13 +7842,6 @@ class Storage:
             conn.execute(
                 "UPDATE payment_checkout_attempts SET status='expired', expired_at=? WHERE id=?",
                 (now, attempt_id),
-            )
-
-    def mark_option_expired(self, option_id: int, now: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE payment_intent_options SET status='expired', updated_at=? WHERE id=?",
-                (now, option_id),
             )
 
     def update_option_expires_at(self, option_id: int, expires_at: str, now: str) -> None:
