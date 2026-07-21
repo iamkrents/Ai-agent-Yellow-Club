@@ -50,10 +50,10 @@ class Test01Frontend(unittest.TestCase):
         self.assertIn('data-admin-tab="client-links"', self.html)
 
     def test_02_version_marker(self):
-        self.assertIn('console.log("MiniApp version: v7.0.98.3")', self.js)
+        self.assertIn('console.log("MiniApp version: v7.0.99.0")', self.js)
 
     def test_03_cache_bust(self):
-        self.assertIn("v=7.0.98.3", self.html)
+        self.assertIn("v=7.0.99.0", self.html)
 
     def test_04_renderClientLinksPanel_exists(self):
         self.assertIn("function renderClientLinksPanel(", self.js)

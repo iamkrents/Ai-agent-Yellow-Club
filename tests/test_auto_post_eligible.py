@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.0.98.3"
+CURRENT_VERSION = "7.0.99.0"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -877,15 +877,15 @@ class TestPostedToMoyklassStageSkipped(unittest.TestCase):
 class TestVersion(unittest.TestCase):
 
     def test_39_version_string(self):
-        self.assertEqual(CURRENT_VERSION, "7.0.98.3")
+        self.assertEqual(CURRENT_VERSION, "7.0.99.0")
 
     def test_40_app_js_version(self):
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v7.0.98.3", js)
+        self.assertIn("v7.0.99.0", js)
 
     def test_41_index_html_cache_bust(self):
         html = (ROOT / "miniapp" / "index.html").read_bytes().decode("utf-8-sig")
-        self.assertIn("v=7.0.98.3", html)
+        self.assertIn("v=7.0.99.0", html)
 
     def test_42_auto_toggle_post_in_html(self):
         html = (ROOT / "miniapp" / "index.html").read_bytes().decode("utf-8-sig")

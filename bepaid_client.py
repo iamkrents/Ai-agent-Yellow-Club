@@ -93,6 +93,7 @@ class BePaidClient:
         return_url: str,
         customer: dict | None = None,
         test: bool = False,
+        expired_at: str = "",
     ) -> "BePaidResult":
         """POST a new hosted checkout to bePaid acquiring (card payments).
 
@@ -125,6 +126,7 @@ class BePaidClient:
             return_url=return_url,
             customer=customer,
             test=test,
+            expired_at=expired_at,
         )
         shop_id = self._shop_id
         log.info(
@@ -408,11 +410,13 @@ class BePaidClient:
         notification_url: str,
         customer_first_name: str = "",
         customer_last_name: str = "",
+        expired_at: str = "",
     ) -> dict:
         """Build the request body for bePaid /beyag/payments (ERIP).
 
         Reference: https://docs.bepaid.by/en/payment_methods/apms/erip/create_payment/
         notification_url is required for webhook delivery and must always be provided.
+        expired_at: ISO 8601 UTC string for explicit link expiry (e.g. "2026-08-01T23:59:59Z").
         """
         request: dict[str, Any] = {
             "amount": int(amount_minor),
@@ -428,6 +432,8 @@ class BePaidClient:
         }
         if order_id:
             request["order_id"] = str(order_id)
+        if expired_at:
+            request["expired_at"] = str(expired_at)
         customer: dict[str, str] = {}
         if customer_first_name:
             customer["first_name"] = customer_first_name
@@ -448,11 +454,21 @@ class BePaidClient:
         return_url: str,
         customer: dict | None = None,
         test: bool = False,
+        expired_at: str = "",
     ) -> dict:
         """Build request body for bePaid hosted checkout (acquiring).
 
         Reference: https://docs.bepaid.by/en/payment_methods/cards/hosted_checkout/
+        expired_at: ISO 8601 UTC string for explicit checkout link expiry.
         """
+        settings: dict[str, Any] = {
+            "notification_url": str(notification_url),
+            "return_url": str(return_url),
+            "language": "ru",
+            "auto_return": 0,
+        }
+        if expired_at:
+            settings["expired_at"] = str(expired_at)
         checkout: dict[str, Any] = {
             "transaction_type": "payment",
             "order": {
@@ -461,12 +477,7 @@ class BePaidClient:
                 "description": str(description),
                 "tracking_id": str(tracking_id),
             },
-            "settings": {
-                "notification_url": str(notification_url),
-                "return_url": str(return_url),
-                "language": "ru",
-                "auto_return": 0,
-            },
+            "settings": settings,
             "payment_method": {
                 "types": ["credit_card"],
             },
@@ -554,6 +565,44 @@ class BePaidClient:
         if row_id > 99_999_999_999:
             raise ValueError(f"pi_row_id {row_id} is too large for bePaid order_id (max 99_999_999_999)")
         return f"1{row_id:011d}"
+
+    @staticmethod
+    def erip_order_id_for_attempt(pi_row_id: int, attempt: int = 1) -> str:
+        """Build order_id for a specific renewal attempt.
+
+        attempt=1 is the original (same as erip_order_id).
+        attempt=2..9 are renewals — prefix digit changes: "2{row_id}", "3{row_id}", etc.
+        This guarantees a unique order_id per (intent, attempt) with no collision risk.
+        """
+        row_id = int(pi_row_id)
+        if row_id <= 0:
+            raise ValueError(f"pi_row_id must be positive, got {row_id}")
+        if row_id > 99_999_999_999:
+            raise ValueError(f"pi_row_id {row_id} is too large for bePaid order_id (max 99_999_999_999)")
+        prefix = max(1, min(int(attempt), 9))
+        return f"{prefix}{row_id:011d}"
+
+    @staticmethod
+    def erip_account_number_for_attempt(
+        mk_user_id: int,
+        period_month: str,
+        pi_row_id: int,
+        attempt: int = 1,
+    ) -> str:
+        """Build account_number for a specific renewal attempt.
+
+        attempt=1 returns the standard account_number (identical to erip_account_number).
+        attempt≥2 appends the attempt digit to the base, trimmed to 30 chars from right.
+        The appended digit differentiates the number from the original (bePaid expires
+        the old invoice when a new one with the same account_number is created — different
+        account_numbers keep both ERIP invoices independently alive for legacy payers).
+        """
+        base = BePaidClient.erip_account_number(mk_user_id, period_month, pi_row_id)
+        if attempt <= 1:
+            return base
+        suffix = str(int(attempt) % 10 or attempt)
+        candidate = base + suffix
+        return candidate[-BEPAID_ACCOUNT_NUMBER_MAX_LEN:]
 
 
 def build_erip_description(intent: dict) -> str:

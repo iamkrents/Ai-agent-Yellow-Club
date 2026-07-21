@@ -60,6 +60,15 @@ from payment_domain import (
     can_post_to_moyklass as _can_post_to_mk,
     build_invoice_deduplication_key,
     build_posting_idempotency_key,
+    # v7.0.99.0
+    normalize_due_at,
+    compute_due_status,
+    due_at_for_bepaid,
+    DUE_STATUS_OVERDUE,
+    DUE_STATUS_DUE_TODAY,
+    DUE_STATUS_UPCOMING,
+    DUE_STATUS_PAID,
+    DUE_STATUS_WITHDRAWN,
 )
 
 log = logging.getLogger("yellow_club_miniapp")
@@ -1324,7 +1333,12 @@ class FoodAutoReminderWatcher:
 
 
 class InvoiceAutomationScheduler:
-    """Background scheduler for the MoyKlass invoice automation pipeline (v7.0.94.0)."""
+    """Background scheduler for the MoyKlass invoice automation pipeline (v7.0.94.0).
+
+    v7.0.99.0 adds:
+    - due_status update pass (runs every cycle)
+    - ERIP auto-renewal pass (kill switch: PAYMENT_ERIP_RENEWAL_ENABLED)
+    """
 
     def __init__(self, ctx: "MiniAppContext") -> None:
         self._ctx = ctx
@@ -1347,6 +1361,14 @@ class InvoiceAutomationScheduler:
                 if not getattr(self._ctx.settings, "payment_invoice_automation_enabled", False):
                     _time.sleep(interval)
                     continue
+
+                # Step 1: update due_status for all active intents
+                try:
+                    self._update_due_statuses()
+                except Exception:
+                    log.exception("InvoiceAutomationScheduler: due_status update error")
+
+                # Step 2: process new MK invoices (discovery)
                 if discovery_on:
                     try:
                         self._ctx.process_new_moyklass_invoices(
@@ -1354,9 +1376,207 @@ class InvoiceAutomationScheduler:
                         )
                     except Exception:
                         log.exception("InvoiceAutomationScheduler: run error")
+
+                # Step 3: ERIP auto-renewal (kill switch: PAYMENT_ERIP_RENEWAL_ENABLED)
+                if getattr(self._ctx.settings, "payment_erip_renewal_enabled", False):
+                    try:
+                        self._run_erip_renewal()
+                    except Exception:
+                        log.exception("InvoiceAutomationScheduler: erip renewal error")
+
             except Exception:
                 log.exception("InvoiceAutomationScheduler: loop error")
             _time.sleep(interval)
+
+    def _update_due_statuses(self) -> None:
+        """Update due_status for all active intents with a due_at set."""
+        import datetime as _dt_due
+        now_utc = _dt_due.datetime.now(_dt_due.timezone.utc)
+        now_str = now_iso()
+        intents = self._ctx.storage.get_intents_for_due_status_update()
+        for row in intents:
+            pid = row["public_id"]
+            new_status = compute_due_status(
+                row.get("due_at"),
+                row.get("client_visibility"),
+                row.get("status"),
+                now_utc,
+            )
+            old_status = str(row.get("due_status") or "")
+            if new_status != old_status:
+                overdue_since = now_str if new_status == DUE_STATUS_OVERDUE and not row.get("overdue_since") else row.get("overdue_since")
+                self._ctx.storage.update_intent_due_status(pid, new_status, overdue_since, now_str)
+                log.info(
+                    "payment_event=payment_due_status_changed intent=%s %s→%s",
+                    pid, old_status, new_status,
+                )
+
+    def _run_erip_renewal(self) -> None:
+        """Auto-renew expired ERIP payment options.
+
+        Order: 1. get candidates, 2. for each: claim lock, check max attempts,
+        create new bePaid ERIP, update option, log event.
+        """
+        import datetime as _dt_ren
+        max_attempts = getattr(self._ctx.settings, "payment_erip_renewal_max_attempts", 3)
+        retry_min = getattr(self._ctx.settings, "payment_erip_renewal_retry_minutes", 60)
+        ttl_hours = getattr(self._ctx.settings, "payment_provider_link_ttl_hours", 72)
+
+        candidates = self._ctx.storage.get_intents_for_erip_renewal()
+        if not candidates:
+            return
+
+        log.info("InvoiceAutomationScheduler: erip renewal candidates=%d", len(candidates))
+
+        for row in candidates:
+            pid = row["public_id"]
+            option_id = int(row["option_id"])
+            renewal_count = int(row.get("renewal_count") or 0)
+            next_attempt = renewal_count + 2  # attempt 1 = original, next = count+2
+
+            if next_attempt > max_attempts + 1:
+                log.warning(
+                    "payment_event=payment_erip_auto_renew_failed intent=%s reason=max_attempts_exhausted",
+                    pid,
+                )
+                # Escalate to requires_check
+                try:
+                    self._ctx.storage.payment_intent_mark_requires_check(
+                        pid, f"erip_renewal_max_attempts:{max_attempts}"
+                    )
+                except Exception:
+                    pass
+                continue
+
+            # Claim renewal lock (prevent concurrent renewal)
+            lock_until = (
+                _dt_ren.datetime.utcnow() + _dt_ren.timedelta(minutes=retry_min)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            claimed = self._ctx.storage.claim_erip_renewal(pid, option_id, lock_until)
+            if not claimed:
+                continue
+
+            log.info(
+                "payment_event=payment_erip_auto_renew_started intent=%s attempt=%d",
+                pid, next_attempt,
+            )
+
+            try:
+                self._do_erip_renewal(pid, row, next_attempt, ttl_hours)
+            except Exception:
+                log.exception(
+                    "payment_event=payment_erip_auto_renew_failed intent=%s attempt=%d",
+                    pid, next_attempt,
+                )
+                self._ctx.storage.release_erip_renewal_claim(option_id)
+
+    def _do_erip_renewal(
+        self,
+        pid: str,
+        row: dict,
+        attempt: int,
+        ttl_hours: int,
+    ) -> None:
+        """Execute a single ERIP renewal for one intent."""
+        option_id = int(row["option_id"])
+        pi_row_id = int(row["pi_row_id"])
+        mk_user_id = int(row["mk_user_id"])
+        period_month = str(row.get("period_month") or "")
+        amount_minor = int(row["amount_minor"])
+        currency = str(row.get("currency") or "BYN")
+
+        new_order_id = BePaidClient.erip_order_id_for_attempt(pi_row_id, attempt)
+        new_account_number = BePaidClient.erip_account_number_for_attempt(
+            mk_user_id, period_month, pi_row_id, attempt
+        )
+        tracking_id = pid  # stable per intent
+        expired_at_str = due_at_for_bepaid(ttl_hours)
+        now_str = now_iso()
+
+        # Re-fetch PI for description
+        pi_full = self._ctx.storage.get_payment_intent(pid)
+        if not pi_full:
+            log.warning("erip_renewal: intent %s vanished during renewal", pid)
+            return
+        description = build_erip_description(pi_full)
+
+        notification_url = (
+            f"{self._ctx.settings.bepaid_public_base_url}"
+            f"/api/integrations/bepaid/webhook/erip/{self._ctx.settings.bepaid_webhook_path_secret}"
+        )
+
+        payload = BePaidClient.build_erip_payload(
+            amount_minor=amount_minor,
+            currency=currency,
+            description=description,
+            account_number=new_account_number,
+            tracking_id=tracking_id,
+            order_id=new_order_id,
+            notification_url=notification_url,
+            expired_at=expired_at_str,
+        )
+
+        shop_id = self._ctx.settings.bepaid_erip_shop_id
+        secret = self._ctx.settings.bepaid_erip_secret_key
+        timeout = getattr(self._ctx.settings, "bepaid_request_timeout", 30)
+
+        client = BePaidClient(shop_id=shop_id, secret_key=secret, timeout=timeout)
+        result = client.create_erip_payment(payload)
+
+        if result.requires_check:
+            log.warning(
+                "payment_event=payment_erip_auto_renew_failed intent=%s attempt=%d reason=requires_check error=%s",
+                pid, attempt, result.error,
+            )
+            self._ctx.storage.release_erip_renewal_claim(option_id)
+            return
+
+        if not result.ok:
+            log.warning(
+                "payment_event=payment_erip_auto_renew_failed intent=%s attempt=%d reason=%s",
+                pid, attempt, result.error,
+            )
+            self._ctx.storage.release_erip_renewal_claim(option_id)
+            return
+
+        # Success: update the option in-place
+        new_uid = str(result.data.get("transaction_uid") or "").strip()
+        new_pay_url = str(result.data.get("pay_url") or "").strip()
+        new_qr = str(result.data.get("qr_code_raw") or "").strip()
+        actual_acct = str(result.data.get("erip_account_number") or new_account_number)
+
+        self._ctx.storage.update_option_after_erip_renewal(
+            option_id=option_id,
+            bepaid_uid=new_uid,
+            bepaid_order_id=new_order_id,
+            account_number=actual_acct,
+            payment_url=new_pay_url,
+            qr_code_raw=new_qr,
+            expires_at=expired_at_str,
+            now=now_str,
+        )
+
+        # Audit: record the renewal attempt
+        try:
+            self._ctx.storage.create_checkout_attempt(
+                intent_public_id=pid,
+                provider="bepaid_erip",
+                channel="erip",
+                attempt_number=attempt,
+                expires_at=expired_at_str,
+                now=now_str,
+                bepaid_uid=new_uid,
+                bepaid_order_id=new_order_id,
+                bepaid_account_number=actual_acct,
+            )
+        except Exception:
+            pass
+
+        log.info(
+            "payment_event=payment_erip_auto_renew_succeeded intent=%s attempt=%d account_number=%s",
+            pid, attempt, actual_acct,
+        )
 
 
 class MiniAppContext:
@@ -8490,6 +8710,24 @@ class MiniAppContext:
                             currency=currency or None,
                             reason=f"refund_received:status={tx_status}",
                         )
+                # v7.0.99.0: mark option expired when bePaid sends expired webhook
+                if tx_status == "expired":
+                    try:
+                        _exp_match = self.storage.match_bepaid_transaction_to_payment_target(
+                            extracted, shop_type
+                        )
+                        if _exp_match.get("matched"):
+                            _exp_pid = _exp_match.get("intent_public_id") or ""
+                            _exp_ch = "erip" if shop_type == "erip" else "acquiring"
+                            _exp_opt = self.storage.get_option_by_channel(_exp_pid, _exp_ch) if _exp_pid else None
+                            if _exp_opt:
+                                self.storage.mark_option_expired(_exp_opt["id"], now_iso())
+                                log.info(
+                                    "payment_event=payment_checkout_expired intent=%s channel=%s via_webhook",
+                                    _exp_pid, _exp_ch,
+                                )
+                    except Exception:
+                        log.warning("webhook expired handler error", exc_info=True)
                 return {
                     "ok": True, "saved_id": tx_id, "is_new": is_new,
                     "signature": sig_reason, "processed": False,
@@ -10497,8 +10735,63 @@ class MiniAppContext:
                 "acquiring_payment_url": (
                     str(acq_opt.get("payment_url") or "").strip() or None
                 ) if acq_opt else None,
+                # v7.0.99.0 — deadline fields
+                "due_at": pi.get("due_at"),
+                "due_at_source": pi.get("due_at_source"),
+                "due_status": pi.get("due_status") or "upcoming",
             })
         return {"ok": True, "payments": result, "total": len(result)}
+
+    def client_payment_card_token(
+        self, auth: dict[str, Any], public_id: str
+    ) -> dict[str, Any]:
+        """GET /api/client/payments/{public_id}/card-token — return fresh card checkout URL.
+
+        Self-healing: if the existing token is expired or missing, creates a new one.
+        Guards: intent must be published, unpaid, not withdrawn, no confirmed transaction.
+        """
+        role = self._role_for_user(int(auth["user_id"]))
+        if role != "parent":
+            return {"ok": False, "error": "Доступ только для родителей."}
+
+        pi = self.storage.get_payment_intent(public_id)
+        if not pi:
+            return {"ok": False, "error": "Счёт не найден."}
+        if pi.get("client_visibility") != "published":
+            return {"ok": False, "error": "Счёт недоступен."}
+        if pi.get("client_visibility") == "withdrawn":
+            return {"ok": False, "error": "Счёт отозван."}
+        if str(pi.get("status") or "") in ("paid", "posted_to_moyklass"):
+            return {"ok": False, "error": "Счёт уже оплачен."}
+        if pi.get("webhook_verified") or str(pi.get("paid_transaction_uid") or "").strip():
+            return {"ok": False, "error": "Счёт уже подтверждён."}
+
+        # Check existing acquiring option
+        import datetime as _dtnow
+        _now_str = _dtnow.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        acq_opt = self.storage.get_option_by_channel(public_id, "acquiring")
+        if acq_opt and acq_opt.get("payment_url") and acq_opt.get("checkout_token"):
+            _exp = str(acq_opt.get("expires_at") or "").strip()
+            _st = str(acq_opt.get("status") or "").strip()
+            if _st != "expired" and (not _exp or _exp > _now_str):
+                return {
+                    "ok": True,
+                    "payment_url": acq_opt["payment_url"],
+                    "checkout_token": acq_opt["checkout_token"],
+                    "renewed": False,
+                }
+
+        # Token expired or missing — create a new one via internal auth
+        _int_auth = {"role": "owner", "user_id": 0, "_internal": True}
+        result = self.payment_intent_create_acquiring_option(_int_auth, public_id)
+        if not result.get("ok"):
+            return {"ok": False, "error": result.get("error", "Не удалось создать ссылку оплаты.")}
+        return {
+            "ok": True,
+            "payment_url": result.get("payment_url"),
+            "checkout_token": result.get("checkout_token"),
+            "renewed": True,
+        }
 
     # ── v7.0.93.1/93.2 — separate client parent-child link system ───────────
 
@@ -12318,9 +12611,23 @@ class MiniAppContext:
             "verified_invoice_at": now,
         })
 
+        # ── v7.0.99.0: persist deadline from payUntil ──────────────────────────
+        _pay_until_raw = str(invoice.get("payUntil") or "").strip() or None
+        _due_at, _due_at_source = normalize_due_at(
+            _pay_until_raw, now,
+            getattr(self.settings, "payment_default_due_days", 14),
+        )
+        if intent.get("public_id"):
+            try:
+                self.storage.set_intent_due_at(
+                    intent["public_id"], _pay_until_raw, _due_at, _due_at_source, now,
+                )
+            except Exception:
+                log.warning("payment_intent_from_mk_invoice: set_intent_due_at failed for %s", intent.get("public_id"))
+
         log.info(
-            "payment_intent_from_mk_invoice created public_id=%s mk_user_id=%s invoice_id=%s amount_byn=%s by=%s",
-            intent.get("public_id"), verified_user_id, invoice_id, amount_byn, tg_id,
+            "payment_intent_from_mk_invoice created public_id=%s mk_user_id=%s invoice_id=%s amount_byn=%s by=%s due_at=%s src=%s",
+            intent.get("public_id"), verified_user_id, invoice_id, amount_byn, tg_id, _due_at, _due_at_source,
         )
 
         return {
@@ -12515,6 +12822,9 @@ class MiniAppContext:
             f"/api/integrations/bepaid/webhook/erip/{self.settings.bepaid_webhook_path_secret}"
         )
         description = build_erip_description(pi)
+        # v7.0.99.0: explicit expired_at — never rely on bePaid's implicit default
+        _erip_ttl = getattr(self.settings, "payment_provider_link_ttl_hours", 72)
+        _erip_expired_at = due_at_for_bepaid(_erip_ttl)
         payload = BePaidClient.build_erip_payload(
             amount_minor=int(pi["amount_minor"]),
             currency=str(pi.get("currency") or "BYN"),
@@ -12523,6 +12833,7 @@ class MiniAppContext:
             tracking_id=tracking_id,
             order_id=order_id,
             notification_url=notification_url,
+            expired_at=_erip_expired_at,
         )
 
         shop_id = self.settings.bepaid_erip_shop_id
@@ -12662,9 +12973,46 @@ class MiniAppContext:
             bepaid_qr_code_raw=bp_qr_code_raw,
         )
 
+        # v7.0.99.0: upsert ERIP option row so expires_at and renewal_count are tracked
+        _erip_opt_now = now_iso()
+        try:
+            _existing_erip_opt = self.storage.get_option_by_channel(public_id, "erip")
+            if _existing_erip_opt:
+                self.storage.update_option_expires_at(
+                    _existing_erip_opt["id"], _erip_expired_at, _erip_opt_now
+                )
+            else:
+                self.storage.create_payment_intent_option(
+                    payment_intent_id=pi_row_id,
+                    intent_public_id=public_id,
+                    channel="erip",
+                    shop_type="erip",
+                    bepaid_order_id=bp_order_id,
+                    bepaid_tracking_id=tracking_id,
+                    bepaid_uid=tx_uid,
+                    bepaid_account_number=bp_account_number,
+                    payment_url=bp_pay_url,
+                    qr_code_raw=bp_qr_code_raw,
+                    expires_at=_erip_expired_at,
+                )
+            # Audit: record this as attempt 1 in checkout_attempts
+            self.storage.create_checkout_attempt(
+                intent_public_id=public_id,
+                provider="bepaid_erip",
+                channel="erip",
+                attempt_number=1,
+                expires_at=_erip_expired_at,
+                now=_erip_opt_now,
+                bepaid_uid=tx_uid,
+                bepaid_order_id=bp_order_id,
+                bepaid_account_number=bp_account_number,
+            )
+        except Exception:
+            log.warning("bepaid_erip: could not upsert option/attempt for %s", public_id)
+
         log.info(
-            "bepaid success public_id=%s bepaid_uid=%s account_number=%s",
-            public_id, tx_uid, bp_account_number,
+            "bepaid success public_id=%s bepaid_uid=%s account_number=%s expires_at=%s",
+            public_id, tx_uid, bp_account_number, _erip_expired_at,
         )
 
         return {
@@ -12729,16 +13077,31 @@ class MiniAppContext:
                 ),
             }
 
-        # ── Idempotency: return existing if already created ────────────────────────
+        # ── Idempotency / self-healing: return existing active token or create new ──
         existing = self.storage.get_option_by_channel(public_id, "acquiring")
+        _acq_ttl = getattr(cfg, "payment_provider_link_ttl_hours", 72)
+        _acq_expired_at = due_at_for_bepaid(_acq_ttl)
         if existing and existing.get("checkout_token") and existing.get("payment_url"):
-            return {
-                "ok": True,
-                "already_exists": True,
-                "payment_url": existing["payment_url"],
-                "checkout_token": existing["checkout_token"],
-                "message": "Checkout уже создан.",
-            }
+            # v7.0.99.0: check if existing token is still valid
+            _opt_expires = str(existing.get("expires_at") or "").strip()
+            _opt_status = str(existing.get("status") or "").strip()
+            import datetime as _dt_acq
+            _token_is_expired = (
+                _opt_status == "expired"
+                or (
+                    _opt_expires
+                    and _opt_expires < _dt_acq.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+                )
+            )
+            if not _token_is_expired:
+                return {
+                    "ok": True,
+                    "already_exists": True,
+                    "payment_url": existing["payment_url"],
+                    "checkout_token": existing["checkout_token"],
+                    "message": "Checkout уже создан.",
+                }
+            # Token expired — fall through to create a fresh checkout below
 
         # ── Build URLs ────────────────────────────────────────────────────────────
         base_url = cfg.bepaid_public_base_url.rstrip("/")
@@ -12787,6 +13150,7 @@ class MiniAppContext:
             tracking_id=tracking_id,
             notification_url=notification_url,
             return_url=return_url,
+            expired_at=_acq_expired_at,
         )
 
         # ── Ambiguous: checkout may or may not have been created ──────────────────
@@ -12824,6 +13188,25 @@ class MiniAppContext:
             checkout_token=checkout_token,
             payment_url=payment_url,
         )
+
+        # v7.0.99.0: store expires_at and create audit attempt record
+        try:
+            self.storage.update_option_expires_at(option_id, _acq_expired_at, now_iso())
+            _prev_attempt = self.storage.get_current_renewal_count(public_id, "acquiring")
+            _acq_attempt_num = _prev_attempt + (1 if existing and existing.get("checkout_token") else 0)
+            _acq_attempt_num = max(1, _acq_attempt_num)
+            self.storage.create_checkout_attempt(
+                intent_public_id=public_id,
+                provider="bepaid_acq",
+                channel="acquiring",
+                attempt_number=_acq_attempt_num,
+                expires_at=_acq_expired_at,
+                now=now_iso(),
+                checkout_token=checkout_token,
+                payment_url=payment_url,
+            )
+        except Exception:
+            log.warning("acquiring: could not save checkout_attempt for %s", public_id)
 
         # ── Update parent intent status ───────────────────────────────────────────
         if status == "bepaid_created":
@@ -14816,6 +15199,19 @@ class MiniAppContext:
 
         public_id = intent["public_id"]
 
+        # v7.0.99.0: persist deadline from payUntil
+        _au_pay_until_raw = str(inv.get("payUntil") or "").strip() or None
+        _au_due_at, _au_due_at_source = normalize_due_at(
+            _au_pay_until_raw, now,
+            getattr(self.settings, "payment_default_due_days", 14),
+        )
+        try:
+            self.storage.set_intent_due_at(
+                public_id, _au_pay_until_raw, _au_due_at, _au_due_at_source, now,
+            )
+        except Exception:
+            log.warning("_automation_create_intent: set_intent_due_at failed for %s", public_id)
+
         # Create payment options (ERIP + acquiring) — internal bypass auth
         _auto_auth: dict[str, Any] = {
             "role": "owner",
@@ -15109,6 +15505,10 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.bepaid_list_recovery_queue(auth))
                 if path == "/api/client/payments":
                     return self._send_json(CTX.client_payments_list(auth))
+                # v7.0.99.0: on-demand fresh card token for parent
+                if path.startswith("/api/client/payments/") and path.endswith("/card-token"):
+                    _cct_pid = path.split("/")[-2]
+                    return self._send_json(CTX.client_payment_card_token(auth, _cct_pid))
                 if path == "/api/client/children":
                     return self._send_json(CTX.client_children_list(auth))
                 if path == "/api/client/admin/link-status":

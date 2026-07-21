@@ -778,6 +778,50 @@ class Storage:
         self._ensure_column(conn, "payment_intents", "published_by", "published_by TEXT")
         self._ensure_column(conn, "payment_intents", "withdrawn_at", "withdrawn_at TEXT")
         self._ensure_column(conn, "payment_intents", "withdrawn_by", "withdrawn_by TEXT")
+        # v7.0.99.0 — deadline management
+        self._ensure_column(conn, "payment_intents", "mk_due_at_raw", "mk_due_at_raw TEXT")
+        self._ensure_column(conn, "payment_intents", "due_at", "due_at TEXT")
+        self._ensure_column(conn, "payment_intents", "due_at_source", "due_at_source TEXT DEFAULT 'missing'")
+        self._ensure_column(conn, "payment_intents", "due_status", "due_status TEXT DEFAULT 'upcoming'")
+        self._ensure_column(conn, "payment_intents", "overdue_since", "overdue_since TEXT")
+        self._ensure_column(conn, "payment_intents", "last_due_status_changed_at", "last_due_status_changed_at TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pi_due_at ON payment_intents(due_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pi_due_status ON payment_intents(due_status)")
+        # v7.0.99.0 — renewal count on options (tracks how many times a link was renewed)
+        self._ensure_column(conn, "payment_intent_options", "renewal_count", "renewal_count INTEGER DEFAULT 0")
+        self._ensure_column(conn, "payment_intent_options", "renewal_locked_until", "renewal_locked_until TEXT")
+        # v7.0.99.0 — checkout attempts audit table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payment_checkout_attempts (
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                intent_public_id     TEXT NOT NULL,
+                provider             TEXT NOT NULL,
+                channel              TEXT NOT NULL DEFAULT 'erip',
+                attempt_number       INTEGER NOT NULL DEFAULT 1,
+                checkout_token       TEXT,
+                payment_url          TEXT,
+                bepaid_uid           TEXT,
+                bepaid_order_id      TEXT,
+                bepaid_account_number TEXT,
+                status               TEXT NOT NULL DEFAULT 'active',
+                created_at           TEXT NOT NULL,
+                expires_at           TEXT,
+                expired_at           TEXT,
+                replaced_by_attempt_id INTEGER,
+                last_checked_at      TEXT,
+                error_code           TEXT,
+                error_message        TEXT,
+                requires_check_reason TEXT
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pca_intent_channel "
+            "ON payment_checkout_attempts(intent_public_id, channel, status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pca_expires "
+            "ON payment_checkout_attempts(expires_at, status)"
+        )
 
     def _init_bepaid_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -7587,6 +7631,273 @@ class Storage:
                 (now,),
             )
         return result.rowcount
+
+    # ── v7.0.99.0 — Due date and self-healing link management ─────────────────
+
+    def set_intent_due_at(
+        self,
+        public_id: str,
+        mk_due_at_raw: Optional[str],
+        due_at: Optional[str],
+        due_at_source: str,
+        now: str,
+    ) -> None:
+        """Persist computed due_at for a payment intent."""
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_intents
+                   SET mk_due_at_raw=?, due_at=?, due_at_source=?, updated_at=?
+                   WHERE public_id=?""",
+                (mk_due_at_raw, due_at, due_at_source, now, public_id),
+            )
+
+    def update_intent_due_status(
+        self,
+        public_id: str,
+        due_status: str,
+        overdue_since: Optional[str],
+        now: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_intents
+                   SET due_status=?, overdue_since=?, last_due_status_changed_at=?, updated_at=?
+                   WHERE public_id=?""",
+                (due_status, overdue_since, now, now, public_id),
+            )
+
+    def get_intents_for_due_status_update(self) -> list:
+        """Return all active (non-final, non-withdrawn) intents with a due_at set."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT public_id, due_at, due_status, overdue_since, client_visibility, status
+                   FROM payment_intents
+                   WHERE due_at IS NOT NULL
+                     AND client_visibility != 'withdrawn'
+                     AND status NOT IN ('paid','posted_to_moyklass','cancelled','error')""",
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_intents_for_erip_renewal(self) -> list:
+        """Return published intents whose ERIP option is expired and eligible for auto-renewal.
+
+        Conditions:
+        - client_visibility = 'published' (must be visible to parent)
+        - status not in final/withdrawn
+        - Has an ERIP payment_intent_options row
+        - That option's expires_at < NOW (in UTC ISO) OR status = 'expired'
+        - renewal_locked_until IS NULL or < NOW (not currently being renewed)
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT pi.public_id, pi.id AS pi_row_id, pi.mk_user_id, pi.period_month,
+                          pi.amount_minor, pi.currency, pi.student_name, pi.status,
+                          pio.id AS option_id, pio.bepaid_account_number,
+                          pio.bepaid_uid, pio.renewal_count, pio.expires_at AS opt_expires_at,
+                          pio.status AS opt_status, pio.renewal_locked_until
+                   FROM payment_intents pi
+                   JOIN payment_intent_options pio
+                     ON pio.intent_public_id = pi.public_id AND pio.channel = 'erip'
+                   WHERE pi.client_visibility = 'published'
+                     AND pi.status NOT IN ('paid','posted_to_moyklass','cancelled','error')
+                     AND (
+                           pio.status = 'expired'
+                        OR (pio.expires_at IS NOT NULL
+                            AND pio.expires_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                     )
+                     AND (
+                           pio.renewal_locked_until IS NULL
+                        OR pio.renewal_locked_until < strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                     )""",
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def claim_erip_renewal(self, public_id: str, option_id: int, lock_until: str) -> bool:
+        """Atomically claim renewal lock for an ERIP option.
+
+        Sets renewal_locked_until only if it is currently NULL or past.
+        Returns True if the claim was acquired (rowcount == 1).
+        """
+        with self._connect() as conn:
+            result = conn.execute(
+                """UPDATE payment_intent_options
+                   SET renewal_locked_until=?
+                   WHERE id=?
+                     AND intent_public_id=?
+                     AND (renewal_locked_until IS NULL OR renewal_locked_until < strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))""",
+                (lock_until, option_id, public_id),
+            )
+        return result.rowcount == 1
+
+    def release_erip_renewal_claim(self, option_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE payment_intent_options SET renewal_locked_until=NULL WHERE id=?",
+                (option_id,),
+            )
+
+    def update_option_after_erip_renewal(
+        self,
+        option_id: int,
+        bepaid_uid: str,
+        bepaid_order_id: str,
+        account_number: str,
+        payment_url: Optional[str],
+        qr_code_raw: Optional[str],
+        expires_at: Optional[str],
+        now: str,
+    ) -> None:
+        """Update the ERIP option row in-place after a successful renewal."""
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_intent_options
+                   SET bepaid_uid=?, bepaid_order_id=?, bepaid_account_number=?,
+                       payment_url=?, qr_code_raw=?, expires_at=?,
+                       status='active', renewal_count=renewal_count+1,
+                       renewal_locked_until=NULL, updated_at=?
+                   WHERE id=?""",
+                (
+                    bepaid_uid, bepaid_order_id, account_number,
+                    payment_url, qr_code_raw, expires_at, now,
+                    option_id,
+                ),
+            )
+
+    def create_checkout_attempt(
+        self,
+        intent_public_id: str,
+        provider: str,
+        channel: str,
+        attempt_number: int,
+        expires_at: Optional[str],
+        now: str,
+        *,
+        checkout_token: Optional[str] = None,
+        payment_url: Optional[str] = None,
+        bepaid_uid: Optional[str] = None,
+        bepaid_order_id: Optional[str] = None,
+        bepaid_account_number: Optional[str] = None,
+        status: str = "active",
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ) -> dict:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO payment_checkout_attempts
+                   (intent_public_id, provider, channel, attempt_number,
+                    checkout_token, payment_url, bepaid_uid, bepaid_order_id,
+                    bepaid_account_number, status, created_at, expires_at,
+                    error_code, error_message)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    intent_public_id, provider, channel, attempt_number,
+                    checkout_token, payment_url, bepaid_uid, bepaid_order_id,
+                    bepaid_account_number, status, now, expires_at,
+                    error_code, error_message,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM payment_checkout_attempts WHERE id=?",
+                (cur.lastrowid,),
+            ).fetchone()
+        return dict(row) if row else {}
+
+    def get_active_checkout_attempt(
+        self, intent_public_id: str, channel: str
+    ) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM payment_checkout_attempts
+                   WHERE intent_public_id=? AND channel=? AND status='active'
+                   ORDER BY attempt_number DESC LIMIT 1""",
+                (intent_public_id, channel),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_current_renewal_count(self, intent_public_id: str, channel: str) -> int:
+        """Return the highest attempt_number used so far for this intent/channel."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT MAX(attempt_number) AS max_attempt
+                   FROM payment_checkout_attempts
+                   WHERE intent_public_id=? AND channel=?""",
+                (intent_public_id, channel),
+            ).fetchone()
+        return int(row["max_attempt"] or 1) if row and row["max_attempt"] else 1
+
+    def mark_checkout_attempt_replaced(
+        self, attempt_id: int, replaced_by_id: int, now: str
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_checkout_attempts
+                   SET status='replaced', replaced_by_attempt_id=?, expired_at=?
+                   WHERE id=?""",
+                (replaced_by_id, now, attempt_id),
+            )
+
+    def mark_checkout_attempt_expired(self, attempt_id: int, now: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE payment_checkout_attempts SET status='expired', expired_at=? WHERE id=?",
+                (now, attempt_id),
+            )
+
+    def mark_option_expired(self, option_id: int, now: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE payment_intent_options SET status='expired', updated_at=? WHERE id=?",
+                (now, option_id),
+            )
+
+    def update_option_expires_at(self, option_id: int, expires_at: str, now: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE payment_intent_options SET expires_at=?, updated_at=? WHERE id=?",
+                (expires_at, now, option_id),
+            )
+
+    def update_reminder_status(
+        self,
+        intent_public_id: str,
+        notification_type: str,
+        status: str,
+        now: str,
+        *,
+        telegram_message_id: Optional[int] = None,
+        last_error: Optional[str] = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_parent_notifications
+                   SET status=?, updated_at=?,
+                       sent_at=CASE WHEN ?='sent' THEN ? ELSE sent_at END,
+                       last_attempt_at=?,
+                       telegram_message_id=COALESCE(?, telegram_message_id),
+                       last_error=COALESCE(?, last_error)
+                   WHERE intent_public_id=? AND notification_type=?""",
+                (
+                    status, now,
+                    status, now,
+                    now,
+                    telegram_message_id,
+                    last_error,
+                    intent_public_id, notification_type,
+                ),
+            )
+
+    def get_intents_for_reminder(self, now_iso: str) -> list:
+        """Return published non-paid intents with a due_at for reminder processing."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT public_id, due_at, due_status, status, client_visibility,
+                          mk_user_id, student_name, amount_minor, payment_method
+                   FROM payment_intents
+                   WHERE due_at IS NOT NULL
+                     AND client_visibility = 'published'
+                     AND status NOT IN ('paid','posted_to_moyklass','cancelled','error')""",
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def update_withdrawal_erip(
         self,

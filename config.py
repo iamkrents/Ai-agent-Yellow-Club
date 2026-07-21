@@ -132,6 +132,17 @@ class Settings:
     # Parent notifications (v7.0.97.0) — global env kill switch (default off)
     payment_parent_notifications_enabled: bool
 
+    # v7.0.99.0 — deadline and self-healing link management
+    payment_default_due_days: int              # fallback days when MK payUntil absent
+    payment_provider_link_ttl_hours: int       # explicit TTL for bePaid ERIP/checkout links
+    payment_erip_renewal_enabled: bool         # kill switch for auto ERIP renewal
+    payment_erip_renewal_max_attempts: int     # max renewal attempts before requires_check
+    payment_erip_renewal_retry_minutes: int    # minutes between renewal retries
+    payment_reminder_enabled: bool             # kill switch for all payment reminders
+    payment_reminder_before_due_hours: int     # hours before due to send reminder
+    payment_reminder_on_due_enabled: bool      # send reminder on due-date day
+    payment_overdue_reminder_days: List[int]   # list of days-after-overdue for reminders
+
     @property
     def bepaid_erip_enabled(self) -> bool:
         return bool(self.bepaid_erip_shop_id and self.bepaid_erip_secret_key)
@@ -253,4 +264,13 @@ def load_settings() -> Settings:
         moyklass_acquiring_payment_type_id=int(os.getenv("MOYKLASS_ACQUIRING_PAYMENT_TYPE_ID", "0") or "0"),
         payment_invoice_automation_enabled=_bool(os.getenv("PAYMENT_INVOICE_AUTOMATION_ENABLED", "false"), False),
         payment_parent_notifications_enabled=_bool(os.getenv("PAYMENT_PARENT_NOTIFICATIONS_ENABLED", "false"), False),
+        payment_default_due_days=max(1, int(os.getenv("PAYMENT_DEFAULT_DUE_DAYS", "14") or "14")),
+        payment_provider_link_ttl_hours=max(1, int(os.getenv("PAYMENT_PROVIDER_LINK_TTL_HOURS", "72") or "72")),
+        payment_erip_renewal_enabled=_bool(os.getenv("PAYMENT_ERIP_RENEWAL_ENABLED", "false"), False),
+        payment_erip_renewal_max_attempts=max(1, int(os.getenv("PAYMENT_ERIP_RENEWAL_MAX_ATTEMPTS", "3") or "3")),
+        payment_erip_renewal_retry_minutes=max(1, int(os.getenv("PAYMENT_ERIP_RENEWAL_RETRY_MINUTES", "60") or "60")),
+        payment_reminder_enabled=_bool(os.getenv("PAYMENT_REMINDER_ENABLED", "false"), False),
+        payment_reminder_before_due_hours=max(1, int(os.getenv("PAYMENT_REMINDER_BEFORE_DUE_HOURS", "48") or "48")),
+        payment_reminder_on_due_enabled=_bool(os.getenv("PAYMENT_REMINDER_ON_DUE_ENABLED", "true"), True),
+        payment_overdue_reminder_days=_split_ints(os.getenv("PAYMENT_OVERDUE_REMINDER_DAYS", "1,3,7")),
     )

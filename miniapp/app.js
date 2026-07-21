@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.0.98.3");
+console.log("MiniApp version: v7.0.99.0");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -13604,6 +13604,64 @@ function cpCopyEripCode(btn) {
   _cpCopy(btn, ERIP_CODE, "Код ЕРИП скопирован");
 }
 
+// v7.0.99.0: on-demand fresh card token — fetch latest URL before opening
+async function cpOpenCardPay(evt, publicId, fallbackUrl) {
+  const btn = evt.currentTarget;
+  btn.disabled = true;
+  btn.textContent = "Получаем ссылку…";
+  try {
+    const freshUrl = await _fetchFreshCardToken(publicId);
+    const targetUrl = freshUrl || fallbackUrl;
+    if (targetUrl) {
+      window.open(targetUrl, "_blank", "noopener,noreferrer");
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Оплатить банковской картой";
+  }
+}
+
+function _fmtDueAt(dueAtIso) {
+  // Format due_at ISO string to DD.MM.YYYY in Europe/Minsk
+  if (!dueAtIso) return "";
+  try {
+    const d = new Date(dueAtIso);
+    if (isNaN(d.getTime())) return "";
+    // Add 3h for Minsk if UTC, or parse offset from string
+    const day = String(d.getDate()).padStart(2, "0");
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const year = d.getFullYear();
+    return `${day}.${month}.${year}`;
+  } catch (e) { return ""; }
+}
+
+function _renderDueBadge(pi) {
+  const ds = pi.due_status;
+  const due = pi.due_at;
+  if (!due || !ds || ds === "paid" || ds === "withdrawn") return "";
+  const dateStr = _fmtDueAt(due);
+  if (ds === "overdue") {
+    const now = new Date();
+    const dueDate = new Date(due);
+    const diffDays = Math.max(0, Math.floor((now - dueDate) / 86400000));
+    const label = diffDays === 1 ? "1 день" : diffDays < 5 ? `${diffDays} дня` : `${diffDays} дней`;
+    return `<span class="cp-due-badge cp-due-overdue">Просрочено на ${label}</span>`;
+  }
+  if (ds === "due_today") {
+    return `<span class="cp-due-badge cp-due-today">Срок оплаты сегодня</span>`;
+  }
+  // upcoming
+  return `<span class="cp-due-badge cp-due-upcoming">Оплатить до: ${escapeHtml(dateStr)}</span>`;
+}
+
+async function _fetchFreshCardToken(publicId) {
+  try {
+    const r = await apiGet(`/api/client/payments/${publicId}/card-token`);
+    if (r && r.ok && r.payment_url) return r.payment_url;
+  } catch (e) {}
+  return null;
+}
+
 function renderClientPaymentCard(pi) {
   const statusLabel = CLIENT_PAYMENT_STATUS_LABELS[pi.status] || "Ожидает оплаты";
   const isPaid = ["paid", "posted_to_moyklass"].includes(pi.status);
@@ -13614,16 +13672,19 @@ function renderClientPaymentCard(pi) {
   const publishedAt = pi.published_at
     ? `<div class="cp-card-date">Выставлено: ${escapeHtml(String(pi.published_at).slice(0, 10))}</div>`
     : "";
+  const dueBadge = _renderDueBadge(pi);
 
   let paymentBlock = "";
   if (!isPaid) {
     let acqBlock = "";
     if (pi.acquiring_payment_url) {
+      // v7.0.99.0: card pay button fetches fresh token on click
+      const safePid = escapeHtml(pi.public_id);
+      const safeUrl = escapeHtml(pi.acquiring_payment_url);
       acqBlock = `
         <div class="cp-pay-method">
           <div class="cp-pay-method-title">Оплата банковской картой</div>
-          <a href="${escapeHtml(pi.acquiring_payment_url)}" target="_blank" rel="noopener noreferrer"
-             class="cp-card-pay-btn">Оплатить банковской картой</a>
+          <button class="cp-card-pay-btn" onclick="cpOpenCardPay(event,'${safePid}','${safeUrl}')">Оплатить банковской картой</button>
         </div>`;
     }
     let erpBlock = "";
@@ -13680,6 +13741,7 @@ function renderClientPaymentCard(pi) {
         ${periodStr ? `<span class="cp-period">${escapeHtml(periodStr)}</span>` : ""}
         <span class="${statusCls}">${escapeHtml(statusLabel)}</span>
       </div>
+      ${dueBadge ? `<div class="cp-due-row">${dueBadge}</div>` : ""}
       ${comment}${publishedAt}
       <div class="cp-methods-divider"></div>
       ${paymentBlock}
