@@ -31,7 +31,7 @@ from payment_domain import (
     is_source_reference_valid,
 )
 
-CURRENT_VERSION = "7.0.99.1"
+CURRENT_VERSION = "7.1.0"
 
 
 # ---------------------------------------------------------------------------

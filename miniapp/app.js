@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.0.99.1");
+console.log("MiniApp version: v7.1.0");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -238,7 +238,7 @@ const MVP_TABS_BY_ROLE = {
   director:       ["reports", "my-lunch"],
   parent:         ["my-children", "food", "help"],
 };
-const MVP_ADMIN_TABS = ["interns", "prep-results", "lesson-control", "teachers", "users", "notifications", "client-links", "food-debug", "food-children", "food-menu", "food-report"];
+const MVP_ADMIN_TABS = ["interns", "prep-results", "lesson-control", "teachers", "users", "notifications", "client-links", "payment-terms", "food-debug", "food-children", "food-menu", "food-report"];
 function isMvpMode() { return !!state.me?.mvpReleaseMode; }
 function availableAdminTabs() {
   const tabs = roleCaps().adminTabs || [];
@@ -583,6 +583,17 @@ async function apiGet(path) {
 async function apiPost(path, payload) {
   const res = await fetch(path, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...payload, initData, dev_user_id: devUserId, unsafe_user_id: unsafeUserId, yc_user_id: launchUserId, yc_ts: launchTs, yc_sig: launchSig }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Ошибка API");
+  return data;
+}
+
+async function apiPut(path, payload) {
+  const res = await fetch(path, {
+    method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...payload, initData, dev_user_id: devUserId, unsafe_user_id: unsafeUserId, yc_user_id: launchUserId, yc_ts: launchTs, yc_sig: launchSig }),
   });
@@ -6580,7 +6591,179 @@ async function renderAdminContent() {
       renderClientLinksPanel(root);
       return;
     }
+    if (tab === "payment-terms") {
+      renderPaymentTermsPanel(root);
+      return;
+    }
   } catch (e) { root.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`; }
+}
+
+// ── v7.1.0 — Admin: payment terms and discounts panel ────────────────────
+
+const paymentTermsState = { mkUserId: "" };
+
+function renderPaymentTermsPanel(root) {
+  root.innerHTML = `
+    <div class="pt-panel">
+      <h3>Условия оплаты и скидки</h3>
+      <p class="pt-hint">Введите MoyKlass user_id ученика, чтобы посмотреть и изменить условия оплаты, скидки и предпросмотр цены следующего цикла.</p>
+      <div class="pt-lookup">
+        <input type="text" id="ptMkUserId" placeholder="MoyKlass user_id" value="${escapeAttr(paymentTermsState.mkUserId || "")}" />
+        <button class="green" id="ptLoadBtn" type="button">Загрузить</button>
+      </div>
+      <div id="ptBody"></div>
+    </div>`;
+  const loadBtn = root.querySelector("#ptLoadBtn");
+  const input = root.querySelector("#ptMkUserId");
+  const doLoad = () => {
+    const val = String(input.value || "").trim();
+    if (!val) { setNotice("Укажите MoyKlass user_id", "warn"); return; }
+    paymentTermsState.mkUserId = val;
+    loadPaymentTermsData(val);
+  };
+  loadBtn.addEventListener("click", doLoad);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") doLoad(); });
+  if (paymentTermsState.mkUserId) loadPaymentTermsData(paymentTermsState.mkUserId);
+}
+
+async function loadPaymentTermsData(mkUserId) {
+  const body = document.getElementById("ptBody");
+  if (!body) return;
+  body.innerHTML = `<div class="empty">Загрузка…</div>`;
+  try {
+    const uid = encodeURIComponent(mkUserId);
+    const [termsRes, discountsRes, previewRes] = await Promise.all([
+      apiGet(`/api/payments/clients/${uid}/terms`),
+      apiGet(`/api/payments/clients/${uid}/discounts`),
+      apiGet(`/api/payments/clients/${uid}/pricing-preview`),
+    ]);
+    body.innerHTML = renderPaymentTermsBody(mkUserId, termsRes, discountsRes, previewRes);
+    wirePaymentTermsHandlers(mkUserId, body);
+  } catch (e) {
+    body.innerHTML = `<div class="empty">${escapeHtml(safeUserError(e))}</div>`;
+  }
+}
+
+function renderPaymentTermsBody(mkUserId, termsRes, discountsRes, previewRes) {
+  const t = (termsRes && termsRes.terms) || {};
+  const discounts = (discountsRes && discountsRes.discounts) || [];
+  const active = discounts.filter(d => d.status === "active");
+  const preview = (previewRes && previewRes.preview) || {};
+  const priceMinor = t.base_price_minor != null ? t.base_price_minor : 23900;
+  const termsForm = `
+    <div class="card pt-card">
+      <div class="card-title">Базовые условия ${t.is_default ? "(по умолчанию — ещё не сохранены)" : ""}</div>
+      <label><span>Базовая цена (в копейках, minor)</span>
+        <input type="number" id="ptBasePrice" value="${escapeAttr(String(priceMinor))}" min="1" /></label>
+      <label><span>Кол-во занятий</span>
+        <input type="number" id="ptLessons" value="${escapeAttr(String(t.base_lessons_count != null ? t.base_lessons_count : 4))}" min="1" /></label>
+      <label><span>Срок оплаты (дней)</span>
+        <input type="number" id="ptDueDays" value="${escapeAttr(String(t.default_due_days != null ? t.default_due_days : 17))}" min="1" max="90" /></label>
+      <label class="pt-check"><input type="checkbox" id="ptAutomation" ${t.automation_enabled ? "checked" : ""} /> <span>Автоматизация включена</span></label>
+      <label><span>Причина паузы автоматизации (опц.)</span>
+        <input type="text" id="ptPausedReason" value="${escapeAttr(t.automation_paused_reason || "")}" /></label>
+      <button class="green" id="ptSaveTerms" type="button">Сохранить условия</button>
+    </div>`;
+  const previewCard = `
+    <div class="card pt-card">
+      <div class="card-title">Предпросмотр цены (${escapeHtml(preview.pricing_date || "")})</div>
+      ${preview.ok === false
+        ? `<div class="pt-conflict">Конфликт цен: ${escapeHtml(preview.conflict_detail || preview.error || "")}</div>`
+        : `<div><b>Итоговая цена:</b> ${escapeHtml(preview.resolved_price_byn || fmtByn((preview.resolved_price_minor || 0) / 100))}</div>
+           <div><b>Источник:</b> ${escapeHtml(preview.price_source || "base")}</div>
+           <div><b>Занятий:</b> ${escapeHtml(String(preview.lessons_count != null ? preview.lessons_count : "-"))}</div>
+           ${preview.automation_block_reason ? `<div class="pt-conflict">Автоматизация на паузе: ${escapeHtml(preview.automation_block_reason)}</div>` : ""}`}
+    </div>`;
+  const discountForm = `
+    <div class="card pt-card">
+      <div class="card-title">Добавить скидку</div>
+      <label><span>Тип</span>
+        <select id="ptDiscType">
+          <option value="one_time">Разовая (one_time)</option>
+          <option value="date_range">На период (date_range)</option>
+          <option value="permanent">Постоянная (permanent)</option>
+        </select></label>
+      <label><span>Фиксированная цена (minor)</span>
+        <input type="number" id="ptDiscPrice" min="1" placeholder="напр. 20000" /></label>
+      <label><span>Действует с (YYYY-MM-DD, для date_range)</span>
+        <input type="text" id="ptDiscFrom" placeholder="2026-06-01" /></label>
+      <label><span>Действует до (YYYY-MM-DD, для date_range)</span>
+        <input type="text" id="ptDiscUntil" placeholder="2026-08-31" /></label>
+      <label><span>Причина</span>
+        <input type="text" id="ptDiscReason" placeholder="напр. многодетная семья" /></label>
+      <button class="green" id="ptAddDiscount" type="button">Добавить скидку</button>
+    </div>`;
+  const discountList = `
+    <div class="card pt-card">
+      <div class="card-title">Активные скидки (${active.length})</div>
+      ${active.length ? active.map(d => `
+        <div class="pt-discount-row" data-discount-id="${escapeAttr(String(d.id))}">
+          <div><b>${escapeHtml(d.discount_type)}</b> — ${escapeHtml(d.fixed_price_byn || fmtByn((d.fixed_price_minor || 0) / 100))}</div>
+          <div class="pt-discount-meta">${escapeHtml(d.valid_from || "")}${d.valid_until ? " → " + escapeHtml(d.valid_until) : ""} ${d.reason ? "· " + escapeHtml(d.reason) : ""}</div>
+          <button class="red pt-cancel-discount" data-id="${escapeAttr(String(d.id))}" type="button">Отменить</button>
+        </div>`).join("") : `<div class="empty">Нет активных скидок.</div>`}
+    </div>`;
+  const auditCard = `
+    <div class="card pt-card">
+      <button class="secondary" id="ptShowAudit" type="button">Показать журнал изменений</button>
+      <div id="ptAuditBox"></div>
+    </div>`;
+  return termsForm + previewCard + discountForm + discountList + auditCard;
+}
+
+function wirePaymentTermsHandlers(mkUserId, body) {
+  const uid = encodeURIComponent(mkUserId);
+  const saveBtn = body.querySelector("#ptSaveTerms");
+  if (saveBtn) saveBtn.addEventListener("click", async () => {
+    try {
+      await apiPut(`/api/payments/clients/${uid}/terms`, {
+        base_price_minor: parseInt(body.querySelector("#ptBasePrice").value, 10),
+        base_lessons_count: parseInt(body.querySelector("#ptLessons").value, 10),
+        default_due_days: parseInt(body.querySelector("#ptDueDays").value, 10),
+        currency: "BYN",
+        automation_enabled: body.querySelector("#ptAutomation").checked,
+        automation_paused_reason: body.querySelector("#ptPausedReason").value.trim() || null,
+      });
+      setNotice("Условия сохранены", "ok");
+      loadPaymentTermsData(mkUserId);
+    } catch (e) { setNotice(safeUserError(e), "bad"); }
+  });
+  const addBtn = body.querySelector("#ptAddDiscount");
+  if (addBtn) addBtn.addEventListener("click", async () => {
+    try {
+      const priceRaw = body.querySelector("#ptDiscPrice").value;
+      await apiPost(`/api/payments/clients/${uid}/discounts`, {
+        discount_type: body.querySelector("#ptDiscType").value,
+        fixed_price_minor: parseInt(priceRaw, 10),
+        valid_from: body.querySelector("#ptDiscFrom").value.trim() || null,
+        valid_until: body.querySelector("#ptDiscUntil").value.trim() || null,
+        reason: body.querySelector("#ptDiscReason").value.trim() || null,
+      });
+      setNotice("Скидка добавлена", "ok");
+      loadPaymentTermsData(mkUserId);
+    } catch (e) { setNotice(safeUserError(e), "bad"); }
+  });
+  body.querySelectorAll(".pt-cancel-discount").forEach(btn => btn.addEventListener("click", async () => {
+    try {
+      await apiPost(`/api/payments/clients/${uid}/discounts/${encodeURIComponent(btn.dataset.id)}/cancel`, { reason: "cancelled_by_admin" });
+      setNotice("Скидка отменена", "ok");
+      loadPaymentTermsData(mkUserId);
+    } catch (e) { setNotice(safeUserError(e), "bad"); }
+  }));
+  const auditBtn = body.querySelector("#ptShowAudit");
+  if (auditBtn) auditBtn.addEventListener("click", async () => {
+    const box = body.querySelector("#ptAuditBox");
+    box.innerHTML = `<div class="empty">Загрузка…</div>`;
+    try {
+      const res = await apiGet(`/api/payments/clients/${uid}/pricing-audit?limit=50`);
+      const rows = (res && res.audit) || [];
+      box.innerHTML = rows.length ? rows.map(a => `
+        <div class="pt-audit-row">
+          <b>${escapeHtml(a.event_type)}</b> · ${escapeHtml(a.entity_type)}${a.entity_id ? " #" + escapeHtml(String(a.entity_id)) : ""}
+          <div class="pt-audit-meta">${escapeHtml(a.created_at || "")} ${a.actor_name ? "· " + escapeHtml(a.actor_name) : ""}${a.reason ? " · " + escapeHtml(a.reason) : ""}</div>
+        </div>`).join("") : `<div class="empty">Нет записей.</div>`;
+    } catch (e) { box.innerHTML = `<div class="empty">${escapeHtml(safeUserError(e))}</div>`; }
+  });
 }
 // ── v7.0.93.2 — Admin: client link codes panel ───────────────────────────
 

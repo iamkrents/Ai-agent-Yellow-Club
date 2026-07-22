@@ -143,6 +143,14 @@ class Settings:
     payment_reminder_on_due_enabled: bool      # send reminder on due-date day
     payment_overdue_reminder_days: List[int]   # list of days-after-overdue for reminders
 
+    # v7.1.0 — payment terms and discounts (all default off, additive)
+    payment_discounts_enabled: bool = False
+    payment_renewal_cycle_enabled: bool = False
+    payment_attendance_trigger_enabled: bool = False
+    payment_auto_create_mk_subscription_enabled: bool = False
+    payment_replace_unpaid_intent_enabled: bool = False
+    payment_renewal_parent_notification_enabled: bool = False
+
     @property
     def bepaid_erip_enabled(self) -> bool:
         return bool(self.bepaid_erip_shop_id and self.bepaid_erip_secret_key)
@@ -264,7 +272,7 @@ def load_settings() -> Settings:
         moyklass_acquiring_payment_type_id=int(os.getenv("MOYKLASS_ACQUIRING_PAYMENT_TYPE_ID", "0") or "0"),
         payment_invoice_automation_enabled=_bool(os.getenv("PAYMENT_INVOICE_AUTOMATION_ENABLED", "false"), False),
         payment_parent_notifications_enabled=_bool(os.getenv("PAYMENT_PARENT_NOTIFICATIONS_ENABLED", "false"), False),
-        payment_default_due_days=max(1, int(os.getenv("PAYMENT_DEFAULT_DUE_DAYS", "14") or "14")),
+        payment_default_due_days=max(1, int(os.getenv("PAYMENT_DEFAULT_DUE_DAYS", "17") or "17")),
         payment_provider_link_ttl_hours=max(1, int(os.getenv("PAYMENT_PROVIDER_LINK_TTL_HOURS", "72") or "72")),
         payment_erip_renewal_enabled=_bool(os.getenv("PAYMENT_ERIP_RENEWAL_ENABLED", "false"), False),
         payment_erip_renewal_max_attempts=max(1, int(os.getenv("PAYMENT_ERIP_RENEWAL_MAX_ATTEMPTS", "3") or "3")),
@@ -273,4 +281,10 @@ def load_settings() -> Settings:
         payment_reminder_before_due_hours=max(1, int(os.getenv("PAYMENT_REMINDER_BEFORE_DUE_HOURS", "48") or "48")),
         payment_reminder_on_due_enabled=_bool(os.getenv("PAYMENT_REMINDER_ON_DUE_ENABLED", "true"), True),
         payment_overdue_reminder_days=_split_ints(os.getenv("PAYMENT_OVERDUE_REMINDER_DAYS", "1,3,7")),
+        payment_discounts_enabled=_bool(os.getenv("PAYMENT_DISCOUNTS_ENABLED", "false"), False),
+        payment_renewal_cycle_enabled=_bool(os.getenv("PAYMENT_RENEWAL_CYCLE_ENABLED", "false"), False),
+        payment_attendance_trigger_enabled=_bool(os.getenv("PAYMENT_ATTENDANCE_TRIGGER_ENABLED", "false"), False),
+        payment_auto_create_mk_subscription_enabled=_bool(os.getenv("PAYMENT_AUTO_CREATE_MK_SUBSCRIPTION_ENABLED", "false"), False),
+        payment_replace_unpaid_intent_enabled=_bool(os.getenv("PAYMENT_REPLACE_UNPAID_INTENT_ENABLED", "false"), False),
+        payment_renewal_parent_notification_enabled=_bool(os.getenv("PAYMENT_RENEWAL_PARENT_NOTIFICATION_ENABLED", "false"), False),
     )

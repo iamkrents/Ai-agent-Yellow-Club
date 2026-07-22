@@ -1,5 +1,5 @@
 # payment_domain.py — Canonical payment domain rules for Yellow Club
-# v7.0.99.1
+# v7.1.0
 #
 # Pure constants and functions only.
 # No database writes, no external API calls.
@@ -346,3 +346,153 @@ def due_at_for_bepaid(ttl_hours: int, now_utc: Optional[datetime.datetime] = Non
         now_utc = datetime.datetime.now(datetime.timezone.utc)
     expires = now_utc + datetime.timedelta(hours=int(ttl_hours))
     return expires.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------------------
+# Payment terms and pricing resolution (v7.1.0)
+# ---------------------------------------------------------------------------
+
+PRICING_SOURCE_ONE_TIME = "one_time"
+PRICING_SOURCE_DATE_RANGE = "date_range"
+PRICING_SOURCE_PERMANENT = "permanent"
+PRICING_SOURCE_BASE = "base"
+
+DEFAULT_BASE_PRICE_MINOR = 23900
+DEFAULT_LESSONS_COUNT = 4
+DEFAULT_DUE_DAYS = 17
+DEFAULT_CURRENCY = "BYN"
+
+VALID_DISCOUNT_TYPES = frozenset({"one_time", "date_range", "permanent"})
+VALID_DISCOUNT_STATUSES = frozenset({"active", "cancelled", "consumed", "expired"})
+VALID_CALCULATION_TYPES = frozenset({"fixed_price"})
+
+
+def resolve_client_payment_terms(terms_row: Optional[dict]) -> dict:
+    """Return canonical payment terms, falling back to defaults if row is None."""
+    if not terms_row:
+        return {
+            "base_price_minor": DEFAULT_BASE_PRICE_MINOR,
+            "base_lessons_count": DEFAULT_LESSONS_COUNT,
+            "default_due_days": DEFAULT_DUE_DAYS,
+            "currency": DEFAULT_CURRENCY,
+            "automation_enabled": False,
+            "automation_paused_reason": None,
+            "base_subscription_type_id": None,
+            "is_default": True,
+        }
+    return {
+        "base_price_minor": int(terms_row.get("base_price_minor") or DEFAULT_BASE_PRICE_MINOR),
+        "base_lessons_count": int(terms_row.get("base_lessons_count") or DEFAULT_LESSONS_COUNT),
+        "default_due_days": int(terms_row.get("default_due_days") or DEFAULT_DUE_DAYS),
+        "currency": str(terms_row.get("currency") or DEFAULT_CURRENCY),
+        "automation_enabled": bool(terms_row.get("automation_enabled")),
+        "automation_paused_reason": terms_row.get("automation_paused_reason"),
+        "base_subscription_type_id": terms_row.get("base_subscription_type_id"),
+        "is_default": False,
+    }
+
+
+def resolve_active_client_discount(
+    active_discounts: list,
+    pricing_date: str,
+) -> Tuple[Optional[dict], Optional[str]]:
+    """
+    Given a list of active discount rows and a pricing_date (YYYY-MM-DD),
+    return (winning_discount, conflict_reason).
+
+    conflict_reason is non-None if there is a data integrity conflict.
+    winning_discount is None if no applicable discount found.
+
+    Priority: one_time > date_range > permanent.
+    If multiple active discounts of the SAME type exist → conflict.
+    """
+    by_type: dict = {"one_time": [], "date_range": [], "permanent": []}
+    for d in active_discounts:
+        dt = str(d.get("discount_type") or "")
+        if dt in by_type:
+            by_type[dt].append(d)
+
+    # Check for conflicts (multiple active of same type)
+    for dtype, rows in by_type.items():
+        if len(rows) > 1:
+            return None, f"pricing_conflict:{dtype}:{len(rows)}_active"
+
+    # one_time (no date filter — applies regardless of date)
+    if by_type["one_time"]:
+        d = by_type["one_time"][0]
+        if str(d.get("status") or "") == "active":
+            return d, None
+
+    # date_range (check date bounds inclusive)
+    if by_type["date_range"]:
+        d = by_type["date_range"][0]
+        vf = str(d.get("valid_from") or "")
+        vu = str(d.get("valid_until") or "")
+        if vf and vu and vf <= pricing_date <= vu:
+            return d, None
+
+    # permanent
+    if by_type["permanent"]:
+        d = by_type["permanent"][0]
+        return d, None
+
+    return None, None
+
+
+def resolve_next_subscription_price(
+    terms_row: Optional[dict],
+    active_discounts: list,
+    pricing_date: str,
+) -> dict:
+    """
+    Compute the resolved price for the next subscription cycle.
+
+    Returns a dict with ok=True on success, ok=False on conflict.
+    pricing_date must be YYYY-MM-DD string — caller supplies it, no system time used here.
+    """
+    terms = resolve_client_payment_terms(terms_row)
+    base_price = terms["base_price_minor"]
+    currency = terms["currency"]
+    lessons_count = terms["base_lessons_count"]
+    due_days = terms["default_due_days"]
+    automation_enabled = terms["automation_enabled"]
+    automation_paused_reason = terms["automation_paused_reason"]
+
+    discount, conflict = resolve_active_client_discount(active_discounts, pricing_date)
+
+    if conflict:
+        return {
+            "ok": False,
+            "error": "pricing_conflict",
+            "conflict_detail": conflict,
+            "automation_blocked": True,
+            "automation_block_reason": conflict,
+        }
+
+    if discount:
+        resolved_price = int(discount.get("fixed_price_minor") or base_price)
+        price_source = str(discount.get("discount_type") or PRICING_SOURCE_BASE)
+        discount_id = discount.get("id")
+        discount_type = discount.get("discount_type")
+    else:
+        resolved_price = base_price
+        price_source = PRICING_SOURCE_BASE
+        discount_id = None
+        discount_type = None
+
+    automation_blocked = bool(automation_paused_reason)
+
+    return {
+        "ok": True,
+        "base_price_minor": base_price,
+        "resolved_price_minor": resolved_price,
+        "currency": currency,
+        "lessons_count": lessons_count,
+        "due_days": due_days,
+        "price_source": price_source,
+        "discount_id": discount_id,
+        "discount_type": discount_type,
+        "automation_enabled": automation_enabled,
+        "automation_blocked": automation_blocked,
+        "automation_block_reason": automation_paused_reason,
+    }

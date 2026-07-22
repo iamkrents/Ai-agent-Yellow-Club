@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.0.99.1"
+CURRENT_VERSION = "7.1.0"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -848,20 +848,20 @@ class TestPeriodLabelNominative(unittest.TestCase):
 class TestVersion(unittest.TestCase):
 
     def test_43_current_version(self):
-        self.assertEqual(CURRENT_VERSION, "7.0.99.1")
+        self.assertEqual(CURRENT_VERSION, "7.1.0")
 
     def test_44_payment_domain_version(self):
         import payment_domain
         src = Path(payment_domain.__file__).read_text(encoding="utf-8")
-        self.assertIn("7.0.99.1", src)
+        self.assertIn("7.1.0", src)
 
     def test_45_miniapp_js_version(self):
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('console.log("MiniApp version: v7.0.99.1")', js)
+        self.assertIn('console.log("MiniApp version: v7.1.0")', js)
 
     def test_46_index_html_cache_bust(self):
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("v=7.0.99.1", html)
+        self.assertIn("v=7.1.0", html)
 
     def test_47_withdrawal_table_exists_after_migration(self):
         """payment_intent_withdrawals table is created on Storage init."""

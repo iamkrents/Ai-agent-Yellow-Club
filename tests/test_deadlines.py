@@ -1,4 +1,4 @@
-"""Tests for v7.0.99.1 — deadline management and self-healing payment links.
+"""Tests for v7.1.0 — deadline management and self-healing payment links.
 
 Covers:
   - due_at normalisation from MoyKlass payUntil (date-only → 23:59:59 Minsk)
@@ -50,7 +50,7 @@ from bepaid_client import BePaidClient
 from storage import Storage
 from config import load_settings
 
-CURRENT_VERSION = "7.0.99.1"
+CURRENT_VERSION = "7.1.0"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -495,7 +495,7 @@ class TestDueAtStorage(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 8 — Config: new v7.0.99.1 variables
+# 8 — Config: new v7.1.0 variables
 # ---------------------------------------------------------------------------
 
 class TestConfig(unittest.TestCase):

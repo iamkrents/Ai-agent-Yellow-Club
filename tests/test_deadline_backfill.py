@@ -1,4 +1,4 @@
-"""Tests for v7.0.99.1 — deadline backfill for pre-existing payment intents.
+"""Tests for v7.1.0 — deadline backfill for pre-existing payment intents.
 
 Covers (per hotfix requirements):
   01-05  Storage: get_intents_for_deadline_backfill query correctness
@@ -54,7 +54,7 @@ from payment_domain import (
 )
 from storage import Storage
 
-CURRENT_VERSION = "7.0.99.1"
+CURRENT_VERSION = "7.1.0"
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -46,7 +46,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 STYLES_CSS = ROOT / "miniapp" / "styles.css"
 
-CURRENT_VERSION = "7.0.99.1"
+CURRENT_VERSION = "7.1.0"
 PURPLE_HEX = "#6366f1"
 PURPLE_RGBA = "rgba(99,102,241"
 YELLOW_HEX = "#ffd84d"
@@ -252,7 +252,7 @@ class TestJSStructure(unittest.TestCase):
         self.assertIn("navigator.clipboard.writeText", self.js)
 
     def test_18_card_link_preserved(self):
-        # v7.0.99.1: card pay is a <button> calling cpOpenCardPay (no longer an <a href>)
+        # v7.1.0: card pay is a <button> calling cpOpenCardPay (no longer an <a href>)
         self.assertIn("acquiring_payment_url", self.card_fn)
         self.assertIn("cpOpenCardPay", self.card_fn)
         self.assertIn("cp-card-pay-btn", self.card_fn)

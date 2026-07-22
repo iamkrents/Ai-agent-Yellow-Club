@@ -606,6 +606,7 @@ class Storage:
             self._init_client_link_tables(conn)
             self._init_automation_tables(conn)
             self._init_withdrawal_tables(conn)
+            self._init_pricing_tables(conn)
 
     def _init_payment_intent_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -1389,6 +1390,78 @@ class Storage:
                )
                AND current_stage != 'withdrawn'""",
             (_now,),
+        )
+
+    # ── v7.1.0 — Payment terms and discounts tables ──────────────────────────
+
+    def _init_pricing_tables(self, conn: sqlite3.Connection) -> None:
+        """Create payment terms / discounts / pricing-audit tables (v7.1.0).
+
+        All additive: CREATE TABLE IF NOT EXISTS only. No data mutation.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payment_client_terms (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mk_user_id TEXT NOT NULL UNIQUE,
+                base_subscription_type_id TEXT NULL,
+                base_lessons_count INTEGER NOT NULL DEFAULT 4,
+                base_price_minor INTEGER NOT NULL DEFAULT 23900,
+                currency TEXT NOT NULL DEFAULT 'BYN',
+                default_due_days INTEGER NOT NULL DEFAULT 17,
+                automation_enabled INTEGER NOT NULL DEFAULT 0,
+                automation_paused_reason TEXT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                updated_by_tg_id INTEGER NULL,
+                updated_by_name TEXT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payment_client_discounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mk_user_id TEXT NOT NULL,
+                discount_type TEXT NOT NULL,
+                calculation_type TEXT NOT NULL DEFAULT 'fixed_price',
+                fixed_price_minor INTEGER NOT NULL,
+                valid_from TEXT NULL,
+                valid_until TEXT NULL,
+                remaining_uses INTEGER NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                reason TEXT NULL,
+                created_by_tg_id INTEGER NULL,
+                created_by_name TEXT NULL,
+                cancelled_by_tg_id INTEGER NULL,
+                cancelled_by_name TEXT NULL,
+                cancelled_at TEXT NULL,
+                cancellation_reason TEXT NULL,
+                consumed_at TEXT NULL,
+                consumed_by_intent_public_id TEXT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payment_pricing_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mk_user_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NULL,
+                old_value_json TEXT NULL,
+                new_value_json TEXT NULL,
+                reason TEXT NULL,
+                actor_tg_id INTEGER NULL,
+                actor_name TEXT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pcd_user "
+            "ON payment_client_discounts(mk_user_id, status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ppal_user "
+            "ON payment_pricing_audit_log(mk_user_id, id)"
         )
 
     # ── v7.0.94.0 — Invoice Automation methods ───────────────────────────────
@@ -8043,5 +8116,331 @@ class Storage:
                    WHERE intent_public_id=?
                      AND (webhook_verified=1 OR provider_verified=1)""",
                 (str(public_id),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── v7.1.0 — Payment terms and discounts methods ─────────────────────────
+
+    @staticmethod
+    def _pricing_audit_value(value: Any) -> Optional[str]:
+        """Serialize a value for the audit log. dict/list → JSON; None → None; else str."""
+        if value is None:
+            return None
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False)
+        return str(value)
+
+    def _append_pricing_audit_conn(
+        self,
+        conn: sqlite3.Connection,
+        mk_user_id: str,
+        event_type: str,
+        entity_type: str,
+        entity_id: Optional[str],
+        old_value: Any,
+        new_value: Any,
+        reason: Optional[str],
+        actor_tg_id: Optional[int],
+        actor_name: Optional[str],
+        now_str: str,
+    ) -> None:
+        """Insert one audit row using an existing connection (same transaction)."""
+        conn.execute(
+            """INSERT INTO payment_pricing_audit_log
+               (mk_user_id, event_type, entity_type, entity_id,
+                old_value_json, new_value_json, reason,
+                actor_tg_id, actor_name, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                str(mk_user_id), str(event_type), str(entity_type),
+                (str(entity_id) if entity_id is not None else None),
+                self._pricing_audit_value(old_value),
+                self._pricing_audit_value(new_value),
+                reason,
+                (int(actor_tg_id) if actor_tg_id is not None else None),
+                actor_name,
+                now_str,
+            ),
+        )
+
+    def get_payment_client_terms(self, mk_user_id: str) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM payment_client_terms WHERE mk_user_id=?",
+                (str(mk_user_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def upsert_payment_client_terms(
+        self,
+        mk_user_id: str,
+        base_lessons_count: int,
+        base_price_minor: int,
+        currency: str,
+        default_due_days: int,
+        automation_enabled: bool,
+        automation_paused_reason: Optional[str],
+        base_subscription_type_id: Optional[str],
+        actor_tg_id: Optional[int],
+        actor_name: Optional[str],
+        now_str: str,
+    ) -> dict:
+        mk_user_id = str(mk_user_id)
+        base_lessons_count = int(base_lessons_count)
+        base_price_minor = int(base_price_minor)
+        default_due_days = int(default_due_days)
+        currency = str(currency or "BYN")
+
+        if base_lessons_count <= 0:
+            raise ValueError("base_lessons_count_must_be_positive")
+        if base_price_minor <= 0:
+            raise ValueError("base_price_minor_must_be_positive")
+        if not (1 <= default_due_days <= 90):
+            raise ValueError("default_due_days_out_of_range")
+        if currency != "BYN":
+            raise ValueError("currency_must_be_byn")
+
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM payment_client_terms WHERE mk_user_id=?",
+                (mk_user_id,),
+            ).fetchone()
+            aenabled = 1 if automation_enabled else 0
+            if existing is None:
+                conn.execute(
+                    """INSERT INTO payment_client_terms
+                       (mk_user_id, base_subscription_type_id, base_lessons_count,
+                        base_price_minor, currency, default_due_days,
+                        automation_enabled, automation_paused_reason,
+                        created_at, updated_at, updated_by_tg_id, updated_by_name)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        mk_user_id, base_subscription_type_id, base_lessons_count,
+                        base_price_minor, currency, default_due_days,
+                        aenabled, automation_paused_reason,
+                        now_str, now_str,
+                        (int(actor_tg_id) if actor_tg_id is not None else None),
+                        actor_name,
+                    ),
+                )
+                new_row = conn.execute(
+                    "SELECT * FROM payment_client_terms WHERE mk_user_id=?",
+                    (mk_user_id,),
+                ).fetchone()
+                new_dict = dict(new_row)
+                self._append_pricing_audit_conn(
+                    conn, mk_user_id, "terms_created", "terms",
+                    str(new_dict.get("id")), None, new_dict,
+                    None, actor_tg_id, actor_name, now_str,
+                )
+                return new_dict
+
+            old_dict = dict(existing)
+            conn.execute(
+                """UPDATE payment_client_terms SET
+                       base_subscription_type_id=?, base_lessons_count=?,
+                       base_price_minor=?, currency=?, default_due_days=?,
+                       automation_enabled=?, automation_paused_reason=?,
+                       updated_at=?, updated_by_tg_id=?, updated_by_name=?
+                   WHERE mk_user_id=?""",
+                (
+                    base_subscription_type_id, base_lessons_count,
+                    base_price_minor, currency, default_due_days,
+                    aenabled, automation_paused_reason,
+                    now_str,
+                    (int(actor_tg_id) if actor_tg_id is not None else None),
+                    actor_name,
+                    mk_user_id,
+                ),
+            )
+            new_row = conn.execute(
+                "SELECT * FROM payment_client_terms WHERE mk_user_id=?",
+                (mk_user_id,),
+            ).fetchone()
+            new_dict = dict(new_row)
+            self._append_pricing_audit_conn(
+                conn, mk_user_id, "terms_updated", "terms",
+                str(new_dict.get("id")), old_dict, new_dict,
+                None, actor_tg_id, actor_name, now_str,
+            )
+            return new_dict
+
+    def list_payment_client_discounts(self, mk_user_id: str) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM payment_client_discounts WHERE mk_user_id=? ORDER BY id DESC",
+                (str(mk_user_id),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_active_payment_client_discounts(
+        self, mk_user_id: str, pricing_date: str
+    ) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM payment_client_discounts
+                   WHERE mk_user_id=? AND status='active'
+                   ORDER BY id DESC""",
+                (str(mk_user_id),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_payment_client_discount(
+        self,
+        mk_user_id: str,
+        discount_type: str,
+        fixed_price_minor: int,
+        valid_from: Optional[str],
+        valid_until: Optional[str],
+        remaining_uses: Optional[int],
+        reason: Optional[str],
+        actor_tg_id: Optional[int],
+        actor_name: Optional[str],
+        now_str: str,
+    ) -> dict:
+        mk_user_id = str(mk_user_id)
+        discount_type = str(discount_type or "")
+        fixed_price_minor = int(fixed_price_minor)
+
+        if discount_type not in ("one_time", "date_range", "permanent"):
+            raise ValueError("invalid_discount_type")
+        if fixed_price_minor <= 0:
+            raise ValueError("fixed_price_minor_must_be_positive")
+
+        if discount_type == "date_range":
+            if not valid_from or not valid_until:
+                raise ValueError("date_range_requires_valid_from_and_valid_until")
+            if str(valid_until) < str(valid_from):
+                raise ValueError("valid_until_before_valid_from")
+        elif discount_type == "permanent":
+            # permanent must not carry an end date
+            valid_until = None
+        elif discount_type == "one_time":
+            remaining_uses = 1
+
+        with self._connect() as conn:
+            replaced = conn.execute(
+                """SELECT * FROM payment_client_discounts
+                   WHERE mk_user_id=? AND discount_type=? AND status='active'
+                   ORDER BY id DESC LIMIT 1""",
+                (mk_user_id, discount_type),
+            ).fetchone()
+            replaced_id = None
+            if replaced is not None:
+                replaced_dict = dict(replaced)
+                replaced_id = replaced_dict.get("id")
+                conn.execute(
+                    """UPDATE payment_client_discounts SET
+                           status='cancelled', cancelled_at=?,
+                           cancellation_reason='replaced_by_new_discount',
+                           updated_at=?
+                       WHERE id=?""",
+                    (now_str, now_str, replaced_id),
+                )
+                self._append_pricing_audit_conn(
+                    conn, mk_user_id, "discount_replaced", "discount",
+                    str(replaced_id), replaced_dict, None,
+                    "replaced_by_new_discount", actor_tg_id, actor_name, now_str,
+                )
+
+            conn.execute(
+                """INSERT INTO payment_client_discounts
+                   (mk_user_id, discount_type, calculation_type, fixed_price_minor,
+                    valid_from, valid_until, remaining_uses, status, reason,
+                    created_by_tg_id, created_by_name, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    mk_user_id, discount_type, "fixed_price", fixed_price_minor,
+                    valid_from, valid_until, remaining_uses, "active", reason,
+                    (int(actor_tg_id) if actor_tg_id is not None else None),
+                    actor_name, now_str, now_str,
+                ),
+            )
+            new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            new_row = conn.execute(
+                "SELECT * FROM payment_client_discounts WHERE id=?",
+                (new_id,),
+            ).fetchone()
+            new_dict = dict(new_row)
+            self._append_pricing_audit_conn(
+                conn, mk_user_id, "discount_created", "discount",
+                str(new_id), None, new_dict,
+                reason, actor_tg_id, actor_name, now_str,
+            )
+            return new_dict
+
+    def cancel_payment_client_discount(
+        self,
+        discount_id: int,
+        mk_user_id: str,
+        actor_tg_id: Optional[int],
+        actor_name: Optional[str],
+        reason: Optional[str],
+        now_str: str,
+    ) -> dict:
+        mk_user_id = str(mk_user_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM payment_client_discounts
+                   WHERE id=? AND mk_user_id=? AND status='active'""",
+                (int(discount_id), mk_user_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("discount_not_found_or_not_active")
+            old_dict = dict(row)
+            conn.execute(
+                """UPDATE payment_client_discounts SET
+                       status='cancelled', cancelled_at=?,
+                       cancelled_by_tg_id=?, cancelled_by_name=?,
+                       cancellation_reason=?, updated_at=?
+                   WHERE id=?""",
+                (
+                    now_str,
+                    (int(actor_tg_id) if actor_tg_id is not None else None),
+                    actor_name, reason, now_str, int(discount_id),
+                ),
+            )
+            new_row = conn.execute(
+                "SELECT * FROM payment_client_discounts WHERE id=?",
+                (int(discount_id),),
+            ).fetchone()
+            new_dict = dict(new_row)
+            self._append_pricing_audit_conn(
+                conn, mk_user_id, "discount_cancelled", "discount",
+                str(discount_id), old_dict, new_dict,
+                reason, actor_tg_id, actor_name, now_str,
+            )
+            return new_dict
+
+    def append_payment_pricing_audit(
+        self,
+        mk_user_id: str,
+        event_type: str,
+        entity_type: str,
+        entity_id: Optional[str],
+        old_value_json: Any,
+        new_value_json: Any,
+        reason: Optional[str],
+        actor_tg_id: Optional[int],
+        actor_name: Optional[str],
+        now_str: str,
+    ) -> None:
+        with self._connect() as conn:
+            self._append_pricing_audit_conn(
+                conn, mk_user_id, event_type, entity_type, entity_id,
+                old_value_json, new_value_json, reason,
+                actor_tg_id, actor_name, now_str,
+            )
+
+    def list_payment_pricing_audit(
+        self, mk_user_id: str, limit: int = 50, offset: int = 0
+    ) -> list[dict]:
+        limit = max(1, min(int(limit), 500))
+        offset = max(0, int(offset))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM payment_pricing_audit_log
+                   WHERE mk_user_id=? ORDER BY id DESC LIMIT ? OFFSET ?""",
+                (str(mk_user_id), limit, offset),
             ).fetchall()
         return [dict(r) for r in rows]

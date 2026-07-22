@@ -1,3 +1,5 @@
+# web_app_server.py — Yellow Club Mini App API server
+# v7.1.0
 from __future__ import annotations
 
 import hashlib
@@ -72,6 +74,13 @@ from payment_domain import (
     DUE_STATUS_UPCOMING,
     DUE_STATUS_PAID,
     DUE_STATUS_WITHDRAWN,
+    # v7.1.0 — payment terms and discounts
+    resolve_client_payment_terms,
+    resolve_active_client_discount,
+    resolve_next_subscription_price,
+    DEFAULT_BASE_PRICE_MINOR,
+    DEFAULT_LESSONS_COUNT,
+    DEFAULT_DUE_DAYS,
 )
 
 log = logging.getLogger("yellow_club_miniapp")
@@ -123,11 +132,12 @@ CLIENT_LINK_ADMIN_ROLES = {"owner", "admin", "operations"}
 AUTOMATION_ADMIN_ROLES = {"owner", "admin"}       # v7.0.94.0
 AUTOMATION_VIEW_ROLES = {"owner", "admin", "operations"}  # v7.0.94.0
 WITHDRAW_INVOICE_ROLES = {"owner", "admin", "operations"}  # v7.0.98.0
+PAYMENT_TERMS_ROLES = {"owner", "admin", "operations"}  # v7.1.0 — pricing/terms admin
 
 ADMIN_TABS_BY_ROLE = {
-    "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links"],
-    "admin": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links"],
-    "operations": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links"],
+    "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links", "payment-terms"],
+    "admin": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links", "payment-terms"],
+    "operations": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links", "payment-terms"],
     "methodist": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "notifications", "kpi", "interns"],
 }
 
@@ -10357,6 +10367,190 @@ class MiniAppContext:
         intent = self._normalize_payment_intent(intent)
         return {"ok": True, "intent": intent}
 
+    # ── v7.1.0 — Payment terms and discounts endpoints ───────────────────────
+
+    def _require_payment_terms_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in PAYMENT_TERMS_ROLES:
+            return {"ok": False, "error": "Доступ к условиям оплаты ограничен: owner, admin, operations."}
+        return None
+
+    def _pricing_actor_name(self, auth: dict[str, Any]) -> str:
+        uid = auth.get("user_id")
+        staff = {}
+        try:
+            staff = self.storage.get_staff_user(int(uid)) or {}
+        except (TypeError, ValueError):
+            staff = {}
+        return (
+            str(staff.get("full_name") or "").strip()
+            or str(auth.get("full_name") or "").strip()
+            or str((auth.get("user") or {}).get("first_name") or "").strip()
+            or str(staff.get("username") or auth.get("username") or "").strip()
+            or (f"Сотрудник #{uid}" if uid else "Сотрудник")
+        )
+
+    @staticmethod
+    def _byn(minor: Any) -> str:
+        try:
+            return f"{int(minor) / 100:.2f} BYN"
+        except (TypeError, ValueError):
+            return "0.00 BYN"
+
+    def _decorate_terms(self, terms_row: dict | None) -> dict[str, Any]:
+        resolved = resolve_client_payment_terms(terms_row)
+        resolved["base_price_byn"] = self._byn(resolved["base_price_minor"])
+        return resolved
+
+    def _decorate_discount(self, d: dict) -> dict[str, Any]:
+        out = dict(d)
+        out["fixed_price_byn"] = self._byn(d.get("fixed_price_minor"))
+        return out
+
+    def payment_client_terms_get(self, auth: dict[str, Any], mk_user_id: str) -> dict[str, Any]:
+        denied = self._require_payment_terms_access(auth)
+        if denied:
+            return denied
+        mk_user_id = str(mk_user_id or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "mk_user_id обязателен"}
+        row = self.storage.get_payment_client_terms(mk_user_id)
+        return {
+            "ok": True,
+            "mk_user_id": mk_user_id,
+            "terms": self._decorate_terms(row),
+            "raw": row,
+        }
+
+    def payment_client_terms_update(
+        self, auth: dict[str, Any], mk_user_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        denied = self._require_payment_terms_access(auth)
+        if denied:
+            return denied
+        mk_user_id = str(mk_user_id or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "mk_user_id обязателен"}
+        try:
+            row = self.storage.upsert_payment_client_terms(
+                mk_user_id=mk_user_id,
+                base_lessons_count=int(body.get("base_lessons_count") or DEFAULT_LESSONS_COUNT),
+                base_price_minor=int(body.get("base_price_minor") or DEFAULT_BASE_PRICE_MINOR),
+                currency=str(body.get("currency") or "BYN"),
+                default_due_days=int(body.get("default_due_days") or DEFAULT_DUE_DAYS),
+                automation_enabled=bool(body.get("automation_enabled")),
+                automation_paused_reason=(body.get("automation_paused_reason") or None),
+                base_subscription_type_id=(body.get("base_subscription_type_id") or None),
+                actor_tg_id=int(auth["user_id"]),
+                actor_name=self._pricing_actor_name(auth),
+                now_str=now_iso(),
+            )
+        except (ValueError, TypeError) as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "mk_user_id": mk_user_id, "terms": self._decorate_terms(row), "raw": row}
+
+    def payment_client_pricing_preview(
+        self, auth: dict[str, Any], mk_user_id: str, params: dict[str, str]
+    ) -> dict[str, Any]:
+        denied = self._require_payment_terms_access(auth)
+        if denied:
+            return denied
+        mk_user_id = str(mk_user_id or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "mk_user_id обязателен"}
+        pricing_date = str(params.get("pricing_date") or "").strip()
+        if not pricing_date:
+            pricing_date = datetime.now(timezone.utc).astimezone(
+                timezone(timedelta(hours=3))
+            ).strftime("%Y-%m-%d")
+        terms_row = self.storage.get_payment_client_terms(mk_user_id)
+        active = self.storage.get_active_payment_client_discounts(mk_user_id, pricing_date)
+        preview = resolve_next_subscription_price(terms_row, active, pricing_date)
+        preview["pricing_date"] = pricing_date
+        if preview.get("ok"):
+            preview["resolved_price_byn"] = self._byn(preview.get("resolved_price_minor"))
+            preview["base_price_byn"] = self._byn(preview.get("base_price_minor"))
+        return {"ok": True, "mk_user_id": mk_user_id, "preview": preview}
+
+    def payment_client_discounts_list(
+        self, auth: dict[str, Any], mk_user_id: str
+    ) -> dict[str, Any]:
+        denied = self._require_payment_terms_access(auth)
+        if denied:
+            return denied
+        mk_user_id = str(mk_user_id or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "mk_user_id обязателен"}
+        rows = self.storage.list_payment_client_discounts(mk_user_id)
+        return {
+            "ok": True,
+            "mk_user_id": mk_user_id,
+            "discounts": [self._decorate_discount(d) for d in rows],
+        }
+
+    def payment_client_discount_create(
+        self, auth: dict[str, Any], mk_user_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        denied = self._require_payment_terms_access(auth)
+        if denied:
+            return denied
+        mk_user_id = str(mk_user_id or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "mk_user_id обязателен"}
+        remaining_uses = body.get("remaining_uses")
+        try:
+            row = self.storage.create_payment_client_discount(
+                mk_user_id=mk_user_id,
+                discount_type=str(body.get("discount_type") or ""),
+                fixed_price_minor=int(body.get("fixed_price_minor") or 0),
+                valid_from=(body.get("valid_from") or None),
+                valid_until=(body.get("valid_until") or None),
+                remaining_uses=(int(remaining_uses) if remaining_uses not in (None, "") else None),
+                reason=(body.get("reason") or None),
+                actor_tg_id=int(auth["user_id"]),
+                actor_name=self._pricing_actor_name(auth),
+                now_str=now_iso(),
+            )
+        except (ValueError, TypeError) as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "mk_user_id": mk_user_id, "discount": self._decorate_discount(row)}
+
+    def payment_client_discount_cancel(
+        self, auth: dict[str, Any], mk_user_id: str, discount_id: int, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        denied = self._require_payment_terms_access(auth)
+        if denied:
+            return denied
+        mk_user_id = str(mk_user_id or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "mk_user_id обязателен"}
+        try:
+            row = self.storage.cancel_payment_client_discount(
+                discount_id=int(discount_id),
+                mk_user_id=mk_user_id,
+                actor_tg_id=int(auth["user_id"]),
+                actor_name=self._pricing_actor_name(auth),
+                reason=(body.get("reason") or None),
+                now_str=now_iso(),
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "mk_user_id": mk_user_id, "discount": self._decorate_discount(row)}
+
+    def payment_client_pricing_audit(
+        self, auth: dict[str, Any], mk_user_id: str, params: dict[str, str]
+    ) -> dict[str, Any]:
+        denied = self._require_payment_terms_access(auth)
+        if denied:
+            return denied
+        mk_user_id = str(mk_user_id or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "mk_user_id обязателен"}
+        limit = _safe_int(params.get("limit"), 50)
+        offset = _safe_int(params.get("offset"), 0)
+        rows = self.storage.list_payment_pricing_audit(mk_user_id, limit=limit, offset=offset)
+        return {"ok": True, "mk_user_id": mk_user_id, "audit": rows}
+
     # ── v7.0.93 — parent client visibility ───────────────────────────────────
 
     def get_intent_publish_preview(
@@ -15671,6 +15865,20 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.automation_get_status(auth, params))
                 if path == "/api/payments/automation/items":
                     return self._send_json(CTX.automation_list_items(auth, params))
+                # ── v7.1.0 — Payment terms and discounts (client-scoped) ────
+                if path.startswith("/api/payments/clients/"):
+                    _cl_rest = path[len("/api/payments/clients/"):]
+                    _cl_parts = _cl_rest.split("/")
+                    if len(_cl_parts) == 2 and _cl_parts[0]:
+                        _cl_uid, _cl_sub = _cl_parts[0], _cl_parts[1]
+                        if _cl_sub == "terms":
+                            return self._send_json(CTX.payment_client_terms_get(auth, _cl_uid))
+                        if _cl_sub == "discounts":
+                            return self._send_json(CTX.payment_client_discounts_list(auth, _cl_uid))
+                        if _cl_sub == "pricing-preview":
+                            return self._send_json(CTX.payment_client_pricing_preview(auth, _cl_uid, params))
+                        if _cl_sub == "pricing-audit":
+                            return self._send_json(CTX.payment_client_pricing_audit(auth, _cl_uid, params))
                 if path.startswith("/api/payments/intents/"):
                     _pi_rest = path[len("/api/payments/intents/"):]
                     _pi_parts = _pi_rest.split("/")
@@ -15786,6 +15994,18 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 _auto_parts = _auto_rest.split("/")
                 if len(_auto_parts) == 2:
                     return self._send_json(CTX.automation_item_action(auth, _auto_parts[0], _auto_parts[1], body))
+            # ── v7.1.0 — Payment discounts (client-scoped) ──────────────────
+            if path.startswith("/api/payments/clients/"):
+                _cl_rest = path[len("/api/payments/clients/"):]
+                _cl_parts = _cl_rest.split("/")
+                if len(_cl_parts) == 2 and _cl_parts[0] and _cl_parts[1] == "discounts":
+                    return self._send_json(CTX.payment_client_discount_create(auth, _cl_parts[0], body))
+                if len(_cl_parts) == 4 and _cl_parts[0] and _cl_parts[1] == "discounts" and _cl_parts[3] == "cancel":
+                    try:
+                        _disc_id = int(_cl_parts[2])
+                    except (ValueError, TypeError):
+                        return self._send_json({"ok": False, "error": "invalid discount id"}, status=400)
+                    return self._send_json(CTX.payment_client_discount_cancel(auth, _cl_parts[0], _disc_id, body))
             if path.startswith("/api/payments/intents/"):
                 _pi_rest = path[len("/api/payments/intents/"):]
                 _pi_parts = _pi_rest.split("/")
@@ -15972,6 +16192,38 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             return
         except Exception as exc:
             log.exception("Mini app POST error")
+            try:
+                self._send_json({"ok": False, "error": str(exc)}, status=500)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+
+    def do_PUT(self) -> None:  # noqa: N802
+        """v7.1.0 — PUT handler (currently: payment client terms update)."""
+        path, params = _parse_query(self.path)
+        try:
+            body = self._read_body_json()
+            init_data = str(body.get("initData") or params.get("initData") or "")
+            auth = CTX.validate_init_data(
+                init_data,
+                dev_user_id=str(body.get("dev_user_id") or params.get("dev_user_id") or ""),
+                unsafe_user_id=str(body.get("unsafe_user_id") or params.get("unsafe_user_id") or ""),
+                yc_user_id=str(body.get("yc_user_id") or params.get("yc_user_id") or ""),
+                yc_ts=str(body.get("yc_ts") or params.get("yc_ts") or ""),
+                yc_sig=str(body.get("yc_sig") or params.get("yc_sig") or ""),
+            )
+            if not auth.get("ok"):
+                return self._send_json(auth, status=401)
+            if path.startswith("/api/payments/clients/"):
+                _cl_rest = path[len("/api/payments/clients/"):]
+                _cl_parts = _cl_rest.split("/")
+                if len(_cl_parts) == 2 and _cl_parts[0] and _cl_parts[1] == "terms":
+                    return self._send_json(CTX.payment_client_terms_update(auth, _cl_parts[0], body))
+            return self._send_json({"ok": False, "error": "Unknown API route"}, status=404)
+        except (BrokenPipeError, ConnectionResetError):
+            log.info("Client disconnected: path=%s", self.path.split("?", 1)[0])
+            return
+        except Exception as exc:
+            log.exception("Mini app PUT error")
             try:
                 self._send_json({"ok": False, "error": str(exc)}, status=500)
             except (BrokenPipeError, ConnectionResetError):
