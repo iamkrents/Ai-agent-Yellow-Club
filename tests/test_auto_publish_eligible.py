@@ -1,4 +1,4 @@
-﻿"""Tests for v7.0.96.1 — auto_publish_eligible eligibility guard.
+"""Tests for v7.0.96.1 — auto_publish_eligible eligibility guard.
 
 Verifies that auto-publishing of payment intents to parents is gated by an
 explicit per-item flag (auto_publish_eligible) set only when
@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.0.99.0"
+CURRENT_VERSION = "7.0.99.1"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -957,7 +957,7 @@ class TestRegressionImports(unittest.TestCase):
         self.assertTrue(hasattr(payment_domain, "can_publish_to_parent"))
 
     def test_version_string(self):
-        self.assertEqual(CURRENT_VERSION, "7.0.99.0")
+        self.assertEqual(CURRENT_VERSION, "7.0.99.1")
 
     def test_auto_publish_eligible_column_schema(self):
         """Schema must have auto_publish_eligible column with DEFAULT 0."""

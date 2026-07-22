@@ -1,4 +1,4 @@
-﻿"""Regression tests for v7.0.94.1 — ERIP awaiting_payment → paid state machine.
+"""Regression tests for v7.0.94.1 — ERIP awaiting_payment → paid state machine.
 
 Root cause fixed:
   payment_intent_mark_paid (legacy path) previously only allowed bepaid_created
@@ -62,7 +62,7 @@ sys.path.insert(0, str(ROOT))
 from storage import Storage
 from utils import now_iso
 
-CURRENT_VERSION = "7.0.99.0"
+CURRENT_VERSION = "7.0.99.1"
 
 APP_JS = ROOT / "miniapp" / "app.js"
 

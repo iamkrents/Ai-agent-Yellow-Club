@@ -1,4 +1,4 @@
-﻿"""Tests for v7.0.98.2 — automatic Telegram parent notifications for new invoices.
+"""Tests for v7.0.98.2 — automatic Telegram parent notifications for new invoices.
 
 Covers:
   - Eligibility flag set at upsert time (two-level protection)
@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.0.99.0"
+CURRENT_VERSION = "7.0.99.1"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -887,20 +887,20 @@ class TestFoodModuleIsolation(unittest.TestCase):
 class TestVersion(unittest.TestCase):
 
     def test_43_current_version(self):
-        self.assertEqual(CURRENT_VERSION, "7.0.99.0")
+        self.assertEqual(CURRENT_VERSION, "7.0.99.1")
 
     def test_44_payment_domain_version(self):
         import payment_domain
         src = Path(ROOT, "payment_domain.py").read_text(encoding="utf-8")
-        self.assertIn("7.0.99.0", src)
+        self.assertIn("7.0.99.1", src)
 
     def test_45_miniapp_version(self):
         src = Path(ROOT, "miniapp", "app.js").read_text(encoding="utf-8")
-        self.assertIn("v7.0.99.0", src)
+        self.assertIn("v7.0.99.1", src)
 
     def test_46_index_html_cache_bust(self):
         src = Path(ROOT, "miniapp", "index.html").read_text(encoding="utf-8")
-        self.assertIn("7.0.99.0", src)
+        self.assertIn("7.0.99.1", src)
 
 
 if __name__ == "__main__":

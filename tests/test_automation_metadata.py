@@ -1,4 +1,4 @@
-﻿"""Regression tests for v7.0.94.2 — automation intent metadata repair.
+"""Regression tests for v7.0.94.2 — automation intent metadata repair.
 
 Covers:
   1-5.   automation_audit_log table creation and schema
@@ -29,7 +29,7 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-CURRENT_VERSION = "7.0.99.0"
+CURRENT_VERSION = "7.0.99.1"
 
 from storage import Storage
 

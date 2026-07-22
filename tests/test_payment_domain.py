@@ -1,4 +1,4 @@
-﻿"""
+"""
 Tests for payment_domain.py — canonical payment domain rules.
 v7.0.96.1
 """
@@ -31,7 +31,7 @@ from payment_domain import (
     is_source_reference_valid,
 )
 
-CURRENT_VERSION = "7.0.99.0"
+CURRENT_VERSION = "7.0.99.1"
 
 
 # ---------------------------------------------------------------------------

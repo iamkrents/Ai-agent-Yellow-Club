@@ -1,4 +1,4 @@
-﻿"""Regression tests for v7.0.94.3 — deduplication guard for automation invoice intents.
+"""Regression tests for v7.0.94.3 — deduplication guard for automation invoice intents.
 
 Covers:
   1-3.   find_all_active_intents_by_invoice includes awaiting_payment/partial_ready
@@ -33,7 +33,7 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-CURRENT_VERSION = "7.0.99.0"
+CURRENT_VERSION = "7.0.99.1"
 
 from storage import Storage
 

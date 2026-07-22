@@ -1,4 +1,4 @@
-﻿"""Tests for MoyKlass invoice automation pipeline (v7.0.94.1).
+"""Tests for MoyKlass invoice automation pipeline (v7.0.94.1).
 
 Covers:
 - Storage automation tables and methods
@@ -27,7 +27,7 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-CURRENT_VERSION = "7.0.99.0"
+CURRENT_VERSION = "7.0.99.1"
 
 from storage import Storage
 

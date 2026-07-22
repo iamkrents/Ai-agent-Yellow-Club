@@ -64,6 +64,9 @@ from payment_domain import (
     normalize_due_at,
     compute_due_status,
     due_at_for_bepaid,
+    DUE_SOURCE_MOYKLASS,
+    DUE_SOURCE_FALLBACK,
+    DUE_SOURCE_MISSING,
     DUE_STATUS_OVERDUE,
     DUE_STATUS_DUE_TODAY,
     DUE_STATUS_UPCOMING,
@@ -1338,6 +1341,9 @@ class InvoiceAutomationScheduler:
     v7.0.99.0 adds:
     - due_status update pass (runs every cycle)
     - ERIP auto-renewal pass (kill switch: PAYMENT_ERIP_RENEWAL_ENABLED)
+
+    v7.0.99.1 adds:
+    - one-shot deadline backfill at startup (idempotent, runs before main loop)
     """
 
     def __init__(self, ctx: "MiniAppContext") -> None:
@@ -1352,6 +1358,13 @@ class InvoiceAutomationScheduler:
     def _loop(self) -> None:
         import time as _time
         _time.sleep(90)  # startup delay
+
+        # v7.0.99.1: one-shot idempotent backfill before entering the main loop
+        try:
+            self._run_deadline_backfill()
+        except Exception:
+            log.exception("InvoiceAutomationScheduler: deadline backfill error")
+
         while True:
             try:
                 settings = self._ctx.storage.get_automation_settings()
@@ -1387,6 +1400,133 @@ class InvoiceAutomationScheduler:
             except Exception:
                 log.exception("InvoiceAutomationScheduler: loop error")
             _time.sleep(interval)
+
+    def _run_deadline_backfill(self) -> None:
+        """v7.0.99.1: Idempotent one-shot backfill of due_at / due_status for pre-existing intents.
+
+        Pass 1 — fix due_status for terminal intents (withdrawn / paid) that were
+                  created before v7.0.99.0 and still carry due_status='upcoming'.
+        Pass 2 — populate due_at (from invoice_snapshot_json.payUntil or fallback)
+                  and compute due_status for active intents with due_at IS NULL.
+
+        Safety guarantees:
+        - Idempotent: rows already populated are skipped by the SQL WHERE clause.
+        - No bePaid calls, no Telegram messages, no payment options created.
+        - ERIP renewal and reminders are NOT triggered.
+        - MoyKlass payment records are NOT modified.
+        """
+        import datetime as _dt_bf
+        import json as _json_bf
+
+        now_utc = _dt_bf.datetime.now(_dt_bf.timezone.utc)
+        now_str = now_iso()
+        default_due_days = getattr(self._ctx.settings, "payment_default_due_days", 14)
+
+        scanned = 0
+        terminal_fixed = 0
+        updated_from_moyklass = 0
+        updated_from_fallback = 0
+        skipped_terminal = 0     # Pass 2: would-be terminal items (SQL excludes them; defensive)
+        skipped_already_filled = 0  # Pass 2: due_at already set (SQL excludes; defensive)
+        skipped_invalid_json = 0
+        errors = 0
+
+        # ── Pass 1: fix due_status for withdrawn / paid intents ──────────────
+        # posted_to_moyklass is in PAYMENT_INTENT_PAID_STATUSES → gets due_status='paid'.
+        # withdrawn (client_visibility) → gets due_status='withdrawn'.
+        # due_at is NOT set for these; only due_status is corrected.
+        terminal_rows = self._ctx.storage.get_intents_for_terminal_due_status_fix()
+        for row in terminal_rows:
+            pid = row["public_id"]
+            new_status = compute_due_status(
+                row.get("due_at"), row.get("client_visibility"), row.get("status"), now_utc,
+            )
+            try:
+                self._ctx.storage.update_intent_due_status(pid, new_status, None, now_str)
+                terminal_fixed += 1
+                log.info(
+                    "payment_event=payment_due_backfill_terminal intent=%s due_status=%s",
+                    pid, new_status,
+                )
+            except Exception:
+                errors += 1
+                log.exception("payment_due_backfill: terminal fix error for %s", pid)
+
+        # ── Pass 2: backfill due_at for active intents with missing deadline ──
+        # SQL WHERE already excludes paid/posted_to_moyklass/cancelled/error/withdrawn.
+        # No bePaid calls, no Telegram, no payment options, no MoyKlass writes.
+        backfill_rows = self._ctx.storage.get_intents_for_deadline_backfill()
+        for row in backfill_rows:
+            pid = row["public_id"]
+            scanned += 1
+
+            # Defensive: SQL already excludes these, but guard against race conditions
+            row_visibility = str(row.get("client_visibility") or "hidden")
+            row_status = str(row.get("status") or "draft")
+            if row_visibility == "withdrawn" or row_status in (
+                "paid", "posted_to_moyklass", "cancelled", "error"
+            ):
+                skipped_terminal += 1
+                continue
+
+            # Defensive: skip if due_at already set with a valid source
+            existing_due_at = row.get("due_at")
+            existing_source = str(row.get("due_at_source") or "missing")
+            if existing_due_at and existing_source not in ("missing", ""):
+                skipped_already_filled += 1
+                continue
+
+            pay_until_raw = None
+            snap = str(row.get("invoice_snapshot_json") or "").strip()
+            if snap:
+                try:
+                    inv = _json_bf.loads(snap)
+                    pay_until_raw = str(inv.get("payUntil") or "").strip() or None
+                except (ValueError, TypeError, KeyError):
+                    skipped_invalid_json += 1
+                    log.warning("payment_due_backfill: invalid invoice_snapshot_json for %s", pid)
+                    continue
+
+            due_at, due_at_source = normalize_due_at(
+                pay_until_raw,
+                str(row.get("created_at") or ""),
+                default_due_days,
+            )
+
+            try:
+                self._ctx.storage.set_intent_due_at(pid, pay_until_raw, due_at, due_at_source, now_str)
+
+                if due_at_source == DUE_SOURCE_MOYKLASS:
+                    updated_from_moyklass += 1
+                elif due_at_source == DUE_SOURCE_FALLBACK:
+                    updated_from_fallback += 1
+
+                new_due_status = compute_due_status(
+                    due_at, row_visibility, row_status, now_utc,
+                )
+                overdue_since = now_str if new_due_status == DUE_STATUS_OVERDUE else None
+                self._ctx.storage.update_intent_due_status(
+                    pid, new_due_status, overdue_since, now_str,
+                )
+                log.info(
+                    "payment_event=payment_due_backfill intent=%s due_at=%s src=%s due_status=%s",
+                    pid, due_at, due_at_source, new_due_status,
+                )
+            except Exception:
+                errors += 1
+                log.exception("payment_due_backfill: error for %s", pid)
+
+        log.info(
+            "payment_event=payment_due_backfill_completed "
+            "scanned=%d terminal_fixed=%d "
+            "updated_from_moyklass=%d updated_from_fallback=%d "
+            "skipped_terminal=%d skipped_already_filled=%d "
+            "skipped_invalid_json=%d errors=%d",
+            scanned, terminal_fixed,
+            updated_from_moyklass, updated_from_fallback,
+            skipped_terminal, skipped_already_filled,
+            skipped_invalid_json, errors,
+        )
 
     def _update_due_statuses(self) -> None:
         """Update due_status for all active intents with a due_at set."""

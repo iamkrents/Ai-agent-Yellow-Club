@@ -7679,6 +7679,53 @@ class Storage:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_intents_for_deadline_backfill(self, limit: int = 500) -> list:
+        """v7.0.99.1: Return active intents with missing due_at eligible for backfill.
+
+        SQL criteria (NULL-safe via COALESCE):
+          - due_at IS NULL OR COALESCE(due_at_source,'missing') IN ('missing','')
+          - COALESCE(client_visibility,'hidden') != 'withdrawn'
+          - COALESCE(status,'draft') NOT IN ('paid','posted_to_moyklass','cancelled','error')
+
+        Excludes:
+          - withdrawn (client_visibility='withdrawn')
+          - paid statuses: paid, posted_to_moyklass  (PAYMENT_INTENT_PAID_STATUSES)
+          - cancelled statuses: cancelled, error       (PAYMENT_INTENT_CANCELLED_STATUSES)
+          - intents with a valid due_at already set
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT public_id, created_at, invoice_snapshot_json,
+                          status, client_visibility, due_at, due_at_source
+                   FROM payment_intents
+                   WHERE (due_at IS NULL OR COALESCE(due_at_source, 'missing') IN ('missing', ''))
+                     AND COALESCE(client_visibility, 'hidden') != 'withdrawn'
+                     AND COALESCE(status, 'draft') NOT IN
+                         ('paid', 'posted_to_moyklass', 'cancelled', 'error')
+                   ORDER BY id ASC
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_intents_for_terminal_due_status_fix(self, limit: int = 500) -> list:
+        """v7.0.99.1: Return withdrawn/paid intents whose due_status doesn't match terminal state."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT public_id, client_visibility, status, due_status, due_at
+                   FROM payment_intents
+                   WHERE (
+                       (client_visibility = 'withdrawn' AND (due_status IS NULL OR due_status != 'withdrawn'))
+                       OR
+                       (status IN ('paid','posted_to_moyklass')
+                        AND (due_status IS NULL OR due_status NOT IN ('paid','withdrawn')))
+                   )
+                   ORDER BY id ASC
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_intents_for_erip_renewal(self) -> list:
         """Return published intents whose ERIP option is expired and eligible for auto-renewal.
 
