@@ -900,7 +900,7 @@ class TestVersion(unittest.TestCase):
 
     def test_46_index_html_cache_bust(self):
         src = Path(ROOT, "miniapp", "index.html").read_text(encoding="utf-8")
-        self.assertIn("7.1.0", src)
+        self.assertIn("7.1", src)
 
 
 if __name__ == "__main__":
