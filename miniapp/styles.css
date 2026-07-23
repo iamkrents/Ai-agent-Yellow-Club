@@ -8295,3 +8295,7 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
 .pt-save-notice { font-size: 13px; min-height: 0; }
 .pt-save-notice--ok { color: #0b7548; font-weight: 600; }
 .pt-save-notice--err { color: #a82d2d; font-weight: 600; }
+/* v7.1.1 — MoyKlass subscription sync */
+.pt-source-info { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+.pt-source-chip { display: inline-block; background: var(--line); border-radius: 4px; padding: 1px 6px; font-size: 12px; }
+.pt-sync-status { font-size: 12px; }

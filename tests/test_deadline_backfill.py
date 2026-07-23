@@ -54,7 +54,7 @@ from payment_domain import (
 )
 from storage import Storage
 
-CURRENT_VERSION = "7.1.0"
+CURRENT_VERSION = "7.1"
 
 # ---------------------------------------------------------------------------
 # Helpers

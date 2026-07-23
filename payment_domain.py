@@ -1,5 +1,5 @@
 # payment_domain.py — Canonical payment domain rules for Yellow Club
-# v7.1.0
+# v7.1.1
 #
 # Pure constants and functions only.
 # No database writes, no external API calls.
@@ -495,4 +495,104 @@ def resolve_next_subscription_price(
         "automation_enabled": automation_enabled,
         "automation_blocked": automation_blocked,
         "automation_block_reason": automation_paused_reason,
+    }
+
+
+# ---------------------------------------------------------------------------
+# v7.1.1 — MoyKlass subscription selection for payment terms sync
+# ---------------------------------------------------------------------------
+
+MK_SUBSCRIPTION_ACTIVE_STATUS_ID = "2"
+
+MK_TERMS_SYNC_STATES = frozenset({
+    "unchanged", "new_source", "ambiguous", "not_found", "invalid",
+})
+
+
+def _mk_sub_price(sub: dict) -> Optional[object]:
+    for key in ("price", "originalPrice"):
+        v = sub.get(key)
+        if v is not None:
+            return v
+    return None
+
+
+def select_moyklass_subscription_for_terms(
+    subscriptions: list,
+    current_price_minor: Optional[int] = None,
+) -> dict:
+    """Select the best MoyKlass subscription to use as payment terms source.
+
+    Returns a dict:
+      state: 'unchanged' | 'new_source' | 'ambiguous' | 'not_found' | 'invalid'
+      subscription: selected subscription dict or None
+      price_minor: resolved price in minor units or None
+      reason: detail string for ambiguous/invalid/not_found or None
+    """
+    active = [
+        s for s in (subscriptions or [])
+        if isinstance(s, dict)
+        and str(s.get("statusId") or "").strip() == MK_SUBSCRIPTION_ACTIVE_STATUS_ID
+    ]
+
+    if not active:
+        return {
+            "state": "not_found",
+            "subscription": None,
+            "price_minor": None,
+            "reason": "no_active_subscriptions",
+        }
+
+    if len(active) > 1:
+        return {
+            "state": "ambiguous",
+            "subscription": None,
+            "price_minor": None,
+            "reason": f"{len(active)}_active_subscriptions",
+        }
+
+    sub = active[0]
+    raw_price = _mk_sub_price(sub)
+
+    if raw_price is None:
+        return {
+            "state": "invalid",
+            "subscription": sub,
+            "price_minor": None,
+            "reason": "price_missing",
+        }
+
+    try:
+        price_byn = float(str(raw_price).replace(",", "."))
+    except (TypeError, ValueError):
+        return {
+            "state": "invalid",
+            "subscription": sub,
+            "price_minor": None,
+            "reason": "price_not_numeric",
+        }
+
+    if price_byn <= 0:
+        return {
+            "state": "invalid",
+            "subscription": sub,
+            "price_minor": None,
+            "reason": "price_not_positive",
+        }
+
+    price_minor = round(price_byn * 100)
+
+    if current_price_minor is not None and price_minor == current_price_minor:
+        return {
+            "state": "unchanged",
+            "subscription": sub,
+            "price_minor": price_minor,
+            "reason": None,
+        }
+
+    return {
+        "state": "new_source",
+        "subscription": sub,
+        "price_minor": price_minor,
+        "reason": None,
     }

@@ -50,7 +50,7 @@ from bepaid_client import BePaidClient
 from storage import Storage
 from config import load_settings
 
-CURRENT_VERSION = "7.1.0"
+CURRENT_VERSION = "7.1"
 
 # ---------------------------------------------------------------------------
 # Helpers

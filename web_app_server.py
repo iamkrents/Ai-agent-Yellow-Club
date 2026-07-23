@@ -81,6 +81,8 @@ from payment_domain import (
     DEFAULT_BASE_PRICE_MINOR,
     DEFAULT_LESSONS_COUNT,
     DEFAULT_DUE_DAYS,
+    # v7.1.1 — MoyKlass subscription terms sync
+    select_moyklass_subscription_for_terms,
 )
 
 log = logging.getLogger("yellow_club_miniapp")
@@ -10400,6 +10402,12 @@ class MiniAppContext:
     def _decorate_terms(self, terms_row: dict | None) -> dict[str, Any]:
         resolved = resolve_client_payment_terms(terms_row)
         resolved["base_price_byn"] = self._byn(resolved["base_price_minor"])
+        if terms_row:
+            for _src_field in (
+                "terms_source", "source_subscription_id", "source_sync_status",
+                "source_ambiguity_reason", "source_synced_at",
+            ):
+                resolved[_src_field] = terms_row.get(_src_field)
         return resolved
 
     def _decorate_discount(self, d: dict) -> dict[str, Any]:
@@ -10448,6 +10456,102 @@ class MiniAppContext:
         except (ValueError, TypeError) as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "mk_user_id": mk_user_id, "terms": self._decorate_terms(row), "raw": row}
+
+    def payment_client_terms_sync(
+        self, auth: dict[str, Any], mk_user_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        denied = self._require_payment_terms_access(auth)
+        if denied:
+            return denied
+        mk_user_id = str(mk_user_id or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "mk_user_id обязателен"}
+        if not getattr(self.settings, "payment_mk_subscription_terms_sync_enabled", False):
+            return {"ok": False, "error": "sync_disabled"}
+        return self._sync_payment_terms_from_moyklass(mk_user_id, auth)
+
+    def _sync_payment_terms_from_moyklass(
+        self, mk_user_id: str, actor_auth: dict[str, Any]
+    ) -> dict[str, Any]:
+        import json as _json
+        now = now_iso()
+        subs_result = self.moyklass.get_user_subscriptions(mk_user_id)
+        if not subs_result.ok:
+            return {
+                "ok": False,
+                "state": "not_found",
+                "error": subs_result.error or "mk_api_error",
+            }
+        subscriptions = extract_items(subs_result.data) if subs_result.ok else []
+        current_row = self.storage.get_payment_client_terms(mk_user_id)
+        current_price_minor = int(current_row["base_price_minor"]) if current_row else None
+        selection = select_moyklass_subscription_for_terms(subscriptions, current_price_minor)
+        state = selection["state"]
+        sub = selection.get("subscription")
+        new_price_minor = selection.get("price_minor")
+        snapshot_json = _json.dumps(sub, ensure_ascii=False)[:2000] if sub else None
+        sub_id = str(sub.get("id") or sub.get("userSubscriptionId") or "") if sub else ""
+        sub_type_id = str(sub.get("subscriptionId") or "") if sub else ""
+        is_internal = actor_auth.get("_internal") is True
+
+        if state == "new_source":
+            try:
+                new_row = self.storage.upsert_payment_client_terms(
+                    mk_user_id=mk_user_id,
+                    base_lessons_count=int(current_row["base_lessons_count"]) if current_row else DEFAULT_LESSONS_COUNT,
+                    base_price_minor=new_price_minor,
+                    currency="BYN",
+                    default_due_days=int(current_row["default_due_days"]) if current_row else DEFAULT_DUE_DAYS,
+                    automation_enabled=bool(current_row.get("automation_enabled")) if current_row else False,
+                    automation_paused_reason=current_row.get("automation_paused_reason") if current_row else None,
+                    base_subscription_type_id=sub_type_id or None,
+                    actor_tg_id=None if is_internal else int(actor_auth.get("user_id", 0)),
+                    actor_name="moyklass_sync" if is_internal else self._pricing_actor_name(actor_auth),
+                    now_str=now,
+                )
+            except Exception as exc:
+                return {"ok": False, "state": state, "error": str(exc)}
+            self.storage.update_payment_client_terms_source(
+                mk_user_id=mk_user_id,
+                terms_source="moyklass_subscription",
+                source_subscription_id=sub_id or None,
+                source_subscription_type_id=sub_type_id or None,
+                source_synced_at=now,
+                source_snapshot_json=snapshot_json,
+                source_sync_status=state,
+                source_ambiguity_reason=None,
+                now_str=now,
+            )
+            return {
+                "ok": True,
+                "state": state,
+                "old_price_minor": current_price_minor,
+                "new_price_minor": new_price_minor,
+                "source_subscription_id": sub_id or None,
+                "mk_user_id": mk_user_id,
+            }
+
+        if current_row:
+            self.storage.update_payment_client_terms_source(
+                mk_user_id=mk_user_id,
+                terms_source=current_row.get("terms_source") or "manual",
+                source_subscription_id=sub_id or None,
+                source_subscription_type_id=sub_type_id or None,
+                source_synced_at=now,
+                source_snapshot_json=snapshot_json,
+                source_sync_status=state,
+                source_ambiguity_reason=selection.get("reason"),
+                now_str=now,
+            )
+
+        return {
+            "ok": True,
+            "state": state,
+            "old_price_minor": current_price_minor,
+            "new_price_minor": new_price_minor,
+            "reason": selection.get("reason"),
+            "mk_user_id": mk_user_id,
+        }
 
     def payment_client_pricing_preview(
         self, auth: dict[str, Any], mk_user_id: str, params: dict[str, str]
@@ -14301,6 +14405,14 @@ class MiniAppContext:
 
         is_new = stage == "discovered"
 
+        # v7.1.1 — Auto-sync payment terms from MoyKlass subscription for new invoices (flag-gated)
+        if is_new and getattr(self.settings, "payment_mk_subscription_terms_sync_enabled", False):
+            try:
+                _internal_auth = {"_internal": True, "role": "operations", "user_id": 0}
+                self._sync_payment_terms_from_moyklass(mk_user_id, _internal_auth)
+            except Exception:
+                log.debug("sync_payment_terms_auto: error for user %s", mk_user_id)
+
         # Deduplication guard: find ALL active intents for this invoice BEFORE creating anything
         existing_intents = self.storage.find_all_active_intents_by_invoice(inv_id)
 
@@ -15995,9 +16107,12 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 if len(_auto_parts) == 2:
                     return self._send_json(CTX.automation_item_action(auth, _auto_parts[0], _auto_parts[1], body))
             # ── v7.1.0 — Payment discounts (client-scoped) ──────────────────
+            # ── v7.1.1 — Payment terms sync ─────────────────────────────────
             if path.startswith("/api/payments/clients/"):
                 _cl_rest = path[len("/api/payments/clients/"):]
                 _cl_parts = _cl_rest.split("/")
+                if len(_cl_parts) == 3 and _cl_parts[0] and _cl_parts[1] == "terms" and _cl_parts[2] == "sync":
+                    return self._send_json(CTX.payment_client_terms_sync(auth, _cl_parts[0], body))
                 if len(_cl_parts) == 2 and _cl_parts[0] and _cl_parts[1] == "discounts":
                     return self._send_json(CTX.payment_client_discount_create(auth, _cl_parts[0], body))
                 if len(_cl_parts) == 4 and _cl_parts[0] and _cl_parts[1] == "discounts" and _cl_parts[3] == "cancel":

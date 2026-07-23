@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.0.1");
+console.log("MiniApp version: v7.1.1");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -6646,14 +6646,33 @@ async function loadPaymentTermsData(mkUserId) {
 
 function renderPaymentTermsBody(mkUserId, termsRes, discountsRes, previewRes) {
   const t = (termsRes && termsRes.terms) || {};
+  const raw = (termsRes && termsRes.raw) || {};
   const discounts = (discountsRes && discountsRes.discounts) || [];
   const active = discounts.filter(d => d.status === "active");
   const preview = (previewRes && previewRes.preview) || {};
   const priceMinor = t.base_price_minor != null ? t.base_price_minor : 23900;
   const priceByn = (priceMinor / 100).toFixed(2);
+  const _sourceLabels = {
+    manual: "Ручной",
+    moyklass_subscription: "МойКласс (абонемент)",
+    virtual_default: "По умолчанию",
+  };
+  const _syncStatusLabels = {
+    new_source: "Обновлено из МК",
+    unchanged: "Совпадает с МК",
+    ambiguous: "Несколько активных абонементов",
+    not_found: "Нет активных абонементов",
+    invalid: "Некорректная цена в МК",
+  };
+  const sourceLabel = _sourceLabels[raw.terms_source] || (raw.terms_source ? escapeHtml(raw.terms_source) : "По умолчанию");
+  const syncStatusText = raw.source_sync_status ? (_syncStatusLabels[raw.source_sync_status] || escapeHtml(raw.source_sync_status)) : "";
+  const sourceRow = raw.terms_source
+    ? `<div class="pt-source-info">Источник: <span class="pt-source-chip">${sourceLabel}</span>${syncStatusText ? ` · <span class="pt-sync-status">${escapeHtml(syncStatusText)}</span>` : ""}</div>`
+    : "";
   const termsForm = `
     <div class="card pt-card">
       <div class="card-title">Базовые условия ${t.is_default ? "(по умолчанию — ещё не сохранены)" : ""}</div>
+      ${sourceRow}
       <label><span>Базовая цена (BYN)</span>
         <input type="number" id="ptBasePrice" value="${escapeAttr(priceByn)}" min="0.01" step="0.01" /></label>
       <label><span>Кол-во занятий</span>
@@ -6665,6 +6684,8 @@ function renderPaymentTermsBody(mkUserId, termsRes, discountsRes, previewRes) {
         <input type="text" id="ptPausedReason" value="${escapeAttr(t.automation_paused_reason || "")}" /></label>
       <div id="ptSaveNotice" class="pt-save-notice"></div>
       <button class="green" id="ptSaveTerms" type="button">Сохранить условия</button>
+      <button class="secondary" id="ptSyncTerms" type="button">Обновить условия из МойКласс</button>
+      <div id="ptSyncNotice" class="pt-save-notice"></div>
     </div>`;
   const previewCard = `
     <div class="card pt-card">
@@ -6754,6 +6775,44 @@ function wirePaymentTermsHandlers(mkUserId, body) {
       }
       saveBtn.disabled = false;
       saveBtn.textContent = "Сохранить условия";
+    }
+  });
+  const syncBtn = body.querySelector("#ptSyncTerms");
+  if (syncBtn) syncBtn.addEventListener("click", async () => {
+    if (syncBtn.disabled) return;
+    syncBtn.disabled = true;
+    syncBtn.textContent = "Синхронизация...";
+    const syncNotice = body.querySelector("#ptSyncNotice");
+    try {
+      const res = await apiPost(`/api/payments/clients/${uid}/terms/sync`, {});
+      let reloadOk = false;
+      try { await loadPaymentTermsData(mkUserId); reloadOk = true; } catch (_) {}
+      if (reloadOk) {
+        const newNotice = body.querySelector("#ptSyncNotice");
+        if (newNotice) {
+          const stateMap = {
+            new_source: "✓ Условия обновлены из МойКласс",
+            unchanged: "✓ Условия совпадают с МойКласс",
+            ambiguous: "Несколько активных абонементов — не обновлено",
+            not_found: "Нет активных абонементов в МойКласс",
+            invalid: "Некорректная цена в МК — не обновлено",
+          };
+          newNotice.textContent = stateMap[res && res.state] || "Синхронизация выполнена";
+          newNotice.className = "pt-save-notice " + (res && res.state === "new_source" ? "pt-save-notice--ok" : "pt-save-notice--err");
+        }
+      } else {
+        syncBtn.disabled = false;
+        syncBtn.textContent = "Обновить условия из МойКласс";
+      }
+    } catch (e) {
+      const msg = safeUserError(e);
+      setNotice(msg, "error");
+      if (syncNotice) {
+        syncNotice.textContent = msg;
+        syncNotice.className = "pt-save-notice pt-save-notice--err";
+      }
+      syncBtn.disabled = false;
+      syncBtn.textContent = "Обновить условия из МойКласс";
     }
   });
   const addBtn = body.querySelector("#ptAddDiscount");

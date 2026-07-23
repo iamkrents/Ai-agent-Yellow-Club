@@ -1463,6 +1463,22 @@ class Storage:
             "CREATE INDEX IF NOT EXISTS idx_ppal_user "
             "ON payment_pricing_audit_log(mk_user_id, id)"
         )
+        # v7.1.1 — additive: source tracking columns on payment_client_terms
+        for _col_def in [
+            ("terms_source", "TEXT NULL"),
+            ("source_subscription_id", "TEXT NULL"),
+            ("source_subscription_type_id", "TEXT NULL"),
+            ("source_synced_at", "TEXT NULL"),
+            ("source_snapshot_json", "TEXT NULL"),
+            ("source_sync_status", "TEXT NULL"),
+            ("source_ambiguity_reason", "TEXT NULL"),
+        ]:
+            try:
+                conn.execute(
+                    f"ALTER TABLE payment_client_terms ADD COLUMN {_col_def[0]} {_col_def[1]}"
+                )
+            except Exception:
+                pass
 
     # ── v7.0.94.0 — Invoice Automation methods ───────────────────────────────
 
@@ -8264,6 +8280,41 @@ class Storage:
                 None, actor_tg_id, actor_name, now_str,
             )
             return new_dict
+
+    def update_payment_client_terms_source(
+        self,
+        mk_user_id: str,
+        terms_source: str,
+        source_subscription_id: Optional[str],
+        source_subscription_type_id: Optional[str],
+        source_synced_at: Optional[str],
+        source_snapshot_json: Optional[str],
+        source_sync_status: str,
+        source_ambiguity_reason: Optional[str],
+        now_str: str,
+    ) -> Optional[dict]:
+        """Update source tracking fields on an existing payment_client_terms row."""
+        mk_user_id = str(mk_user_id)
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_client_terms SET
+                   terms_source=?, source_subscription_id=?,
+                   source_subscription_type_id=?, source_synced_at=?,
+                   source_snapshot_json=?, source_sync_status=?,
+                   source_ambiguity_reason=?, updated_at=?
+                   WHERE mk_user_id=?""",
+                (
+                    str(terms_source), source_subscription_id,
+                    source_subscription_type_id, source_synced_at,
+                    source_snapshot_json, str(source_sync_status),
+                    source_ambiguity_reason, now_str, mk_user_id,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM payment_client_terms WHERE mk_user_id=?",
+                (mk_user_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def list_payment_client_discounts(self, mk_user_id: str) -> list[dict]:
         with self._connect() as conn:

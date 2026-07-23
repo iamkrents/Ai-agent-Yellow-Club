@@ -36,8 +36,8 @@ from payment_domain import (
     PRICING_SOURCE_BASE,
 )
 
-CURRENT_VERSION = "7.1.0"
-PATCH_VERSION = "7.1.0.1"
+CURRENT_VERSION = "7.1"
+PATCH_VERSION = "7.1.1"
 PRICING_DATE = datetime.datetime(2026, 6, 15).strftime("%Y-%m-%d")  # "2026-06-15"
 NOW = "2026-06-15T10:00:00"
 

@@ -151,6 +151,9 @@ class Settings:
     payment_replace_unpaid_intent_enabled: bool = False
     payment_renewal_parent_notification_enabled: bool = False
 
+    # v7.1.1 — MoyKlass subscription terms sync (default off)
+    payment_mk_subscription_terms_sync_enabled: bool = False
+
     @property
     def bepaid_erip_enabled(self) -> bool:
         return bool(self.bepaid_erip_shop_id and self.bepaid_erip_secret_key)
