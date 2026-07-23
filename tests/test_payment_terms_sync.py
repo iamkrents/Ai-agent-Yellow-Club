@@ -38,7 +38,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 SERVER_PY = ROOT / "web_app_server.py"
 
-VERSION = "7.1.1"
+VERSION = "7.1.1.1"
 NOW = "2026-07-23T10:00:00"
 
 
@@ -245,11 +245,15 @@ class Test06ServerSyncBehaviour(unittest.TestCase):
         self.st = _tmp_storage()
         self.ctx = _make_ctx(self.st)
 
-    def test_13_sync_disabled_returns_error(self):
+    def test_13_manual_sync_works_when_flag_disabled(self):
+        """Manual admin endpoint must work regardless of the auto-flag setting."""
         self.ctx.settings.payment_mk_subscription_terms_sync_enabled = False
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok([_mk_sub(price=199.0)])
+        _upsert_terms(self.st, "u1", 23900)
         r = self.ctx.payment_client_terms_sync(_auth(), "u1", {})
-        self.assertFalse(r["ok"])
-        self.assertEqual(r["error"], "sync_disabled")
+        self.assertTrue(r["ok"])
+        self.assertIn(r["state"], ("new_source", "unchanged", "ambiguous", "not_found", "invalid"))
+        self.assertNotEqual(r.get("error"), "sync_disabled")
 
     def test_14_mk_api_error_returns_not_found(self):
         self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_err("connection_error")
@@ -356,11 +360,13 @@ class Test08ServerRoute(unittest.TestCase):
     def test_25_sync_payment_terms_helper_exists(self):
         self.assertIn("def _sync_payment_terms_from_moyklass(", self.server)
 
-    def test_26_sync_disabled_check_in_method(self):
+    def test_26_manual_sync_not_flag_gated(self):
+        """payment_client_terms_sync must NOT check the auto-flag (flag gating belongs only in invoice flow)."""
         idx = self.server.find("def payment_client_terms_sync(")
-        method = self.server[idx:idx + 600]
-        self.assertIn("payment_mk_subscription_terms_sync_enabled", method)
-        self.assertIn("sync_disabled", method)
+        next_def = self.server.find("\n    def ", idx + 1)
+        method = self.server[idx:next_def]
+        self.assertNotIn("sync_disabled", method)
+        self.assertNotIn("payment_mk_subscription_terms_sync_enabled", method)
 
     def test_27_select_moyklass_subscription_imported(self):
         self.assertIn("select_moyklass_subscription_for_terms", self.server)
@@ -476,6 +482,71 @@ class Test10Frontend(unittest.TestCase):
     def test_40_sync_styles_in_css(self):
         self.assertIn(".pt-source-chip", self.css)
         self.assertIn(".pt-sync-status", self.css)
+
+
+# ---------------------------------------------------------------------------
+# 41-46 — v7.1.1.1: manual/auto split + localization + flag default
+# ---------------------------------------------------------------------------
+
+class Test11ManualAutoSplit(unittest.TestCase):
+    def setUp(self):
+        self.st = _tmp_storage()
+        self.ctx = _make_ctx(self.st)
+
+    def test_41_auto_sync_calls_mk_when_flag_true(self):
+        """When flag=true and invoice is new, MK subscriptions ARE fetched."""
+        import web_app_server as _srv
+        ctx = _srv.MiniAppContext.__new__(_srv.MiniAppContext)
+        ctx.storage = self.st
+        ctx.settings = MagicMock()
+        ctx.settings.payment_mk_subscription_terms_sync_enabled = True
+        ctx.moyklass = MagicMock()
+        ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok([])
+        inv = {
+            "id": 7001, "userId": 7001, "price": 239.0, "payed": 0.0,
+            "payUntil": "2026-07-31", "createdAt": NOW,
+            "userSubscription": {"clientName": "Тест", "beginDate": "2026-07-01"},
+            "userSubscriptionId": 1001,
+        }
+        ctx._process_single_automation_item_from_invoice(
+            inv, now=NOW, create_enabled=False, publish_enabled=False,
+        )
+        ctx.moyklass.get_user_subscriptions.assert_called_once()
+
+    def test_42_manual_sync_denied_for_wrong_role(self):
+        """Manual sync must be rejected when the caller has an unauthorised role."""
+        ctx = _make_ctx(self.st, role="viewer")
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok([_mk_sub()])
+        r = ctx.payment_client_terms_sync(_auth(), "u_auth", {})
+        self.assertFalse(r.get("ok", True))
+
+
+class Test12FrontendLocalization(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.js = APP_JS.read_text(encoding="utf-8")
+
+    def test_43_frontend_sync_disabled_localized(self):
+        """Frontend stateMap must handle sync_disabled without exposing the raw key."""
+        self.assertIn("sync_disabled", self.js)
+        self.assertNotIn('"sync_disabled"', self.js.split("stateMap")[0] if "stateMap" in self.js else "")
+
+    def test_44_frontend_all_domain_states_localized(self):
+        """stateMap in sync handler must cover all domain states in Russian."""
+        js = self.js
+        idx = js.find("const stateMap")
+        block = js[idx:idx + 600]
+        for state in ("new_source", "unchanged", "ambiguous", "not_found", "invalid", "sync_disabled"):
+            self.assertIn(state, block, f"stateMap missing: {state}")
+
+    def test_45_frontend_no_raw_mk_api_error_key(self):
+        """Frontend must not display the raw 'mk_api_error' string to the user."""
+        self.assertNotIn('"mk_api_error"', self.js)
+
+    def test_46_default_feature_flag_is_false(self):
+        """PAYMENT_MK_SUBSCRIPTION_TERMS_SYNC_ENABLED must default to False in config source."""
+        cfg = (ROOT / "config.py").read_text(encoding="utf-8")
+        self.assertIn("payment_mk_subscription_terms_sync_enabled: bool = False", cfg)
 
 
 if __name__ == "__main__":

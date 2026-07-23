@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.1");
+console.log("MiniApp version: v7.1.1.1");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -6792,10 +6792,11 @@ function wirePaymentTermsHandlers(mkUserId, body) {
         if (newNotice) {
           const stateMap = {
             new_source: "✓ Условия обновлены из МойКласс",
-            unchanged: "✓ Условия совпадают с МойКласс",
-            ambiguous: "Несколько активных абонементов — не обновлено",
-            not_found: "Нет активных абонементов в МойКласс",
-            invalid: "Некорректная цена в МК — не обновлено",
+            unchanged: "✓ Условия уже актуальны",
+            ambiguous: "Найдено несколько подходящих абонементов. Требуется проверка",
+            not_found: "Подходящий абонемент в МойКласс не найден",
+            invalid: "Данные абонемента МойКласс некорректны",
+            sync_disabled: "Синхронизация из МойКласс недоступна",
           };
           newNotice.textContent = stateMap[res && res.state] || "Синхронизация выполнена";
           newNotice.className = "pt-save-notice " + (res && res.state === "new_source" ? "pt-save-notice--ok" : "pt-save-notice--err");

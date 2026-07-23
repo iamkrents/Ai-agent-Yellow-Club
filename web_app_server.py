@@ -10466,8 +10466,6 @@ class MiniAppContext:
         mk_user_id = str(mk_user_id or "").strip()
         if not mk_user_id:
             return {"ok": False, "error": "mk_user_id обязателен"}
-        if not getattr(self.settings, "payment_mk_subscription_terms_sync_enabled", False):
-            return {"ok": False, "error": "sync_disabled"}
         return self._sync_payment_terms_from_moyklass(mk_user_id, auth)
 
     def _sync_payment_terms_from_moyklass(
@@ -10480,7 +10478,7 @@ class MiniAppContext:
             return {
                 "ok": False,
                 "state": "not_found",
-                "error": subs_result.error or "mk_api_error",
+                "error": "Не удалось получить данные из МойКласс",
             }
         subscriptions = extract_items(subs_result.data) if subs_result.ok else []
         current_row = self.storage.get_payment_client_terms(mk_user_id)
