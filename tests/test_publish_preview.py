@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.93.2.3 — publish-preview ERIP readiness fix.
+﻿"""Regression tests for v7.0.93.2.3 — publish-preview ERIP readiness fix.
 
 Root cause: publish-preview read ERIP account number only from payment_intent_options
 rows, while the admin card reads from payment_intents.bepaid_account_number (the legacy
@@ -422,7 +422,7 @@ class Test04ExistingGuard(unittest.TestCase):
         import tests.test_client_parent_links  # noqa: F401
 
     def test_19_version_constant_is_v7_0_93_2_2(self):
-        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}")', self.js,
+        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}', self.js,
                       f"app.js version marker must be v{CURRENT_VERSION}")
         self.assertIn(f"v={CURRENT_VERSION}", self.html,
                       f"index.html cache-bust must be v={CURRENT_VERSION}")

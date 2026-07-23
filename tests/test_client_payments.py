@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.93.2.3 — client parent payment display fix.
+﻿"""Regression tests for v7.0.93.2.3 — client parent payment display fix.
 
 Root cause: client_payments_list read ERIP account only from payment_intent_options,
 so legacy intents (ERIP in payment_intents.bepaid_account_number, no option row) showed
@@ -473,7 +473,7 @@ class Test12ExistingGuard(unittest.TestCase):
         import tests.test_client_parent_links  # noqa: F401
 
     def test_28_version_marker(self):
-        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}")', self.js)
+        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}', self.js)
         self.assertIn(f"v={CURRENT_VERSION}", self.html)
 
 

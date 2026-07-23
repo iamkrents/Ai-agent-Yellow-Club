@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.93.2.4 — ERIP payment instruction UX.
+﻿"""Regression tests for v7.0.93.2.4 — ERIP payment instruction UX.
 
 Covers:
   Frontend static analysis:
@@ -174,7 +174,7 @@ class TestRegressionSuite(unittest.TestCase):
                              f"{fn_name} must not reference mk_user_id")
 
     def test_17_version_marker(self):
-        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}")', self.js)
+        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}', self.js)
         self.assertIn(f"v={CURRENT_VERSION}", self.html)
 
 

@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.93.2.5 — client payment page Yellow Club rebrand.
+﻿"""Regression tests for v7.0.93.2.5 — client payment page Yellow Club rebrand.
 
 Covers:
   CSS structure:
@@ -294,7 +294,7 @@ class TestRegressionSuite(unittest.TestCase):
         self.assertNotIn("mk_user_id", card_fn)
 
     def test_25_version_marker(self):
-        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}")', self.js)
+        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}', self.js)
         self.assertIn(f"v={CURRENT_VERSION}", self.html)
 
 

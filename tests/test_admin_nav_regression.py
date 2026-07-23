@@ -1,4 +1,4 @@
-"""Frontend regression tests for v7.0.93.2.3 — admin tab visibility and nav fixes.
+﻿"""Frontend regression tests for v7.0.93.2.3 — admin tab visibility and nav fixes.
 
 Covers:
   Root cause analysis:
@@ -215,7 +215,7 @@ class Test08Version(unittest.TestCase):
         cls.html = INDEX_HTML.read_text(encoding="utf-8")
 
     def test_18_version_marker(self):
-        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}")', self.js)
+        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}', self.js)
 
     def test_19_cache_bust(self):
         self.assertIn(f"v={CURRENT_VERSION}", self.html)

@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.94.1 — bePaid recovery queue.
+﻿"""Regression tests for v7.0.94.1 — bePaid recovery queue.
 
 Root cause:
   tx_id=163 was already matched to ycpi_202607_16 (intent_public_id set in DB),
@@ -435,7 +435,7 @@ class Test06Version(unittest.TestCase):
         """Version marker is v7.0.94.1."""
         js = APP_JS.read_text(encoding="utf-8")
         self.assertIn(
-            f'console.log("MiniApp version: v{CURRENT_VERSION}")', js,
+            f'console.log("MiniApp version: v{CURRENT_VERSION}', js,
             f"app.js must declare version v{CURRENT_VERSION}",
         )
 

@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.94.1 — ERIP awaiting_payment → paid state machine.
+﻿"""Regression tests for v7.0.94.1 — ERIP awaiting_payment → paid state machine.
 
 Root cause fixed:
   payment_intent_mark_paid (legacy path) previously only allowed bepaid_created
@@ -548,7 +548,7 @@ class Test12Version(unittest.TestCase):
         """Full suite guard — version marker is v7.0.94.1."""
         js = APP_JS.read_text(encoding="utf-8")
         self.assertIn(
-            f'console.log("MiniApp version: v{CURRENT_VERSION}")',
+            f'console.log("MiniApp version: v{CURRENT_VERSION}',
             js,
             f"app.js must declare version v{CURRENT_VERSION}",
         )

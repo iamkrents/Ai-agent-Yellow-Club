@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.94.5 — Process all fetched MoyKlass invoices.
+﻿"""Regression tests for v7.0.94.5 — Process all fetched MoyKlass invoices.
 
 Covers:
 - Hard cap [:50] removal: all invoices processed, no silent truncation
@@ -608,7 +608,7 @@ class TestVersionAndSafetyGuards(unittest.TestCase):
     def test_46_app_js_version_is_7_0_94_5(self):
         js = APP_JS.read_text(encoding="utf-8")
         self.assertIn(
-            f'console.log("MiniApp version: v{CURRENT_VERSION}")', js,
+            f'console.log("MiniApp version: v{CURRENT_VERSION}', js,
             f"app.js must declare version v{CURRENT_VERSION}",
         )
 

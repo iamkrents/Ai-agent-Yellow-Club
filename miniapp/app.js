@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.0");
+console.log("MiniApp version: v7.1.0.1");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -6650,11 +6650,12 @@ function renderPaymentTermsBody(mkUserId, termsRes, discountsRes, previewRes) {
   const active = discounts.filter(d => d.status === "active");
   const preview = (previewRes && previewRes.preview) || {};
   const priceMinor = t.base_price_minor != null ? t.base_price_minor : 23900;
+  const priceByn = (priceMinor / 100).toFixed(2);
   const termsForm = `
     <div class="card pt-card">
       <div class="card-title">Базовые условия ${t.is_default ? "(по умолчанию — ещё не сохранены)" : ""}</div>
-      <label><span>Базовая цена (в копейках, minor)</span>
-        <input type="number" id="ptBasePrice" value="${escapeAttr(String(priceMinor))}" min="1" /></label>
+      <label><span>Базовая цена (BYN)</span>
+        <input type="number" id="ptBasePrice" value="${escapeAttr(priceByn)}" min="0.01" step="0.01" /></label>
       <label><span>Кол-во занятий</span>
         <input type="number" id="ptLessons" value="${escapeAttr(String(t.base_lessons_count != null ? t.base_lessons_count : 4))}" min="1" /></label>
       <label><span>Срок оплаты (дней)</span>
@@ -6662,6 +6663,7 @@ function renderPaymentTermsBody(mkUserId, termsRes, discountsRes, previewRes) {
       <label class="pt-check"><input type="checkbox" id="ptAutomation" ${t.automation_enabled ? "checked" : ""} /> <span>Автоматизация включена</span></label>
       <label><span>Причина паузы автоматизации (опц.)</span>
         <input type="text" id="ptPausedReason" value="${escapeAttr(t.automation_paused_reason || "")}" /></label>
+      <div id="ptSaveNotice" class="pt-save-notice"></div>
       <button class="green" id="ptSaveTerms" type="button">Сохранить условия</button>
     </div>`;
   const previewCard = `
@@ -6715,18 +6717,44 @@ function wirePaymentTermsHandlers(mkUserId, body) {
   const uid = encodeURIComponent(mkUserId);
   const saveBtn = body.querySelector("#ptSaveTerms");
   if (saveBtn) saveBtn.addEventListener("click", async () => {
+    if (saveBtn.disabled) return;
+    saveBtn.disabled = true;
+    saveBtn.textContent = "Сохранение...";
+    const localNotice = body.querySelector("#ptSaveNotice");
     try {
+      const priceMinor = Math.round(parseFloat(body.querySelector("#ptBasePrice").value || "0") * 100);
       await apiPut(`/api/payments/clients/${uid}/terms`, {
-        base_price_minor: parseInt(body.querySelector("#ptBasePrice").value, 10),
+        base_price_minor: priceMinor,
         base_lessons_count: parseInt(body.querySelector("#ptLessons").value, 10),
         default_due_days: parseInt(body.querySelector("#ptDueDays").value, 10),
         currency: "BYN",
         automation_enabled: body.querySelector("#ptAutomation").checked,
         automation_paused_reason: body.querySelector("#ptPausedReason").value.trim() || null,
       });
-      setNotice("Условия сохранены", "ok");
-      loadPaymentTermsData(mkUserId);
-    } catch (e) { setNotice(safeUserError(e), "bad"); }
+      setNotice("Условия оплаты сохранены", "ok");
+      let reloadOk = false;
+      try { await loadPaymentTermsData(mkUserId); reloadOk = true; } catch (_) {}
+      if (reloadOk) {
+        const newNotice = body.querySelector("#ptSaveNotice");
+        if (newNotice) {
+          newNotice.textContent = "✓ Условия оплаты сохранены";
+          newNotice.className = "pt-save-notice pt-save-notice--ok";
+        }
+        body.querySelector("#ptShowAudit")?.click();
+      } else {
+        saveBtn.disabled = false;
+        saveBtn.textContent = "Сохранить условия";
+      }
+    } catch (e) {
+      const msg = safeUserError(e);
+      setNotice(msg, "error");
+      if (localNotice) {
+        localNotice.textContent = msg;
+        localNotice.className = "pt-save-notice pt-save-notice--err";
+      }
+      saveBtn.disabled = false;
+      saveBtn.textContent = "Сохранить условия";
+    }
   });
   const addBtn = body.querySelector("#ptAddDiscount");
   if (addBtn) addBtn.addEventListener("click", async () => {

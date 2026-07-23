@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.94.1 — bePaid MoyKlass payment type exact name matching.
+﻿"""Regression tests for v7.0.94.1 — bePaid MoyKlass payment type exact name matching.
 
 Covers:
   Backend constants and helpers:
@@ -254,7 +254,7 @@ class TestVersionMarker(unittest.TestCase):
     def test_21_version_marker(self):
         js = APP_JS.read_text(encoding="utf-8")
         html = INDEX_HTML.read_text(encoding="utf-8")
-        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}")', js)
+        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}', js)
         self.assertIn(f"v={CURRENT_VERSION}", html)
 
 

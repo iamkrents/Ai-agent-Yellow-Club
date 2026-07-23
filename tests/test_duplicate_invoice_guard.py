@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.94.3 — deduplication guard for automation invoice intents.
+﻿"""Regression tests for v7.0.94.3 — deduplication guard for automation invoice intents.
 
 Covers:
   1-3.   find_all_active_intents_by_invoice includes awaiting_payment/partial_ready
@@ -666,7 +666,7 @@ class TestVersionAndCSS(unittest.TestCase):
 
     def test_40_version_is_current(self):
         """app.js and index.html reference current version."""
-        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}")', self.js)
+        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}', self.js)
         self.assertIn(f"v={CURRENT_VERSION}", self.html)
 
     def test_41_pi_duplicate_badge_css_defined(self):

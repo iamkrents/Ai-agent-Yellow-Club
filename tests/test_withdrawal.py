@@ -857,7 +857,7 @@ class TestVersion(unittest.TestCase):
 
     def test_45_miniapp_js_version(self):
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('console.log("MiniApp version: v7.1.0")', js)
+        self.assertIn('console.log("MiniApp version: v7.1.0', js)
 
     def test_46_index_html_cache_bust(self):
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")

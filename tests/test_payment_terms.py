@@ -37,6 +37,7 @@ from payment_domain import (
 )
 
 CURRENT_VERSION = "7.1.0"
+PATCH_VERSION = "7.1.0.1"
 PRICING_DATE = datetime.datetime(2026, 6, 15).strftime("%Y-%m-%d")  # "2026-06-15"
 NOW = "2026-06-15T10:00:00"
 
@@ -465,6 +466,128 @@ class Test05Safety(unittest.TestCase):
         events = [a["event_type"] for a in self.st.list_payment_pricing_audit("u1", limit=500)]
         for e in ("terms_created", "discount_created", "discount_cancelled"):
             self.assertIn(e, events)
+
+
+# ---------------------------------------------------------------------------
+# 56-64 — v7.1.0.1 save-feedback patch (static assertions + storage)
+# ---------------------------------------------------------------------------
+
+class Test06PatchV7101(unittest.TestCase):
+    """Static assertions verifying the v7.1.0.1 save-feedback fix is present."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        cls.html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
+        cls.css = (ROOT / "miniapp" / "styles.css").read_text(encoding="utf-8")
+
+    def test_56_patch_version_in_app_js(self):
+        self.assertIn(f"MiniApp version: v{PATCH_VERSION}", self.js)
+
+    def test_57_patch_version_cache_bust_html(self):
+        self.assertIn(f"app.js?v={PATCH_VERSION}", self.html)
+        self.assertIn(f"styles.css?v={PATCH_VERSION}", self.html)
+
+    def test_58_save_button_disabled_during_request(self):
+        self.assertIn("saveBtn.disabled = true", self.js)
+        self.assertIn("Сохранение...", self.js)
+
+    def test_59_double_click_guard(self):
+        self.assertIn("if (saveBtn.disabled) return", self.js)
+
+    def test_60_put_method_used_for_terms(self):
+        self.assertIn("apiPut(`/api/payments/clients/", self.js)
+
+    def test_61_success_notice_text_present(self):
+        self.assertIn("Условия оплаты сохранены", self.js)
+
+    def test_62_price_shown_in_byn_step(self):
+        self.assertIn('step="0.01"', self.js)
+
+    def test_63_inline_save_notice_element(self):
+        self.assertIn("ptSaveNotice", self.js)
+        self.assertIn("pt-save-notice--ok", self.js)
+        self.assertIn("pt-save-notice--err", self.js)
+
+    def test_64_audit_auto_triggered_after_save(self):
+        # ptShowAudit click must appear after the success notice assignment
+        idx_notice = self.js.index("✓ Условия оплаты сохранены")
+        idx_audit = self.js.index("ptShowAudit", idx_notice)
+        self.assertGreater(idx_audit, idx_notice)
+
+    def test_65_pt_save_notice_styles_in_css(self):
+        self.assertIn(".pt-save-notice--ok", self.css)
+        self.assertIn(".pt-save-notice--err", self.css)
+
+    def test_66_button_reenabled_on_error(self):
+        # In the catch block: saveBtn.disabled = false must follow setNotice
+        catch_block = self.js[self.js.index("} catch (e) {\n      const msg = safeUserError(e)"):]
+        self.assertIn("saveBtn.disabled = false", catch_block[:500])
+
+    def test_67_get_terms_does_not_create_row(self):
+        st = _make_storage()
+        ctx = _make_ctx(st, "owner")
+        ctx.payment_client_terms_get(_auth(), "u999")
+        ctx.payment_client_terms_get(_auth(), "u999")
+        with __import__("sqlite3").connect(st.db_path) as conn:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM payment_client_terms WHERE mk_user_id='u999'"
+            ).fetchone()[0]
+        self.assertEqual(n, 0)
+
+    def test_68_first_save_creates_row_and_audit(self):
+        st = _make_storage()
+        ctx = _make_ctx(st, "admin")
+        self.assertIsNone(st.get_payment_client_terms("u1"))
+        r = ctx.payment_client_terms_update(_auth(), "u1", {
+            "base_price_minor": 23900, "base_lessons_count": 4,
+            "default_due_days": 17, "currency": "BYN", "automation_enabled": False,
+        })
+        self.assertTrue(r["ok"])
+        self.assertIsNotNone(st.get_payment_client_terms("u1"))
+        events = [a["event_type"] for a in st.list_payment_pricing_audit("u1")]
+        self.assertIn("terms_created", events)
+
+    def test_69_repeat_save_updates_row_and_audit(self):
+        st = _make_storage()
+        ctx = _make_ctx(st, "admin")
+        ctx.payment_client_terms_update(_auth(), "u1", {
+            "base_price_minor": 23900, "base_lessons_count": 4,
+            "default_due_days": 17, "currency": "BYN", "automation_enabled": False,
+        })
+        ctx.payment_client_terms_update(_auth(), "u1", {
+            "base_price_minor": 29900, "base_lessons_count": 4,
+            "default_due_days": 17, "currency": "BYN", "automation_enabled": False,
+        })
+        row = st.get_payment_client_terms("u1")
+        self.assertEqual(row["base_price_minor"], 29900)
+        events = [a["event_type"] for a in st.list_payment_pricing_audit("u1")]
+        self.assertIn("terms_updated", events)
+
+    def test_70_save_default_values_works(self):
+        """Saving values identical to virtual defaults must create a real row."""
+        st = _make_storage()
+        ctx = _make_ctx(st, "owner")
+        self.assertIsNone(st.get_payment_client_terms("u1"))
+        r = ctx.payment_client_terms_update(_auth(), "u1", {
+            "base_price_minor": 23900, "base_lessons_count": 4,
+            "default_due_days": 17, "currency": "BYN", "automation_enabled": False,
+        })
+        self.assertTrue(r["ok"])
+        row = st.get_payment_client_terms("u1")
+        self.assertIsNotNone(row)
+        self.assertFalse(row.get("is_default"))
+
+    def test_71_save_terms_does_not_create_payment_intent(self):
+        st = _make_storage()
+        ctx = _make_ctx(st, "admin")
+        ctx.payment_client_terms_update(_auth(), "u1", {
+            "base_price_minor": 23900, "base_lessons_count": 4,
+            "default_due_days": 17, "currency": "BYN", "automation_enabled": False,
+        })
+        with __import__("sqlite3").connect(st.db_path) as conn:
+            n = conn.execute("SELECT COUNT(*) FROM payment_intents").fetchone()[0]
+        self.assertEqual(n, 0)
 
 
 if __name__ == "__main__":

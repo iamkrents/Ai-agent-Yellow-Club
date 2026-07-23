@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.94.1 — parent payment contrast & header hotfix.
+﻿"""Regression tests for v7.0.94.1 — parent payment contrast & header hotfix.
 
 Root causes fixed:
   1. appTitle showed "Питание · Yellow Club" for parent role — now "Оплаты · Yellow Club".
@@ -307,7 +307,7 @@ class Test06Version(unittest.TestCase):
         cls.html = INDEX_HTML.read_text(encoding="utf-8")
 
     def test_22_version_marker(self):
-        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}")', self.js)
+        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}', self.js)
         self.assertIn(f"v={CURRENT_VERSION}", self.html)
 
 

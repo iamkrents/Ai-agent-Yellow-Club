@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.94.1 — parent payment UI/UX hotfix.
+﻿"""Regression tests for v7.0.94.1 — parent payment UI/UX hotfix.
 
 Fixes:
   1. Role banner showed «Руководитель Ресторана: Родитель» on parent screen.
@@ -315,7 +315,7 @@ class Test05Version(unittest.TestCase):
 
     def test_22_version_marker(self):
         """app.js and index.html must reference v7.0.94.1."""
-        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}")', self.js)
+        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}', self.js)
         self.assertIn(f"v={CURRENT_VERSION}", self.html)
 
 

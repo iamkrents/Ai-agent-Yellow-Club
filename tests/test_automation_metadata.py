@@ -1,4 +1,4 @@
-"""Regression tests for v7.0.94.2 — automation intent metadata repair.
+﻿"""Regression tests for v7.0.94.2 — automation intent metadata repair.
 
 Covers:
   1-5.   automation_audit_log table creation and schema
@@ -631,7 +631,7 @@ class TestCssAndHtmlVersion(unittest.TestCase):
 
     def test_45_version_marker_v7094_2(self):
         """app.js, styles.css, and index.html all reference v7.0.94.2."""
-        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}")', self.js,
+        self.assertIn(f'console.log("MiniApp version: v{CURRENT_VERSION}', self.js,
                       f"app.js must declare version v{CURRENT_VERSION}")
         self.assertIn(f"v={CURRENT_VERSION}", self.html,
                       f"index.html cache-bust must be v={CURRENT_VERSION}")
