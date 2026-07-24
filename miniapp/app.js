@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.2.1");
+console.log("MiniApp version: v7.1.3");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -6669,10 +6669,20 @@ function renderPaymentTermsBody(mkUserId, termsRes, discountsRes, previewRes) {
   const sourceRow = raw.terms_source
     ? `<div class="pt-source-info">Источник: <span class="pt-source-chip">${sourceLabel}</span>${syncStatusText ? ` · <span class="pt-sync-status">${escapeHtml(syncStatusText)}</span>` : ""}</div>`
     : "";
+  const _autoSyncStatus = (termsRes && termsRes.auto_sync && termsRes.auto_sync.status) || "";
+  const _autoSyncLabels = {
+    disabled: "выключена",
+    pilot_match: "pilot для этого клиента",
+    pilot_no_match: "клиент не входит в pilot",
+  };
+  const autoSyncRow = _autoSyncStatus
+    ? `<div class="pt-auto-sync-info">Автосинхронизация: <span class="pt-auto-sync-chip pt-auto-sync-${escapeAttr(_autoSyncStatus)}">${escapeHtml(_autoSyncLabels[_autoSyncStatus] || _autoSyncStatus)}</span></div>`
+    : "";
   const termsForm = `
     <div class="card pt-card">
       <div class="card-title">Базовые условия ${t.is_default ? "(по умолчанию — ещё не сохранены)" : ""}</div>
       ${sourceRow}
+      ${autoSyncRow}
       <label><span>Базовая цена (BYN)</span>
         <input type="number" id="ptBasePrice" value="${escapeAttr(priceByn)}" min="0.01" step="0.01" /></label>
       <label><span>Кол-во занятий</span>

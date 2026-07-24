@@ -153,6 +153,8 @@ class Settings:
 
     # v7.1.1 — MoyKlass subscription terms sync (default off)
     payment_mk_subscription_terms_sync_enabled: bool = False
+    # v7.1.3 — pilot allowlist: empty tuple = fail-closed even when enabled
+    payment_mk_subscription_terms_sync_user_ids: tuple = ()
 
     @property
     def bepaid_erip_enabled(self) -> bool:
@@ -290,4 +292,6 @@ def load_settings() -> Settings:
         payment_auto_create_mk_subscription_enabled=_bool(os.getenv("PAYMENT_AUTO_CREATE_MK_SUBSCRIPTION_ENABLED", "false"), False),
         payment_replace_unpaid_intent_enabled=_bool(os.getenv("PAYMENT_REPLACE_UNPAID_INTENT_ENABLED", "false"), False),
         payment_renewal_parent_notification_enabled=_bool(os.getenv("PAYMENT_RENEWAL_PARENT_NOTIFICATION_ENABLED", "false"), False),
+        payment_mk_subscription_terms_sync_enabled=_bool(os.getenv("PAYMENT_MK_SUBSCRIPTION_TERMS_SYNC_ENABLED", "false"), False),
+        payment_mk_subscription_terms_sync_user_ids=tuple(_split_strings(os.getenv("PAYMENT_MK_SUBSCRIPTION_TERMS_SYNC_USER_IDS", ""))),
     )

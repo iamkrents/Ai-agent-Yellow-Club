@@ -38,7 +38,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 SERVER_PY = ROOT / "web_app_server.py"
 
-VERSION = "7.1.2.1"
+VERSION = "7.1.3"
 NOW = "2026-07-23T10:00:00"
 
 
@@ -540,13 +540,15 @@ class Test09AutoTrigger(unittest.TestCase):
         self.assertIn("sync_payment_terms_auto", self.server)
 
     def test_29_auto_trigger_is_flag_gated(self):
+        # v7.1.3: flag check must gate the auto-sync (window extended for allowlist block)
         idx = self.server.find("sync_payment_terms_auto")
-        segment = self.server[max(0, idx - 400):idx + 200]
+        segment = self.server[max(0, idx - 1600):idx + 200]
         self.assertIn("payment_mk_subscription_terms_sync_enabled", segment)
 
     def test_30_auto_trigger_only_for_new_invoices(self):
+        # v7.1.3: is_new check must gate the auto-sync (window extended for allowlist block)
         idx = self.server.find("sync_payment_terms_auto")
-        segment = self.server[max(0, idx - 400):idx + 200]
+        segment = self.server[max(0, idx - 1600):idx + 200]
         self.assertIn("is_new", segment)
 
     def test_31_flag_exists_in_config(self):
@@ -649,12 +651,13 @@ class Test11ManualAutoSplit(unittest.TestCase):
         self.ctx = _make_ctx(self.st)
 
     def test_41_auto_sync_calls_mk_when_flag_true(self):
-        """When flag=true and invoice is new, MK subscriptions ARE fetched."""
+        """v7.1.3: flag=true + user in allowlist + new invoice → MK subscriptions ARE fetched."""
         import web_app_server as _srv
         ctx = _srv.MiniAppContext.__new__(_srv.MiniAppContext)
         ctx.storage = self.st
         ctx.settings = MagicMock()
         ctx.settings.payment_mk_subscription_terms_sync_enabled = True
+        ctx.settings.payment_mk_subscription_terms_sync_user_ids = ("7001",)
         ctx.moyklass = MagicMock()
         ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok([])
         inv = {
@@ -822,12 +825,12 @@ class Test14V712Regression(unittest.TestCase):
         self.assertNotIn("food_module", src)
         self.assertNotIn("food_menu", src)
 
-    def test_56_cache_bust_v712(self):
-        """Cache-bust must be v7.1.2 in index.html and app.js."""
+    def test_56_cache_bust_format(self):
+        """Cache-bust format exists in index.html and version marker in app.js."""
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v=7.1.2", html)
-        self.assertIn("v7.1.2", js)
+        self.assertIn("v=7.1", html, "Cache-bust must start with v=7.1")
+        self.assertIn("v7.1", js, "Version marker must start with v7.1")
 
 
 # ---------------------------------------------------------------------------
@@ -1109,18 +1112,363 @@ class Test16V7121Static(unittest.TestCase):
 
     # --- test 70: cache-bust v7.1.2.1 ---
 
-    def test_70_cache_bust_v7121(self):
-        """Cache-bust strings must be v7.1.2.1 in index.html and app.js."""
-        self.assertIn("v=7.1.2.1", self.html,
-                      "index.html cache-bust must be v=7.1.2.1")
-        self.assertIn("v7.1.2.1", self.js,
-                      "app.js version marker must contain v7.1.2.1")
+    def test_70_cache_bust_v713(self):
+        """Cache-bust strings must be v7.1.3 in index.html and app.js."""
+        self.assertIn("v=7.1.3", self.html,
+                      "index.html cache-bust must be v=7.1.3")
+        self.assertIn("v7.1.3", self.js,
+                      "app.js version marker must contain v7.1.3")
 
     # --- test 71: auto flag source stays False ---
 
     def test_71_auto_flag_default_false_in_config_source(self):
         cfg = (ROOT / "config.py").read_text(encoding="utf-8")
         self.assertIn("payment_mk_subscription_terms_sync_enabled: bool = False", cfg)
+
+
+# ---------------------------------------------------------------------------
+# 72-96 — v7.1.3: pilot allowlist, structured logging, safety guarantees
+# ---------------------------------------------------------------------------
+
+class Test17PilotAllowlist(unittest.TestCase):
+    """72-96: v7.1.3 pilot auto-sync allowlist and safety guarantees."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = (ROOT / "web_app_server.py").read_text(encoding="utf-8")
+        cls.cfg = (ROOT / "config.py").read_text(encoding="utf-8")
+        cls.js = APP_JS.read_text(encoding="utf-8")
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def _make_inv(self, inv_id=30001, user_id=9748998, price=57.25):
+        return {
+            "id": inv_id, "userId": user_id, "price": price, "payed": 0.0,
+            "payUntil": "2026-08-31", "createdAt": NOW,
+            "userSubscription": {"clientName": "Pilot", "beginDate": "2026-08-01"},
+        }
+
+    def _make_ctx_with_flags(self, enabled, allowlist):
+        import web_app_server as _srv
+        st = _tmp_storage()
+        ctx = _srv.MiniAppContext.__new__(_srv.MiniAppContext)
+        ctx.storage = st
+        ctx.settings = MagicMock()
+        ctx.settings.payment_mk_subscription_terms_sync_enabled = enabled
+        ctx.settings.payment_mk_subscription_terms_sync_user_ids = allowlist
+        ctx.moyklass = MagicMock()
+        ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok([])
+        return ctx, st
+
+    # --- test 72: enabled=False → no MK call ---
+
+    def test_72_flag_false_no_mk_call(self):
+        """enabled=False → auto-sync must not call MK at all."""
+        ctx, _ = self._make_ctx_with_flags(False, ("9748998",))
+        ctx._process_single_automation_item_from_invoice(
+            self._make_inv(), now=NOW, create_enabled=False, publish_enabled=False,
+        )
+        ctx.moyklass.get_user_subscriptions.assert_not_called()
+
+    # --- test 73: enabled=True + user in allowlist → sync called ---
+
+    def test_73_flag_true_user_in_allowlist_mk_called(self):
+        """enabled=True + mk_user_id in allowlist → MK subscriptions fetched."""
+        ctx, _ = self._make_ctx_with_flags(True, ("9748998",))
+        ctx._process_single_automation_item_from_invoice(
+            self._make_inv(user_id=9748998), now=NOW, create_enabled=False, publish_enabled=False,
+        )
+        ctx.moyklass.get_user_subscriptions.assert_called_once()
+
+    # --- test 74: enabled=True + user not in allowlist → no MK call ---
+
+    def test_74_flag_true_user_not_in_allowlist_no_mk_call(self):
+        """enabled=True + mk_user_id NOT in allowlist → no MK call."""
+        ctx, _ = self._make_ctx_with_flags(True, ("99999",))
+        ctx._process_single_automation_item_from_invoice(
+            self._make_inv(user_id=9748998), now=NOW, create_enabled=False, publish_enabled=False,
+        )
+        ctx.moyklass.get_user_subscriptions.assert_not_called()
+
+    # --- test 75: enabled=True + empty allowlist → fail-closed ---
+
+    def test_75_empty_allowlist_fail_closed(self):
+        """enabled=True + empty allowlist → fail-closed, no MK call."""
+        ctx, _ = self._make_ctx_with_flags(True, ())
+        ctx._process_single_automation_item_from_invoice(
+            self._make_inv(), now=NOW, create_enabled=False, publish_enabled=False,
+        )
+        ctx.moyklass.get_user_subscriptions.assert_not_called()
+
+    # --- test 76: manual button works when flag=False ---
+
+    def test_76_manual_sync_works_flag_false(self):
+        """Manual sync endpoint ignores feature flag (flag=False must not block it)."""
+        st = _tmp_storage()
+        ctx = _make_ctx(st, role="operations")
+        ctx.settings.payment_mk_subscription_terms_sync_enabled = False
+        ctx.settings.payment_mk_subscription_terms_sync_user_ids = ()
+        ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok([_mk_sub(price=57.25)])
+        _upsert_terms(st, "9748998", 5725)
+        r = ctx.payment_client_terms_sync(_auth(), "9748998", {})
+        self.assertTrue(r.get("ok"), f"Manual sync must succeed even when flag=False: {r}")
+
+    # --- test 77: manual button works for user outside allowlist ---
+
+    def test_77_manual_sync_works_user_outside_allowlist(self):
+        """Manual sync ignores allowlist — works for any authorised admin."""
+        st = _tmp_storage()
+        ctx = _make_ctx(st, role="operations")
+        ctx.settings.payment_mk_subscription_terms_sync_enabled = True
+        ctx.settings.payment_mk_subscription_terms_sync_user_ids = ("OTHER_USER",)
+        ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok([_mk_sub(price=57.25)])
+        _upsert_terms(st, "9748998", 5725)
+        r = ctx.payment_client_terms_sync(_auth(), "9748998", {})
+        self.assertTrue(r.get("ok"), f"Manual sync must work outside allowlist: {r}")
+
+    # --- test 78: new invoice → sync called exactly once ---
+
+    def test_78_new_invoice_triggers_sync_once(self):
+        """New invoice for allowlist user triggers auto-sync exactly once."""
+        ctx, _ = self._make_ctx_with_flags(True, ("9748998",))
+        ctx._process_single_automation_item_from_invoice(
+            self._make_inv(inv_id=78001, user_id=9748998), now=NOW,
+            create_enabled=False, publish_enabled=False,
+        )
+        self.assertEqual(ctx.moyklass.get_user_subscriptions.call_count, 1)
+
+    # --- test 79: already-processed invoice → no sync ---
+
+    def test_79_processed_invoice_no_sync(self):
+        """Invoice already in payment_options_created stage must not re-trigger sync."""
+        import web_app_server as _srv
+        st = _tmp_storage()
+        ctx = _srv.MiniAppContext.__new__(_srv.MiniAppContext)
+        ctx.storage = st
+        ctx.settings = MagicMock()
+        ctx.settings.payment_mk_subscription_terms_sync_enabled = True
+        ctx.settings.payment_mk_subscription_terms_sync_user_ids = ("5555",)
+        ctx.moyklass = MagicMock()
+        ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok([])
+        # Pre-create the item and advance its stage
+        item = st.upsert_automation_item("79001", "5555", "Test", "{}", NOW)
+        st.update_automation_item_stage(item["id"], "payment_options_created", now=NOW)
+        # Second call with same invoice — stage is already payment_options_created → is_new=False
+        inv = {"id": 79001, "userId": 5555, "price": 100.0, "payed": 0.0}
+        ctx._process_single_automation_item_from_invoice(
+            inv, now=NOW, create_enabled=False, publish_enabled=False,
+        )
+        ctx.moyklass.get_user_subscriptions.assert_not_called()
+
+    # --- test 80: new_source → terms updated atomically (auto path) ---
+
+    def test_80_new_source_updates_terms_atomically(self):
+        """Auto-sync new_source state must update both base and source fields in one audit."""
+        st = _tmp_storage()
+        ctx = _make_ctx(st, role="operations")
+        ctx.settings.payment_mk_subscription_terms_sync_enabled = True
+        ctx.settings.payment_mk_subscription_terms_sync_user_ids = ("u80",)
+        _upsert_terms(st, "u80", 5000)
+        ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok([
+            _mk_sub(sub_id=8001, price=58.25, sell_date="2026-07-01"),
+        ])
+        ctx._process_single_automation_item_from_invoice(
+            {"id": 800001, "userId": "u80", "price": 58.25, "payed": 0.0},
+            now=NOW, create_enabled=False, publish_enabled=False,
+        )
+        row = st.get_payment_client_terms("u80")
+        self.assertIsNotNone(row)
+        self.assertEqual(int(row["base_price_minor"]), 5825)
+        self.assertEqual(str(row.get("source_subscription_id") or ""), "8001")
+
+    # --- test 81: unchanged → no audit ---
+
+    def test_81_unchanged_no_audit(self):
+        """unchanged state: no terms_updated audit should be created."""
+        st = _tmp_storage()
+        ctx = _make_ctx(st, role="operations")
+        ctx.settings.payment_mk_subscription_terms_sync_enabled = True
+        ctx.settings.payment_mk_subscription_terms_sync_user_ids = ("u81",)
+        # Save terms from sub 9001 so the state becomes unchanged
+        _upsert_terms(st, "u81", 5725)
+        sub = _mk_sub(sub_id=9001, price=57.25, sell_date="2026-07-01")
+        _internal_auth = {"_internal": True, "role": "operations", "user_id": 0}
+        ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok([sub])
+        # First: sync to establish sub 9001 as source
+        ctx._sync_payment_terms_from_moyklass("u81", _internal_auth)
+        audit_before = st.list_payment_pricing_audit("u81")
+        count_before = len(audit_before) if audit_before else 0
+        # Now same sub → unchanged
+        ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok([sub])
+        ctx._sync_payment_terms_from_moyklass("u81", _internal_auth)
+        audit_after = st.list_payment_pricing_audit("u81")
+        count_after = len(audit_after) if audit_after else 0
+        self.assertEqual(count_before, count_after, "unchanged state must not create audit")
+
+    # --- test 82: not_found → flow continues ---
+
+    def test_82_not_found_flow_continues(self):
+        """not_found: auto-sync must not break invoice flow."""
+        ctx, _ = self._make_ctx_with_flags(True, ("9748998",))
+        ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok([])
+        try:
+            ctx._process_single_automation_item_from_invoice(
+                self._make_inv(inv_id=82001, user_id=9748998), now=NOW,
+                create_enabled=False, publish_enabled=False,
+            )
+        except Exception as e:
+            self.fail(f"not_found must not raise: {e}")
+
+    # --- test 83: ambiguous → flow continues ---
+
+    def test_83_ambiguous_flow_continues(self):
+        """ambiguous: auto-sync must not break invoice flow."""
+        ctx, _ = self._make_ctx_with_flags(True, ("9748998",))
+        ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok([
+            _mk_sub(sub_id=1, price=57.25, sell_date="2026-07-01"),
+            _mk_sub(sub_id=2, price=57.25, sell_date="2026-07-01"),
+        ])
+        try:
+            ctx._process_single_automation_item_from_invoice(
+                self._make_inv(inv_id=83001, user_id=9748998), now=NOW,
+                create_enabled=False, publish_enabled=False,
+            )
+        except Exception as e:
+            self.fail(f"ambiguous must not raise: {e}")
+
+    # --- test 84: api_error → flow continues ---
+
+    def test_84_api_error_flow_continues(self):
+        """api_error: MK exception must be caught and invoice flow must continue."""
+        ctx, _ = self._make_ctx_with_flags(True, ("9748998",))
+        ctx.moyklass.get_user_subscriptions.side_effect = RuntimeError("mk_down")
+        try:
+            ctx._process_single_automation_item_from_invoice(
+                self._make_inv(inv_id=84001, user_id=9748998), now=NOW,
+                create_enabled=False, publish_enabled=False,
+            )
+        except Exception as e:
+            self.fail(f"api_error must not propagate: {e}")
+
+    # --- test 85: sync method does not touch payment intents ---
+
+    def test_85_sync_does_not_modify_payment_intents(self):
+        """_sync_payment_terms_from_moyklass must not call any payment intent update."""
+        idx = self.server.find("def _sync_payment_terms_from_moyklass(")
+        next_def = self.server.find("\n    def ", idx + 1)
+        method = self.server[idx:next_def]
+        for fn in ("update_payment_intent", "update_intent_status", "update_intent_amount",
+                   "withdraw_payment_intent", "create_payment_intent"):
+            self.assertNotIn(fn, method,
+                             f"Sync must not touch payment intents: {fn}")
+
+    # --- test 86: payment intent uses invoice price, not terms price ---
+
+    def test_86_intent_uses_invoice_price(self):
+        """_automation_create_intent must derive amount from invoice price, not terms."""
+        idx = self.server.find("def _automation_create_intent(")
+        next_def = self.server.find("\n    def ", idx + 1)
+        method = self.server[idx:next_def]
+        self.assertIn('inv.get("price")', method, "Intent creation must read price from invoice")
+        self.assertNotIn("get_payment_client_terms", method,
+                         "Intent creation must not read payment_client_terms")
+
+    # --- test 87: duplicate payment intent not created ---
+
+    def test_87_no_duplicate_intent(self):
+        """Deduplication guard must prevent duplicate intents for the same invoice."""
+        srv = self.server
+        # find_all_active_intents_by_invoice is the dedup guard
+        self.assertIn("find_all_active_intents_by_invoice", srv)
+        # It must appear before create_payment_intent in the pipeline method
+        pipeline_idx = srv.find("def _process_single_automation_item_from_invoice(")
+        dedup_idx = srv.find("find_all_active_intents_by_invoice", pipeline_idx)
+        create_idx = srv.find("_automation_create_intent(", pipeline_idx)
+        self.assertLess(dedup_idx, create_idx,
+                        "Dedup guard must run before intent creation")
+
+    # --- test 88: BePaid not called from sync ---
+
+    def test_88_bepaid_not_called_from_sync(self):
+        """_sync_payment_terms_from_moyklass must not call bePaid."""
+        idx = self.server.find("def _sync_payment_terms_from_moyklass(")
+        next_def = self.server.find("\n    def ", idx + 1)
+        method = self.server[idx:next_def]
+        for bepaid in ("bepaid_client", "self.bepaid", "create_payment", "BePaid"):
+            self.assertNotIn(bepaid, method,
+                             f"Sync must not call bePaid: {bepaid}")
+
+    # --- test 89: MoyKlass write API not called from sync ---
+
+    def test_89_moyklass_write_not_called_from_sync(self):
+        """_sync_payment_terms_from_moyklass must not call MoyKlass write endpoints."""
+        idx = self.server.find("def _sync_payment_terms_from_moyklass(")
+        next_def = self.server.find("\n    def ", idx + 1)
+        method = self.server[idx:next_def]
+        for write_fn in ("create_invoice", "update_invoice", "create_subscription",
+                         "update_subscription", "delete_invoice"):
+            self.assertNotIn(write_fn, method,
+                             f"Sync must not call MK write API: {write_fn}")
+
+    # --- test 90: auto audit reason differs from manual ---
+
+    def test_90_auto_audit_reason_distinct(self):
+        """Auto-sync must use audit_reason='newer_moyklass_subscription_auto'."""
+        self.assertIn("newer_moyklass_subscription_auto", self.server)
+        # Manual path still uses the original reason
+        self.assertIn('"newer_moyklass_subscription"', self.server)
+        # They must be different strings
+        self.assertNotEqual("newer_moyklass_subscription_auto", "newer_moyklass_subscription")
+
+    # --- test 91: log contains result and mk_invoice_id ---
+
+    def test_91_log_contains_result_and_invoice_id(self):
+        """Auto-sync log format must include result= and mk_invoice_id."""
+        self.assertIn("payment_event=payment_terms_auto_sync", self.server)
+        self.assertIn("mk_invoice_id=%s", self.server)
+        self.assertIn("result=%s", self.server)
+
+    # --- test 92: no tokens or raw API response in auto-sync log strings ---
+
+    def test_92_no_secrets_in_log_strings(self):
+        """Auto-sync log strings must not expose API tokens or raw responses."""
+        idx = self.server.find("payment_event=payment_terms_auto_sync")
+        # Check 500 chars around each occurrence
+        while idx != -1:
+            segment = self.server[max(0, idx - 20):idx + 500]
+            for secret in ("api_key", "secret_key", "token", "raw_response", "api_response"):
+                self.assertNotIn(secret, segment.lower(),
+                                 f"Log must not expose secrets: '{secret}'")
+            idx = self.server.find("payment_event=payment_terms_auto_sync", idx + 1)
+
+    # --- test 93: default flag stays False ---
+
+    def test_93_default_flag_false(self):
+        """payment_mk_subscription_terms_sync_enabled must default to False in config."""
+        self.assertIn("payment_mk_subscription_terms_sync_enabled: bool = False", self.cfg)
+
+    # --- test 94: default allowlist is empty ---
+
+    def test_94_default_allowlist_empty(self):
+        """payment_mk_subscription_terms_sync_user_ids must default to empty tuple in config."""
+        self.assertIn("payment_mk_subscription_terms_sync_user_ids: tuple = ()", self.cfg)
+
+    # --- test 95: cache-bust v7.1.3 ---
+
+    def test_95_cache_bust_v713(self):
+        """Cache-bust strings must be v7.1.3."""
+        self.assertIn("v=7.1.3", self.html, "index.html cache-bust must be v=7.1.3")
+        self.assertIn("v7.1.3", self.js, "app.js version must be v7.1.3")
+
+    # --- test 96: food module not changed ---
+
+    def test_96_food_module_not_changed(self):
+        """_sync_payment_terms_from_moyklass must not touch food tables."""
+        idx = self.server.find("def _sync_payment_terms_from_moyklass(")
+        next_def = self.server.find("\n    def ", idx + 1)
+        method = self.server[idx:next_def]
+        for food in ("food_order", "food_menu", "food_children", "meal_option"):
+            self.assertNotIn(food, method,
+                             f"Sync must not reference food module: {food}")
 
 
 if __name__ == "__main__":

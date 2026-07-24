@@ -10428,7 +10428,22 @@ class MiniAppContext:
             "mk_user_id": mk_user_id,
             "terms": self._decorate_terms(row),
             "raw": row,
+            "auto_sync": self._payment_terms_auto_sync_status(mk_user_id, auth),
         }
+
+    def _payment_terms_auto_sync_status(self, mk_user_id: str, auth: dict[str, Any]) -> dict[str, Any]:
+        """v7.1.3: return pilot auto-sync status for owner/admin only."""
+        if auth.get("role", "") not in {"owner", "admin"}:
+            return {}
+        sync_enabled = getattr(self.settings, "payment_mk_subscription_terms_sync_enabled", False)
+        if not sync_enabled:
+            return {"status": "disabled"}
+        allowlist = getattr(self.settings, "payment_mk_subscription_terms_sync_user_ids", ())
+        if not allowlist:
+            return {"status": "disabled"}
+        if mk_user_id in allowlist:
+            return {"status": "pilot_match"}
+        return {"status": "pilot_no_match"}
 
     def payment_client_terms_update(
         self, auth: dict[str, Any], mk_user_id: str, body: dict[str, Any]
@@ -10469,7 +10484,8 @@ class MiniAppContext:
         return self._sync_payment_terms_from_moyklass(mk_user_id, auth)
 
     def _sync_payment_terms_from_moyklass(
-        self, mk_user_id: str, actor_auth: dict[str, Any]
+        self, mk_user_id: str, actor_auth: dict[str, Any],
+        audit_reason: str = "newer_moyklass_subscription",
     ) -> dict[str, Any]:
         import json as _json
         now = now_iso()
@@ -10543,7 +10559,7 @@ class MiniAppContext:
                     actor_tg_id=None if is_internal else int(actor_auth.get("user_id", 0)),
                     actor_name="moyklass_sync" if is_internal else self._pricing_actor_name(actor_auth),
                     now_str=now,
-                    audit_reason="newer_moyklass_subscription",
+                    audit_reason=audit_reason,
                 )
             except Exception as exc:
                 return {"ok": False, "state": state, "error": str(exc)}
@@ -14440,13 +14456,37 @@ class MiniAppContext:
 
         is_new = stage == "discovered"
 
-        # v7.1.1 — Auto-sync payment terms from MoyKlass subscription for new invoices (flag-gated)
+        # v7.1.3 — Auto-sync payment terms: pilot allowlist + structured logging
         if is_new and getattr(self.settings, "payment_mk_subscription_terms_sync_enabled", False):
-            try:
-                _internal_auth = {"_internal": True, "role": "operations", "user_id": 0}
-                self._sync_payment_terms_from_moyklass(mk_user_id, _internal_auth)
-            except Exception:
-                log.debug("sync_payment_terms_auto: error for user %s", mk_user_id)
+            _allowlist = getattr(self.settings, "payment_mk_subscription_terms_sync_user_ids", ())
+            if not _allowlist:
+                pass  # fail-closed: enabled but empty allowlist → no auto-sync
+            elif mk_user_id not in _allowlist:
+                log.info(
+                    "payment_event=payment_terms_auto_sync_skipped mk_user_id=%s mk_invoice_id=%s "
+                    "reason_code=not_in_allowlist",
+                    mk_user_id, inv_id,
+                )
+            else:
+                try:
+                    _internal_auth = {"_internal": True, "role": "operations", "user_id": 0}
+                    _sync_result = self._sync_payment_terms_from_moyklass(
+                        mk_user_id, _internal_auth,
+                        audit_reason="newer_moyklass_subscription_auto",
+                    )
+                    log.info(
+                        "payment_event=payment_terms_auto_sync mk_user_id=%s mk_invoice_id=%s "
+                        "result=%s source_subscription_id=%s candidates_count=%s allowlist_match=1",
+                        mk_user_id, inv_id,
+                        _sync_result.get("state", "unknown"),
+                        _sync_result.get("source_subscription_id") or "",
+                        _sync_result.get("candidates_count", ""),
+                    )
+                except Exception:
+                    log.exception(
+                        "sync_payment_terms_auto: error for mk_user_id=%s mk_invoice_id=%s",
+                        mk_user_id, inv_id,
+                    )
 
         # Deduplication guard: find ALL active intents for this invoice BEFORE creating anything
         existing_intents = self.storage.find_all_active_intents_by_invoice(inv_id)
