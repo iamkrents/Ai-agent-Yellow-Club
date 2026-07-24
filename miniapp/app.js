@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.3");
+console.log("MiniApp version: v7.1.4");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -14288,12 +14288,15 @@ function _renderWithdrawalResultBlock(result) {
     : tgStatus === "failed" ? "✗ Не удалось обновить"
     : tgStatus ? escapeHtml(tgStatus) : "—";
 
-  const erpStatus = wr.erip_cancel_status || result.erip_cancel_status || "";
-  const erpLabel = erpStatus === "cancelled" ? "✓ Отменён в ЕРИП"
-    : erpStatus === "unsupported"
-      ? "Отмена номера ЕРИП во внешней системе не поддерживается. Не используйте ранее сохранённые реквизиты."
-    : erpStatus === "failed" ? "✗ Не удалось отменить ЕРИП"
-    : erpStatus ? escapeHtml(erpStatus) : "—";
+  const remoteStatus = wr.remote_cancel_status || result.remote_cancel_status
+    || wr.erip_cancel_status || result.erip_cancel_status || "";
+  const remoteLabel = remoteStatus === "cancelled" ? "✓ Счёт отменён в bePaid"
+    : remoteStatus === "no_erip_uid" ? "— Нет UID платежа (ЕРИП не создавался)"
+    : remoteStatus === "failed" ? "✗ Не удалось отменить"
+    : remoteStatus === "requires_check" ? "⚠ Результат неопределён (нужна проверка)"
+    : remoteStatus === "unsupported" ? "— Отмена ЕРИП во внешней системе не поддерживается. Не используйте ранее сохранённые реквизиты."
+    : remoteStatus ? escapeHtml(remoteStatus) : "—";
+  const remoteMethod = wr.remote_cancel_method || result.remote_cancel_method || "";
 
   const cardBlocked = wr.card_checkout_blocked_at || wr.card_blocked || result.card_blocked;
   const reqCheck = wr.requires_check_reason || result.requires_check_reason;
@@ -14316,7 +14319,8 @@ function _renderWithdrawalResultBlock(result) {
   html += `<div style="margin-bottom:3px">Агент: ✓ Счёт заблокирован для оплаты в агенте</div>`;
   html += `<div style="margin-bottom:3px">МойКласс: Счёт и абонемент не удалены</div>`;
   html += `<div style="margin-bottom:3px">Уведомление родителю: ${tgLabel}</div>`;
-  html += `<div style="margin-bottom:3px">ЕРИП: ${erpLabel}</div>`;
+  const remoteMethodNote = remoteMethod === "api_delete" ? " (API DELETE)" : "";
+  html += `<div style="margin-bottom:3px">ЕРИП: ${remoteLabel}${remoteMethodNote ? `<span class="wd-remote-method">${escapeHtml(remoteMethodNote)}</span>` : ""}</div>`;
   html += `<div style="margin-bottom:3px">Карта: ${cardBlocked ? "✓ Заблокирована" : "— Не применимо"}</div>`;
   if (reqCheck) {
     html += `<div style="margin-top:8px;color:#92400e;font-size:11px">⚠ Требует проверки: <strong>${escapeHtml(reqCheck)}</strong></div>`;

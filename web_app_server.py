@@ -11074,35 +11074,85 @@ class MiniAppContext:
         if mk_invoice_id:
             self.storage.reset_automation_item_for_withdrawal(mk_invoice_id, now)
 
-        # ── ERIP: attempt void (currently unsupported — local block applied) ───
+        # ── ERIP: remote cancel via DELETE API (v7.1.4) ──────────────────────
         erip_uid = str(pi.get("bepaid_uid") or "").strip()
         erip_option = self.storage.get_option_by_channel(public_id, "erip") if hasattr(self.storage, "get_option_by_channel") else None
         if not erip_uid and erip_option:
             erip_uid = str(erip_option.get("bepaid_uid") or "").strip()
 
         if erip_uid and hasattr(self, "_bepaid_erip_client"):
+            remote_requested_at = now
             try:
                 void_result = self._bepaid_erip_client().void_erip_payment(erip_uid)
                 err_txt = str(void_result.error or "")
+                resp_data = void_result.data or {}
                 if void_result.ok:
+                    remote_status_after = str(resp_data.get("status") or "deleted")
+                    remote_ref = str(resp_data.get("uid") or erip_uid)
                     self.storage.update_withdrawal_erip(
                         withdrawal_id, "cancelled", now, None, now,
                     )
-                elif "unsupported" in err_txt.lower():
-                    self.storage.update_withdrawal_erip(
-                        withdrawal_id, "unsupported", None, err_txt[:300], now,
+                    self.storage.update_withdrawal_remote_cancel(
+                        withdrawal_id,
+                        remote_cancel_status="cancelled",
+                        remote_cancel_method="api_delete",
+                        remote_cancel_requested_at=remote_requested_at,
+                        remote_cancel_confirmed_at=now,
+                        remote_cancel_error=None,
+                        remote_status_before="pending",
+                        remote_status_after=remote_status_after,
+                        remote_response_reference=remote_ref,
+                        now=now,
                     )
                 else:
+                    r_cancel_status = "requires_check" if void_result.requires_check else "failed"
                     self.storage.update_withdrawal_erip(
                         withdrawal_id, "failed", None, err_txt[:300], now,
                     )
+                    self.storage.update_withdrawal_remote_cancel(
+                        withdrawal_id,
+                        remote_cancel_status=r_cancel_status,
+                        remote_cancel_method="api_delete",
+                        remote_cancel_requested_at=remote_requested_at,
+                        remote_cancel_confirmed_at=None,
+                        remote_cancel_error=err_txt[:300],
+                        remote_status_before="pending",
+                        remote_status_after=None,
+                        remote_response_reference=None,
+                        now=now,
+                    )
             except Exception as exc:
+                exc_txt = str(exc)[:300]
                 self.storage.update_withdrawal_erip(
-                    withdrawal_id, "failed", None, str(exc)[:300], now,
+                    withdrawal_id, "failed", None, exc_txt, now,
+                )
+                self.storage.update_withdrawal_remote_cancel(
+                    withdrawal_id,
+                    remote_cancel_status="failed",
+                    remote_cancel_method="api_delete",
+                    remote_cancel_requested_at=remote_requested_at,
+                    remote_cancel_confirmed_at=None,
+                    remote_cancel_error=exc_txt,
+                    remote_status_before=None,
+                    remote_status_after=None,
+                    remote_response_reference=None,
+                    now=now,
                 )
         else:
             self.storage.update_withdrawal_erip(
                 withdrawal_id, "unsupported", None, "no_erip_uid_or_client", now,
+            )
+            self.storage.update_withdrawal_remote_cancel(
+                withdrawal_id,
+                remote_cancel_status="no_erip_uid",
+                remote_cancel_method=None,
+                remote_cancel_requested_at=None,
+                remote_cancel_confirmed_at=None,
+                remote_cancel_error="no_erip_uid_or_client",
+                remote_status_before=None,
+                remote_status_after=None,
+                remote_response_reference=None,
+                now=now,
             )
 
         # ── Card: block checkout (record blocked timestamp) ────────────────────
@@ -11130,6 +11180,11 @@ class MiniAppContext:
         return {
             "ok": True,
             "status": "withdrawn",
+            "local_withdrawal_status": "withdrawn",
+            "remote_cancel_status": (
+                final_wr.get("remote_cancel_status") or final_wr.get("erip_cancel_status")
+            ),
+            "telegram_status": final_wr.get("telegram_update_status"),
             "erip_cancel_status": final_wr.get("erip_cancel_status"),
             "card_blocked": bool(final_wr.get("card_checkout_blocked_at")),
             "telegram_update_status": final_wr.get("telegram_update_status"),
@@ -11171,6 +11226,10 @@ class MiniAppContext:
                 "requested_by_name": wr.get("requested_by_name"),
                 "completed_at": wr.get("completed_at"),
                 "erip_cancel_status": wr.get("erip_cancel_status"),
+                "remote_cancel_status": wr.get("remote_cancel_status"),
+                "remote_cancel_method": wr.get("remote_cancel_method"),
+                "remote_cancel_error": wr.get("remote_cancel_error"),
+                "remote_status_after": wr.get("remote_status_after"),
                 "card_blocked": bool(wr.get("card_checkout_blocked_at")),
                 "card_checkout_blocked_at": wr.get("card_checkout_blocked_at"),
                 "telegram_update_status": wr.get("telegram_update_status"),

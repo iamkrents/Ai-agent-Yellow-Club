@@ -526,22 +526,86 @@ class BePaidClient:
         return candidate[:BEPAID_ACCOUNT_NUMBER_MAX_LEN]
 
     def void_erip_payment(self, transaction_uid: str) -> "BePaidResult":
-        """Attempt to void an ERIP payment by transaction UID.
+        """Cancel an unpaid ERIP payment by transaction UID.
 
-        The bePaid ERIP void API endpoint is not confirmed in the current integration.
-        Returns ok=False with error='unsupported' so the caller applies local blocking.
+        Sends DELETE https://api.bepaid.by/beyag/payments/{uid}.
+        BePaid marks the payment as 'deleted' without removing it from their system.
+        Payment must have 'pending' or 'permanent' status.
+
+        Reference: https://docs.bepaid.by/en/payment_methods/apms/erip/create_payment/
         """
         uid = str(transaction_uid or "").strip()
         if not uid:
             return BePaidResult(ok=False, http_status=0, error="missing_transaction_uid")
-        log.info(
-            "bepaid void_erip_payment uid=%s: unsupported in current integration", uid
+        url = f"{BEPAID_ERIP_ENDPOINT}/{uid}"
+        log.info("bepaid void_erip_payment uid=%s DELETE <BEPAID_ERIP_ENDPOINT>/{uid}", uid)
+        return self._delete(url)
+
+    def _delete(self, url: str) -> "BePaidResult":
+        try:
+            resp = requests.delete(
+                url,
+                auth=(self._shop_id, self._secret_key),
+                timeout=self._timeout,
+                headers={"Accept": "application/json"},
+            )
+            log.info("bePaid DELETE %s → HTTP %s", url, resp.status_code)
+            return self._parse_delete_response(resp)
+        except requests.Timeout:
+            log.warning("bePaid timeout url=<bepaid_erip_delete> timeout=%ss", self._timeout)
+            return BePaidResult(ok=False, http_status=0, error="timeout", requires_check=True)
+        except requests.ConnectionError as exc:
+            log.warning(
+                "bePaid connection_error url=<bepaid_erip_delete> type=%s", type(exc).__name__
+            )
+            return BePaidResult(
+                ok=False, http_status=0,
+                error=f"connection_error:{type(exc).__name__}", requires_check=True,
+            )
+        except requests.RequestException as exc:
+            log.warning(
+                "bePaid network error url=<bepaid_erip_delete> type=%s", type(exc).__name__
+            )
+            return BePaidResult(
+                ok=False, http_status=0, error=f"network_error:{type(exc).__name__}",
+            )
+
+    @staticmethod
+    def _parse_delete_response(resp: requests.Response) -> "BePaidResult":
+        try:
+            raw = resp.json()
+        except Exception:
+            raw = {}
+
+        if resp.status_code >= 500:
+            return BePaidResult(
+                ok=False, http_status=resp.status_code,
+                error=f"server_error:HTTP {resp.status_code}", requires_check=True,
+            )
+
+        if resp.status_code in (200, 204):
+            outer = raw if isinstance(raw, dict) else {}
+            tx = outer.get("transaction") or {}
+            if not isinstance(tx, dict):
+                tx = {}
+            return BePaidResult(ok=True, http_status=resp.status_code, data={
+                "status": str(tx.get("status") or "deleted"),
+                "uid": tx.get("uid"),
+            })
+
+        errors: Any = (
+            raw.get("errors") or raw.get("error") or raw.get("message")
+            if isinstance(raw, dict) else None
         )
-        return BePaidResult(
-            ok=False,
-            http_status=0,
-            error="unsupported:ERIP_void_not_confirmed_in_current_bepaid_integration",
-        )
+        if isinstance(errors, list):
+            msg = "; ".join(str(e)[:120] for e in errors[:3])
+        elif isinstance(errors, dict):
+            msg = "; ".join(f"{k}: {v}" for k, v in list(errors.items())[:3])
+        elif isinstance(errors, str):
+            msg = errors[:200]
+        else:
+            msg = f"HTTP {resp.status_code}"
+        return BePaidResult(ok=False, http_status=resp.status_code, error=msg)
 
     @staticmethod
     def erip_order_id(pi_row_id: int) -> str:

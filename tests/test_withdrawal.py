@@ -872,13 +872,20 @@ class TestVersion(unittest.TestCase):
             ).fetchall()}
         self.assertIn("payment_intent_withdrawals", tables)
 
-    def test_48_bepaid_void_erip_returns_unsupported(self):
-        """void_erip_payment returns ok=False with unsupported error."""
+    def test_48_bepaid_void_erip_calls_delete_api(self):
+        """void_erip_payment sends DELETE to bePaid API (v7.1.4)."""
         from bepaid_client import BePaidClient
+        import requests as req
         client = BePaidClient("shop_123", "secret_xyz")
-        result = client.void_erip_payment("tx_uid_test_01")
-        self.assertFalse(result.ok)
-        self.assertIn("unsupported", result.error.lower())
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.json.return_value = {"transaction": {"uid": "tx_uid_test_01", "status": "deleted"}}
+        with patch.object(req, "delete", return_value=fake_resp) as mock_del:
+            result = client.void_erip_payment("tx_uid_test_01")
+        self.assertTrue(result.ok, f"Expected ok=True for 200 DELETE: {result}")
+        mock_del.assert_called_once()
+        call_url = mock_del.call_args[0][0]
+        self.assertIn("tx_uid_test_01", call_url)
 
     def test_49_withdrawal_text_contains_icon(self):
         """Withdrawal text starts with ⚠️ icon."""
@@ -1505,6 +1512,361 @@ class TestHotfix98_3(unittest.TestCase):
             "Сотрудник #",
             js,
         )
+
+
+# ---------------------------------------------------------------------------
+# 15 — v7.1.4: reliable remote cancel via DELETE API
+# ---------------------------------------------------------------------------
+
+class TestRemoteCancelV714(unittest.TestCase):
+    """Tests 100-127: v7.1.4 remote cancel via BePaid DELETE API."""
+
+    def _ctx(self):
+        storage = _make_storage()
+        return _make_context(storage, _make_settings()), storage
+
+    def _ctx_with_erip_client(self, void_result):
+        """Return (ctx, storage) with a mock _bepaid_erip_client that returns void_result."""
+        from bepaid_client import BePaidResult
+        ctx, storage = self._ctx()
+        mock_client = MagicMock()
+        mock_client.void_erip_payment.return_value = void_result
+        ctx._bepaid_erip_client = lambda: mock_client
+        return ctx, storage, mock_client
+
+    def _seed_intent_with_uid(self, storage, public_id, bepaid_uid="tx_abc_123"):
+        _seed_intent(storage, public_id, status="awaiting_payment")
+        now = _now()
+        with storage._connect() as conn:
+            conn.execute(
+                "UPDATE payment_intents SET bepaid_uid=? WHERE public_id=?",
+                (bepaid_uid, public_id),
+            )
+
+    # ── BePaidClient unit tests ───────────────────────────────────────────────
+
+    def test_100_void_erip_calls_delete_api(self):
+        """void_erip_payment sends HTTP DELETE to bePaid API (v7.1.4)."""
+        from bepaid_client import BePaidClient
+        import requests as req
+        client = BePaidClient("shop_x", "secret_x")
+        fake = MagicMock()
+        fake.status_code = 200
+        fake.json.return_value = {"transaction": {"uid": "tx_100", "status": "deleted"}}
+        with patch.object(req, "delete", return_value=fake) as mock_del:
+            result = client.void_erip_payment("tx_100")
+        self.assertTrue(result.ok, f"200 DELETE must return ok=True: {result}")
+        mock_del.assert_called_once()
+        call_url = mock_del.call_args[0][0]
+        self.assertIn("tx_100", call_url)
+
+    def test_101_void_erip_success_returns_ok_true(self):
+        """DELETE 200 response → ok=True with data.status='deleted'."""
+        from bepaid_client import BePaidClient
+        import requests as req
+        client = BePaidClient("shop_x", "secret_x")
+        fake = MagicMock()
+        fake.status_code = 200
+        fake.json.return_value = {"transaction": {"uid": "tx_101", "status": "deleted"}}
+        with patch.object(req, "delete", return_value=fake):
+            result = client.void_erip_payment("tx_101")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data.get("status"), "deleted")
+
+    def test_102_void_erip_204_returns_ok_true(self):
+        """DELETE 204 (no body) → ok=True."""
+        from bepaid_client import BePaidClient
+        import requests as req
+        client = BePaidClient("shop_x", "secret_x")
+        fake = MagicMock()
+        fake.status_code = 204
+        fake.json.side_effect = ValueError("no body")
+        with patch.object(req, "delete", return_value=fake):
+            result = client.void_erip_payment("tx_102")
+        self.assertTrue(result.ok, f"204 must be ok=True: {result}")
+
+    def test_103_void_erip_4xx_returns_ok_false(self):
+        """DELETE 422 → ok=False, requires_check=False."""
+        from bepaid_client import BePaidClient
+        import requests as req
+        client = BePaidClient("shop_x", "secret_x")
+        fake = MagicMock()
+        fake.status_code = 422
+        fake.json.return_value = {"errors": ["payment status is not pending"]}
+        with patch.object(req, "delete", return_value=fake):
+            result = client.void_erip_payment("tx_103")
+        self.assertFalse(result.ok)
+        self.assertFalse(result.requires_check)
+
+    def test_104_void_erip_5xx_requires_check(self):
+        """DELETE 500 → ok=False, requires_check=True."""
+        from bepaid_client import BePaidClient
+        import requests as req
+        client = BePaidClient("shop_x", "secret_x")
+        fake = MagicMock()
+        fake.status_code = 500
+        fake.json.return_value = {}
+        with patch.object(req, "delete", return_value=fake):
+            result = client.void_erip_payment("tx_104")
+        self.assertFalse(result.ok)
+        self.assertTrue(result.requires_check)
+
+    def test_105_void_erip_timeout_requires_check(self):
+        """Timeout → ok=False, requires_check=True."""
+        from bepaid_client import BePaidClient
+        import requests as req
+        client = BePaidClient("shop_x", "secret_x")
+        with patch.object(req, "delete", side_effect=req.exceptions.Timeout()):
+            result = client.void_erip_payment("tx_105")
+        self.assertFalse(result.ok)
+        self.assertTrue(result.requires_check)
+        self.assertIn("timeout", result.error)
+
+    def test_106_void_erip_connection_error_requires_check(self):
+        """ConnectionError → ok=False, requires_check=True."""
+        from bepaid_client import BePaidClient
+        import requests as req
+        client = BePaidClient("shop_x", "secret_x")
+        with patch.object(req, "delete", side_effect=req.exceptions.ConnectionError()):
+            result = client.void_erip_payment("tx_106")
+        self.assertFalse(result.ok)
+        self.assertTrue(result.requires_check)
+
+    def test_107_void_erip_missing_uid_no_api_call(self):
+        """Empty uid → ok=False without making any HTTP call."""
+        from bepaid_client import BePaidClient
+        import requests as req
+        client = BePaidClient("shop_x", "secret_x")
+        with patch.object(req, "delete") as mock_del:
+            result = client.void_erip_payment("")
+        self.assertFalse(result.ok)
+        mock_del.assert_not_called()
+
+    def test_108_parse_delete_response_200_with_body(self):
+        """_parse_delete_response: 200 with transaction body → ok=True, data has status."""
+        from bepaid_client import BePaidClient
+        fake = MagicMock()
+        fake.status_code = 200
+        fake.json.return_value = {"transaction": {"uid": "tx_108", "status": "deleted"}}
+        result = BePaidClient._parse_delete_response(fake)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data.get("status"), "deleted")
+        self.assertEqual(result.data.get("uid"), "tx_108")
+
+    def test_109_parse_delete_response_204_no_body(self):
+        """_parse_delete_response: 204, no body → ok=True, status defaults to 'deleted'."""
+        from bepaid_client import BePaidClient
+        fake = MagicMock()
+        fake.status_code = 204
+        fake.json.side_effect = ValueError("no body")
+        result = BePaidClient._parse_delete_response(fake)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data.get("status"), "deleted")
+
+    def test_110_parse_delete_response_404(self):
+        """_parse_delete_response: 404 → ok=False."""
+        from bepaid_client import BePaidClient
+        fake = MagicMock()
+        fake.status_code = 404
+        fake.json.return_value = {"errors": ["not found"]}
+        result = BePaidClient._parse_delete_response(fake)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.http_status, 404)
+
+    def test_111_parse_delete_response_5xx_requires_check(self):
+        """_parse_delete_response: 500 → ok=False, requires_check=True."""
+        from bepaid_client import BePaidClient
+        fake = MagicMock()
+        fake.status_code = 500
+        fake.json.return_value = {}
+        result = BePaidClient._parse_delete_response(fake)
+        self.assertFalse(result.ok)
+        self.assertTrue(result.requires_check)
+        self.assertIn("server_error", result.error)
+
+    # ── Integration: full withdrawal flow with mocked BePaid ─────────────────
+
+    def test_112_remote_cancel_success_stores_cancelled(self):
+        """Successful API DELETE → remote_cancel_status='cancelled' in DB."""
+        from bepaid_client import BePaidResult
+        ok_result = BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "tx_112"})
+        ctx, storage, _ = self._ctx_with_erip_client(ok_result)
+        self._seed_intent_with_uid(storage, "ycpi_rc_01", bepaid_uid="tx_112")
+        ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_rc_01", _WITHDRAW_BODY)
+        wr = storage.get_withdrawal_by_intent("ycpi_rc_01")
+        self.assertIsNotNone(wr)
+        self.assertEqual(wr.get("remote_cancel_status"), "cancelled")
+
+    def test_113_remote_cancel_failure_stores_failed(self):
+        """Failed API DELETE (4xx) → remote_cancel_status='failed' in DB."""
+        from bepaid_client import BePaidResult
+        fail_result = BePaidResult(ok=False, http_status=422, error="payment_not_pending")
+        ctx, storage, _ = self._ctx_with_erip_client(fail_result)
+        self._seed_intent_with_uid(storage, "ycpi_rc_02", bepaid_uid="tx_113")
+        ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_rc_02", _WITHDRAW_BODY)
+        wr = storage.get_withdrawal_by_intent("ycpi_rc_02")
+        self.assertIsNotNone(wr)
+        self.assertEqual(wr.get("remote_cancel_status"), "failed")
+
+    def test_114_remote_cancel_no_uid_stores_no_erip_uid(self):
+        """No bepaid_uid → remote_cancel_status='no_erip_uid'."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_rc_03", status="awaiting_payment")
+        ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_rc_03", _WITHDRAW_BODY)
+        wr = storage.get_withdrawal_by_intent("ycpi_rc_03")
+        self.assertIsNotNone(wr)
+        self.assertEqual(wr.get("remote_cancel_status"), "no_erip_uid")
+
+    def test_115_remote_cancel_method_api_delete_on_success(self):
+        """remote_cancel_method='api_delete' when uid present and API called."""
+        from bepaid_client import BePaidResult
+        ok_result = BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "tx_115"})
+        ctx, storage, _ = self._ctx_with_erip_client(ok_result)
+        self._seed_intent_with_uid(storage, "ycpi_rc_04", bepaid_uid="tx_115")
+        ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_rc_04", _WITHDRAW_BODY)
+        wr = storage.get_withdrawal_by_intent("ycpi_rc_04")
+        self.assertEqual(wr.get("remote_cancel_method"), "api_delete")
+
+    def test_116_remote_cancel_confirmed_at_set_on_success(self):
+        """remote_cancel_confirmed_at is set when DELETE succeeds."""
+        from bepaid_client import BePaidResult
+        ok_result = BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "tx_116"})
+        ctx, storage, _ = self._ctx_with_erip_client(ok_result)
+        self._seed_intent_with_uid(storage, "ycpi_rc_05", bepaid_uid="tx_116")
+        ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_rc_05", _WITHDRAW_BODY)
+        wr = storage.get_withdrawal_by_intent("ycpi_rc_05")
+        self.assertIsNotNone(wr.get("remote_cancel_confirmed_at"))
+
+    def test_117_remote_status_after_deleted_on_success(self):
+        """remote_status_after='deleted' when DELETE returns status='deleted'."""
+        from bepaid_client import BePaidResult
+        ok_result = BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "tx_117"})
+        ctx, storage, _ = self._ctx_with_erip_client(ok_result)
+        self._seed_intent_with_uid(storage, "ycpi_rc_06", bepaid_uid="tx_117")
+        ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_rc_06", _WITHDRAW_BODY)
+        wr = storage.get_withdrawal_by_intent("ycpi_rc_06")
+        self.assertEqual(wr.get("remote_status_after"), "deleted")
+
+    def test_118_remote_response_reference_set_on_success(self):
+        """remote_response_reference is set to uid from API response on success."""
+        from bepaid_client import BePaidResult
+        ok_result = BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "tx_118"})
+        ctx, storage, _ = self._ctx_with_erip_client(ok_result)
+        self._seed_intent_with_uid(storage, "ycpi_rc_07", bepaid_uid="tx_118")
+        ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_rc_07", _WITHDRAW_BODY)
+        wr = storage.get_withdrawal_by_intent("ycpi_rc_07")
+        self.assertEqual(wr.get("remote_response_reference"), "tx_118")
+
+    def test_119_remote_cancel_requires_check_on_timeout(self):
+        """Timeout from API → remote_cancel_status='requires_check'."""
+        from bepaid_client import BePaidResult
+        timeout_result = BePaidResult(ok=False, http_status=0, error="timeout", requires_check=True)
+        ctx, storage, _ = self._ctx_with_erip_client(timeout_result)
+        self._seed_intent_with_uid(storage, "ycpi_rc_08", bepaid_uid="tx_119")
+        ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_rc_08", _WITHDRAW_BODY)
+        wr = storage.get_withdrawal_by_intent("ycpi_rc_08")
+        self.assertEqual(wr.get("remote_cancel_status"), "requires_check")
+
+    # ── Response structure tests ──────────────────────────────────────────────
+
+    def test_120_response_has_local_withdrawal_status(self):
+        """withdraw_payment_intent response includes 'local_withdrawal_status' key."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_rc_09", status="awaiting_payment")
+        result = ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_rc_09", _WITHDRAW_BODY)
+        self.assertIn("local_withdrawal_status", result, f"Missing key: {list(result)}")
+
+    def test_121_local_withdrawal_status_is_withdrawn(self):
+        """local_withdrawal_status='withdrawn' after successful withdrawal."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_rc_10", status="awaiting_payment")
+        result = ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_rc_10", _WITHDRAW_BODY)
+        self.assertEqual(result.get("local_withdrawal_status"), "withdrawn")
+
+    def test_122_response_has_remote_cancel_status(self):
+        """withdraw_payment_intent response includes 'remote_cancel_status' key."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_rc_11", status="awaiting_payment")
+        result = ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_rc_11", _WITHDRAW_BODY)
+        self.assertIn("remote_cancel_status", result, f"Missing key: {list(result)}")
+
+    def test_123_response_has_telegram_status(self):
+        """withdraw_payment_intent response includes 'telegram_status' key."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_rc_12", status="awaiting_payment")
+        result = ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_rc_12", _WITHDRAW_BODY)
+        self.assertIn("telegram_status", result, f"Missing key: {list(result)}")
+
+    # ── get_intent_withdrawal_info ────────────────────────────────────────────
+
+    def test_124_withdrawal_info_includes_remote_cancel_status(self):
+        """get_intent_withdrawal_info withdrawal dict includes remote_cancel_status."""
+        ctx, storage = self._ctx()
+        _seed_intent(storage, "ycpi_rc_13", status="awaiting_payment")
+        ctx.withdraw_payment_intent(_WITHDRAW_AUTH, "ycpi_rc_13", _WITHDRAW_BODY)
+        info = ctx.get_intent_withdrawal_info(_WITHDRAW_AUTH, "ycpi_rc_13")
+        self.assertTrue(info.get("ok"), info)
+        wr = info.get("withdrawal", {})
+        self.assertIn("remote_cancel_status", wr)
+
+    # ── Storage method and DB columns ─────────────────────────────────────────
+
+    def test_125_remote_cancel_db_columns_exist(self):
+        """All 8 remote_cancel columns exist in payment_intent_withdrawals after migration."""
+        storage = _make_storage()
+        with storage._connect() as conn:
+            cols = {row[1] for row in conn.execute(
+                "PRAGMA table_info(payment_intent_withdrawals)"
+            ).fetchall()}
+        expected = {
+            "remote_cancel_status", "remote_cancel_method",
+            "remote_cancel_requested_at", "remote_cancel_confirmed_at",
+            "remote_cancel_error", "remote_status_before",
+            "remote_status_after", "remote_response_reference",
+        }
+        for col in expected:
+            self.assertIn(col, cols, f"Column '{col}' missing from payment_intent_withdrawals")
+
+    def test_126_storage_update_withdrawal_remote_cancel(self):
+        """update_withdrawal_remote_cancel saves all fields correctly."""
+        storage = _make_storage()
+        now = _now()
+        wr = storage.create_withdrawal_record(
+            public_id="ycpi_rc_14",
+            mk_invoice_id="inv_rc_14",
+            reason="test remote cancel method",
+            requested_by_telegram_id="9001",
+            requested_by_name="Test",
+            payment_status_at_request="awaiting_payment",
+            now=now,
+        )
+        storage.update_withdrawal_remote_cancel(
+            wr["id"],
+            remote_cancel_status="cancelled",
+            remote_cancel_method="api_delete",
+            remote_cancel_requested_at=now,
+            remote_cancel_confirmed_at=now,
+            remote_cancel_error=None,
+            remote_status_before="pending",
+            remote_status_after="deleted",
+            remote_response_reference="tx_rc_14",
+            now=now,
+        )
+        wr2 = storage.get_withdrawal_by_intent("ycpi_rc_14")
+        self.assertEqual(wr2.get("remote_cancel_status"), "cancelled")
+        self.assertEqual(wr2.get("remote_cancel_method"), "api_delete")
+        self.assertEqual(wr2.get("remote_status_after"), "deleted")
+        self.assertEqual(wr2.get("remote_response_reference"), "tx_rc_14")
+        self.assertIsNotNone(wr2.get("remote_cancel_confirmed_at"))
+
+    # ── Version and cache-bust ────────────────────────────────────────────────
+
+    def test_127_cache_bust_v714(self):
+        """index.html has v=7.1.4 and app.js has MiniApp version: v7.1.4."""
+        html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("v=7.1.4", html, "index.html cache-bust must be v=7.1.4")
+        self.assertIn("v7.1.4", js, "app.js version marker must contain v7.1.4")
 
 
 if __name__ == "__main__":

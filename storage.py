@@ -1375,6 +1375,24 @@ class Storage:
             "CREATE INDEX IF NOT EXISTS idx_piw_status "
             "ON payment_intent_withdrawals(status, created_at)"
         )
+        # v7.1.4 — additive: remote cancel tracking columns on payment_intent_withdrawals
+        for _rc_col in [
+            ("remote_cancel_status", "TEXT"),
+            ("remote_cancel_method", "TEXT"),
+            ("remote_cancel_requested_at", "TEXT"),
+            ("remote_cancel_confirmed_at", "TEXT"),
+            ("remote_cancel_error", "TEXT"),
+            ("remote_status_before", "TEXT"),
+            ("remote_status_after", "TEXT"),
+            ("remote_response_reference", "TEXT"),
+        ]:
+            try:
+                conn.execute(
+                    f"ALTER TABLE payment_intent_withdrawals ADD COLUMN {_rc_col[0]} {_rc_col[1]}"
+                )
+            except Exception:
+                pass
+
         # Idempotent startup repair: zero automation flags for any historically
         # withdrawn intents that were processed before v7.0.98.2.
         import datetime as _dt
@@ -8044,6 +8062,46 @@ class Storage:
                        erip_cancel_error=?, updated_at=?
                    WHERE id=?""",
                 (erip_cancel_status, erip_cancelled_at, erip_cancel_error, now, withdrawal_id),
+            )
+
+    def update_withdrawal_remote_cancel(
+        self,
+        withdrawal_id: int,
+        remote_cancel_status: str,
+        remote_cancel_method: "Optional[str]",
+        remote_cancel_requested_at: "Optional[str]",
+        remote_cancel_confirmed_at: "Optional[str]",
+        remote_cancel_error: "Optional[str]",
+        remote_status_before: "Optional[str]",
+        remote_status_after: "Optional[str]",
+        remote_response_reference: "Optional[str]",
+        now: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_intent_withdrawals
+                   SET remote_cancel_status=?,
+                       remote_cancel_method=?,
+                       remote_cancel_requested_at=?,
+                       remote_cancel_confirmed_at=?,
+                       remote_cancel_error=?,
+                       remote_status_before=?,
+                       remote_status_after=?,
+                       remote_response_reference=?,
+                       updated_at=?
+                   WHERE id=?""",
+                (
+                    remote_cancel_status,
+                    remote_cancel_method,
+                    remote_cancel_requested_at,
+                    remote_cancel_confirmed_at,
+                    remote_cancel_error,
+                    remote_status_before,
+                    remote_status_after,
+                    remote_response_reference,
+                    now,
+                    withdrawal_id,
+                ),
             )
 
     def update_withdrawal_card(

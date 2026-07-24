@@ -8305,3 +8305,5 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
 .pt-auto-sync-pilot_match { background: #d4edda; color: #155724; }
 .pt-auto-sync-pilot_no_match { background: var(--line); }
 .pt-auto-sync-disabled { background: var(--line); opacity: 0.7; }
+/* v7.1.4 — withdrawal remote cancel method note */
+.wd-remote-method { font-size: 10px; color: var(--muted); margin-left: 4px; }
