@@ -10524,7 +10524,7 @@ class MiniAppContext:
                 int(current_row["base_lessons_count"]) if current_row else DEFAULT_LESSONS_COUNT
             )
             try:
-                self.storage.upsert_payment_client_terms(
+                self.storage.upsert_payment_client_terms_moyklass(
                     mk_user_id=mk_user_id,
                     base_lessons_count=new_lessons,
                     base_price_minor=new_price_minor,
@@ -10533,23 +10533,20 @@ class MiniAppContext:
                     automation_enabled=bool(current_row.get("automation_enabled")) if current_row else False,
                     automation_paused_reason=current_row.get("automation_paused_reason") if current_row else None,
                     base_subscription_type_id=sub_type_id or None,
+                    terms_source="moyklass_subscription",
+                    source_subscription_id=sub_id or None,
+                    source_subscription_type_id=sub_type_id or None,
+                    source_synced_at=now,
+                    source_snapshot_json=snapshot_json,
+                    source_sync_status=state,
+                    source_ambiguity_reason=None,
                     actor_tg_id=None if is_internal else int(actor_auth.get("user_id", 0)),
                     actor_name="moyklass_sync" if is_internal else self._pricing_actor_name(actor_auth),
                     now_str=now,
+                    audit_reason="newer_moyklass_subscription",
                 )
             except Exception as exc:
                 return {"ok": False, "state": state, "error": str(exc)}
-            self.storage.update_payment_client_terms_source(
-                mk_user_id=mk_user_id,
-                terms_source="moyklass_subscription",
-                source_subscription_id=sub_id or None,
-                source_subscription_type_id=sub_type_id or None,
-                source_synced_at=now,
-                source_snapshot_json=snapshot_json,
-                source_sync_status=state,
-                source_ambiguity_reason=None,
-                now_str=now,
-            )
             return {
                 "ok": True,
                 "state": state,

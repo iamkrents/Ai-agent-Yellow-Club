@@ -8281,6 +8281,114 @@ class Storage:
             )
             return new_dict
 
+    def upsert_payment_client_terms_moyklass(
+        self,
+        mk_user_id: str,
+        base_lessons_count: int,
+        base_price_minor: int,
+        currency: str,
+        default_due_days: int,
+        automation_enabled: bool,
+        automation_paused_reason: Optional[str],
+        base_subscription_type_id: Optional[str],
+        terms_source: str,
+        source_subscription_id: Optional[str],
+        source_subscription_type_id: Optional[str],
+        source_synced_at: str,
+        source_snapshot_json: Optional[str],
+        source_sync_status: str,
+        source_ambiguity_reason: Optional[str],
+        actor_tg_id: Optional[int],
+        actor_name: Optional[str],
+        now_str: str,
+        audit_reason: str,
+    ) -> dict:
+        """Atomically write all payment terms fields (base + source) and one audit row."""
+        mk_user_id = str(mk_user_id)
+        base_lessons_count = int(base_lessons_count)
+        base_price_minor = int(base_price_minor)
+        default_due_days = int(default_due_days)
+        currency = str(currency or "BYN")
+
+        if base_lessons_count <= 0:
+            raise ValueError("base_lessons_count_must_be_positive")
+        if base_price_minor <= 0:
+            raise ValueError("base_price_minor_must_be_positive")
+        if not (1 <= default_due_days <= 90):
+            raise ValueError("default_due_days_out_of_range")
+        if currency != "BYN":
+            raise ValueError("currency_must_be_byn")
+
+        aenabled = 1 if automation_enabled else 0
+        actor_id = int(actor_tg_id) if actor_tg_id is not None else None
+
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM payment_client_terms WHERE mk_user_id=?",
+                (mk_user_id,),
+            ).fetchone()
+            old_dict = dict(existing) if existing else None
+
+            if existing is None:
+                conn.execute(
+                    """INSERT INTO payment_client_terms
+                       (mk_user_id, base_subscription_type_id, base_lessons_count,
+                        base_price_minor, currency, default_due_days,
+                        automation_enabled, automation_paused_reason,
+                        terms_source, source_subscription_id, source_subscription_type_id,
+                        source_synced_at, source_snapshot_json, source_sync_status,
+                        source_ambiguity_reason,
+                        created_at, updated_at, updated_by_tg_id, updated_by_name)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        mk_user_id, base_subscription_type_id, base_lessons_count,
+                        base_price_minor, currency, default_due_days,
+                        aenabled, automation_paused_reason,
+                        str(terms_source), source_subscription_id, source_subscription_type_id,
+                        source_synced_at, source_snapshot_json, str(source_sync_status),
+                        source_ambiguity_reason,
+                        now_str, now_str, actor_id, actor_name,
+                    ),
+                )
+                event_type = "terms_created"
+            else:
+                conn.execute(
+                    """UPDATE payment_client_terms SET
+                           base_subscription_type_id=?, base_lessons_count=?,
+                           base_price_minor=?, currency=?, default_due_days=?,
+                           automation_enabled=?, automation_paused_reason=?,
+                           terms_source=?, source_subscription_id=?,
+                           source_subscription_type_id=?, source_synced_at=?,
+                           source_snapshot_json=?, source_sync_status=?,
+                           source_ambiguity_reason=?,
+                           updated_at=?, updated_by_tg_id=?, updated_by_name=?
+                       WHERE mk_user_id=?""",
+                    (
+                        base_subscription_type_id, base_lessons_count,
+                        base_price_minor, currency, default_due_days,
+                        aenabled, automation_paused_reason,
+                        str(terms_source), source_subscription_id,
+                        source_subscription_type_id, source_synced_at,
+                        source_snapshot_json, str(source_sync_status),
+                        source_ambiguity_reason,
+                        now_str, actor_id, actor_name,
+                        mk_user_id,
+                    ),
+                )
+                event_type = "terms_updated"
+
+            new_row = conn.execute(
+                "SELECT * FROM payment_client_terms WHERE mk_user_id=?",
+                (mk_user_id,),
+            ).fetchone()
+            new_dict = dict(new_row)
+            self._append_pricing_audit_conn(
+                conn, mk_user_id, event_type, "terms",
+                str(new_dict.get("id")), old_dict, new_dict,
+                audit_reason, actor_id, actor_name, now_str,
+            )
+        return new_dict
+
     def update_payment_client_terms_source(
         self,
         mk_user_id: str,

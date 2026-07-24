@@ -38,7 +38,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 SERVER_PY = ROOT / "web_app_server.py"
 
-VERSION = "7.1.2"
+VERSION = "7.1.2.1"
 NOW = "2026-07-23T10:00:00"
 
 
@@ -828,6 +828,299 @@ class Test14V712Regression(unittest.TestCase):
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
         self.assertIn("v=7.1.2", html)
         self.assertIn("v7.1.2", js)
+
+
+# ---------------------------------------------------------------------------
+# 57-71 — v7.1.2.1: atomic audit correctness (new_source writes one complete row)
+# ---------------------------------------------------------------------------
+
+class Test15AuditAtomicity(unittest.TestCase):
+    """Verify that new_source sync writes base + source fields in one transaction
+    and the resulting audit captures the final state in new_value_json."""
+
+    def setUp(self):
+        self.st = _tmp_storage()
+        self.ctx = _make_ctx(self.st)
+
+    def _pre_set_mk_source(self, mk_user_id: str, sub_id: str, type_id: str,
+                            price_minor: int, snapshot: str | None = None) -> None:
+        _upsert_terms(self.st, mk_user_id, price_minor)
+        self.st.update_payment_client_terms_source(
+            mk_user_id=mk_user_id, terms_source="moyklass_subscription",
+            source_subscription_id=sub_id, source_subscription_type_id=type_id,
+            source_synced_at=NOW, source_snapshot_json=snapshot,
+            source_sync_status="new_source", source_ambiguity_reason=None, now_str=NOW,
+        )
+
+    def _terms_updated_audits(self, mk_user_id: str) -> list:
+        return [a for a in self.st.list_payment_pricing_audit(mk_user_id)
+                if a["event_type"] == "terms_updated"]
+
+    # --- test 57: manual → moyklass ---
+
+    def test_57_manual_to_moyklass_audit_sources_correct(self):
+        """After manual→moyklass sync: old_value has terms_source=manual,
+        new_value has terms_source=moyklass_subscription with correct sub ID."""
+        _upsert_terms(self.st, "u1", 23900)
+        self.st.update_payment_client_terms_source(
+            mk_user_id="u1", terms_source="manual",
+            source_subscription_id=None, source_subscription_type_id=None,
+            source_synced_at=NOW, source_snapshot_json=None,
+            source_sync_status="unchanged", source_ambiguity_reason=None, now_str=NOW,
+        )
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok(
+            [_mk_sub(sub_id=5001, price=200.0, subscription_id=99)]
+        )
+        self.ctx.payment_client_terms_sync(_auth(), "u1", {})
+        audits = self._terms_updated_audits("u1")
+        self.assertEqual(len(audits), 1)
+        import json as _json
+        old_val = _json.loads(audits[0]["old_value_json"])
+        new_val = _json.loads(audits[0]["new_value_json"])
+        self.assertEqual(old_val.get("terms_source"), "manual")
+        self.assertEqual(new_val.get("terms_source"), "moyklass_subscription")
+        self.assertEqual(new_val.get("source_subscription_id"), "5001")
+
+    # --- test 58: mk old sub → mk newer sub ---
+
+    def test_58_old_mk_sub_to_newer_mk_sub_audit_ids_correct(self):
+        """Audit must capture old sub ID in old_value and new sub ID in new_value."""
+        self._pre_set_mk_source("u1", sub_id="18024837", type_id="265878",
+                                 price_minor=100,
+                                 snapshot='{"id": 18024837, "subscriptionId": 265878}')
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok([
+            _mk_sub(sub_id=18074747, price=57.25, subscription_id=245319,
+                    sell_date="2026-07-24", visit_count=1),
+            _mk_sub(sub_id=18024837, price=1.0, subscription_id=265878,
+                    sell_date="2026-07-01", visit_count=1),
+        ])
+        self.ctx.payment_client_terms_sync(_auth(), "u1", {})
+        audits = self._terms_updated_audits("u1")
+        self.assertEqual(len(audits), 1)
+        import json as _json
+        old_val = _json.loads(audits[0]["old_value_json"])
+        new_val = _json.loads(audits[0]["new_value_json"])
+        self.assertEqual(old_val.get("source_subscription_id"), "18024837")
+        self.assertEqual(old_val.get("source_subscription_type_id"), "265878")
+        self.assertEqual(new_val.get("source_subscription_id"), "18074747")
+        self.assertEqual(new_val.get("source_subscription_type_id"), "245319")
+        self.assertIsNotNone(new_val.get("source_synced_at"))
+
+    # --- test 59: production scenario ---
+
+    def test_59_production_example_new_value_has_new_sub_id(self):
+        """Production: client 9748998 old sub 18024837 (100 minor) →
+        new sub 18074747 (5725 minor). new_value must NOT contain old sub ID."""
+        self._pre_set_mk_source("u1", sub_id="18024837", type_id="265878",
+                                 price_minor=100)
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok([
+            _mk_sub(sub_id=18074747, price=57.25, subscription_id=245319,
+                    sell_date="2026-07-24", visit_count=1),
+            _mk_sub(sub_id=18024837, price=1.0, subscription_id=265878,
+                    sell_date="2026-07-01", visit_count=1),
+        ])
+        r = self.ctx.payment_client_terms_sync(_auth(), "u1", {})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["state"], "new_source")
+        audits = self._terms_updated_audits("u1")
+        self.assertEqual(len(audits), 1)
+        import json as _json
+        new_val = _json.loads(audits[0]["new_value_json"])
+        self.assertEqual(new_val.get("source_subscription_id"), "18074747")
+        self.assertNotEqual(new_val.get("source_subscription_id"), "18024837")
+        self.assertEqual(new_val.get("base_price_minor"), 5725)
+
+    # --- test 60: new_value_json completeness ---
+
+    def test_60_new_value_json_has_all_required_source_fields(self):
+        """new_value_json in audit must contain the final state of ALL source fields."""
+        _upsert_terms(self.st, "u1", 23900)
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok(
+            [_mk_sub(sub_id=9999, price=199.0, subscription_id=111)]
+        )
+        self.ctx.payment_client_terms_sync(_auth(), "u1", {})
+        audits = self._terms_updated_audits("u1")
+        self.assertEqual(len(audits), 1)
+        import json as _json
+        new_val = _json.loads(audits[0]["new_value_json"])
+        self.assertEqual(new_val.get("terms_source"), "moyklass_subscription")
+        self.assertEqual(new_val.get("source_subscription_id"), "9999")
+        self.assertEqual(new_val.get("source_subscription_type_id"), "111")
+        self.assertIsNotNone(new_val.get("source_snapshot_json"))
+        self.assertEqual(new_val.get("source_sync_status"), "new_source")
+        self.assertIsNone(new_val.get("source_ambiguity_reason"))
+
+    # --- test 61: exactly one audit per new_source ---
+
+    def test_61_exactly_one_terms_updated_audit_per_new_source(self):
+        """new_source sync must create exactly one terms_updated audit — not two."""
+        _upsert_terms(self.st, "u1", 23900)
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok(
+            [_mk_sub(sub_id=1234, price=200.0)]
+        )
+        self.ctx.payment_client_terms_sync(_auth(), "u1", {})
+        audits = self._terms_updated_audits("u1")
+        self.assertEqual(len(audits), 1, "Expected exactly 1 terms_updated audit, not 2")
+
+    # --- test 62: ambiguous creates no terms_updated audit ---
+
+    def test_62_ambiguous_state_creates_no_terms_updated_audit(self):
+        """Genuine tie (ambiguous) must not create terms_updated audit."""
+        _upsert_terms(self.st, "u1", 23900)
+        subs = [
+            _mk_sub(sub_id=100, price=229.0, sell_date="2026-07-01"),
+            _mk_sub(sub_id=100, price=200.0, sell_date="2026-07-01"),
+        ]
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok(subs)
+        before = len(self._terms_updated_audits("u1"))
+        r = self.ctx.payment_client_terms_sync(_auth(), "u1", {})
+        self.assertEqual(r["state"], "ambiguous")
+        after = len(self._terms_updated_audits("u1"))
+        self.assertEqual(before, after)
+
+    # --- test 63: rollback on audit failure ---
+
+    def test_63_rollback_on_audit_failure_leaves_terms_unchanged(self):
+        """If audit INSERT fails, the entire transaction rolls back.
+        Terms must stay at old values and no audit must be created."""
+        _upsert_terms(self.st, "u1", 23900)
+        original_audit = self.st._append_pricing_audit_conn
+
+        def _fail_audit(*args, **kwargs):
+            raise RuntimeError("simulated_audit_failure")
+
+        self.st._append_pricing_audit_conn = _fail_audit
+        try:
+            with self.assertRaises(RuntimeError):
+                self.st.upsert_payment_client_terms_moyklass(
+                    mk_user_id="u1",
+                    base_lessons_count=4,
+                    base_price_minor=99900,
+                    currency="BYN",
+                    default_due_days=17,
+                    automation_enabled=False,
+                    automation_paused_reason=None,
+                    base_subscription_type_id="777",
+                    terms_source="moyklass_subscription",
+                    source_subscription_id="9999",
+                    source_subscription_type_id="777",
+                    source_synced_at=NOW,
+                    source_snapshot_json='{"id": 9999}',
+                    source_sync_status="new_source",
+                    source_ambiguity_reason=None,
+                    actor_tg_id=555,
+                    actor_name="Test Admin",
+                    now_str=NOW,
+                    audit_reason="newer_moyklass_subscription",
+                )
+        finally:
+            self.st._append_pricing_audit_conn = original_audit
+
+        row = self.st.get_payment_client_terms("u1")
+        self.assertEqual(row["base_price_minor"], 23900,
+                         "Terms must be unchanged after rollback")
+        self.assertEqual(len(self._terms_updated_audits("u1")), 0,
+                         "No terms_updated audit must exist after rollback")
+
+    # --- test 64: manual save unaffected ---
+
+    def test_64_manual_upsert_still_creates_correct_audit(self):
+        """Existing upsert_payment_client_terms (used by manual save) must still work."""
+        _upsert_terms(self.st, "u1", 23900)
+        self.st.upsert_payment_client_terms(
+            mk_user_id="u1",
+            base_lessons_count=8,
+            base_price_minor=19900,
+            currency="BYN",
+            default_due_days=17,
+            automation_enabled=False,
+            automation_paused_reason=None,
+            base_subscription_type_id="manual_type",
+            actor_tg_id=555,
+            actor_name="Test Admin",
+            now_str=NOW,
+        )
+        row = self.st.get_payment_client_terms("u1")
+        self.assertEqual(row["base_price_minor"], 19900)
+        self.assertEqual(row["base_lessons_count"], 8)
+        audits = self._terms_updated_audits("u1")
+        self.assertEqual(len(audits), 1)
+
+    # --- test 65: audit reason field ---
+
+    def test_65_audit_reason_is_newer_moyklass_subscription(self):
+        """terms_updated audit reason must be 'newer_moyklass_subscription'."""
+        _upsert_terms(self.st, "u1", 23900)
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok(
+            [_mk_sub(sub_id=8888, price=199.0)]
+        )
+        self.ctx.payment_client_terms_sync(_auth(), "u1", {})
+        audits = self._terms_updated_audits("u1")
+        self.assertEqual(len(audits), 1)
+        self.assertEqual(audits[0]["reason"], "newer_moyklass_subscription")
+
+    # --- test 66: storage has atomic method ---
+
+    def test_66_storage_has_upsert_payment_client_terms_moyklass(self):
+        import storage as _st_mod
+        self.assertTrue(
+            hasattr(_st_mod.Storage, "upsert_payment_client_terms_moyklass"),
+            "Storage must expose upsert_payment_client_terms_moyklass",
+        )
+
+    # --- test 67: server uses atomic method ---
+
+    def test_67_server_uses_atomic_moyklass_upsert_not_two_calls(self):
+        """_sync_payment_terms_from_moyklass must call the atomic method,
+        not upsert_payment_client_terms + update_payment_client_terms_source."""
+        src = SERVER_PY.read_text(encoding="utf-8")
+        idx = src.find("def _sync_payment_terms_from_moyklass(")
+        next_def = src.find("\n    def ", idx + 1)
+        method = src[idx:next_def]
+        self.assertIn("upsert_payment_client_terms_moyklass", method)
+
+
+class Test16V7121Static(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.js = APP_JS.read_text(encoding="utf-8")
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+        cls.server = SERVER_PY.read_text(encoding="utf-8")
+
+    # --- test 68: BePaid not called in sync ---
+
+    def test_68_bepaid_not_called_in_moyklass_sync(self):
+        idx = self.server.find("def _sync_payment_terms_from_moyklass(")
+        next_def = self.server.find("\n    def ", idx + 1)
+        method = self.server[idx:next_def]
+        self.assertNotIn("bepaid", method.lower())
+        self.assertNotIn("create_payment_intent", method.lower())
+
+    # --- test 69: MK write not called ---
+
+    def test_69_moyklass_write_not_called_in_sync(self):
+        idx = self.server.find("def _sync_payment_terms_from_moyklass(")
+        next_def = self.server.find("\n    def ", idx + 1)
+        method = self.server[idx:next_def]
+        for write_fn in ("create_invoice", "update_invoice", "delete_invoice",
+                         "create_subscription", "update_subscription"):
+            self.assertNotIn(write_fn, method,
+                             f"Sync method must not call MK write API: {write_fn}")
+
+    # --- test 70: cache-bust v7.1.2.1 ---
+
+    def test_70_cache_bust_v7121(self):
+        """Cache-bust strings must be v7.1.2.1 in index.html and app.js."""
+        self.assertIn("v=7.1.2.1", self.html,
+                      "index.html cache-bust must be v=7.1.2.1")
+        self.assertIn("v7.1.2.1", self.js,
+                      "app.js version marker must contain v7.1.2.1")
+
+    # --- test 71: auto flag source stays False ---
+
+    def test_71_auto_flag_default_false_in_config_source(self):
+        cfg = (ROOT / "config.py").read_text(encoding="utf-8")
+        self.assertIn("payment_mk_subscription_terms_sync_enabled: bool = False", cfg)
 
 
 if __name__ == "__main__":
