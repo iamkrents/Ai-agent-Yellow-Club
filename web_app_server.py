@@ -10477,26 +10477,56 @@ class MiniAppContext:
         if not subs_result.ok:
             return {
                 "ok": False,
-                "state": "not_found",
+                "state": "api_error",
                 "error": "Не удалось получить данные из МойКласс",
             }
         subscriptions = extract_items(subs_result.data) if subs_result.ok else []
         current_row = self.storage.get_payment_client_terms(mk_user_id)
         current_price_minor = int(current_row["base_price_minor"]) if current_row else None
-        selection = select_moyklass_subscription_for_terms(subscriptions, current_price_minor)
+        current_lessons_count = int(current_row["base_lessons_count"]) if current_row else None
+        current_source_sub_id = str(current_row.get("source_subscription_id") or "") if current_row else None
+        selection = select_moyklass_subscription_for_terms(
+            subscriptions,
+            current_price_minor=current_price_minor,
+            current_lessons_count=current_lessons_count,
+            current_source_sub_id=current_source_sub_id or None,
+        )
         state = selection["state"]
         sub = selection.get("subscription")
         new_price_minor = selection.get("price_minor")
-        snapshot_json = _json.dumps(sub, ensure_ascii=False)[:2000] if sub else None
+        new_lessons_count = selection.get("lessons_count")
+        candidates_count = selection.get("candidates_count", 0)
+        selection_field = selection.get("selection_field")
+
         sub_id = str(sub.get("id") or sub.get("userSubscriptionId") or "") if sub else ""
         sub_type_id = str(sub.get("subscriptionId") or "") if sub else ""
         is_internal = actor_auth.get("_internal") is True
 
+        # Build safe snapshot for storage (no secrets)
+        snapshot_data: dict[str, Any] = {}
+        if sub:
+            snapshot_data = {
+                "id": sub.get("id"),
+                "subscriptionId": sub.get("subscriptionId"),
+                "statusId": sub.get("statusId"),
+                "price": sub.get("price"),
+                "visitCount": sub.get("visitCount"),
+                "sellDate": sub.get("sellDate"),
+                "beginDate": sub.get("beginDate"),
+                "endDate": sub.get("endDate"),
+                "_selection_field": selection_field,
+                "_candidates_count": candidates_count,
+            }
+        snapshot_json = _json.dumps(snapshot_data, ensure_ascii=False)[:2000] if snapshot_data else None
+
         if state == "new_source":
+            new_lessons = new_lessons_count if new_lessons_count is not None else (
+                int(current_row["base_lessons_count"]) if current_row else DEFAULT_LESSONS_COUNT
+            )
             try:
-                new_row = self.storage.upsert_payment_client_terms(
+                self.storage.upsert_payment_client_terms(
                     mk_user_id=mk_user_id,
-                    base_lessons_count=int(current_row["base_lessons_count"]) if current_row else DEFAULT_LESSONS_COUNT,
+                    base_lessons_count=new_lessons,
                     base_price_minor=new_price_minor,
                     currency="BYN",
                     default_due_days=int(current_row["default_due_days"]) if current_row else DEFAULT_DUE_DAYS,
@@ -10525,14 +10555,22 @@ class MiniAppContext:
                 "state": state,
                 "old_price_minor": current_price_minor,
                 "new_price_minor": new_price_minor,
+                "old_lessons_count": current_lessons_count,
+                "new_lessons_count": new_lessons,
                 "source_subscription_id": sub_id or None,
+                "candidates_count": candidates_count,
+                "selection_field": selection_field,
                 "mk_user_id": mk_user_id,
             }
 
+        # For non-updating states: update diagnostic source fields only (no price/lessons change)
         if current_row:
+            src = current_row.get("terms_source") or "manual"
+            if state == "unchanged":
+                src = "moyklass_subscription"
             self.storage.update_payment_client_terms_source(
                 mk_user_id=mk_user_id,
-                terms_source=current_row.get("terms_source") or "manual",
+                terms_source=src,
                 source_subscription_id=sub_id or None,
                 source_subscription_type_id=sub_type_id or None,
                 source_synced_at=now,
@@ -10547,6 +10585,8 @@ class MiniAppContext:
             "state": state,
             "old_price_minor": current_price_minor,
             "new_price_minor": new_price_minor,
+            "candidates_count": candidates_count,
+            "selection_field": selection_field,
             "reason": selection.get("reason"),
             "mk_user_id": mk_user_id,
         }

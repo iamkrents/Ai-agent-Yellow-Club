@@ -499,7 +499,7 @@ def resolve_next_subscription_price(
 
 
 # ---------------------------------------------------------------------------
-# v7.1.1 — MoyKlass subscription selection for payment terms sync
+# v7.1.2 — MoyKlass subscription selection for payment terms sync
 # ---------------------------------------------------------------------------
 
 MK_SUBSCRIPTION_ACTIVE_STATUS_ID = "2"
@@ -517,17 +517,64 @@ def _mk_sub_price(sub: dict) -> Optional[object]:
     return None
 
 
+def _mk_sub_visit_count(sub: dict) -> Optional[int]:
+    for key in ("visitCount", "visitsCount", "count"):
+        v = sub.get(key)
+        if v is not None:
+            try:
+                return int(float(str(v)))
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def _mk_sub_validate_price(sub: dict) -> tuple:
+    """Returns (price_minor_int, None) or (None, error_reason_str)."""
+    raw_price = _mk_sub_price(sub)
+    if raw_price is None:
+        return None, "price_missing"
+    try:
+        price_byn = float(str(raw_price).replace(",", "."))
+    except (TypeError, ValueError):
+        return None, "price_not_numeric"
+    if price_byn <= 0:
+        return None, "price_not_positive"
+    return round(price_byn * 100), None
+
+
+def _mk_sub_sort_key(sub: dict) -> tuple:
+    """Sort key (higher = newer): (sellDate, numeric_id).
+
+    sellDate is the MoyKlass sale/creation date (YYYY-MM-DD).
+    id is the numeric userSubscription id — monotonically increasing.
+    Both are real fields in /v1/company/userSubscriptions responses.
+    """
+    sell = str(sub.get("sellDate") or "").strip()[:10]
+    try:
+        sub_id = int(sub.get("id") or 0)
+    except (TypeError, ValueError):
+        sub_id = 0
+    return (sell, sub_id)
+
+
 def select_moyklass_subscription_for_terms(
     subscriptions: list,
     current_price_minor: Optional[int] = None,
+    current_lessons_count: Optional[int] = None,
+    current_source_sub_id: Optional[str] = None,
 ) -> dict:
-    """Select the best MoyKlass subscription to use as payment terms source.
+    """Select the latest MoyKlass subscription to use as payment terms source.
 
-    Returns a dict:
+    Algorithm (v7.1.2):
+      1. Filter to active (statusId=2) with valid price (>0) and visitCount (>0).
+      2. Sort by (sellDate DESC, numeric id DESC) — higher = newer.
+      3. Top candidate wins. Genuine tie (same sellDate AND same id) → ambiguous.
+      4. Multiple active subs do NOT automatically mean ambiguous.
+
+    Returns:
       state: 'unchanged' | 'new_source' | 'ambiguous' | 'not_found' | 'invalid'
-      subscription: selected subscription dict or None
-      price_minor: resolved price in minor units or None
-      reason: detail string for ambiguous/invalid/not_found or None
+      subscription, price_minor, lessons_count, reason,
+      candidates_count, selection_field
     """
     active = [
         s for s in (subscriptions or [])
@@ -540,59 +587,66 @@ def select_moyklass_subscription_for_terms(
             "state": "not_found",
             "subscription": None,
             "price_minor": None,
+            "lessons_count": None,
             "reason": "no_active_subscriptions",
+            "candidates_count": 0,
+            "selection_field": None,
         }
 
-    if len(active) > 1:
-        return {
-            "state": "ambiguous",
-            "subscription": None,
-            "price_minor": None,
-            "reason": f"{len(active)}_active_subscriptions",
-        }
+    candidates = []
+    for s in active:
+        pm, _err = _mk_sub_validate_price(s)
+        if pm is None:
+            continue
+        vc = _mk_sub_visit_count(s)
+        if vc is None or vc <= 0:
+            continue
+        candidates.append((s, pm, vc))
 
-    sub = active[0]
-    raw_price = _mk_sub_price(sub)
-
-    if raw_price is None:
-        return {
-            "state": "invalid",
-            "subscription": sub,
-            "price_minor": None,
-            "reason": "price_missing",
-        }
-
-    try:
-        price_byn = float(str(raw_price).replace(",", "."))
-    except (TypeError, ValueError):
+    if not candidates:
         return {
             "state": "invalid",
-            "subscription": sub,
+            "subscription": active[0],
             "price_minor": None,
-            "reason": "price_not_numeric",
+            "lessons_count": None,
+            "reason": "no_valid_candidates",
+            "candidates_count": 0,
+            "selection_field": None,
         }
 
-    if price_byn <= 0:
-        return {
-            "state": "invalid",
-            "subscription": sub,
-            "price_minor": None,
-            "reason": "price_not_positive",
-        }
+    candidates.sort(key=lambda t: _mk_sub_sort_key(t[0]), reverse=True)
 
-    price_minor = round(price_byn * 100)
+    if len(candidates) >= 2:
+        top_key = _mk_sub_sort_key(candidates[0][0])
+        second_key = _mk_sub_sort_key(candidates[1][0])
+        if top_key == second_key:
+            return {
+                "state": "ambiguous",
+                "subscription": None,
+                "price_minor": None,
+                "lessons_count": None,
+                "reason": f"tie_{len(candidates)}_candidates",
+                "candidates_count": len(candidates),
+                "selection_field": "tie",
+            }
 
-    if current_price_minor is not None and price_minor == current_price_minor:
-        return {
-            "state": "unchanged",
-            "subscription": sub,
-            "price_minor": price_minor,
-            "reason": None,
-        }
+    sub, price_minor, lessons_count = candidates[0]
+    sell = str(sub.get("sellDate") or "").strip()[:10]
+    selection_field = "sellDate" if sell else "id"
+    sub_id = str(sub.get("id") or "").strip()
+
+    same_sub = bool(current_source_sub_id and sub_id and str(current_source_sub_id) == sub_id)
+    same_price = (current_price_minor is not None) and (price_minor == current_price_minor)
+    same_lessons = (current_lessons_count is not None) and (lessons_count == current_lessons_count)
+
+    state = "unchanged" if (same_sub and same_price and same_lessons) else "new_source"
 
     return {
-        "state": "new_source",
+        "state": state,
         "subscription": sub,
         "price_minor": price_minor,
+        "lessons_count": lessons_count,
         "reason": None,
+        "candidates_count": len(candidates),
+        "selection_field": selection_field,
     }

@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.1.1");
+console.log("MiniApp version: v7.1.2");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -6781,7 +6781,7 @@ function wirePaymentTermsHandlers(mkUserId, body) {
   if (syncBtn) syncBtn.addEventListener("click", async () => {
     if (syncBtn.disabled) return;
     syncBtn.disabled = true;
-    syncBtn.textContent = "Синхронизация...";
+    syncBtn.textContent = "Обновление...";
     const syncNotice = body.querySelector("#ptSyncNotice");
     try {
       const res = await apiPost(`/api/payments/clients/${uid}/terms/sync`, {});
@@ -6791,15 +6791,23 @@ function wirePaymentTermsHandlers(mkUserId, body) {
         const newNotice = body.querySelector("#ptSyncNotice");
         if (newNotice) {
           const stateMap = {
-            new_source: "✓ Условия обновлены из МойКласс",
-            unchanged: "✓ Условия уже актуальны",
-            ambiguous: "Найдено несколько подходящих абонементов. Требуется проверка",
+            new_source: "✓ Условия обновлены по последнему абонементу МойКласс",
+            unchanged: "✓ Используется актуальный последний абонемент МойКласс",
+            ambiguous: "Не удалось определить самый новый абонемент. Требуется проверка",
             not_found: "Подходящий абонемент в МойКласс не найден",
-            invalid: "Данные абонемента МойКласс некорректны",
+            invalid: "Данные последнего абонемента МойКласс некорректны",
+            api_error: "Не удалось получить абонементы из МойКласс",
             sync_disabled: "Синхронизация из МойКласс недоступна",
           };
-          newNotice.textContent = stateMap[res && res.state] || "Синхронизация выполнена";
-          newNotice.className = "pt-save-notice " + (res && res.state === "new_source" ? "pt-save-notice--ok" : "pt-save-notice--err");
+          const subId = res && res.source_subscription_id;
+          const count = res && res.candidates_count;
+          const countSuffix = count && count > 1 ? ` (выбран из ${count})` : "";
+          const subSuffix = subId ? ` · #${escapeHtml(String(subId))}` : "";
+          const state = res && res.state;
+          const baseText = stateMap[state] || "Синхронизация выполнена";
+          newNotice.textContent = baseText + subSuffix + countSuffix;
+          const isOk = state === "new_source" || state === "unchanged";
+          newNotice.className = "pt-save-notice " + (isOk ? "pt-save-notice--ok" : "pt-save-notice--err");
         }
       } else {
         syncBtn.disabled = false;

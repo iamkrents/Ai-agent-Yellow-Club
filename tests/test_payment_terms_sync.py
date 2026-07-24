@@ -38,7 +38,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 SERVER_PY = ROOT / "web_app_server.py"
 
-VERSION = "7.1.1.1"
+VERSION = "7.1.2"
 NOW = "2026-07-23T10:00:00"
 
 
@@ -64,15 +64,17 @@ def _auth(uid: int = 555):
 
 
 def _mk_sub(sub_id: int = 1001, status_id: str = "2", price: float = 239.0,
-            subscription_id: int = 50) -> dict:
+            subscription_id: int = 50, sell_date: str = "2026-07-01",
+            visit_count: int = 4) -> dict:
     return {
         "id": sub_id,
         "statusId": status_id,
         "price": price,
         "subscriptionId": subscription_id,
+        "sellDate": sell_date,
         "beginDate": "2026-07-01",
         "endDate": "2026-07-31",
-        "visitCount": 4,
+        "visitCount": visit_count,
         "visitedCount": 0,
     }
 
@@ -108,7 +110,7 @@ def _upsert_terms(st: Storage, mk_user_id: str, price_minor: int = 23900) -> dic
 
 
 # ---------------------------------------------------------------------------
-# 01-08 — Domain: select_moyklass_subscription_for_terms
+# 01-16 — Domain: select_moyklass_subscription_for_terms (v7.1.2 algorithm)
 # ---------------------------------------------------------------------------
 
 class Test01DomainNotFound(unittest.TestCase):
@@ -118,51 +120,187 @@ class Test01DomainNotFound(unittest.TestCase):
         self.assertIsNone(r["subscription"])
 
     def test_02_no_active_subscriptions_returns_not_found(self):
-        subs = [
-            _mk_sub(status_id="1"),  # inactive
-            _mk_sub(status_id="4"),  # ended
-        ]
+        subs = [_mk_sub(status_id="1"), _mk_sub(status_id="4")]
         r = select_moyklass_subscription_for_terms(subs)
         self.assertEqual(r["state"], "not_found")
 
+    def test_03_single_active_sub_selected(self):
+        r = select_moyklass_subscription_for_terms([_mk_sub(sub_id=100, price=199.0)])
+        self.assertIn(r["state"], ("new_source", "unchanged"))
+        self.assertIsNotNone(r["subscription"])
+        self.assertEqual(r["price_minor"], 19900)
 
-class Test02DomainAmbiguous(unittest.TestCase):
-    def test_03_two_active_returns_ambiguous(self):
-        subs = [_mk_sub(sub_id=1, price=239.0), _mk_sub(sub_id=2, price=200.0)]
+
+class Test02DomainMultipleActive(unittest.TestCase):
+    def test_04_two_active_newer_by_sell_date_wins(self):
+        subs = [
+            _mk_sub(sub_id=100, price=229.0, sell_date="2026-06-01"),
+            _mk_sub(sub_id=200, price=199.0, sell_date="2026-07-01"),
+        ]
+        r = select_moyklass_subscription_for_terms(subs)
+        self.assertIn(r["state"], ("new_source", "unchanged"))
+        self.assertEqual(r["price_minor"], 19900)
+        self.assertEqual(r["subscription"]["id"], 200)
+
+    def test_05_three_active_newest_wins_not_ambiguous(self):
+        subs = [
+            _mk_sub(sub_id=100, price=229.0, sell_date="2026-05-01"),
+            _mk_sub(sub_id=200, price=209.0, sell_date="2026-06-01"),
+            _mk_sub(sub_id=300, price=199.0, sell_date="2026-07-01"),
+        ]
+        r = select_moyklass_subscription_for_terms(subs)
+        self.assertNotEqual(r["state"], "ambiguous")
+        self.assertEqual(r["subscription"]["id"], 300)
+        self.assertEqual(r["price_minor"], 19900)
+        self.assertEqual(r["candidates_count"], 3)
+
+    def test_06_newer_lower_price_sub_wins(self):
+        subs = [
+            _mk_sub(sub_id=100, price=229.0, sell_date="2026-06-01"),
+            _mk_sub(sub_id=200, price=199.0, sell_date="2026-07-01"),
+        ]
+        r = select_moyklass_subscription_for_terms(subs)
+        self.assertEqual(r["price_minor"], 19900)
+
+    def test_07_newer_higher_price_sub_wins(self):
+        subs = [
+            _mk_sub(sub_id=100, price=199.0, sell_date="2026-06-01"),
+            _mk_sub(sub_id=200, price=239.0, sell_date="2026-07-01"),
+        ]
+        r = select_moyklass_subscription_for_terms(subs)
+        self.assertEqual(r["price_minor"], 23900)
+
+    def test_08_same_sell_date_higher_id_wins(self):
+        subs = [
+            _mk_sub(sub_id=100, price=229.0, sell_date="2026-07-01"),
+            _mk_sub(sub_id=200, price=199.0, sell_date="2026-07-01"),
+        ]
+        r = select_moyklass_subscription_for_terms(subs)
+        self.assertNotEqual(r["state"], "ambiguous")
+        self.assertEqual(r["subscription"]["id"], 200)
+
+    def test_09_same_sell_date_same_id_is_ambiguous(self):
+        subs = [
+            _mk_sub(sub_id=100, price=229.0, sell_date="2026-07-01"),
+            _mk_sub(sub_id=100, price=199.0, sell_date="2026-07-01"),
+        ]
         r = select_moyklass_subscription_for_terms(subs)
         self.assertEqual(r["state"], "ambiguous")
         self.assertIsNone(r["subscription"])
-        self.assertIn("2", r.get("reason", ""))
+
+    def test_10_input_order_does_not_affect_result(self):
+        sub_a = _mk_sub(sub_id=100, price=229.0, sell_date="2026-06-01")
+        sub_b = _mk_sub(sub_id=200, price=199.0, sell_date="2026-07-01")
+        r1 = select_moyklass_subscription_for_terms([sub_a, sub_b])
+        r2 = select_moyklass_subscription_for_terms([sub_b, sub_a])
+        self.assertEqual(r1["subscription"]["id"], r2["subscription"]["id"])
+
+    def test_11_cancelled_sub_ignored(self):
+        subs = [
+            _mk_sub(sub_id=300, price=199.0, sell_date="2026-07-10", status_id="1"),
+            _mk_sub(sub_id=200, price=229.0, sell_date="2026-06-01", status_id="2"),
+        ]
+        r = select_moyklass_subscription_for_terms(subs)
+        self.assertEqual(r["subscription"]["id"], 200)
+
+    def test_12_zero_price_sub_ignored(self):
+        subs = [
+            _mk_sub(sub_id=300, price=0.0, sell_date="2026-07-10"),
+            _mk_sub(sub_id=200, price=229.0, sell_date="2026-06-01"),
+        ]
+        r = select_moyklass_subscription_for_terms(subs)
+        self.assertEqual(r["subscription"]["id"], 200)
+
+    def test_13_zero_visit_count_sub_ignored(self):
+        subs = [
+            _mk_sub(sub_id=300, price=199.0, sell_date="2026-07-10", visit_count=0),
+            _mk_sub(sub_id=200, price=229.0, sell_date="2026-06-01", visit_count=4),
+        ]
+        r = select_moyklass_subscription_for_terms(subs)
+        self.assertEqual(r["subscription"]["id"], 200)
+
+    def test_14_no_sell_date_uses_id_fallback(self):
+        sub_old = _mk_sub(sub_id=100, price=229.0)
+        sub_new = _mk_sub(sub_id=200, price=199.0)
+        del sub_old["sellDate"]
+        del sub_new["sellDate"]
+        r = select_moyklass_subscription_for_terms([sub_old, sub_new])
+        self.assertNotEqual(r["state"], "ambiguous")
+        self.assertEqual(r["subscription"]["id"], 200)
+        self.assertEqual(r["selection_field"], "id")
+
+    def test_15_numeric_id_sorted_numerically_not_lexically(self):
+        subs = [
+            _mk_sub(sub_id=99, price=229.0, sell_date="2026-07-01"),
+            _mk_sub(sub_id=100, price=199.0, sell_date="2026-07-01"),
+        ]
+        r = select_moyklass_subscription_for_terms(subs)
+        self.assertEqual(r["subscription"]["id"], 100)
+
+    def test_16_lessons_count_from_sub_used(self):
+        r = select_moyklass_subscription_for_terms([_mk_sub(visit_count=8)])
+        self.assertEqual(r["lessons_count"], 8)
 
 
 class Test03DomainInvalid(unittest.TestCase):
-    def test_04_zero_price_returns_invalid(self):
+    def test_17_zero_price_returns_invalid(self):
         r = select_moyklass_subscription_for_terms([_mk_sub(price=0.0)])
         self.assertEqual(r["state"], "invalid")
         self.assertIsNotNone(r["subscription"])
 
-    def test_05_negative_price_returns_invalid(self):
+    def test_18_negative_price_returns_invalid(self):
         r = select_moyklass_subscription_for_terms([_mk_sub(price=-10.0)])
         self.assertEqual(r["state"], "invalid")
 
-    def test_06_none_price_returns_invalid(self):
+    def test_19_missing_price_returns_invalid(self):
         sub = _mk_sub(price=0.0)
         del sub["price"]
         r = select_moyklass_subscription_for_terms([sub])
         self.assertEqual(r["state"], "invalid")
 
+    def test_20_zero_visit_count_only_sub_returns_invalid(self):
+        r = select_moyklass_subscription_for_terms([_mk_sub(visit_count=0)])
+        self.assertEqual(r["state"], "invalid")
 
-class Test04DomainNewSource(unittest.TestCase):
-    def test_07_price_differs_returns_new_source(self):
-        r = select_moyklass_subscription_for_terms([_mk_sub(price=239.0)], current_price_minor=23900)
-        # 239.0 BYN = 23900 minor — same price
+
+class Test04DomainState(unittest.TestCase):
+    def test_21_unchanged_when_same_sub_price_and_lessons(self):
+        r = select_moyklass_subscription_for_terms(
+            [_mk_sub(sub_id=1001, price=239.0, visit_count=4)],
+            current_price_minor=23900,
+            current_lessons_count=4,
+            current_source_sub_id="1001",
+        )
         self.assertEqual(r["state"], "unchanged")
 
-    def test_08_price_matches_returns_unchanged(self):
-        # 239.0 * 100 = 23900 minor
-        r = select_moyklass_subscription_for_terms([_mk_sub(price=239.0)], current_price_minor=20000)
+    def test_22_new_source_when_price_differs(self):
+        r = select_moyklass_subscription_for_terms(
+            [_mk_sub(sub_id=1001, price=239.0, visit_count=4)],
+            current_price_minor=20000,
+            current_lessons_count=4,
+            current_source_sub_id="1001",
+        )
         self.assertEqual(r["state"], "new_source")
         self.assertEqual(r["price_minor"], 23900)
+
+    def test_23_new_source_when_lessons_differ(self):
+        r = select_moyklass_subscription_for_terms(
+            [_mk_sub(sub_id=1001, price=239.0, visit_count=8)],
+            current_price_minor=23900,
+            current_lessons_count=4,
+            current_source_sub_id="1001",
+        )
+        self.assertEqual(r["state"], "new_source")
+        self.assertEqual(r["lessons_count"], 8)
+
+    def test_24_new_source_when_sub_id_differs(self):
+        r = select_moyklass_subscription_for_terms(
+            [_mk_sub(sub_id=9999, price=239.0, visit_count=4)],
+            current_price_minor=23900,
+            current_lessons_count=4,
+            current_source_sub_id="1001",
+        )
+        self.assertEqual(r["state"], "new_source")
 
 
 # ---------------------------------------------------------------------------
@@ -255,11 +393,11 @@ class Test06ServerSyncBehaviour(unittest.TestCase):
         self.assertIn(r["state"], ("new_source", "unchanged", "ambiguous", "not_found", "invalid"))
         self.assertNotEqual(r.get("error"), "sync_disabled")
 
-    def test_14_mk_api_error_returns_not_found(self):
+    def test_14_mk_api_error_returns_api_error_state(self):
         self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_err("connection_error")
         r = self.ctx.payment_client_terms_sync(_auth(), "u1", {})
         self.assertFalse(r["ok"])
-        self.assertEqual(r["state"], "not_found")
+        self.assertEqual(r["state"], "api_error")
 
     def test_15_not_found_state_returns_ok_no_update(self):
         _upsert_terms(self.st, "u1", 23900)
@@ -270,9 +408,14 @@ class Test06ServerSyncBehaviour(unittest.TestCase):
         row = self.st.get_payment_client_terms("u1")
         self.assertEqual(row["base_price_minor"], 23900)
 
-    def test_16_ambiguous_state_returns_ok_no_price_update(self):
+    def test_16_ambiguous_tie_returns_ok_no_price_update(self):
+        """Genuine tie (same sellDate AND same id) → ambiguous, terms unchanged."""
         _upsert_terms(self.st, "u1", 23900)
-        subs = [_mk_sub(sub_id=1, price=239.0), _mk_sub(sub_id=2, price=200.0)]
+        # Same id=100 and same sellDate → genuine tie
+        subs = [
+            _mk_sub(sub_id=100, price=239.0, sell_date="2026-07-01"),
+            _mk_sub(sub_id=100, price=200.0, sell_date="2026-07-01"),
+        ]
         self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok(subs)
         r = self.ctx.payment_client_terms_sync(_auth(), "u1", {})
         self.assertTrue(r["ok"])
@@ -281,8 +424,17 @@ class Test06ServerSyncBehaviour(unittest.TestCase):
         self.assertEqual(row["base_price_minor"], 23900)
 
     def test_17_unchanged_state_updates_source_status(self):
-        _upsert_terms(self.st, "u1", 23900)  # 239.00 BYN
-        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok([_mk_sub(price=239.0)])
+        _upsert_terms(self.st, "u1", 23900)
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok(
+            [_mk_sub(sub_id=1001, price=239.0, visit_count=4)]
+        )
+        # Set source to same sub so it's unchanged
+        self.st.update_payment_client_terms_source(
+            mk_user_id="u1", terms_source="moyklass_subscription",
+            source_subscription_id="1001", source_subscription_type_id="50",
+            source_synced_at=NOW, source_snapshot_json=None,
+            source_sync_status="new_source", source_ambiguity_reason=None, now_str=NOW,
+        )
         r = self.ctx.payment_client_terms_sync(_auth(), "u1", {})
         self.assertTrue(r["ok"])
         self.assertEqual(r["state"], "unchanged")
@@ -299,14 +451,17 @@ class Test07ServerNewSource(unittest.TestCase):
         self.st = _tmp_storage()
         self.ctx = _make_ctx(self.st)
 
-    def test_18_new_source_updates_price(self):
+    def test_18_new_source_updates_price_and_lessons(self):
         _upsert_terms(self.st, "u1", 23900)
-        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok([_mk_sub(price=200.0)])
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok(
+            [_mk_sub(price=200.0, visit_count=8)]
+        )
         r = self.ctx.payment_client_terms_sync(_auth(), "u1", {})
         self.assertTrue(r["ok"])
         self.assertEqual(r["state"], "new_source")
         row = self.st.get_payment_client_terms("u1")
         self.assertEqual(row["base_price_minor"], 20000)
+        self.assertEqual(row["base_lessons_count"], 8)
 
     def test_19_new_source_creates_audit_entries(self):
         _upsert_terms(self.st, "u1", 23900)
@@ -472,7 +627,7 @@ class Test10Frontend(unittest.TestCase):
         self.assertIn("/terms/sync", self.js)
 
     def test_38_sync_button_loading_state(self):
-        self.assertIn("Синхронизация...", self.js)
+        self.assertIn("Обновление...", self.js)
 
     def test_39_source_info_displayed(self):
         self.assertIn("ptSyncNotice", self.js)
@@ -535,8 +690,8 @@ class Test12FrontendLocalization(unittest.TestCase):
         """stateMap in sync handler must cover all domain states in Russian."""
         js = self.js
         idx = js.find("const stateMap")
-        block = js[idx:idx + 600]
-        for state in ("new_source", "unchanged", "ambiguous", "not_found", "invalid", "sync_disabled"):
+        block = js[idx:idx + 700]
+        for state in ("new_source", "unchanged", "ambiguous", "not_found", "invalid", "api_error", "sync_disabled"):
             self.assertIn(state, block, f"stateMap missing: {state}")
 
     def test_45_frontend_no_raw_mk_api_error_key(self):
@@ -547,6 +702,132 @@ class Test12FrontendLocalization(unittest.TestCase):
         """PAYMENT_MK_SUBSCRIPTION_TERMS_SYNC_ENABLED must default to False in config source."""
         cfg = (ROOT / "config.py").read_text(encoding="utf-8")
         self.assertIn("payment_mk_subscription_terms_sync_enabled: bool = False", cfg)
+
+
+# ---------------------------------------------------------------------------
+# 47-56 — v7.1.2: multi-candidate, snapshot, audit, regression
+# ---------------------------------------------------------------------------
+
+class Test13V712MultiCandidate(unittest.TestCase):
+    def setUp(self):
+        self.st = _tmp_storage()
+        self.ctx = _make_ctx(self.st)
+
+    def test_47_three_active_subs_picks_newest_not_ambiguous(self):
+        """Three active subscriptions must not produce ambiguous when orderable."""
+        subs = [
+            _mk_sub(sub_id=100, price=229.0, sell_date="2026-05-01"),
+            _mk_sub(sub_id=200, price=209.0, sell_date="2026-06-01"),
+            _mk_sub(sub_id=300, price=199.0, sell_date="2026-07-01"),
+        ]
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok(subs)
+        _upsert_terms(self.st, "u1", 22900)
+        r = self.ctx.payment_client_terms_sync(_auth(), "u1", {})
+        self.assertTrue(r["ok"])
+        self.assertNotEqual(r["state"], "ambiguous")
+        self.assertEqual(r["source_subscription_id"], "300")
+        row = self.st.get_payment_client_terms("u1")
+        self.assertEqual(row["base_price_minor"], 19900)
+
+    def test_48_snapshot_json_stored_after_new_source(self):
+        """source_snapshot_json must contain selected sub's id after new_source."""
+        subs = [_mk_sub(sub_id=4242, price=199.0)]
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok(subs)
+        _upsert_terms(self.st, "u1", 23900)
+        self.ctx.payment_client_terms_sync(_auth(), "u1", {})
+        row = self.st.get_payment_client_terms("u1")
+        import json as _json
+        snap = _json.loads(row["source_snapshot_json"] or "{}")
+        self.assertEqual(str(snap.get("id")), "4242")
+
+    def test_49_ambiguity_reason_cleared_after_new_source(self):
+        """source_ambiguity_reason must be NULL after a successful new_source sync."""
+        self.st.update_payment_client_terms_source(
+            mk_user_id="u1", terms_source="manual", source_subscription_id=None,
+            source_subscription_type_id=None, source_synced_at=NOW,
+            source_snapshot_json=None, source_sync_status="ambiguous",
+            source_ambiguity_reason="tie_2_candidates", now_str=NOW,
+        )
+        _upsert_terms(self.st, "u1", 23900)
+        subs = [_mk_sub(sub_id=500, price=199.0)]
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok(subs)
+        self.ctx.payment_client_terms_sync(_auth(), "u1", {})
+        row = self.st.get_payment_client_terms("u1")
+        self.assertIsNone(row["source_ambiguity_reason"])
+
+    def test_50_manual_source_replaced_by_moyklass(self):
+        """Manual terms_source must be replaced by moyklass_subscription after sync."""
+        _upsert_terms(self.st, "u1", 23900)
+        self.st.update_payment_client_terms_source(
+            mk_user_id="u1", terms_source="manual", source_subscription_id=None,
+            source_subscription_type_id=None, source_synced_at=NOW,
+            source_snapshot_json=None, source_sync_status="unchanged", source_ambiguity_reason=None,
+            now_str=NOW,
+        )
+        subs = [_mk_sub(sub_id=777, price=199.0)]
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok(subs)
+        self.ctx.payment_client_terms_sync(_auth(), "u1", {})
+        row = self.st.get_payment_client_terms("u1")
+        self.assertEqual(row["terms_source"], "moyklass_subscription")
+
+    def test_51_unchanged_no_duplicate_audit(self):
+        """unchanged state must not create new audit entries."""
+        _upsert_terms(self.st, "u1", 23900)
+        self.st.update_payment_client_terms_source(
+            mk_user_id="u1", terms_source="moyklass_subscription",
+            source_subscription_id="1001", source_subscription_type_id="50",
+            source_synced_at=NOW, source_snapshot_json=None,
+            source_sync_status="unchanged", source_ambiguity_reason=None, now_str=NOW,
+        )
+        before = self.st.list_payment_pricing_audit("u1")
+        subs = [_mk_sub(sub_id=1001, price=239.0, visit_count=4)]
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok(subs)
+        self.ctx.payment_client_terms_sync(_auth(), "u1", {})
+        after = self.st.list_payment_pricing_audit("u1")
+        self.assertEqual(len(before), len(after))
+
+    def test_52_api_error_does_not_corrupt_terms(self):
+        """MK API error must not modify existing payment_client_terms."""
+        _upsert_terms(self.st, "u1", 23900)
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_err("timeout")
+        r = self.ctx.payment_client_terms_sync(_auth(), "u1", {})
+        self.assertFalse(r["ok"])
+        row = self.st.get_payment_client_terms("u1")
+        self.assertEqual(row["base_price_minor"], 23900)
+
+    def test_53_candidates_count_in_response(self):
+        """Response must include candidates_count for multi-sub scenarios."""
+        subs = [
+            _mk_sub(sub_id=100, price=229.0, sell_date="2026-06-01"),
+            _mk_sub(sub_id=200, price=199.0, sell_date="2026-07-01"),
+        ]
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok(subs)
+        r = self.ctx.payment_client_terms_sync(_auth(), "u1", {})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r.get("candidates_count"), 2)
+
+    def test_54_selection_field_in_response(self):
+        """Response must include selection_field to explain sort criterion used."""
+        subs = [_mk_sub(sub_id=100, price=199.0, sell_date="2026-07-01")]
+        self.ctx.moyklass.get_user_subscriptions.return_value = _mk_result_ok(subs)
+        r = self.ctx.payment_client_terms_sync(_auth(), "u1", {})
+        self.assertTrue(r["ok"])
+        self.assertIn(r.get("selection_field"), ("sellDate", "id", None))
+
+
+class Test14V712Regression(unittest.TestCase):
+    def test_55_food_module_not_referenced_in_new_domain_code(self):
+        """payment_domain.py must not reference food module functions."""
+        src = (ROOT / "payment_domain.py").read_text(encoding="utf-8")
+        self.assertNotIn("food_module", src)
+        self.assertNotIn("food_menu", src)
+
+    def test_56_cache_bust_v712(self):
+        """Cache-bust must be v7.1.2 in index.html and app.js."""
+        html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("v=7.1.2", html)
+        self.assertIn("v7.1.2", js)
 
 
 if __name__ == "__main__":
