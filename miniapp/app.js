@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.5");
+console.log("MiniApp version: v7.1.5.1");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -14741,7 +14741,12 @@ async function _loadWorkspaceStats() {
   try {
     const d = await apiGet("/api/payments/workspace/stats");
     _wsState.stats = d; _wsRenderCurrentTab();
-  } catch (e) { /* stats are optional */ }
+  } catch (e) {
+    _wsState.statsLoading = false;
+    const root = $("wsTabContent");
+    if (root) root.innerHTML = `<div class="notice notice-error">Ошибка загрузки данных. <button class="secondary" style="font-size:12px;padding:4px 10px;margin-left:8px" onclick="loadPaymentsWorkspace()">Повторить</button></div>`;
+    return;
+  }
   _wsState.statsLoading = false;
 }
 
@@ -14852,7 +14857,7 @@ function _wsRenderPilotClients(root) {
     ${addForm}
     <div class="ws-pilot-table-wrap" style="overflow-x:auto;margin-top:12px">
       ${clients.length ? `<table class="ws-pilot-table"><thead><tr><th>MK User ID</th><th>Режим</th><th>Примечание</th><th>Последний успех</th><th></th></tr></thead><tbody>${tableRows}</tbody></table>`
-        : `<div class="notice">Нет клиентов в пилоте.</div>`}
+        : `<div class="notice">Пока ни один клиент не добавлен в пилот.</div>`}
     </div>`;
 }
 
