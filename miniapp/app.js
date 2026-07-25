@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.4.1");
+console.log("MiniApp version: v7.1.4.2");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12688,7 +12688,7 @@ function renderPaymentIntentCard(pi) {
   // "Скрыть от родителя" removed from card UI (v7.0.98.1) — replaced by "Отозвать счёт".
   // Backend endpoint /withdraw-from-parent preserved for backward compatibility.
 
-  // ── Withdrawal (v7.0.98.1 / v7.0.98.3 / v7.1.4.1) ───────────────────────
+  // ── Withdrawal (v7.0.98.1 / v7.0.98.3 / v7.1.4.2) ───────────────────────
   const withdrawalInfoBlock = isWithdrawn && pi.withdrawal
     ? _renderWithdrawalResultBlock(pi.withdrawal)
     : "";
@@ -12702,11 +12702,12 @@ function renderPaymentIntentCard(pi) {
   const withdrawBtn = canWithdrawFrontend
     ? `<button class="danger" style="font-size:12px;padding:4px 10px" data-pi-withdraw-btn="${escapeHtml(pi.public_id)}" onclick="openWithdrawModal('${escapeHtml(pi.public_id)}','${cancelSafeName}',${amountVal},'${escapeHtml(String(pi.mk_invoice_id||''))}')">Отозвать счёт</button>`
     : "";
-  // ── Remote cancel retry (v7.1.4.1) ───────────────────────────────────────
+  // ── Remote cancel retry (v7.1.4.2) ───────────────────────────────────────
   const _hasEripUid = pi.bepaid_uid || (pi.payment_options || []).some(function(o) { return o.channel === "erip" && o.uid; });
   const _wdRemoteStatus = (pi.withdrawal || {}).remote_cancel_status || (pi.withdrawal || {}).erip_cancel_status || "";
   const _canRetryRemote = isWithdrawn && canWithdrawInvoice() && !!_hasEripUid
-    && !["cancelled", "already_cancelled"].includes(_wdRemoteStatus);
+    && !["cancelled", "already_cancelled"].includes(_wdRemoteStatus)
+    && _wdRemoteStatus !== "no_erip_uid";
   const retryRemoteCancelBtn = _canRetryRemote
     ? `<button class="secondary" style="font-size:12px;padding:4px 10px" data-retry-remote-cancel="${escapeHtml(pi.public_id)}" onclick="retryRemoteCancel('${escapeHtml(pi.public_id)}')">Повторить отмену в bePaid</button>`
     : "";
@@ -14300,6 +14301,7 @@ function _renderWithdrawalResultBlock(result) {
     || wr.erip_cancel_status || result.erip_cancel_status || "";
   const remoteLabel = remoteStatus === "cancelled" ? "✓ Счёт отменён в bePaid"
     : remoteStatus === "no_erip_uid" ? "— Нет UID платежа (ЕРИП не создавался)"
+    : remoteStatus === "client_unavailable" ? "⚠ Клиент bePaid не настроен на сервере. Требуется проверка конфигурации"
     : remoteStatus === "failed" ? "✗ Не удалось отменить"
     : remoteStatus === "requires_check" ? "⚠ Результат неопределён (нужна проверка)"
     : remoteStatus === "unsupported" ? "— Отмена ЕРИП во внешней системе не поддерживается. Не используйте ранее сохранённые реквизиты."
@@ -14355,7 +14357,7 @@ window.withdrawIntentFromParent = async function(publicId) {
   }
 };
 
-// ── v7.1.4.1 — Remote cancel retry ────────────────────────────────────────────
+// ── v7.1.4.2 — Remote cancel retry ────────────────────────────────────────────
 window.retryRemoteCancel = async function(publicId) {
   if (!canWithdrawInvoice()) return;
   const btn = document.querySelector(`[data-retry-remote-cancel="${escapeHtml(publicId)}"]`);

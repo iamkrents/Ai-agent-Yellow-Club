@@ -1862,11 +1862,11 @@ class TestRemoteCancelV714(unittest.TestCase):
     # ── Version and cache-bust ────────────────────────────────────────────────
 
     def test_127_cache_bust_v714(self):
-        """index.html has v=7.1.4.1 and app.js has MiniApp version: v7.1.4.1."""
+        """index.html has v=7.1.4.2 and app.js has MiniApp version: v7.1.4.2."""
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v=7.1.4.1", html, "index.html cache-bust must be v=7.1.4.1")
-        self.assertIn("v7.1.4.1", js, "app.js version marker must contain v7.1.4.1")
+        self.assertIn("v=7.1.4.2", html, "index.html cache-bust must be v=7.1.4.2")
+        self.assertIn("v7.1.4.2", js, "app.js version marker must contain v7.1.4.2")
 
 
 # ---------------------------------------------------------------------------
@@ -2273,12 +2273,390 @@ class TestRemoteCancelRetryV7141(unittest.TestCase):
             "pilot_auto_mk_terms_sync must remain disabled by default",
         )
 
-    def test_157_cache_bust_v7141(self):
-        """index.html has v=7.1.4.1 and app.js has MiniApp version: v7.1.4.1."""
+    def test_157_cache_bust_v7142(self):
+        """index.html has v=7.1.4.2 and app.js has MiniApp version: v7.1.4.2."""
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v=7.1.4.1", html, "index.html cache-bust must be v=7.1.4.1")
-        self.assertIn("v7.1.4.1", js, "app.js version marker must contain v7.1.4.1")
+        self.assertIn("v=7.1.4.2", html, "index.html cache-bust must be v=7.1.4.2")
+        self.assertIn("v7.1.4.2", js, "app.js version marker must contain v7.1.4.2")
+
+
+# ---------------------------------------------------------------------------
+# 19 — v7.1.4.2: BePaid ERIP client wiring fix
+# ---------------------------------------------------------------------------
+
+def _make_settings_no_erip_creds():
+    """_make_settings() with ERIP credentials explicitly absent."""
+    s = _make_settings()
+    s.bepaid_erip_shop_id = ""
+    s.bepaid_erip_secret_key = ""
+    return s
+
+
+def _make_settings_with_erip_creds():
+    """_make_settings() with valid-looking ERIP credentials."""
+    s = _make_settings()
+    s.bepaid_erip_shop_id = "test_erip_shop"
+    s.bepaid_erip_secret_key = "test_erip_secret"
+    s.bepaid_request_timeout = 30
+    return s
+
+
+class TestEripClientWiringV7142(unittest.TestCase):
+    """Tests 158-182: v7.1.4.2 — _bepaid_erip_client method wiring fix."""
+
+    def _ctx_no_creds(self):
+        storage = _make_storage()
+        return _make_context(storage, _make_settings_no_erip_creds()), storage
+
+    def _ctx_with_creds(self):
+        storage = _make_storage()
+        return _make_context(storage, _make_settings_with_erip_creds()), storage
+
+    def _ctx_with_erip_client(self, void_result):
+        from bepaid_client import BePaidResult
+        ctx, storage = self._ctx_with_creds()
+        mock_client = MagicMock()
+        mock_client.void_erip_payment.return_value = void_result
+        ctx._bepaid_erip_client = lambda: mock_client
+        return ctx, storage, mock_client
+
+    def _seed_with_uid(self, storage, public_id, bepaid_uid="uid_v7142_001"):
+        _seed_intent(storage, public_id, status="awaiting_payment")
+        with storage._connect() as conn:
+            conn.execute(
+                "UPDATE payment_intents SET bepaid_uid=? WHERE public_id=?",
+                (bepaid_uid, public_id),
+            )
+
+    def _seed_withdrawn_with_uid(self, storage, public_id,
+                                  bepaid_uid="uid_v7142_w01",
+                                  remote_cancel_status=None):
+        _seed_intent(storage, public_id, status="awaiting_payment", client_visibility="withdrawn")
+        with storage._connect() as conn:
+            conn.execute(
+                "UPDATE payment_intents SET bepaid_uid=? WHERE public_id=?",
+                (bepaid_uid, public_id),
+            )
+        now = _now()
+        with storage._connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO payment_intent_withdrawals
+                   (intent_public_id, mk_invoice_id, status, reason,
+                    requested_by_telegram_id, requested_by_name,
+                    payment_status_at_request,
+                    erip_cancel_status, remote_cancel_status,
+                    requested_at, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    public_id, public_id, "withdrawn",
+                    "ошибочно выставлен", "9001", "Admin Test",
+                    "awaiting_payment",
+                    "unsupported", remote_cancel_status,
+                    now, now, now,
+                ),
+            )
+
+    _AUTH = {"_internal": True, "role": "owner", "user_id": "9001", "full_name": "Admin"}
+
+    # ── Group 1: _bepaid_erip_client method ──────────────────────────────────
+
+    def test_158_bepaid_erip_client_method_exists(self):
+        """_bepaid_erip_client is a defined method on MiniAppContext (not just injection)."""
+        from web_app_server import MiniAppContext
+        self.assertTrue(
+            hasattr(MiniAppContext, "_bepaid_erip_client"),
+            "_bepaid_erip_client must be defined as a class method on MiniAppContext",
+        )
+
+    def test_159_bepaid_erip_client_returns_instance_with_valid_creds(self):
+        """_bepaid_erip_client() returns a BePaidClient when credentials are configured."""
+        from bepaid_client import BePaidClient
+        ctx, _ = self._ctx_with_creds()
+        client = ctx._bepaid_erip_client()
+        self.assertIsNotNone(client, "_bepaid_erip_client() must return BePaidClient when creds set")
+        self.assertIsInstance(client, BePaidClient)
+
+    def test_160_bepaid_erip_client_returns_none_when_shop_id_missing(self):
+        """_bepaid_erip_client() returns None when bepaid_erip_shop_id is empty."""
+        ctx, _ = self._ctx_no_creds()
+        ctx.settings.bepaid_erip_secret_key = "has_secret"
+        ctx.settings.bepaid_erip_shop_id = ""
+        result = ctx._bepaid_erip_client()
+        self.assertIsNone(result)
+
+    def test_161_bepaid_erip_client_returns_none_when_secret_missing(self):
+        """_bepaid_erip_client() returns None when bepaid_erip_secret_key is empty."""
+        ctx, _ = self._ctx_no_creds()
+        ctx.settings.bepaid_erip_shop_id = "has_shop"
+        ctx.settings.bepaid_erip_secret_key = ""
+        result = ctx._bepaid_erip_client()
+        self.assertIsNone(result)
+
+    def test_162_bepaid_erip_client_returns_none_when_both_empty(self):
+        """_bepaid_erip_client() returns None when both credentials are empty strings."""
+        ctx, _ = self._ctx_no_creds()
+        result = ctx._bepaid_erip_client()
+        self.assertIsNone(result)
+
+    # ── Group 2: no_erip_uid state (UID absent) ───────────────────────────────
+
+    def test_163_no_uid_gives_no_erip_uid_status(self):
+        """No bepaid_uid → remote_cancel_status=no_erip_uid."""
+        ctx, storage = self._ctx_no_creds()
+        _seed_intent(storage, "ycpi_v2_163", status="awaiting_payment")
+        wr = storage.create_withdrawal_record(
+            public_id="ycpi_v2_163", mk_invoice_id="inv_163",
+            reason="тест", requested_by_telegram_id="9001",
+            requested_by_name="Admin", payment_status_at_request="awaiting_payment",
+            now=_now(),
+        )
+        ctx._attempt_remote_cancel_for_withdrawal(wr["id"], "", _now(), "ycpi_v2_163")
+        wr2 = storage.get_withdrawal_by_intent("ycpi_v2_163")
+        self.assertEqual(wr2.get("remote_cancel_status"), "no_erip_uid")
+
+    def test_164_no_uid_gives_erip_unsupported(self):
+        """No bepaid_uid → erip_cancel_status=unsupported."""
+        ctx, storage = self._ctx_no_creds()
+        _seed_intent(storage, "ycpi_v2_164", status="awaiting_payment")
+        wr = storage.create_withdrawal_record(
+            public_id="ycpi_v2_164", mk_invoice_id="inv_164",
+            reason="тест", requested_by_telegram_id="9001",
+            requested_by_name="Admin", payment_status_at_request="awaiting_payment",
+            now=_now(),
+        )
+        ctx._attempt_remote_cancel_for_withdrawal(wr["id"], "", _now(), "ycpi_v2_164")
+        wr2 = storage.get_withdrawal_by_intent("ycpi_v2_164")
+        self.assertEqual(wr2.get("erip_cancel_status"), "unsupported")
+
+    # ── Group 3: client_unavailable state (UID present, no credentials) ───────
+
+    def test_165_uid_present_no_creds_gives_client_unavailable(self):
+        """UID present but no credentials → remote_cancel_status=client_unavailable."""
+        ctx, storage = self._ctx_no_creds()
+        _seed_intent(storage, "ycpi_v2_165", status="awaiting_payment")
+        wr = storage.create_withdrawal_record(
+            public_id="ycpi_v2_165", mk_invoice_id="inv_165",
+            reason="тест", requested_by_telegram_id="9001",
+            requested_by_name="Admin", payment_status_at_request="awaiting_payment",
+            now=_now(),
+        )
+        ctx._attempt_remote_cancel_for_withdrawal(wr["id"], "uid_abc_165", _now(), "ycpi_v2_165")
+        wr2 = storage.get_withdrawal_by_intent("ycpi_v2_165")
+        self.assertEqual(wr2.get("remote_cancel_status"), "client_unavailable")
+
+    def test_166_client_unavailable_does_not_call_delete(self):
+        """client_unavailable state must not call BePaid DELETE API."""
+        ctx, storage = self._ctx_no_creds()
+        _seed_intent(storage, "ycpi_v2_166", status="awaiting_payment")
+        wr = storage.create_withdrawal_record(
+            public_id="ycpi_v2_166", mk_invoice_id="inv_166",
+            reason="тест", requested_by_telegram_id="9001",
+            requested_by_name="Admin", payment_status_at_request="awaiting_payment",
+            now=_now(),
+        )
+        import requests as req
+        with patch.object(req, "delete") as mock_del:
+            ctx._attempt_remote_cancel_for_withdrawal(wr["id"], "uid_166", _now(), "ycpi_v2_166")
+        mock_del.assert_not_called()
+
+    def test_167_client_unavailable_sets_erip_unsupported(self):
+        """client_unavailable → erip_cancel_status=unsupported."""
+        ctx, storage = self._ctx_no_creds()
+        _seed_intent(storage, "ycpi_v2_167", status="awaiting_payment")
+        wr = storage.create_withdrawal_record(
+            public_id="ycpi_v2_167", mk_invoice_id="inv_167",
+            reason="тест", requested_by_telegram_id="9001",
+            requested_by_name="Admin", payment_status_at_request="awaiting_payment",
+            now=_now(),
+        )
+        ctx._attempt_remote_cancel_for_withdrawal(wr["id"], "uid_167", _now(), "ycpi_v2_167")
+        wr2 = storage.get_withdrawal_by_intent("ycpi_v2_167")
+        self.assertEqual(wr2.get("erip_cancel_status"), "unsupported")
+
+    def test_168_client_unavailable_logs_event(self):
+        """client_unavailable → payment_remote_cancel_client_unavailable logged with uid_present=1."""
+        import logging
+        ctx, storage = self._ctx_no_creds()
+        _seed_intent(storage, "ycpi_v2_168", status="awaiting_payment")
+        wr = storage.create_withdrawal_record(
+            public_id="ycpi_v2_168", mk_invoice_id="inv_168",
+            reason="тест", requested_by_telegram_id="9001",
+            requested_by_name="Admin", payment_status_at_request="awaiting_payment",
+            now=_now(),
+        )
+        with self.assertLogs("yellow_club_miniapp", level="WARNING") as log_cm:
+            ctx._attempt_remote_cancel_for_withdrawal(wr["id"], "uid_168", _now(), "ycpi_v2_168")
+        joined = "\n".join(log_cm.output)
+        self.assertIn("payment_remote_cancel_client_unavailable", joined)
+        self.assertIn("uid_present=1", joined)
+
+    def test_169_client_resolved_logged_when_client_available(self):
+        """UID present + valid credentials → payment_remote_cancel_client_resolved logged."""
+        from bepaid_client import BePaidResult
+        import logging
+        ctx, storage, _ = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "uid_169"})
+        )
+        _seed_intent(storage, "ycpi_v2_169", status="awaiting_payment")
+        wr = storage.create_withdrawal_record(
+            public_id="ycpi_v2_169", mk_invoice_id="inv_169",
+            reason="ошибочно выставлен", requested_by_telegram_id="9001",
+            requested_by_name="Admin", payment_status_at_request="awaiting_payment",
+            now=_now(),
+        )
+        with self.assertLogs("yellow_club_miniapp", level="INFO") as log_cm:
+            ctx._attempt_remote_cancel_for_withdrawal(wr["id"], "uid_169", _now(), "ycpi_v2_169")
+        joined = "\n".join(log_cm.output)
+        self.assertIn("payment_remote_cancel_client_resolved", joined)
+        self.assertIn("client_available=1", joined)
+        self.assertIn("uid_present=1", joined)
+
+    # ── Group 4: Regression test (would fail on v7.1.4.1) ────────────────────
+
+    def test_170_regression_uid_present_no_injection_not_no_erip_uid(self):
+        """Regression: UID present but _bepaid_erip_client not injected must NOT give no_erip_uid.
+
+        v7.1.4.1 used hasattr(self, '_bepaid_erip_client') which was always False in production,
+        causing remote_cancel_status='no_erip_uid' even when uid was present.
+        v7.1.4.2 defines the method on the class, so it always resolves correctly.
+        """
+        ctx, storage = self._ctx_no_creds()
+        _seed_intent(storage, "ycpi_v2_170", status="awaiting_payment")
+        wr = storage.create_withdrawal_record(
+            public_id="ycpi_v2_170", mk_invoice_id="inv_170",
+            reason="тест", requested_by_telegram_id="9001",
+            requested_by_name="Admin", payment_status_at_request="awaiting_payment",
+            now=_now(),
+        )
+        ctx._attempt_remote_cancel_for_withdrawal(wr["id"], "uid_present_170", _now(), "ycpi_v2_170")
+        wr2 = storage.get_withdrawal_by_intent("ycpi_v2_170")
+        status = wr2.get("remote_cancel_status")
+        self.assertNotEqual(
+            status, "no_erip_uid",
+            "When UID is present, remote_cancel_status must NOT be no_erip_uid "
+            "(v7.1.4.1 regression: would fail because hasattr was always False)",
+        )
+        self.assertEqual(status, "client_unavailable")
+
+    # ── Group 5: First withdrawal with new client wiring ─────────────────────
+
+    def test_171_withdraw_with_uid_no_creds_gives_client_unavailable(self):
+        """withdraw_payment_intent with UID present but no credentials → client_unavailable."""
+        ctx, storage = self._ctx_no_creds()
+        _seed_intent(storage, "ycpi_v2_171", status="awaiting_payment")
+        with storage._connect() as conn:
+            conn.execute(
+                "UPDATE payment_intents SET bepaid_uid='uid_v2_171' WHERE public_id='ycpi_v2_171'"
+            )
+        ctx.withdraw_payment_intent(self._AUTH, "ycpi_v2_171", {"reason": "ошибочно выставлен"})
+        wr = storage.get_withdrawal_by_intent("ycpi_v2_171")
+        self.assertEqual(wr.get("remote_cancel_status"), "client_unavailable")
+
+    def test_172_withdraw_with_uid_no_creds_local_withdrawal_succeeds(self):
+        """withdraw_payment_intent with no credentials still completes local withdrawal."""
+        ctx, storage = self._ctx_no_creds()
+        _seed_intent(storage, "ycpi_v2_172", status="awaiting_payment")
+        with storage._connect() as conn:
+            conn.execute(
+                "UPDATE payment_intents SET bepaid_uid='uid_v2_172' WHERE public_id='ycpi_v2_172'"
+            )
+        result = ctx.withdraw_payment_intent(self._AUTH, "ycpi_v2_172", {"reason": "ошибочно выставлен"})
+        self.assertTrue(result.get("ok"), result)
+        pi = storage.get_payment_intent("ycpi_v2_172") or {}
+        self.assertEqual(pi.get("client_visibility"), "withdrawn")
+
+    def test_173_withdraw_no_uid_gives_no_erip_uid(self):
+        """withdraw_payment_intent with no bepaid_uid → remote_cancel_status=no_erip_uid."""
+        ctx, storage = self._ctx_no_creds()
+        _seed_intent(storage, "ycpi_v2_173", status="awaiting_payment")
+        ctx.withdraw_payment_intent(self._AUTH, "ycpi_v2_173", {"reason": "ошибочно выставлен"})
+        wr = storage.get_withdrawal_by_intent("ycpi_v2_173")
+        self.assertEqual(wr.get("remote_cancel_status"), "no_erip_uid")
+
+    def test_174_withdraw_with_uid_and_creds_calls_void(self):
+        """withdraw_payment_intent with UID + credentials (injected) → void called once."""
+        from bepaid_client import BePaidResult
+        ctx, storage, mock_client = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "uid_174"})
+        )
+        _seed_intent(storage, "ycpi_v2_174", status="awaiting_payment")
+        with storage._connect() as conn:
+            conn.execute(
+                "UPDATE payment_intents SET bepaid_uid='uid_174' WHERE public_id='ycpi_v2_174'"
+            )
+        ctx.withdraw_payment_intent(self._AUTH, "ycpi_v2_174", {"reason": "ошибочно выставлен"})
+        mock_client.void_erip_payment.assert_called_once_with("uid_174")
+
+    # ── Group 6: Retry endpoint with client_unavailable ───────────────────────
+
+    def test_175_retry_with_client_unavailable_returns_client_unavailable(self):
+        """retry_remote_cancel with UID present but no credentials → client_unavailable result."""
+        ctx, storage = self._ctx_no_creds()
+        self._seed_withdrawn_with_uid(storage, "ycpi_v2_175", remote_cancel_status="client_unavailable")
+        result = ctx.retry_remote_cancel(self._AUTH, "ycpi_v2_175")
+        wr = storage.get_withdrawal_by_intent("ycpi_v2_175")
+        self.assertEqual(wr.get("remote_cancel_status"), "client_unavailable")
+
+    def test_176_client_unavailable_is_not_idempotent_blocked(self):
+        """client_unavailable is NOT in the idempotency-blocked set (should allow re-retry)."""
+        ctx, storage = self._ctx_no_creds()
+        self._seed_withdrawn_with_uid(storage, "ycpi_v2_176", remote_cancel_status="client_unavailable")
+        result = ctx.retry_remote_cancel(self._AUTH, "ycpi_v2_176")
+        self.assertIsNone(result.get("idempotent"), "client_unavailable must not be idempotent-blocked")
+
+    def test_177_retry_after_credentials_fix_calls_void(self):
+        """After credentials are configured, retry on a client_unavailable record succeeds."""
+        from bepaid_client import BePaidResult
+        ctx, storage, mock_client = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "uid_177"})
+        )
+        self._seed_withdrawn_with_uid(
+            storage, "ycpi_v2_177",
+            bepaid_uid="uid_177",
+            remote_cancel_status="client_unavailable",
+        )
+        result = ctx.retry_remote_cancel(self._AUTH, "ycpi_v2_177")
+        mock_client.void_erip_payment.assert_called_once_with("uid_177")
+        self.assertTrue(result.get("ok"), result)
+
+    def test_178_hasattr_bepaid_erip_client_always_true(self):
+        """In v7.1.4.2, hasattr(ctx, '_bepaid_erip_client') is True for all MiniAppContext."""
+        ctx, _ = self._ctx_no_creds()
+        self.assertTrue(
+            hasattr(ctx, "_bepaid_erip_client"),
+            "hasattr must be True in v7.1.4.2 — method is defined on the class",
+        )
+
+    # ── Group 7: UI labels ────────────────────────────────────────────────────
+
+    def test_179_js_has_client_unavailable_label(self):
+        """app.js _renderWithdrawalResultBlock has label for client_unavailable status."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("client_unavailable", js)
+        self.assertIn("Клиент bePaid не настроен на сервере", js)
+
+    def test_180_js_retry_button_allowed_for_client_unavailable(self):
+        """app.js retry button condition does NOT exclude client_unavailable."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        # The retry button exclusion list must NOT contain client_unavailable
+        self.assertNotIn('"client_unavailable"', js.split("_canRetryRemote")[1].split("retryRemoteCancelBtn")[0])
+
+    def test_181_js_retry_button_excluded_for_no_erip_uid(self):
+        """app.js retry button condition excludes no_erip_uid (UID not present)."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        # The _canRetryRemote block must exclude no_erip_uid
+        can_retry_block = js.split("_canRetryRemote")[1].split("retryRemoteCancelBtn")[0]
+        self.assertIn("no_erip_uid", can_retry_block)
+
+    # ── Group 8: Version ──────────────────────────────────────────────────────
+
+    def test_182_cache_bust_v7142(self):
+        """index.html has v=7.1.4.2 and app.js has MiniApp version: v7.1.4.2."""
+        html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("v=7.1.4.2", html, "index.html cache-bust must be v=7.1.4.2")
+        self.assertIn("v7.1.4.2", js, "app.js version marker must contain v7.1.4.2")
 
 
 if __name__ == "__main__":
