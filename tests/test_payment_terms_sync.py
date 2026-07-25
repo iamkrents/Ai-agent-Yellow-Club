@@ -38,7 +38,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 SERVER_PY = ROOT / "web_app_server.py"
 
-VERSION = "7.1.4"
+VERSION = "7.1.4.1"
 NOW = "2026-07-23T10:00:00"
 
 

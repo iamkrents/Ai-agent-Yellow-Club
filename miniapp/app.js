@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.4");
+console.log("MiniApp version: v7.1.4.1");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12688,7 +12688,7 @@ function renderPaymentIntentCard(pi) {
   // "Скрыть от родителя" removed from card UI (v7.0.98.1) — replaced by "Отозвать счёт".
   // Backend endpoint /withdraw-from-parent preserved for backward compatibility.
 
-  // ── Withdrawal (v7.0.98.1 / v7.0.98.3) ──────────────────────────────────
+  // ── Withdrawal (v7.0.98.1 / v7.0.98.3 / v7.1.4.1) ───────────────────────
   const withdrawalInfoBlock = isWithdrawn && pi.withdrawal
     ? _renderWithdrawalResultBlock(pi.withdrawal)
     : "";
@@ -12701,6 +12701,14 @@ function renderPaymentIntentCard(pi) {
     : "";
   const withdrawBtn = canWithdrawFrontend
     ? `<button class="danger" style="font-size:12px;padding:4px 10px" data-pi-withdraw-btn="${escapeHtml(pi.public_id)}" onclick="openWithdrawModal('${escapeHtml(pi.public_id)}','${cancelSafeName}',${amountVal},'${escapeHtml(String(pi.mk_invoice_id||''))}')">Отозвать счёт</button>`
+    : "";
+  // ── Remote cancel retry (v7.1.4.1) ───────────────────────────────────────
+  const _hasEripUid = pi.bepaid_uid || (pi.payment_options || []).some(function(o) { return o.channel === "erip" && o.uid; });
+  const _wdRemoteStatus = (pi.withdrawal || {}).remote_cancel_status || (pi.withdrawal || {}).erip_cancel_status || "";
+  const _canRetryRemote = isWithdrawn && canWithdrawInvoice() && !!_hasEripUid
+    && !["cancelled", "already_cancelled"].includes(_wdRemoteStatus);
+  const retryRemoteCancelBtn = _canRetryRemote
+    ? `<button class="secondary" style="font-size:12px;padding:4px 10px" data-retry-remote-cancel="${escapeHtml(pi.public_id)}" onclick="retryRemoteCancel('${escapeHtml(pi.public_id)}')">Повторить отмену в bePaid</button>`
     : "";
 
   const extraCls = pi.status === "cancelled" ? " pi-card-cancelled"
@@ -12728,7 +12736,7 @@ function renderPaymentIntentCard(pi) {
     ${comment}${cancelInfo}${bePaidCreatingBlock}${bePaidRequiresCheckBlock}${bePaidInfo}${acqReadyBadge}${bePaidPaidBlock}${mkPostedBlock}
     ${publishedBadge}${withdrawnBadge}
     ${withdrawalInfoBlock}
-    <div class="pi-card-footer">${bePaidBtn}${acquiringBtn}${verifyAcquiringBtn}${mkPostBtn}${cancelBtn}${publishToParentBtn}${withdrawBtn}</div>
+    <div class="pi-card-footer">${bePaidBtn}${acquiringBtn}${verifyAcquiringBtn}${mkPostBtn}${cancelBtn}${publishToParentBtn}${withdrawBtn}${retryRemoteCancelBtn}</div>
     <div class="pi-card-id">${escapeHtml(pi.public_id)} · mk_user_id: ${pi.mk_user_id} · ${createdAt} ${createdBy}</div>
   </div>`;
 }
@@ -14344,6 +14352,28 @@ window.withdrawIntentFromParent = async function(publicId) {
     alert(`Ошибка: ${err}`);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = "Скрыть от родителя"; }
+  }
+};
+
+// ── v7.1.4.1 — Remote cancel retry ────────────────────────────────────────────
+window.retryRemoteCancel = async function(publicId) {
+  if (!canWithdrawInvoice()) return;
+  const btn = document.querySelector(`[data-retry-remote-cancel="${escapeHtml(publicId)}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = "Отменяем в bePaid..."; }
+  try {
+    const result = await _apiPostRaw(`/api/payments/intents/${encodeURIComponent(publicId)}/remote-cancel`, {});
+    if (result.ok) {
+      loadPaymentIntents();
+    } else if (result.remote_cancel_status === "already_paid") {
+      alert("Платёж уже оплачен. Требуется возврат, а не отмена.");
+      if (btn) { btn.disabled = false; btn.textContent = "Повторить отмену в bePaid"; }
+    } else {
+      alert(`Ошибка: ${result.error || result.remote_cancel_status || "неизвестно"}`);
+      if (btn) { btn.disabled = false; btn.textContent = "Повторить отмену в bePaid"; }
+    }
+  } catch(err) {
+    alert(`Ошибка: ${err}`);
+    if (btn) { btn.disabled = false; btn.textContent = "Повторить отмену в bePaid"; }
   }
 };
 

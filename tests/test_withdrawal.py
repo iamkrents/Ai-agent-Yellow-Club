@@ -1862,11 +1862,423 @@ class TestRemoteCancelV714(unittest.TestCase):
     # ── Version and cache-bust ────────────────────────────────────────────────
 
     def test_127_cache_bust_v714(self):
-        """index.html has v=7.1.4 and app.js has MiniApp version: v7.1.4."""
+        """index.html has v=7.1.4.1 and app.js has MiniApp version: v7.1.4.1."""
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v=7.1.4", html, "index.html cache-bust must be v=7.1.4")
-        self.assertIn("v7.1.4", js, "app.js version marker must contain v7.1.4")
+        self.assertIn("v=7.1.4.1", html, "index.html cache-bust must be v=7.1.4.1")
+        self.assertIn("v7.1.4.1", js, "app.js version marker must contain v7.1.4.1")
+
+
+# ---------------------------------------------------------------------------
+# 9 — Retry remote cancel (v7.1.4.1)
+# ---------------------------------------------------------------------------
+
+class TestRemoteCancelRetryV7141(unittest.TestCase):
+    """Tests 128-157: POST /remote-cancel retry for already-withdrawn payments."""
+
+    def _ctx(self):
+        storage = _make_storage()
+        return _make_context(storage, _make_settings()), storage
+
+    def _ctx_with_erip_client(self, void_result):
+        from bepaid_client import BePaidResult
+        ctx, storage = self._ctx()
+        mock_client = MagicMock()
+        mock_client.void_erip_payment.return_value = void_result
+        ctx._bepaid_erip_client = lambda: mock_client
+        return ctx, storage, mock_client
+
+    def _seed_withdrawn(
+        self,
+        storage,
+        public_id,
+        bepaid_uid="uid_retry_001",
+        erip_cancel_status="unsupported",
+        remote_cancel_status=None,
+    ):
+        """Seed a payment_intent already withdrawn (client_visibility=withdrawn)
+        with a withdrawal record simulating a legacy v7.1.3 or failed v7.1.4 row."""
+        _seed_intent(storage, public_id, status="awaiting_payment", client_visibility="withdrawn")
+        now = _now()
+        if bepaid_uid:
+            with storage._connect() as conn:
+                conn.execute(
+                    "UPDATE payment_intents SET bepaid_uid=? WHERE public_id=?",
+                    (bepaid_uid, public_id),
+                )
+        # Create withdrawal record via raw INSERT (simulates pre-existing withdrawal)
+        with storage._connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO payment_intent_withdrawals
+                   (intent_public_id, mk_invoice_id, status, reason,
+                    requested_by_telegram_id, requested_by_name,
+                    payment_status_at_request,
+                    erip_cancel_status, remote_cancel_status,
+                    requested_at, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    public_id, public_id, "withdrawn",
+                    "ошибочно выставлен", "9001", "Admin Test",
+                    "awaiting_payment",
+                    erip_cancel_status, remote_cancel_status,
+                    now, now, now,
+                ),
+            )
+
+    _RETRY_AUTH = {"_internal": True, "role": "owner", "user_id": "9001", "full_name": "Admin Test"}
+
+    # ── Availability checks ────────────────────────────────────────────────────
+
+    def test_128_legacy_unsupported_retry_is_accessible(self):
+        """Legacy withdrawn + erip_cancel_status=unsupported + remote_cancel_status=NULL → retry succeeds."""
+        from bepaid_client import BePaidResult
+        ctx, storage, mock_client = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "uid_retry_001"})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_128", erip_cancel_status="unsupported", remote_cancel_status=None)
+        result = ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_128")
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(result.get("remote_cancel_status"), "cancelled")
+
+    def test_129_retry_uses_existing_withdrawal_id(self):
+        """Retry updates the existing withdrawal record, not a new one."""
+        from bepaid_client import BePaidResult
+        ctx, storage, _ = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "uid_r_129"})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_129")
+        wr_before = storage.get_withdrawal_by_intent("ycpi_r_129")
+        ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_129")
+        wr_after = storage.get_withdrawal_by_intent("ycpi_r_129")
+        self.assertEqual(wr_before["id"], wr_after["id"])
+
+    def test_130_retry_does_not_create_second_withdrawal_record(self):
+        """Retry does not insert a second withdrawal record."""
+        from bepaid_client import BePaidResult
+        ctx, storage, _ = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "uid_r_130"})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_130")
+        ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_130")
+        with storage._connect() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM payment_intent_withdrawals WHERE intent_public_id=?",
+                ("ycpi_r_130",),
+            ).fetchone()[0]
+        self.assertEqual(count, 1)
+
+    def test_131_retry_does_not_call_telegram_edit(self):
+        """Retry does not attempt to edit the Telegram notification."""
+        from bepaid_client import BePaidResult
+        ctx, storage, _ = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "uid_r_131"})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_131")
+        with patch("web_app_server._telegram_edit_parent_notification_msg") as mock_tg:
+            ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_131")
+        mock_tg.assert_not_called()
+
+    def test_132_retry_does_not_reset_automation_item(self):
+        """Retry does not reset auto_post_eligible / auto_publish_eligible."""
+        from bepaid_client import BePaidResult
+        ctx, storage, _ = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "uid_r_132"})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_132", bepaid_uid="uid_r_132")
+        mk_inv = "inv_r_132"
+        with storage._connect() as conn:
+            conn.execute(
+                "UPDATE payment_intents SET mk_invoice_id=? WHERE public_id=?",
+                (mk_inv, "ycpi_r_132"),
+            )
+        _seed_automation_item(storage, mk_inv, auto_post_eligible=0, auto_publish_eligible=0)
+        ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_132")
+        item = storage.get_automation_item_by_invoice(mk_inv)
+        # flags stay at 0, not flipped back
+        self.assertEqual(item.get("auto_post_eligible"), 0)
+        self.assertEqual(item.get("auto_publish_eligible"), 0)
+
+    def test_133_retry_calls_void_erip_payment_once(self):
+        """Retry calls void_erip_payment exactly once."""
+        from bepaid_client import BePaidResult
+        ctx, storage, mock_client = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "uid_r_133"})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_133")
+        ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_133")
+        mock_client.void_erip_payment.assert_called_once()
+
+    # ── Success path ───────────────────────────────────────────────────────────
+
+    def test_134_success_saves_remote_cancel_status_cancelled(self):
+        """Successful retry saves remote_cancel_status='cancelled' in withdrawal record."""
+        from bepaid_client import BePaidResult
+        ctx, storage, _ = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "uid_r_134"})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_134")
+        ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_134")
+        wr = storage.get_withdrawal_by_intent("ycpi_r_134")
+        self.assertEqual(wr.get("remote_cancel_status"), "cancelled")
+
+    def test_135_success_saves_remote_cancel_method_api_delete(self):
+        """Successful retry saves remote_cancel_method='api_delete'."""
+        from bepaid_client import BePaidResult
+        ctx, storage, _ = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "uid_r_135"})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_135")
+        ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_135")
+        wr = storage.get_withdrawal_by_intent("ycpi_r_135")
+        self.assertEqual(wr.get("remote_cancel_method"), "api_delete")
+
+    # ── Idempotency ────────────────────────────────────────────────────────────
+
+    def test_136_second_retry_after_cancelled_skips_delete(self):
+        """Second retry after remote_cancel_status=cancelled does not call DELETE again."""
+        from bepaid_client import BePaidResult
+        ctx, storage, mock_client = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "uid_r_136"})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_136", remote_cancel_status="cancelled")
+        result = ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_136")
+        mock_client.void_erip_payment.assert_not_called()
+        self.assertTrue(result.get("ok"))
+        self.assertTrue(result.get("idempotent"))
+
+    def test_137_idempotent_response_has_correct_status(self):
+        """Idempotent retry returns remote_cancel_status=cancelled."""
+        from bepaid_client import BePaidResult
+        ctx, storage, _ = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_137", remote_cancel_status="cancelled")
+        result = ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_137")
+        self.assertEqual(result.get("remote_cancel_status"), "cancelled")
+
+    # ── Block conditions ───────────────────────────────────────────────────────
+
+    def test_138_paid_status_blocks_retry(self):
+        """status=paid blocks retry — does not call DELETE."""
+        from bepaid_client import BePaidResult
+        ctx, storage, mock_client = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_138")
+        with storage._connect() as conn:
+            conn.execute("UPDATE payment_intents SET status='paid' WHERE public_id=?", ("ycpi_r_138",))
+        result = ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_138")
+        mock_client.void_erip_payment.assert_not_called()
+        self.assertFalse(result.get("ok"))
+        self.assertEqual(result.get("remote_cancel_status"), "already_paid")
+
+    def test_139_confirmed_tx_blocks_retry(self):
+        """Confirmed BePaid transaction blocks retry."""
+        from bepaid_client import BePaidResult
+        ctx, storage, mock_client = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_139")
+        _seed_bepaid_tx(storage, "ycpi_r_139", webhook_verified=1)
+        result = ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_139")
+        mock_client.void_erip_payment.assert_not_called()
+        self.assertFalse(result.get("ok"))
+
+    def test_140_mk_payment_id_blocks_retry(self):
+        """mk_payment_id present blocks retry."""
+        from bepaid_client import BePaidResult
+        ctx, storage, mock_client = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_140")
+        with storage._connect() as conn:
+            conn.execute("UPDATE payment_intents SET mk_payment_id=99 WHERE public_id=?", ("ycpi_r_140",))
+        result = ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_140")
+        mock_client.void_erip_payment.assert_not_called()
+        self.assertFalse(result.get("ok"))
+
+    def test_141_posted_to_moyklass_blocks_retry(self):
+        """status=posted_to_moyklass blocks retry."""
+        from bepaid_client import BePaidResult
+        ctx, storage, mock_client = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_141")
+        with storage._connect() as conn:
+            conn.execute(
+                "UPDATE payment_intents SET status='posted_to_moyklass' WHERE public_id=?",
+                ("ycpi_r_141",),
+            )
+        result = ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_141")
+        mock_client.void_erip_payment.assert_not_called()
+        self.assertFalse(result.get("ok"))
+
+    # ── Error paths ────────────────────────────────────────────────────────────
+
+    def test_142_timeout_saves_requires_check(self):
+        """Timeout → remote_cancel_status=requires_check, retry still available."""
+        from bepaid_client import BePaidResult
+        ctx, storage, _ = self._ctx_with_erip_client(
+            BePaidResult(ok=False, http_status=0, error="timeout", requires_check=True)
+        )
+        self._seed_withdrawn(storage, "ycpi_r_142")
+        result = ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_142")
+        self.assertFalse(result.get("ok"))
+        self.assertEqual(result.get("remote_cancel_status"), "requires_check")
+
+    def test_143_connection_error_saves_failed_or_requires_check(self):
+        """ConnectionError → remote_cancel_status in {failed, requires_check}, not cancelled."""
+        from bepaid_client import BePaidResult
+        ctx, storage, _ = self._ctx_with_erip_client(
+            BePaidResult(ok=False, http_status=0, error="connection_error:ConnectionError", requires_check=True)
+        )
+        self._seed_withdrawn(storage, "ycpi_r_143")
+        result = ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_143")
+        self.assertFalse(result.get("ok"))
+        self.assertNotEqual(result.get("remote_cancel_status"), "cancelled")
+
+    def test_144_failed_status_allows_subsequent_retry(self):
+        """remote_cancel_status=failed is retryable (not blocked by idempotency guard)."""
+        from bepaid_client import BePaidResult
+        ctx, storage, mock_client = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "uid_r_144"})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_144", remote_cancel_status="failed")
+        result = ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_144")
+        mock_client.void_erip_payment.assert_called_once()
+        self.assertTrue(result.get("ok"))
+
+    def test_145_no_uid_returns_no_erip_uid(self):
+        """No bepaid_uid → error, no DELETE called."""
+        from bepaid_client import BePaidResult
+        ctx, storage, mock_client = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_145", bepaid_uid="")
+        result = ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_145")
+        mock_client.void_erip_payment.assert_not_called()
+        self.assertFalse(result.get("ok"))
+        self.assertEqual(result.get("remote_cancel_status"), "no_erip_uid")
+
+    # ── Role / access ──────────────────────────────────────────────────────────
+
+    def test_146_teacher_role_is_denied(self):
+        """teacher role cannot call remote-cancel."""
+        ctx, storage = self._ctx()
+        self._seed_withdrawn(storage, "ycpi_r_146")
+        auth = {"_internal": True, "role": "teacher", "user_id": "9002"}
+        result = ctx.retry_remote_cancel(auth, "ycpi_r_146")
+        self.assertFalse(result.get("ok"))
+        self.assertIn("Доступ", result.get("error", ""))
+
+    def test_147_parent_role_is_denied(self):
+        """parent role cannot call remote-cancel."""
+        ctx, storage = self._ctx()
+        self._seed_withdrawn(storage, "ycpi_r_147")
+        auth = {"_internal": True, "role": "parent", "user_id": "9003"}
+        result = ctx.retry_remote_cancel(auth, "ycpi_r_147")
+        self.assertFalse(result.get("ok"))
+        self.assertIn("Доступ", result.get("error", ""))
+
+    # ── withdrawal-status endpoint ─────────────────────────────────────────────
+
+    def test_148_withdrawal_status_returns_new_remote_values(self):
+        """GET withdrawal-status includes remote_cancel_status after successful retry."""
+        from bepaid_client import BePaidResult
+        ctx, storage, _ = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "uid_r_148"})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_148")
+        ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_148")
+        info = ctx.get_intent_withdrawal_info(self._RETRY_AUTH, "ycpi_r_148")
+        wd = info.get("withdrawal", {})
+        self.assertEqual(wd.get("remote_cancel_status"), "cancelled")
+        self.assertEqual(wd.get("remote_cancel_method"), "api_delete")
+
+    # ── UI / JS ────────────────────────────────────────────────────────────────
+
+    def test_149_js_shows_retry_button_for_legacy_unsupported(self):
+        """app.js contains logic for retry button (data-retry-remote-cancel attribute)."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("data-retry-remote-cancel", js)
+        self.assertIn("retryRemoteCancel", js)
+
+    def test_150_js_shows_retry_button_for_failed(self):
+        """app.js retry button visible for failed/requires_check remote status."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("_canRetryRemote", js)
+
+    def test_151_js_hides_retry_button_for_cancelled(self):
+        """app.js retry button hidden when remote_cancel_status=cancelled."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('"cancelled"', js)
+        self.assertIn("already_cancelled", js)
+
+    def test_152_js_does_not_call_withdraw_for_retry(self):
+        """retryRemoteCancel calls /remote-cancel, not /withdraw."""
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        retry_fn_start = js.find("window.retryRemoteCancel")
+        retry_fn_end = js.find("};", retry_fn_start)
+        retry_fn = js[retry_fn_start:retry_fn_end]
+        self.assertIn("/remote-cancel", retry_fn)
+        self.assertNotIn("/withdraw", retry_fn)
+
+    def test_153_retry_does_not_send_telegram(self):
+        """retry_remote_cancel does not invoke _try_edit_parent_notification_for_withdrawal."""
+        from bepaid_client import BePaidResult
+        ctx, storage, _ = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "uid_r_153"})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_153")
+        called = []
+        orig = ctx._try_edit_parent_notification_for_withdrawal if hasattr(ctx, "_try_edit_parent_notification_for_withdrawal") else None
+        ctx._try_edit_parent_notification_for_withdrawal = lambda *a, **k: called.append(True)
+        ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_153")
+        self.assertEqual(called, [], "Telegram edit must not be called during retry")
+        if orig:
+            ctx._try_edit_parent_notification_for_withdrawal = orig
+
+    def test_154_retry_does_not_call_refund(self):
+        """retry_remote_cancel does not call any refund method."""
+        from bepaid_client import BePaidResult
+        ctx, storage, mock_client = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "uid_r_154"})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_154")
+        ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_154")
+        # BePaidClient mock should have no refund call
+        self.assertFalse(
+            any("refund" in str(c) for c in mock_client.method_calls),
+            "No refund calls expected",
+        )
+
+    def test_155_retry_does_not_call_moyklass(self):
+        """retry_remote_cancel does not write to MoyKlass."""
+        from bepaid_client import BePaidResult
+        ctx, storage, _ = self._ctx_with_erip_client(
+            BePaidResult(ok=True, http_status=200, data={"status": "deleted", "uid": "uid_r_155"})
+        )
+        self._seed_withdrawn(storage, "ycpi_r_155")
+        ctx.retry_remote_cancel(self._RETRY_AUTH, "ycpi_r_155")
+        # moyklass.request should never have been called
+        ctx.moyklass.request.assert_not_called()
+
+    def test_156_mk_terms_sync_default_is_false(self):
+        """pilot_auto_mk_terms_sync default remains False after v7.1.4.1."""
+        import config as cfg
+        default_val = getattr(cfg, "PILOT_AUTO_MK_TERMS_SYNC_DEFAULT", None)
+        # Accept None (not set) or False
+        self.assertFalse(
+            bool(default_val),
+            "pilot_auto_mk_terms_sync must remain disabled by default",
+        )
+
+    def test_157_cache_bust_v7141(self):
+        """index.html has v=7.1.4.1 and app.js has MiniApp version: v7.1.4.1."""
+        html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("v=7.1.4.1", html, "index.html cache-bust must be v=7.1.4.1")
+        self.assertIn("v7.1.4.1", js, "app.js version marker must contain v7.1.4.1")
 
 
 if __name__ == "__main__":

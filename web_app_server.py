@@ -10335,6 +10335,9 @@ class MiniAppContext:
                             "completed_at": wr.get("completed_at"),
                             "erip_cancel_status": wr.get("erip_cancel_status"),
                             "erip_cancel_error": wr.get("erip_cancel_error"),
+                            "remote_cancel_status": wr.get("remote_cancel_status"),
+                            "remote_cancel_method": wr.get("remote_cancel_method"),
+                            "remote_cancel_error": wr.get("remote_cancel_error"),
                             "card_checkout_blocked_at": wr.get("card_checkout_blocked_at"),
                             "card_blocked": bool(wr.get("card_checkout_blocked_at")),
                             "telegram_update_status": wr.get("telegram_update_status"),
@@ -10926,6 +10929,88 @@ class MiniAppContext:
                 public_id, err,
             )
 
+    def _attempt_remote_cancel_for_withdrawal(
+        self, withdrawal_id: int, erip_uid: str, now: str
+    ) -> None:
+        """Call BePaid DELETE API and update withdrawal record with the result.
+
+        Shared by withdraw_payment_intent (first withdrawal) and retry_remote_cancel.
+        """
+        if erip_uid and hasattr(self, "_bepaid_erip_client"):
+            remote_requested_at = now
+            try:
+                void_result = self._bepaid_erip_client().void_erip_payment(erip_uid)
+                err_txt = str(void_result.error or "")
+                resp_data = void_result.data or {}
+                if void_result.ok:
+                    remote_status_after = str(resp_data.get("status") or "deleted")
+                    remote_ref = str(resp_data.get("uid") or erip_uid)
+                    self.storage.update_withdrawal_erip(
+                        withdrawal_id, "cancelled", now, None, now,
+                    )
+                    self.storage.update_withdrawal_remote_cancel(
+                        withdrawal_id,
+                        remote_cancel_status="cancelled",
+                        remote_cancel_method="api_delete",
+                        remote_cancel_requested_at=remote_requested_at,
+                        remote_cancel_confirmed_at=now,
+                        remote_cancel_error=None,
+                        remote_status_before="pending",
+                        remote_status_after=remote_status_after,
+                        remote_response_reference=remote_ref,
+                        now=now,
+                    )
+                else:
+                    r_cancel_status = "requires_check" if void_result.requires_check else "failed"
+                    self.storage.update_withdrawal_erip(
+                        withdrawal_id, "failed", None, err_txt[:300], now,
+                    )
+                    self.storage.update_withdrawal_remote_cancel(
+                        withdrawal_id,
+                        remote_cancel_status=r_cancel_status,
+                        remote_cancel_method="api_delete",
+                        remote_cancel_requested_at=remote_requested_at,
+                        remote_cancel_confirmed_at=None,
+                        remote_cancel_error=err_txt[:300],
+                        remote_status_before="pending",
+                        remote_status_after=None,
+                        remote_response_reference=None,
+                        now=now,
+                    )
+            except Exception as exc:
+                exc_txt = str(exc)[:300]
+                self.storage.update_withdrawal_erip(
+                    withdrawal_id, "failed", None, exc_txt, now,
+                )
+                self.storage.update_withdrawal_remote_cancel(
+                    withdrawal_id,
+                    remote_cancel_status="failed",
+                    remote_cancel_method="api_delete",
+                    remote_cancel_requested_at=remote_requested_at,
+                    remote_cancel_confirmed_at=None,
+                    remote_cancel_error=exc_txt,
+                    remote_status_before=None,
+                    remote_status_after=None,
+                    remote_response_reference=None,
+                    now=now,
+                )
+        else:
+            self.storage.update_withdrawal_erip(
+                withdrawal_id, "unsupported", None, "no_erip_uid_or_client", now,
+            )
+            self.storage.update_withdrawal_remote_cancel(
+                withdrawal_id,
+                remote_cancel_status="no_erip_uid",
+                remote_cancel_method=None,
+                remote_cancel_requested_at=None,
+                remote_cancel_confirmed_at=None,
+                remote_cancel_error="no_erip_uid_or_client",
+                remote_status_before=None,
+                remote_status_after=None,
+                remote_response_reference=None,
+                now=now,
+            )
+
     def withdraw_payment_intent(
         self,
         auth: dict[str, Any],
@@ -11074,86 +11159,12 @@ class MiniAppContext:
         if mk_invoice_id:
             self.storage.reset_automation_item_for_withdrawal(mk_invoice_id, now)
 
-        # ── ERIP: remote cancel via DELETE API (v7.1.4) ──────────────────────
+        # ── ERIP: remote cancel via DELETE API (v7.1.4 / v7.1.4.1) ─────────────
         erip_uid = str(pi.get("bepaid_uid") or "").strip()
         erip_option = self.storage.get_option_by_channel(public_id, "erip") if hasattr(self.storage, "get_option_by_channel") else None
         if not erip_uid and erip_option:
             erip_uid = str(erip_option.get("bepaid_uid") or "").strip()
-
-        if erip_uid and hasattr(self, "_bepaid_erip_client"):
-            remote_requested_at = now
-            try:
-                void_result = self._bepaid_erip_client().void_erip_payment(erip_uid)
-                err_txt = str(void_result.error or "")
-                resp_data = void_result.data or {}
-                if void_result.ok:
-                    remote_status_after = str(resp_data.get("status") or "deleted")
-                    remote_ref = str(resp_data.get("uid") or erip_uid)
-                    self.storage.update_withdrawal_erip(
-                        withdrawal_id, "cancelled", now, None, now,
-                    )
-                    self.storage.update_withdrawal_remote_cancel(
-                        withdrawal_id,
-                        remote_cancel_status="cancelled",
-                        remote_cancel_method="api_delete",
-                        remote_cancel_requested_at=remote_requested_at,
-                        remote_cancel_confirmed_at=now,
-                        remote_cancel_error=None,
-                        remote_status_before="pending",
-                        remote_status_after=remote_status_after,
-                        remote_response_reference=remote_ref,
-                        now=now,
-                    )
-                else:
-                    r_cancel_status = "requires_check" if void_result.requires_check else "failed"
-                    self.storage.update_withdrawal_erip(
-                        withdrawal_id, "failed", None, err_txt[:300], now,
-                    )
-                    self.storage.update_withdrawal_remote_cancel(
-                        withdrawal_id,
-                        remote_cancel_status=r_cancel_status,
-                        remote_cancel_method="api_delete",
-                        remote_cancel_requested_at=remote_requested_at,
-                        remote_cancel_confirmed_at=None,
-                        remote_cancel_error=err_txt[:300],
-                        remote_status_before="pending",
-                        remote_status_after=None,
-                        remote_response_reference=None,
-                        now=now,
-                    )
-            except Exception as exc:
-                exc_txt = str(exc)[:300]
-                self.storage.update_withdrawal_erip(
-                    withdrawal_id, "failed", None, exc_txt, now,
-                )
-                self.storage.update_withdrawal_remote_cancel(
-                    withdrawal_id,
-                    remote_cancel_status="failed",
-                    remote_cancel_method="api_delete",
-                    remote_cancel_requested_at=remote_requested_at,
-                    remote_cancel_confirmed_at=None,
-                    remote_cancel_error=exc_txt,
-                    remote_status_before=None,
-                    remote_status_after=None,
-                    remote_response_reference=None,
-                    now=now,
-                )
-        else:
-            self.storage.update_withdrawal_erip(
-                withdrawal_id, "unsupported", None, "no_erip_uid_or_client", now,
-            )
-            self.storage.update_withdrawal_remote_cancel(
-                withdrawal_id,
-                remote_cancel_status="no_erip_uid",
-                remote_cancel_method=None,
-                remote_cancel_requested_at=None,
-                remote_cancel_confirmed_at=None,
-                remote_cancel_error="no_erip_uid_or_client",
-                remote_status_before=None,
-                remote_status_after=None,
-                remote_response_reference=None,
-                now=now,
-            )
+        self._attempt_remote_cancel_for_withdrawal(withdrawal_id, erip_uid, now)
 
         # ── Card: block checkout (record blocked timestamp) ────────────────────
         self.storage.update_withdrawal_card(withdrawal_id, now, now)
@@ -11236,6 +11247,112 @@ class MiniAppContext:
                 "requires_check_reason": wr.get("requires_check_reason"),
             }
         return result
+
+    def retry_remote_cancel(
+        self, auth: dict[str, Any], public_id: str
+    ) -> dict[str, Any]:
+        """POST /api/payments/intents/{id}/remote-cancel — v7.1.4.1.
+
+        Retry BePaid DELETE for an already locally-withdrawn intent (legacy or failed).
+        Does NOT create a new withdrawal record, does NOT edit Telegram again,
+        does NOT touch MoyKlass.
+        """
+        if auth.get("_internal") is True and auth.get("role") in WITHDRAW_INVOICE_ROLES:
+            role = auth["role"]
+        else:
+            role = self._role_for_user(int(auth.get("user_id") or 0))
+        if role not in WITHDRAW_INVOICE_ROLES:
+            return {"ok": False, "error": "Доступ запрещён. Требуется роль: owner, admin или operations."}
+
+        now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+
+        pi = self.storage.get_payment_intent(public_id)
+        if not pi:
+            return {"ok": False, "error": "Счёт не найден.", "public_id": public_id}
+
+        if pi.get("client_visibility") != "withdrawn":
+            return {"ok": False, "error": "Счёт не отозван. Операция доступна только для отозванных счетов."}
+
+        wr = self.storage.get_withdrawal_by_intent(public_id)
+        if not wr:
+            return {"ok": False, "error": "Запись отзыва не найдена."}
+
+        withdrawal_id = wr["id"]
+
+        # Idempotency: already successfully cancelled — do not re-call DELETE
+        current_remote = str(wr.get("remote_cancel_status") or "")
+        if current_remote in ("cancelled", "already_cancelled"):
+            return {
+                "ok": True,
+                "idempotent": True,
+                "local_withdrawal_status": "withdrawn",
+                "remote_cancel_status": current_remote,
+                "telegram_status": wr.get("telegram_update_status"),
+            }
+
+        # Re-verify payment not received (paid/ambiguous guard)
+        payment_status = str(pi.get("status") or "")
+        mk_payment_id = pi.get("mk_payment_id")
+        mk_posting_status = str(pi.get("mk_posting_status") or "")
+        confirmed_txs = self.storage.get_confirmed_bepaid_transactions_for_intent(public_id)
+        already_paid = (
+            payment_status in ("paid", "posted_to_moyklass")
+            or bool(mk_payment_id)
+            or mk_posting_status in ("posted", "claiming", "ambiguous")
+            or bool(confirmed_txs)
+        )
+        if already_paid:
+            log.warning(
+                "payment_event=payment_remote_cancel_retry_blocked_paid intent=%s",
+                public_id,
+            )
+            return {
+                "ok": False,
+                "remote_cancel_status": "already_paid",
+                "error": "Платёж уже оплачен. Требуется возврат, а не отмена.",
+            }
+
+        # Resolve ERIP UID
+        erip_uid = str(pi.get("bepaid_uid") or "").strip()
+        erip_option = self.storage.get_option_by_channel(public_id, "erip") if hasattr(self.storage, "get_option_by_channel") else None
+        if not erip_uid and erip_option:
+            erip_uid = str(erip_option.get("bepaid_uid") or "").strip()
+
+        if not erip_uid:
+            return {
+                "ok": False,
+                "remote_cancel_status": "no_erip_uid",
+                "error": "UID платежа в bePaid не найден. Отмена невозможна.",
+            }
+
+        log.info(
+            "payment_event=payment_remote_cancel_retry_started intent=%s withdrawal_id=%d uid_present=1",
+            public_id, withdrawal_id,
+        )
+
+        self._attempt_remote_cancel_for_withdrawal(withdrawal_id, erip_uid, now)
+
+        final_wr = self.storage.get_withdrawal_by_intent(public_id) or {}
+        remote_cancel_status = str(final_wr.get("remote_cancel_status") or "")
+
+        if remote_cancel_status == "cancelled":
+            log.info(
+                "payment_event=payment_remote_cancel_retry_succeeded intent=%s withdrawal_id=%d"
+                " remote_cancel_status=cancelled method=api_delete",
+                public_id, withdrawal_id,
+            )
+        elif remote_cancel_status == "requires_check":
+            log.warning(
+                "payment_event=payment_remote_cancel_retry_requires_check intent=%s reason_code=%s",
+                public_id, final_wr.get("remote_cancel_error") or "unknown",
+            )
+
+        return {
+            "ok": remote_cancel_status == "cancelled",
+            "local_withdrawal_status": "withdrawn",
+            "remote_cancel_status": remote_cancel_status,
+            "telegram_status": final_wr.get("telegram_update_status"),
+        }
 
     def client_payments_list(self, auth: dict[str, Any]) -> dict[str, Any]:
         """GET /api/client/payments — parent-only, returns published intents for own children."""
@@ -16278,6 +16395,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.withdraw_intent_from_parent(auth, _pi_parts[0]))
                 if len(_pi_parts) == 2 and _pi_parts[1] == "withdraw":
                     return self._send_json(CTX.withdraw_payment_intent(auth, _pi_parts[0], body))
+                if len(_pi_parts) == 2 and _pi_parts[1] == "remote-cancel":
+                    return self._send_json(CTX.retry_remote_cancel(auth, _pi_parts[0]))
             if path.startswith("/api/payments/notifications/"):
                 _notif_rest = path[len("/api/payments/notifications/"):]
                 _notif_parts = _notif_rest.split("/")
