@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.5.1");
+console.log("MiniApp version: v7.1.5.2");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -14690,7 +14690,7 @@ window.automationItemAction = async function(itemId, action, evOrBtn) {
 
 // ── v7.1.5 — Payments workspace ───────────────────────────────────────────
 
-const _wsState = { tab: "overview", stats: null, attention: [], pilotClients: [], statsLoading: false };
+const _wsState = { tab: "overview", stats: null, attention: [], pilotClients: [], allPayments: null, statsLoading: false };
 
 function loadPaymentsWorkspace() {
   const root = $("paymentsWorkspaceRoot");
@@ -14732,7 +14732,7 @@ function _wsRenderCurrentTab() {
   if (!root) return;
   if (_wsState.tab === "overview") _wsRenderOverview(root);
   else if (_wsState.tab === "attention") { _wsRenderAttention(root); _loadWorkspaceAttention(); }
-  else if (_wsState.tab === "all-payments") _wsRenderAllPayments(root);
+  else if (_wsState.tab === "all-payments") { _wsRenderAllPayments(root); _loadWorkspaceAllPayments(); }
   else if (_wsState.tab === "pilot-clients") { _wsRenderPilotClients(root); _loadPilotClients(); }
 }
 
@@ -14764,6 +14764,17 @@ async function _loadPilotClients() {
     const d = await apiGet("/api/pilot/clients");
     _wsState.pilotClients = d.clients || []; _wsRenderPilotClients(root);
   } catch (e) { if (root) root.innerHTML = `<div class="notice notice-error">Ошибка загрузки</div>`; }
+}
+
+async function _loadWorkspaceAllPayments() {
+  const root = $("wsTabContent");
+  try {
+    const d = await apiGet("/api/payments/intents");
+    _wsState.allPayments = d.intents || [];
+    _wsRenderAllPayments(root);
+  } catch (e) {
+    if (root) root.innerHTML = `<div class="notice notice-error">Ошибка загрузки. <button class="secondary" style="font-size:12px;padding:4px 10px;margin-left:8px" onclick="_loadWorkspaceAllPayments()">Повторить</button></div>`;
+  }
 }
 
 function _wsRenderOverview(root) {
@@ -14814,7 +14825,19 @@ function _wsRenderAttention(root) {
 }
 
 function _wsRenderAllPayments(root) {
-  root.innerHTML = `<div class="notice">Для просмотра всех платёжных счетов используйте раздел <strong>Отчёты → Платежи</strong>.</div>`;
+  if (_wsState.allPayments === null) {
+    root.innerHTML = `<div class="notice">Загрузка платёжных счетов...</div>`;
+    return;
+  }
+  if (!_wsState.allPayments.length) {
+    root.innerHTML = `<div class="notice">Платёжных счетов нет.</div>`;
+    return;
+  }
+  const el = document.createElement("div");
+  el.className = "ws-all-payments";
+  root.innerHTML = "";
+  root.appendChild(el);
+  renderPaymentIntentList(el, _wsState.allPayments, {});
 }
 
 function _wsRenderPilotClients(root) {

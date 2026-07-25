@@ -336,12 +336,12 @@ class TestMkTermsSyncDefault(unittest.TestCase):
 
 class TestVersionV7151(unittest.TestCase):
 
-    def test_21_cache_bust_and_version_are_v7151(self):
-        """index.html cache-bust and app.js version marker must be v7.1.5.1."""
+    def test_21_cache_bust_and_version_are_v7152(self):
+        """index.html cache-bust and app.js version marker must be v7.1.5.2."""
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.5.1", html, "index.html cache-bust must be v=7.1.5.1")
-        self.assertIn("v7.1.5.1", js, "app.js version marker must be v7.1.5.1")
+        self.assertIn("v=7.1.5.2", html, "index.html cache-bust must be v=7.1.5.2")
+        self.assertIn("v7.1.5.2", js, "app.js version marker must be v7.1.5.2")
 
 
 if __name__ == "__main__":

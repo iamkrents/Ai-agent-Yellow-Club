@@ -8307,3 +8307,77 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
 .pt-auto-sync-disabled { background: var(--line); opacity: 0.7; }
 /* v7.1.4 — withdrawal remote cancel method note */
 .wd-remote-method { font-size: 10px; color: var(--muted); margin-left: 4px; }
+
+/* v7.1.5.2 — Payments Workspace mobile layout ───────────────────────── */
+.ws-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin: 12px 0 16px;
+}
+@media (min-width: 560px) {
+  .ws-stats-grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 319px) {
+  .ws-stats-grid { grid-template-columns: 1fr; }
+}
+.ws-stat-card {
+  background: var(--surface, #fff);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  min-height: 70px;
+}
+.ws-stat-value {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.ws-stat-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+  line-height: 1.3;
+}
+.ws-subtabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  padding-bottom: 4px;
+  margin: 0 0 14px;
+}
+.ws-subtabs::-webkit-scrollbar { display: none; }
+.ws-subtab {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: transparent;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--ink);
+  line-height: 1.4;
+  font-family: inherit;
+}
+.ws-subtab.active {
+  background: var(--ink);
+  color: #fff;
+  border-color: transparent;
+}
+@media (max-width: 420px) {
+  .topbar h1 { font-size: 18px; }
+}
+@media (max-width: 360px) {
+  .topbar h1 { font-size: 16px; }
+}
