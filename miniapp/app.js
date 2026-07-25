@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.4.2");
+console.log("MiniApp version: v7.1.5");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -231,10 +231,10 @@ const MVP_TABS_BY_ROLE = {
   intern:         ["intern", "help", "ask", "my-lunch"],
   teacher:        ["lessons", "tasks", "help", "ask", "my-lunch"],
   methodist:      ["lessons", "tasks", "help", "ask", "admin", "my-lunch"],
-  owner:          ["lessons", "tasks", "reports", "help", "ask", "admin", "my-lunch"],
-  admin:          ["lessons", "tasks", "reports", "help", "ask", "admin", "my-lunch"],
-  operations:     ["lessons", "tasks", "reports", "help", "ask", "admin", "my-lunch"],
-  client_manager: ["reports", "my-lunch"],
+  owner:          ["lessons", "tasks", "reports", "help", "ask", "admin", "payments-workspace", "my-lunch"],
+  admin:          ["lessons", "tasks", "reports", "help", "ask", "admin", "payments-workspace", "my-lunch"],
+  operations:     ["lessons", "tasks", "reports", "help", "ask", "admin", "payments-workspace", "my-lunch"],
+  client_manager: ["payments-workspace", "reports", "my-lunch"],
   director:       ["reports", "my-lunch"],
   parent:         ["my-children", "food", "help"],
 };
@@ -1141,6 +1141,7 @@ function setupRoleUi() {
   $("appTitle").textContent = titles[role] || "Кабинет сотрудника";
 
   document.querySelectorAll(".admin-only").forEach(el => el.classList.toggle("hidden", !canUseAdmin()));
+  document.querySelectorAll(".payments-workspace-only").forEach(el => el.classList.toggle("hidden", !roleCaps().canUsePaymentsWorkspace));
   document.querySelectorAll(".role-lessons").forEach(el => el.classList.toggle("hidden", !canUseLessons()));
   document.querySelectorAll(".role-schedule").forEach(el => el.classList.toggle("hidden", !canUseSchedule()));
   document.querySelectorAll(".role-open-slots").forEach(el => el.classList.toggle("hidden", !canUseOpenSlots()));
@@ -1263,6 +1264,7 @@ function activateTab(name) {
   }
   if (name === "intern") loadInternTrack();
   if (name === "admin") loadAdmin();
+  if (name === "payments-workspace") loadPaymentsWorkspace();
   if (name === "schedule") loadWorkSchedule();
   if (name === "windows") loadOpenSlots();
   if (name === "reports") { loadReports(); loadKpi(); renderChildrenReport(); renderBepaid(); loadBepaidStatus(); }
@@ -12702,6 +12704,16 @@ function renderPaymentIntentCard(pi) {
   const withdrawBtn = canWithdrawFrontend
     ? `<button class="danger" style="font-size:12px;padding:4px 10px" data-pi-withdraw-btn="${escapeHtml(pi.public_id)}" onclick="openWithdrawModal('${escapeHtml(pi.public_id)}','${cancelSafeName}',${amountVal},'${escapeHtml(String(pi.mk_invoice_id||''))}')">Отозвать счёт</button>`
     : "";
+  // ── Pilot review approval (v7.1.5) ───────────────────────────────────────
+  const _isPilotReviewDraft = pi.status === "draft"
+    && pi.source === "moyklass_invoice_automation"
+    && !pi.bepaid_uid
+    && !(pi.payment_options || []).some(function(o) { return o.uid; })
+    && roleCaps().canApprovePilotIntents;
+  const approveReviewBtn = _isPilotReviewDraft
+    ? `<button class="primary" style="font-size:12px;padding:4px 10px" data-approve-btn="${escapeHtml(pi.public_id)}" onclick="approvePaymentIntent('${escapeHtml(pi.public_id)}',this)">Подтвердить и отправить</button>`
+    : "";
+
   // ── Remote cancel retry (v7.1.4.2) ───────────────────────────────────────
   const _hasEripUid = pi.bepaid_uid || (pi.payment_options || []).some(function(o) { return o.channel === "erip" && o.uid; });
   const _wdRemoteStatus = (pi.withdrawal || {}).remote_cancel_status || (pi.withdrawal || {}).erip_cancel_status || "";
@@ -12737,7 +12749,7 @@ function renderPaymentIntentCard(pi) {
     ${comment}${cancelInfo}${bePaidCreatingBlock}${bePaidRequiresCheckBlock}${bePaidInfo}${acqReadyBadge}${bePaidPaidBlock}${mkPostedBlock}
     ${publishedBadge}${withdrawnBadge}
     ${withdrawalInfoBlock}
-    <div class="pi-card-footer">${bePaidBtn}${acquiringBtn}${verifyAcquiringBtn}${mkPostBtn}${cancelBtn}${publishToParentBtn}${withdrawBtn}${retryRemoteCancelBtn}</div>
+    <div class="pi-card-footer">${approveReviewBtn}${bePaidBtn}${acquiringBtn}${verifyAcquiringBtn}${mkPostBtn}${cancelBtn}${publishToParentBtn}${withdrawBtn}${retryRemoteCancelBtn}</div>
     <div class="pi-card-id">${escapeHtml(pi.public_id)} · mk_user_id: ${pi.mk_user_id} · ${createdAt} ${createdBy}</div>
   </div>`;
 }
@@ -14675,6 +14687,226 @@ window.automationItemAction = async function(itemId, action, evOrBtn) {
     if (btn) btn.disabled = false;
   }
 };
+
+// ── v7.1.5 — Payments workspace ───────────────────────────────────────────
+
+const _wsState = { tab: "overview", stats: null, attention: [], pilotClients: [], statsLoading: false };
+
+function loadPaymentsWorkspace() {
+  const root = $("paymentsWorkspaceRoot");
+  if (!root) return;
+  _renderWorkspaceSkeleton(root);
+  _loadWorkspaceStats();
+}
+
+function _renderWorkspaceSkeleton(root) {
+  const caps = roleCaps();
+  const canAdmin = caps.canAdminPilot;
+  const tabs = [
+    { id: "overview", label: "Обзор" },
+    { id: "attention", label: "Требуют внимания" },
+    { id: "all-payments", label: "Все платежи" },
+    ...(caps.canUsePaymentsWorkspace ? [{ id: "pilot-clients", label: "Клиенты пилота" }] : []),
+  ].filter(Boolean);
+  root.innerHTML = `
+    <div class="section-head">
+      <div><h2>Рабочее пространство платежей</h2></div>
+      <button class="secondary" id="wsRefreshBtn" onclick="loadPaymentsWorkspace()">Обновить</button>
+    </div>
+    <nav class="ws-subtabs" id="wsSubtabs">
+      ${tabs.map(t => `<button class="ws-subtab${_wsState.tab === t.id ? " active" : ""}" data-ws-tab="${escapeHtml(t.id)}" onclick="_wsActivateTab('${escapeHtml(t.id)}')">${escapeHtml(t.label)}</button>`).join("")}
+    </nav>
+    <div id="wsTabContent"></div>
+  `;
+  _wsRenderCurrentTab();
+}
+
+function _wsActivateTab(tabId) {
+  _wsState.tab = tabId;
+  document.querySelectorAll(".ws-subtab").forEach(b => b.classList.toggle("active", b.dataset.wsTab === tabId));
+  _wsRenderCurrentTab();
+}
+
+function _wsRenderCurrentTab() {
+  const root = $("wsTabContent");
+  if (!root) return;
+  if (_wsState.tab === "overview") _wsRenderOverview(root);
+  else if (_wsState.tab === "attention") { _wsRenderAttention(root); _loadWorkspaceAttention(); }
+  else if (_wsState.tab === "all-payments") _wsRenderAllPayments(root);
+  else if (_wsState.tab === "pilot-clients") { _wsRenderPilotClients(root); _loadPilotClients(); }
+}
+
+async function _loadWorkspaceStats() {
+  _wsState.statsLoading = true;
+  try {
+    const d = await apiGet("/api/payments/workspace/stats");
+    _wsState.stats = d; _wsRenderCurrentTab();
+  } catch (e) { /* stats are optional */ }
+  _wsState.statsLoading = false;
+}
+
+async function _loadWorkspaceAttention() {
+  const root = $("wsTabContent");
+  try {
+    const d = await apiGet("/api/payments/workspace/attention?limit=100");
+    _wsState.attention = d.items || []; _wsRenderAttention(root);
+  } catch (e) { if (root) root.innerHTML = `<div class="notice notice-error">Ошибка загрузки</div>`; }
+}
+
+async function _loadPilotClients() {
+  const root = $("wsTabContent");
+  try {
+    const d = await apiGet("/api/pilot/clients");
+    _wsState.pilotClients = d.clients || []; _wsRenderPilotClients(root);
+  } catch (e) { if (root) root.innerHTML = `<div class="notice notice-error">Ошибка загрузки</div>`; }
+}
+
+function _wsRenderOverview(root) {
+  const s = _wsState.stats;
+  if (!s) { root.innerHTML = `<div class="notice">Загрузка статистики...</div>`; return; }
+  const fmtNum = n => Number(n || 0).toLocaleString("ru-RU");
+  root.innerHTML = `
+    <div class="ws-stats-grid">
+      <div class="ws-stat-card"><div class="ws-stat-value">${fmtNum(s.pending_review)}</div><div class="ws-stat-label">На проверке</div></div>
+      <div class="ws-stat-card"><div class="ws-stat-value">${fmtNum(s.requires_check)}</div><div class="ws-stat-label">Требуют внимания</div></div>
+      <div class="ws-stat-card"><div class="ws-stat-value">${fmtNum(s.awaiting_payment)}</div><div class="ws-stat-label">Ожидают оплаты</div></div>
+      <div class="ws-stat-card"><div class="ws-stat-value">${fmtNum(s.paid)}</div><div class="ws-stat-label">Оплачено</div></div>
+      <div class="ws-stat-card"><div class="ws-stat-value">${fmtNum(s.posted_to_moyklass)}</div><div class="ws-stat-label">Внесено в МойКласс</div></div>
+      <div class="ws-stat-card"><div class="ws-stat-value">${fmtNum(s.pilot_clients_count)}</div><div class="ws-stat-label">Клиентов в пилоте</div></div>
+    </div>
+  `;
+}
+
+function _wsRenderAttention(root) {
+  const items = _wsState.attention;
+  if (!items) { root.innerHTML = `<div class="notice">Загрузка...</div>`; return; }
+  if (!items.length) { root.innerHTML = `<div class="notice">Нет элементов, требующих внимания.</div>`; return; }
+  const canApprove = roleCaps().canApprovePilotIntents;
+  root.innerHTML = `<div class="ws-attention-list">${items.map(item => {
+    const stage = item.current_stage || "";
+    const pid = escapeHtml(item.intent_public_id || "");
+    const stageLabel = {
+      pending_review: "⏳ На проверке",
+      requires_check: "⚠ Требует проверки",
+      error: "❌ Ошибка",
+      missing_parent_link: "👤 Нет привязки родителя",
+      ambiguous_parent_link: "👥 Несколько родителей",
+    }[stage] || stage;
+    const approveBtn = (stage === "pending_review" && canApprove && pid)
+      ? `<button class="primary" style="font-size:12px;padding:4px 10px" onclick="approvePaymentIntent('${pid}',this)">Подтвердить и отправить</button>`
+      : "";
+    return `
+      <div class="ws-attention-item">
+        <div class="ws-attention-meta">
+          <span class="ws-stage-badge">${stageLabel}</span>
+          ${pid ? `<span class="ws-intent-id">${pid}</span>` : ""}
+          <span class="ws-student">${escapeHtml(item.pi_student_name || item.student_name || "")}</span>
+        </div>
+        ${item.readable_reason ? `<div class="ws-reason">${escapeHtml(item.readable_reason)}</div>` : ""}
+        <div class="ws-attention-actions">${approveBtn}</div>
+      </div>`;
+  }).join("")}</div>`;
+}
+
+function _wsRenderAllPayments(root) {
+  root.innerHTML = `<div class="notice">Для просмотра всех платёжных счетов используйте раздел <strong>Отчёты → Платежи</strong>.</div>`;
+}
+
+function _wsRenderPilotClients(root) {
+  const clients = _wsState.pilotClients;
+  const canAdmin = roleCaps().canAdminPilot;
+  const modeLabel = { observe: "Наблюдение", review: "Проверка", auto: "Авто", disabled: "Отключён" };
+  const addForm = canAdmin ? `
+    <div class="ws-pilot-add-form">
+      <h3>Добавить / обновить клиента пилота</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <label style="flex:1;min-width:120px"><span>MK User ID</span><input id="pilotAddUserId" type="text" placeholder="12345" /></label>
+        <label style="flex:1;min-width:120px"><span>Режим</span>
+          <select id="pilotAddMode">
+            <option value="review">Проверка</option>
+            <option value="observe">Наблюдение</option>
+            <option value="auto">Авто</option>
+            <option value="disabled">Отключён</option>
+          </select>
+        </label>
+        <label style="flex:2;min-width:160px"><span>Примечание</span><input id="pilotAddNote" type="text" placeholder="Необязательно" /></label>
+        <button class="primary" onclick="_pilotAddClient()">Добавить</button>
+      </div>
+      <div id="pilotAddResult" style="margin-top:6px;font-size:13px"></div>
+    </div>` : "";
+  const tableRows = clients.map(c => {
+    const changeMode = canAdmin ? `
+      <select onchange="_pilotChangeMode('${escapeHtml(c.mk_user_id)}',this.value)" style="font-size:12px">
+        ${["observe","review","auto","disabled"].map(m => `<option value="${m}"${c.mode===m?" selected":""}>${modeLabel[m]||m}</option>`).join("")}
+      </select>` : escapeHtml(modeLabel[c.mode] || c.mode);
+    const removeBtn = canAdmin ? `<button class="danger" style="font-size:11px;padding:2px 8px" onclick="_pilotRemove('${escapeHtml(c.mk_user_id)}',this)">Удалить</button>` : "";
+    return `<tr>
+      <td>${escapeHtml(c.mk_user_id)}</td>
+      <td>${changeMode}</td>
+      <td>${escapeHtml(c.note || "")}</td>
+      <td style="font-size:11px;color:var(--muted)">${c.last_success_at ? c.last_success_at.slice(0,16) : "—"}</td>
+      <td>${removeBtn}</td>
+    </tr>`;
+  }).join("");
+  root.innerHTML = `
+    ${addForm}
+    <div class="ws-pilot-table-wrap" style="overflow-x:auto;margin-top:12px">
+      ${clients.length ? `<table class="ws-pilot-table"><thead><tr><th>MK User ID</th><th>Режим</th><th>Примечание</th><th>Последний успех</th><th></th></tr></thead><tbody>${tableRows}</tbody></table>`
+        : `<div class="notice">Нет клиентов в пилоте.</div>`}
+    </div>`;
+}
+
+async function approvePaymentIntent(publicId, btn) {
+  if (!publicId) return;
+  if (btn) { btn.disabled = true; btn.textContent = "Подтверждаю..."; }
+  try {
+    const d = await _apiPostRaw(`/api/payments/intents/${encodeURIComponent(publicId)}/approve`, {});
+    if (d.ok) {
+      setNotice("Счёт подтверждён и отправлен родителю.", "success");
+      loadPaymentsWorkspace();
+    } else {
+      setNotice(d.error || "Ошибка подтверждения", "error");
+      if (btn) { btn.disabled = false; btn.textContent = "Подтвердить и отправить"; }
+    }
+  } catch (e) {
+    setNotice(safeUserError(e), "error");
+    if (btn) { btn.disabled = false; btn.textContent = "Подтвердить и отправить"; }
+  }
+}
+
+async function _pilotAddClient() {
+  const userId = ($("pilotAddUserId")?.value || "").trim();
+  const mode = $("pilotAddMode")?.value || "review";
+  const note = ($("pilotAddNote")?.value || "").trim() || null;
+  const resultEl = $("pilotAddResult");
+  if (!userId) { if (resultEl) resultEl.textContent = "Укажите MK User ID."; return; }
+  try {
+    const d = await _apiPostRaw("/api/pilot/clients", { mk_user_id: userId, mode, note });
+    if (d.ok) {
+      if (resultEl) resultEl.textContent = "✓ Сохранено.";
+      _loadPilotClients();
+    } else {
+      if (resultEl) resultEl.textContent = d.error || "Ошибка";
+    }
+  } catch (e) { if (resultEl) resultEl.textContent = safeUserError(e); }
+}
+
+async function _pilotChangeMode(mkUserId, newMode) {
+  try {
+    const d = await _apiPostRaw(`/api/pilot/clients/${encodeURIComponent(mkUserId)}/mode`, { mode: newMode });
+    if (!d.ok) setNotice(d.error || "Ошибка смены режима", "error");
+  } catch (e) { setNotice(safeUserError(e), "error"); }
+}
+
+async function _pilotRemove(mkUserId, btn) {
+  if (!confirm(`Удалить клиента ${mkUserId} из пилота?`)) return;
+  if (btn) btn.disabled = true;
+  try {
+    const d = await _apiPostRaw(`/api/pilot/clients/${encodeURIComponent(mkUserId)}/remove`, {});
+    if (d.ok) _loadPilotClients();
+    else { setNotice(d.error || "Ошибка удаления", "error"); if (btn) btn.disabled = false; }
+  } catch (e) { setNotice(safeUserError(e), "error"); if (btn) btn.disabled = false; }
+}
 
 // ── Wire up event listeners ───────────────────────────────────────────────
 

@@ -135,11 +135,14 @@ AUTOMATION_ADMIN_ROLES = {"owner", "admin"}       # v7.0.94.0
 AUTOMATION_VIEW_ROLES = {"owner", "admin", "operations"}  # v7.0.94.0
 WITHDRAW_INVOICE_ROLES = {"owner", "admin", "operations"}  # v7.0.98.0
 PAYMENT_TERMS_ROLES = {"owner", "admin", "operations"}  # v7.1.0 — pricing/terms admin
+PILOT_ADMIN_ROLES = {"owner", "admin"}                 # v7.1.5 — pilot client CRUD
+PAYMENT_APPROVAL_ROLES = {"owner", "admin", "operations", "client_manager"}  # v7.1.5 — review approve
+WORKSPACE_VIEW_ROLES = {"owner", "admin", "operations", "client_manager"}    # v7.1.5 — workspace read
 
 ADMIN_TABS_BY_ROLE = {
-    "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links", "payment-terms"],
-    "admin": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links", "payment-terms"],
-    "operations": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links", "payment-terms"],
+    "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links", "payment-terms", "payment-automation"],
+    "admin": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links", "payment-terms", "payment-automation"],
+    "operations": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links", "payment-terms", "payment-automation"],
     "methodist": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "notifications", "kpi", "interns"],
 }
 
@@ -1946,6 +1949,9 @@ class MiniAppContext:
             "canDeleteFoodMenu": food_enabled and role in FOOD_MENU_DELETE_ROLES,
             "foodMenuOcrEnabled": bool(getattr(self.settings, "food_menu_ocr_enabled", False)) and role in FOOD_MENU_EDIT_ROLES,
             "canAdminFoodOrders": food_enabled and role in FOOD_ADMIN_EDIT_ROLES,
+            "canUsePaymentsWorkspace": role in WORKSPACE_VIEW_ROLES,
+            "canApprovePilotIntents": role in PAYMENT_APPROVAL_ROLES,
+            "canAdminPilot": role in PILOT_ADMIN_ROLES,
         }
 
     def me(self, auth: dict[str, Any]) -> dict[str, Any]:
@@ -14129,6 +14135,184 @@ class MiniAppContext:
             log.warning("_fetch_mk_student_name: failed for mk_user_id=%s", mk_user_id)
         return None
 
+    # ── v7.1.5 — Payments Workspace ──────────────────────────────────────────
+
+    def _require_workspace_access(self, auth: dict[str, Any]) -> Optional[dict[str, Any]]:
+        if auth.get("_internal") is True:
+            return None
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in WORKSPACE_VIEW_ROLES:
+            return {"ok": False, "error": "Нет доступа к рабочему пространству платежей."}
+        return None
+
+    def payments_workspace_stats(self, auth: dict[str, Any]) -> dict[str, Any]:
+        denied = self._require_workspace_access(auth)
+        if denied:
+            return denied
+        return self.storage.get_payments_workspace_stats()
+
+    def payments_workspace_attention(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        denied = self._require_workspace_access(auth)
+        if denied:
+            return denied
+        limit = max(1, min(int(params.get("limit", 50)), 200))
+        items = self.storage.get_payments_attention_queue(limit=limit)
+        return {"ok": True, "items": items, "count": len(items)}
+
+    # ── v7.1.5 — Pilot client management ─────────────────────────────────────
+
+    def pilot_list_clients(self, auth: dict[str, Any]) -> dict[str, Any]:
+        denied = self._require_workspace_access(auth)
+        if denied:
+            return denied
+        clients = self.storage.list_pilot_clients()
+        return {"ok": True, "clients": clients, "count": len(clients)}
+
+    def pilot_upsert_client(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in PILOT_ADMIN_ROLES:
+            return {"ok": False, "error": "Управление пилотом доступно только owner и admin."}
+        mk_user_id = str(body.get("mk_user_id") or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "mk_user_id обязателен."}
+        mode = str(body.get("mode") or "disabled").strip()
+        if mode not in ("observe", "review", "auto", "disabled"):
+            return {"ok": False, "error": "Допустимые режимы: observe, review, auto, disabled."}
+        note = str(body.get("note") or "").strip() or None
+        now = now_iso()
+        existing = self.storage.get_pilot_client(mk_user_id)
+        old_mode = existing.get("mode") if existing else None
+        client = self.storage.upsert_pilot_client(
+            mk_user_id=mk_user_id,
+            mode=mode,
+            note=note,
+            added_by_tg_id=str(auth.get("user_id") or ""),
+            added_by_name=str(auth.get("full_name") or ""),
+            now=now,
+        )
+        self.storage.create_pilot_audit_event({
+            "created_at": now,
+            "event_type": "pilot_client_upserted",
+            "mk_user_id": mk_user_id,
+            "old_mode": old_mode,
+            "new_mode": mode,
+            "actor_tg_id": str(auth.get("user_id") or ""),
+            "actor_name": str(auth.get("full_name") or ""),
+            "note": note,
+        })
+        return {"ok": True, "client": client}
+
+    def pilot_update_mode(self, auth: dict[str, Any], mk_user_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in PILOT_ADMIN_ROLES:
+            return {"ok": False, "error": "Управление пилотом доступно только owner и admin."}
+        mk_user_id = str(mk_user_id).strip()
+        existing = self.storage.get_pilot_client(mk_user_id)
+        if not existing:
+            return {"ok": False, "error": "Клиент не найден в пилоте."}
+        new_mode = str(body.get("mode") or "").strip()
+        if new_mode not in ("observe", "review", "auto", "disabled"):
+            return {"ok": False, "error": "Допустимые режимы: observe, review, auto, disabled."}
+        now = now_iso()
+        old_mode = existing.get("mode")
+        client = self.storage.update_pilot_mode(mk_user_id, new_mode, now=now)
+        self.storage.create_pilot_audit_event({
+            "created_at": now,
+            "event_type": "pilot_mode_changed",
+            "mk_user_id": mk_user_id,
+            "old_mode": old_mode,
+            "new_mode": new_mode,
+            "actor_tg_id": str(auth.get("user_id") or ""),
+            "actor_name": str(auth.get("full_name") or ""),
+        })
+        return {"ok": True, "client": client}
+
+    def pilot_remove_client(self, auth: dict[str, Any], mk_user_id: str) -> dict[str, Any]:
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in PILOT_ADMIN_ROLES:
+            return {"ok": False, "error": "Управление пилотом доступно только owner и admin."}
+        mk_user_id = str(mk_user_id).strip()
+        now = now_iso()
+        existing = self.storage.get_pilot_client(mk_user_id)
+        if not existing:
+            return {"ok": False, "error": "Клиент не найден в пилоте."}
+        removed = self.storage.remove_pilot_client(mk_user_id)
+        if removed:
+            self.storage.create_pilot_audit_event({
+                "created_at": now,
+                "event_type": "pilot_client_removed",
+                "mk_user_id": mk_user_id,
+                "old_mode": existing.get("mode"),
+                "actor_tg_id": str(auth.get("user_id") or ""),
+                "actor_name": str(auth.get("full_name") or ""),
+            })
+        return {"ok": removed, "removed": removed}
+
+    # ── v7.1.5 — Review approval ──────────────────────────────────────────────
+
+    def approve_payment_intent(self, auth: dict[str, Any], public_id: str) -> dict[str, Any]:
+        denied = self._require_payment_intent_access(auth)
+        if denied:
+            return denied
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in PAYMENT_APPROVAL_ROLES:
+            return {"ok": False, "error": "Нет прав для подтверждения счёта."}
+        intent = self.storage.get_payment_intent(public_id)
+        if not intent:
+            return {"ok": False, "error": "Счёт не найден."}
+        if intent.get("status") not in ("draft",):
+            return {"ok": False, "error": "Счёт уже обработан или не является черновиком."}
+        if (intent.get("client_visibility") or "hidden") == "published":
+            return {"ok": False, "error": "Счёт уже открыт родителю."}
+        now = now_iso()
+        _auto_auth: dict[str, Any] = {"role": "owner", "user_id": 0, "_internal": True}
+        try:
+            opts_result = self.payment_intent_prepare_options(_auto_auth, public_id)
+        except Exception as exc:
+            log.exception("approve_payment_intent: prepare_options error for %s", public_id)
+            return {"ok": False, "error": f"Ошибка создания реквизитов bePaid: {exc}"}
+        if not opts_result.get("ok"):
+            return {"ok": False, "error": opts_result.get("error", "Ошибка bePaid")}
+        pub = self.storage.publish_payment_intent_to_client(public_id, str(auth.get("user_id") or ""), now)
+        if not pub.get("ok"):
+            return {"ok": False, "error": pub.get("error", "Ошибка публикации")}
+        # Update automation item stage
+        item = self.storage.find_automation_item_by_intent_public_id(public_id)
+        if item:
+            self.storage.update_automation_item_stage(
+                item["id"], "published",
+                readable_reason=f"Approved by user_id={auth.get('user_id')}",
+                now=now,
+            )
+            mk_invoice_id = item.get("mk_invoice_id", "")
+            mk_user_id = str(item.get("mk_user_id") or "")
+            if item.get("parent_notify_eligible", 0):
+                try:
+                    self._enqueue_and_send_parent_notification(
+                        item, public_id, mk_invoice_id, mk_user_id, now,
+                        intent=pub.get("intent"),
+                    )
+                except Exception:
+                    log.exception("approve_payment_intent: notify error for %s", public_id)
+        else:
+            mk_user_id = str(intent.get("mk_user_id") or "")
+        # Update pilot last success
+        if mk_user_id:
+            try:
+                self.storage.update_pilot_last_result(mk_user_id, success=True, now=now)
+            except Exception:
+                pass
+        # Audit
+        self.storage.create_pilot_audit_event({
+            "created_at": now,
+            "event_type": "pilot_review_approved",
+            "mk_user_id": mk_user_id,
+            "intent_public_id": public_id,
+            "actor_tg_id": str(auth.get("user_id") or ""),
+            "actor_name": str(auth.get("full_name") or ""),
+        })
+        return {"ok": True, "intent": pub.get("intent")}
+
     def automation_get_settings(self, auth: dict[str, Any]) -> dict[str, Any]:
         role = self._automation_effective_role(auth)
         if role not in AUTOMATION_VIEW_ROLES:
@@ -14824,6 +15008,32 @@ class MiniAppContext:
                 parent_notify_eligible=item.get("parent_notify_eligible", 0),
             )
 
+        # v7.1.5 — Pilot gate (fail-closed): only DB-enrolled pilot clients proceed to new intent creation
+        _pilot = self.storage.get_pilot_client(mk_user_id)
+        _pilot_mode = _pilot.get("mode", "disabled") if _pilot else "not_in_pilot"
+        if _pilot_mode in ("disabled", "not_in_pilot"):
+            log.info(
+                "payment_event=automation_pilot_skip mk_user_id=%s mk_invoice_id=%s mode=%s",
+                mk_user_id, inv_id, _pilot_mode,
+            )
+            return {"skip": True}
+        if _pilot_mode == "observe":
+            log.info(
+                "payment_event=automation_pilot_observe mk_user_id=%s mk_invoice_id=%s "
+                "would_create=1",
+                mk_user_id, inv_id,
+            )
+            self.storage.create_pilot_audit_event({
+                "created_at": now,
+                "event_type": "pilot_observe",
+                "mk_user_id": mk_user_id,
+                "mk_invoice_id": inv_id,
+                "note": "observe_mode_no_action",
+            })
+            return {"skip": True}
+        # mode == "review" or "auto" — proceed
+        _pilot_review_mode = (_pilot_mode == "review")
+
         # Check parent link
         parents = self.storage.get_parents_for_child(mk_user_id)
         if len(parents) == 0:
@@ -14874,7 +15084,8 @@ class MiniAppContext:
         # Create payment intent
         try:
             intent = self._automation_create_intent(
-                inv, inv_id, mk_user_id, student_name, now
+                inv, inv_id, mk_user_id, student_name, now,
+                create_bepaid=not _pilot_review_mode,
             )
             if not intent:
                 self.storage.update_automation_item_stage(
@@ -14886,6 +15097,31 @@ class MiniAppContext:
                 return {"requires_check": True, "discovered": is_new}
 
             public_id = intent["public_id"]
+
+            # v7.1.5 — review mode: intent created without BePaid, awaits manual approval
+            if _pilot_review_mode:
+                self.storage.update_automation_item_stage(
+                    item_id, "pending_review",
+                    intent_public_id=public_id,
+                    linked_parent_tg_id=parent_tg_id,
+                    readable_reason="Intent created, awaiting review approval",
+                    now=now,
+                )
+                self.storage.create_pilot_audit_event({
+                    "created_at": now,
+                    "event_type": "pilot_review_created",
+                    "mk_user_id": mk_user_id,
+                    "mk_invoice_id": inv_id,
+                    "intent_public_id": public_id,
+                    "note": "review_mode_pending_approval",
+                })
+                log.info(
+                    "payment_event=automation_pilot_review_created intent=%s mk_invoice_id=%s "
+                    "mk_user_id=%s bepaid_skipped=1",
+                    public_id, inv_id, mk_user_id,
+                )
+                return {"created": True, "review_pending": True, "discovered": is_new}
+
             self.storage.update_automation_item_stage(
                 item_id, "payment_options_created",
                 intent_public_id=public_id,
@@ -15867,6 +16103,8 @@ class MiniAppContext:
         mk_user_id: str,
         student_name: Optional[str],
         now: str,
+        *,
+        create_bepaid: bool = True,
     ) -> Optional[dict[str, Any]]:
         """Create payment intent directly via storage (not via HTTP handler)."""
         import json as _json
@@ -15947,15 +16185,17 @@ class MiniAppContext:
             log.warning("_automation_create_intent: set_intent_due_at failed for %s", public_id)
 
         # Create payment options (ERIP + acquiring) — internal bypass auth
-        _auto_auth: dict[str, Any] = {
-            "role": "owner",
-            "user_id": 0,
-            "_internal": True,
-        }
-        try:
-            self.payment_intent_prepare_options(_auto_auth, public_id)
-        except Exception:
-            log.exception("_automation_create_intent: prepare_options error for %s", public_id)
+        # Skipped for review-mode intents: BePaid link is created at approval time.
+        if create_bepaid:
+            _auto_auth: dict[str, Any] = {
+                "role": "owner",
+                "user_id": 0,
+                "_internal": True,
+            }
+            try:
+                self.payment_intent_prepare_options(_auto_auth, public_id)
+            except Exception:
+                log.exception("_automation_create_intent: prepare_options error for %s", public_id)
 
         return intent
 
@@ -16294,6 +16534,13 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                         return self._send_json(CTX.get_intent_notification_status(auth, _pi_parts[0]))
                     if len(_pi_parts) == 2 and _pi_parts[1] == "withdrawal-status":
                         return self._send_json(CTX.get_intent_withdrawal_info(auth, _pi_parts[0]))
+                # v7.1.5 — Payments workspace
+                if path == "/api/payments/workspace/stats":
+                    return self._send_json(CTX.payments_workspace_stats(auth))
+                if path == "/api/payments/workspace/attention":
+                    return self._send_json(CTX.payments_workspace_attention(auth, params))
+                if path == "/api/pilot/clients":
+                    return self._send_json(CTX.pilot_list_clients(auth))
                 if path.startswith("/api/food/kitchen/menus/"):
                     _krest = path[len("/api/food/kitchen/menus/"):]
                     _kparts = _krest.split("/")
@@ -16434,6 +16681,18 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.withdraw_payment_intent(auth, _pi_parts[0], body))
                 if len(_pi_parts) == 2 and _pi_parts[1] == "remote-cancel":
                     return self._send_json(CTX.retry_remote_cancel(auth, _pi_parts[0]))
+                if len(_pi_parts) == 2 and _pi_parts[1] == "approve":
+                    return self._send_json(CTX.approve_payment_intent(auth, _pi_parts[0]))
+            # v7.1.5 — Pilot management
+            if path == "/api/pilot/clients":
+                return self._send_json(CTX.pilot_upsert_client(auth, body))
+            if path.startswith("/api/pilot/clients/"):
+                _pc_rest = path[len("/api/pilot/clients/"):]
+                _pc_parts = _pc_rest.split("/")
+                if len(_pc_parts) == 2 and _pc_parts[1] == "mode":
+                    return self._send_json(CTX.pilot_update_mode(auth, _pc_parts[0], body))
+                if len(_pc_parts) == 2 and _pc_parts[1] == "remove":
+                    return self._send_json(CTX.pilot_remove_client(auth, _pc_parts[0]))
             if path.startswith("/api/payments/notifications/"):
                 _notif_rest = path[len("/api/payments/notifications/"):]
                 _notif_parts = _notif_rest.split("/")

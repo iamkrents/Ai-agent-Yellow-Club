@@ -412,6 +412,7 @@ class TestCounterReconciliation(unittest.TestCase):
     def test_28_re_processed_missing_parent_not_unaccounted(self):
         # An item already in missing_parent_link stage from a prior run must
         # still be counted (not unaccounted) when the pipeline re-processes it.
+        self.st.upsert_pilot_client("25000", mode="auto")
         inv = _mk_invoice(inv_id=21400, user_id=25000, price=100.0)
         ctx = _make_ctx(self.st, [inv])
         # First run: no parent → missing_parent_link stage created

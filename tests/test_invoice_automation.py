@@ -431,6 +431,7 @@ class TestPipelineBasic(unittest.TestCase):
         self.assertEqual(result.get("skipped"), 1)
 
     def test_missing_parent_link(self):
+        self.st.upsert_pilot_client("2000", mode="auto")
         inv = _mk_invoice(inv_id=200, user_id=2000, price=100.0, payed=0.0)
         ctx = _make_ctx_with_mocks(self.st, [inv])
         result = ctx.process_new_moyklass_invoices()
@@ -442,6 +443,7 @@ class TestPipelineBasic(unittest.TestCase):
         self.assertEqual(item["reason_code"], "no_parent_link")
 
     def test_discovered_count(self):
+        self.st.upsert_pilot_client("2001", mode="auto")
         inv = _mk_invoice(inv_id=201, user_id=2001, price=80.0, payed=0.0)
         ctx = _make_ctx_with_mocks(self.st, [inv])
         result = ctx.process_new_moyklass_invoices()
@@ -541,6 +543,7 @@ class TestPipelineWithParent(unittest.TestCase):
             )
 
     def test_single_parent_becomes_ready_for_creation(self):
+        self.st.upsert_pilot_client("2000", mode="auto")
         self._seed_parent_link("2000", "tg_parent_1")
         inv = _mk_invoice(inv_id=500, user_id=2000, price=90.0)
         ctx = _make_ctx_with_mocks(self.st, [inv])
@@ -552,6 +555,7 @@ class TestPipelineWithParent(unittest.TestCase):
         self.assertEqual(item["current_stage"], "ready_for_creation")
 
     def test_ambiguous_parent_link(self):
+        self.st.upsert_pilot_client("3000", mode="auto")
         self._seed_parent_link("3000", "tg_parent_A")
         self._seed_parent_link("3000", "tg_parent_B")
         inv = _mk_invoice(inv_id=600, user_id=3000, price=50.0)

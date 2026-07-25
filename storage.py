@@ -607,6 +607,7 @@ class Storage:
             self._init_automation_tables(conn)
             self._init_withdrawal_tables(conn)
             self._init_pricing_tables(conn)
+            self._init_pilot_tables(conn)
 
     def _init_payment_intent_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -1497,6 +1498,51 @@ class Storage:
                 )
             except Exception:
                 pass
+
+    # ── v7.1.5 — Pilot automation tables ─────────────────────────────────────
+
+    def _init_pilot_tables(self, conn: sqlite3.Connection) -> None:
+        """Create payment automation pilot tables (v7.1.5). All additive."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payment_automation_pilot_clients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mk_user_id TEXT NOT NULL UNIQUE,
+                mode TEXT NOT NULL DEFAULT 'disabled',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                note TEXT,
+                added_by_tg_id TEXT,
+                added_by_name TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_success_at TEXT,
+                last_error_at TEXT,
+                last_error_code TEXT
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_papc_mk_user "
+            "ON payment_automation_pilot_clients(mk_user_id)"
+        )
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payment_pilot_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                mk_user_id TEXT,
+                pilot_client_id INTEGER,
+                old_mode TEXT,
+                new_mode TEXT,
+                actor_tg_id TEXT,
+                actor_name TEXT,
+                intent_public_id TEXT,
+                mk_invoice_id TEXT,
+                note TEXT
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ppal_mk_user "
+            "ON payment_pilot_audit_log(mk_user_id, created_at)"
+        )
 
     # ── v7.0.94.0 — Invoice Automation methods ───────────────────────────────
 
@@ -8659,5 +8705,176 @@ class Storage:
                 """SELECT * FROM payment_pricing_audit_log
                    WHERE mk_user_id=? ORDER BY id DESC LIMIT ? OFFSET ?""",
                 (str(mk_user_id), limit, offset),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── v7.1.5 — Pilot automation client methods ─────────────────────────────
+
+    def get_pilot_client(self, mk_user_id: str) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM payment_automation_pilot_clients WHERE mk_user_id=?",
+                (str(mk_user_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_pilot_clients(self) -> list:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM payment_automation_pilot_clients ORDER BY created_at DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def upsert_pilot_client(
+        self,
+        mk_user_id: str,
+        mode: str,
+        note: Optional[str] = None,
+        added_by_tg_id: Optional[str] = None,
+        added_by_name: Optional[str] = None,
+        now: Optional[str] = None,
+    ) -> dict:
+        now = now or now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO payment_automation_pilot_clients
+                       (mk_user_id, mode, enabled, note, added_by_tg_id, added_by_name,
+                        created_at, updated_at)
+                   VALUES (?, ?, 1, ?, ?, ?, ?, ?)
+                   ON CONFLICT(mk_user_id) DO UPDATE SET
+                       mode=excluded.mode,
+                       note=COALESCE(excluded.note, note),
+                       updated_at=excluded.updated_at""",
+                (str(mk_user_id), str(mode), note, added_by_tg_id, added_by_name, now, now),
+            )
+            row = conn.execute(
+                "SELECT * FROM payment_automation_pilot_clients WHERE mk_user_id=?",
+                (str(mk_user_id),),
+            ).fetchone()
+        return dict(row)
+
+    def update_pilot_mode(self, mk_user_id: str, new_mode: str, now: Optional[str] = None) -> dict:
+        now = now or now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE payment_automation_pilot_clients SET mode=?, updated_at=? WHERE mk_user_id=?",
+                (str(new_mode), now, str(mk_user_id)),
+            )
+            row = conn.execute(
+                "SELECT * FROM payment_automation_pilot_clients WHERE mk_user_id=?",
+                (str(mk_user_id),),
+            ).fetchone()
+        return dict(row) if row else {}
+
+    def remove_pilot_client(self, mk_user_id: str) -> bool:
+        with self._connect() as conn:
+            result = conn.execute(
+                "DELETE FROM payment_automation_pilot_clients WHERE mk_user_id=?",
+                (str(mk_user_id),),
+            )
+        return result.rowcount > 0
+
+    def update_pilot_last_result(
+        self,
+        mk_user_id: str,
+        success: bool,
+        error_code: Optional[str] = None,
+        now: Optional[str] = None,
+    ) -> None:
+        now = now or now_iso()
+        with self._connect() as conn:
+            if success:
+                conn.execute(
+                    "UPDATE payment_automation_pilot_clients "
+                    "SET last_success_at=?, updated_at=? WHERE mk_user_id=?",
+                    (now, now, str(mk_user_id)),
+                )
+            else:
+                conn.execute(
+                    "UPDATE payment_automation_pilot_clients "
+                    "SET last_error_at=?, last_error_code=?, updated_at=? WHERE mk_user_id=?",
+                    (now, error_code, now, str(mk_user_id)),
+                )
+
+    def create_pilot_audit_event(self, event: dict) -> None:
+        now = event.get("created_at") or now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO payment_pilot_audit_log
+                       (created_at, event_type, mk_user_id, pilot_client_id, old_mode, new_mode,
+                        actor_tg_id, actor_name, intent_public_id, mk_invoice_id, note)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    now,
+                    event.get("event_type"),
+                    event.get("mk_user_id"),
+                    event.get("pilot_client_id"),
+                    event.get("old_mode"),
+                    event.get("new_mode"),
+                    event.get("actor_tg_id"),
+                    event.get("actor_name"),
+                    event.get("intent_public_id"),
+                    event.get("mk_invoice_id"),
+                    event.get("note"),
+                ),
+            )
+
+    def find_automation_item_by_intent_public_id(self, public_id: str) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM invoice_automation_items WHERE intent_public_id=?",
+                (str(public_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_payments_workspace_stats(self) -> dict:
+        with self._connect() as conn:
+            awaiting = conn.execute(
+                "SELECT COUNT(*) FROM payment_intents WHERE status IN ('ready','bepaid_created')"
+            ).fetchone()[0]
+            draft = conn.execute(
+                "SELECT COUNT(*) FROM payment_intents WHERE status='draft'"
+            ).fetchone()[0]
+            paid = conn.execute(
+                "SELECT COUNT(*) FROM payment_intents WHERE status='paid'"
+            ).fetchone()[0]
+            posted = conn.execute(
+                "SELECT COUNT(*) FROM payment_intents WHERE status='posted_to_moyklass'"
+            ).fetchone()[0]
+            pending_review = conn.execute(
+                "SELECT COUNT(*) FROM invoice_automation_items WHERE current_stage='pending_review'"
+            ).fetchone()[0]
+            requires_check = conn.execute(
+                "SELECT COUNT(*) FROM invoice_automation_items WHERE current_stage='requires_check'"
+            ).fetchone()[0]
+            pilot_count = conn.execute(
+                "SELECT COUNT(*) FROM payment_automation_pilot_clients WHERE enabled=1"
+            ).fetchone()[0]
+        return {
+            "ok": True,
+            "awaiting_payment": awaiting,
+            "draft": draft,
+            "paid": paid,
+            "posted_to_moyklass": posted,
+            "pending_review": pending_review,
+            "requires_check": requires_check,
+            "pilot_clients_count": pilot_count,
+        }
+
+    def get_payments_attention_queue(self, limit: int = 50) -> list:
+        limit = max(1, min(int(limit), 200))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT a.*, p.status AS intent_status,
+                          p.amount_byn, p.student_name AS pi_student_name
+                   FROM invoice_automation_items a
+                   LEFT JOIN payment_intents p ON p.public_id = a.intent_public_id
+                   WHERE a.current_stage IN (
+                       'pending_review', 'requires_check', 'error',
+                       'missing_parent_link', 'ambiguous_parent_link'
+                   )
+                   ORDER BY a.updated_at DESC
+                   LIMIT ?""",
+                (limit,),
             ).fetchall()
         return [dict(r) for r in rows]
