@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.5.3");
+console.log("MiniApp version: v7.1.6");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12572,7 +12572,7 @@ function renderPaymentIntentCard(pi) {
   const purposeCls = PI_PURPOSE_CLS[pi.purpose] || "";
   const amountVal = paymentIntentAmountByn(pi);   // uses amount_byn first, then amount_minor/100
   const amount = fmtByn(amountVal);
-  const name = pi.student_name ? escapeHtml(pi.student_name) : `userId=${pi.mk_user_id}`;
+  const name = pi.student_name ? escapeHtml(pi.student_name) : `Клиент МойКласс #${escapeHtml(String(pi.mk_user_id))}`;
   const period = pi.period_month ? `<span class="chip chip-info" style="font-size:10px">${escapeHtml(pi.period_month)}</span>` : "";
   const method = `<span class="chip" style="font-size:10px">${escapeHtml(methodLabel)}</span>`;
   const purposeChip = `<span class="chip ${purposeCls}" style="font-size:10px">${escapeHtml(purposeLabel)}</span>`;
@@ -12750,7 +12750,7 @@ function renderPaymentIntentCard(pi) {
     ${publishedBadge}${withdrawnBadge}
     ${withdrawalInfoBlock}
     <div class="pi-card-footer">${approveReviewBtn}${bePaidBtn}${acquiringBtn}${verifyAcquiringBtn}${mkPostBtn}${cancelBtn}${publishToParentBtn}${withdrawBtn}${retryRemoteCancelBtn}</div>
-    <div class="pi-card-id">${escapeHtml(pi.public_id)} · mk_user_id: ${pi.mk_user_id} · ${createdAt} ${createdBy}</div>
+    <div class="pi-card-id">${escapeHtml(pi.public_id)} · ID в МойКласс: ${escapeHtml(String(pi.mk_user_id))} · ${createdAt} ${createdBy}</div>
   </div>`;
 }
 
@@ -14690,13 +14690,26 @@ window.automationItemAction = async function(itemId, action, evOrBtn) {
 
 // ── v7.1.5 — Payments workspace ───────────────────────────────────────────
 
-const _wsState = { tab: "overview", stats: null, attention: [], pilotClients: [], allPayments: null, statsLoading: false };
+const _wsState = { tab: "overview", stats: null, attention: null, pilotClients: [], allPayments: null, statsLoading: false };
 
 function loadPaymentsWorkspace() {
   const root = $("paymentsWorkspaceRoot");
   if (!root) return;
   _renderWorkspaceSkeleton(root);
   _loadWorkspaceStats();
+  _loadWorkspaceAttentionPreview();
+}
+
+// Best-effort preview fetch for the Overview "Требуют внимания" section — uses
+// the same existing endpoint the Attention tab uses, so no new backend and no
+// duplicate data source. Silently ignored on failure: the Attention tab has
+// its own dedicated error handling when the user actually opens it.
+async function _loadWorkspaceAttentionPreview() {
+  try {
+    const d = await apiGet("/api/payments/workspace/attention?limit=100");
+    _wsState.attention = d.items || [];
+    if (_wsState.tab === "overview") _wsRenderCurrentTab();
+  } catch (e) { /* best-effort preview only */ }
 }
 
 function _renderWorkspaceSkeleton(root) {
@@ -14755,7 +14768,7 @@ async function _loadWorkspaceAttention() {
   try {
     const d = await apiGet("/api/payments/workspace/attention?limit=100");
     _wsState.attention = d.items || []; _wsRenderAttention(root);
-  } catch (e) { if (root) root.innerHTML = `<div class="notice notice-error">Ошибка загрузки</div>`; }
+  } catch (e) { if (root) root.innerHTML = _wsErrorState("Не удалось загрузить список.", "_loadWorkspaceAttention()"); }
 }
 
 async function _loadPilotClients() {
@@ -14763,7 +14776,7 @@ async function _loadPilotClients() {
   try {
     const d = await apiGet("/api/pilot/clients");
     _wsState.pilotClients = d.clients || []; _wsRenderPilotClients(root);
-  } catch (e) { if (root) root.innerHTML = `<div class="notice notice-error">Ошибка загрузки</div>`; }
+  } catch (e) { if (root) root.innerHTML = _wsErrorState("Не удалось загрузить клиентов пилота.", "_loadPilotClients()"); }
 }
 
 async function _loadWorkspaceAllPayments() {
@@ -14773,15 +14786,64 @@ async function _loadWorkspaceAllPayments() {
     _wsState.allPayments = d.intents || [];
     _wsRenderAllPayments(root);
   } catch (e) {
-    if (root) root.innerHTML = `<div class="notice notice-error">Ошибка загрузки. <button class="secondary" style="font-size:12px;padding:4px 10px;margin-left:8px" onclick="_loadWorkspaceAllPayments()">Повторить</button></div>`;
+    if (root) root.innerHTML = _wsErrorState("Сервер платежей не ответил.", "_loadWorkspaceAllPayments()");
   }
+}
+
+function _wsFmtNum(n) { return Number(n || 0).toLocaleString("ru-RU"); }
+
+// Shared date formatter — "2026-07-26T09:14:00" / "2026-07-26" → "26.07.2026, 09:14" / "26.07.2026".
+// Used everywhere workspace UI shows a date so the format is consistent (v7.1.6).
+function wsFormatDate(iso) {
+  if (!iso) return "—";
+  const datePart = String(iso).slice(0, 10);
+  const bits = datePart.split("-");
+  if (bits.length !== 3) return escapeHtml(String(iso));
+  const [y, m, d] = bits;
+  return `${d}.${m}.${y}`;
+}
+function wsFormatDateTime(iso) {
+  if (!iso) return "—";
+  const datePretty = wsFormatDate(iso);
+  const timePart = String(iso).slice(11, 16);
+  return timePart ? `${datePretty}, ${timePart}` : datePretty;
+}
+
+const WS_ATTENTION_STAGE_LABELS = {
+  pending_review: "На проверке",
+  requires_check: "Требует проверки",
+  error: "Ошибка",
+  missing_parent_link: "Нет привязки родителя",
+  ambiguous_parent_link: "Несколько родителей",
+};
+
+function _wsEmptyState(icon, title, desc) {
+  return `<div class="ws-empty-state">
+    <div class="ws-empty-state-icon">${icon}</div>
+    <div class="ws-empty-state-title">${escapeHtml(title)}</div>
+    ${desc ? `<div class="ws-empty-state-desc">${escapeHtml(desc)}</div>` : ""}
+  </div>`;
+}
+
+function _wsErrorState(message, retryOnclick) {
+  return `<div class="ws-error-state">
+    <div class="ws-error-state-title">Ошибка загрузки</div>
+    <div class="ws-error-state-desc">${escapeHtml(message)}</div>
+    <button class="secondary" style="font-size:12px;padding:6px 14px" onclick="${retryOnclick}">Повторить</button>
+  </div>`;
+}
+
+function _wsStatsSkeleton() {
+  return `<div class="ws-stats-grid">${Array.from({ length: 6 }).map(() =>
+    `<div class="ws-skeleton ws-skeleton-stat"></div>`
+  ).join("")}</div>`;
 }
 
 function _wsRenderOverview(root) {
   const s = _wsState.stats;
-  if (!s) { root.innerHTML = `<div class="notice">Загрузка статистики...</div>`; return; }
-  const fmtNum = n => Number(n || 0).toLocaleString("ru-RU");
-  root.innerHTML = `
+  if (!s) { root.innerHTML = _wsStatsSkeleton(); return; }
+  const fmtNum = _wsFmtNum;
+  let html = `
     <div class="ws-stats-grid">
       <div class="ws-stat-card"><div class="ws-stat-value">${fmtNum(s.pending_review)}</div><div class="ws-stat-label">На проверке</div></div>
       <div class="ws-stat-card"><div class="ws-stat-value">${fmtNum(s.requires_check)}</div><div class="ws-stat-label">Требуют внимания</div></div>
@@ -14791,53 +14853,244 @@ function _wsRenderOverview(root) {
       <div class="ws-stat-card"><div class="ws-stat-value">${fmtNum(s.pilot_clients_count)}</div><div class="ws-stat-label">Клиентов в пилоте</div></div>
     </div>
   `;
+
+  // Preview blocks only render when the underlying data is already available
+  // (loaded via the same real endpoints the Attention / All Payments tabs use)
+  // — no decorative-only backend calls are added for this preview.
+  const attention = _wsState.attention;
+  if (Array.isArray(attention) && attention.length) {
+    const preview = attention.slice(0, 3);
+    html += `
+      <div class="section-head" style="margin-top:18px">
+        <div><h3 style="margin:0;font-size:15px">Требуют внимания</h3></div>
+        <button class="secondary" style="font-size:12px;padding:4px 10px" onclick="_wsActivateTab('attention')">Все</button>
+      </div>
+      <div class="ws-attention-list">${preview.map(_wsRenderAttentionItem).join("")}</div>
+    `;
+  }
+
+  if (Array.isArray(_wsState.allPayments) && _wsState.allPayments.length) {
+    const recent = _wsState.allPayments.slice(0, 3);
+    html += `
+      <div class="section-head" style="margin-top:18px">
+        <div><h3 style="margin:0;font-size:15px">Последние операции</h3></div>
+        <button class="secondary" style="font-size:12px;padding:4px 10px" onclick="_wsActivateTab('all-payments')">Все</button>
+      </div>
+      <div class="ws-attention-list">${recent.map(pi => {
+        const st = PI_STATUS_LABELS[pi.status] || { label: pi.status || "—", cls: "chip-pi-draft" };
+        const name = pi.student_name ? escapeHtml(pi.student_name) : `Клиент МойКласс #${escapeHtml(String(pi.mk_user_id))}`;
+        return `<div class="ws-attention-item">
+          <div class="ws-attention-meta">
+            <span class="chip ${st.cls}" style="font-size:10px">${escapeHtml(st.label)}</span>
+            <span class="ws-student">${name}</span>
+            <span class="ws-attention-amount">${fmtByn(paymentIntentAmountByn(pi))}</span>
+          </div>
+        </div>`;
+      }).join("")}</div>
+    `;
+  }
+
+  root.innerHTML = html;
+}
+
+function _wsRenderAttentionItem(item) {
+  const stage = item.current_stage || "";
+  const pid = escapeHtml(item.intent_public_id || "");
+  const stageLabel = WS_ATTENTION_STAGE_LABELS[stage] || stage;
+  const canApprove = roleCaps().canApprovePilotIntents;
+  const approveBtn = (stage === "pending_review" && canApprove && pid)
+    ? `<button class="primary" style="font-size:12px;padding:4px 10px" onclick="approvePaymentIntent('${pid}',this)">Подтвердить и отправить</button>`
+    : "";
+  const reasonHtml = stage === "error"
+    ? _wsFriendlyAttentionError(item)
+    : (item.readable_reason ? `<div class="ws-reason">${escapeHtml(item.readable_reason)}</div>` : "");
+  return `
+    <div class="ws-attention-item">
+      <div class="ws-attention-meta">
+        <span class="ws-stage-badge ws-stage-badge-${escapeHtml(stage)}">${escapeHtml(stageLabel)}</span>
+        ${pid ? `<span class="ws-intent-id">${pid}</span>` : ""}
+        <span class="ws-student">${escapeHtml(item.pi_student_name || item.student_name || "")}</span>
+      </div>
+      ${reasonHtml}
+      <div class="ws-attention-actions">${approveBtn}</div>
+    </div>`;
+}
+
+// error-stage items can carry a raw internal reason (e.g. "Error: ValueError: ...")
+// in readable_reason — client_manager only ever sees a friendly message; owner/admin
+// additionally gets a collapsible "Техническая информация" block with the raw text.
+// Kept as its own function (not inlined into _wsRenderAttentionItem) so this
+// admin-only technical detail is independent of the tab's own render/gate logic.
+function _wsFriendlyAttentionError(item) {
+  const raw = item.readable_reason || "";
+  const looksTechnical = /^Error:|Traceback|Exception/i.test(raw);
+  const friendly = looksTechnical
+    ? "Не удалось обработать счёт из-за внутренней ошибки. Информация передана администратору."
+    : raw;
+  let html = friendly ? `<div class="ws-error-message">${escapeHtml(friendly)}</div>` : "";
+  if (looksTechnical && roleCaps().canAdminPilot) {
+    html += `<details class="ws-tech-details"><summary>Техническая информация</summary><code>${escapeHtml(raw)}</code></details>`;
+  }
+  return html;
 }
 
 function _wsRenderAttention(root) {
   const items = _wsState.attention;
-  if (!items) { root.innerHTML = `<div class="notice">Загрузка...</div>`; return; }
-  if (!items.length) { root.innerHTML = `<div class="notice">Нет элементов, требующих внимания.</div>`; return; }
-  const canApprove = roleCaps().canApprovePilotIntents;
-  root.innerHTML = `<div class="ws-attention-list">${items.map(item => {
-    const stage = item.current_stage || "";
-    const pid = escapeHtml(item.intent_public_id || "");
-    const stageLabel = {
-      pending_review: "⏳ На проверке",
-      requires_check: "⚠ Требует проверки",
-      error: "❌ Ошибка",
-      missing_parent_link: "👤 Нет привязки родителя",
-      ambiguous_parent_link: "👥 Несколько родителей",
-    }[stage] || stage;
-    const approveBtn = (stage === "pending_review" && canApprove && pid)
-      ? `<button class="primary" style="font-size:12px;padding:4px 10px" onclick="approvePaymentIntent('${pid}',this)">Подтвердить и отправить</button>`
-      : "";
-    return `
-      <div class="ws-attention-item">
-        <div class="ws-attention-meta">
-          <span class="ws-stage-badge">${stageLabel}</span>
-          ${pid ? `<span class="ws-intent-id">${pid}</span>` : ""}
-          <span class="ws-student">${escapeHtml(item.pi_student_name || item.student_name || "")}</span>
-        </div>
-        ${item.readable_reason ? `<div class="ws-reason">${escapeHtml(item.readable_reason)}</div>` : ""}
-        <div class="ws-attention-actions">${approveBtn}</div>
-      </div>`;
-  }).join("")}</div>`;
+  if (items === null) { root.innerHTML = `<div class="ws-attention-list">${Array.from({ length: 3 }).map(() => `<div class="ws-skeleton ws-skeleton-row"></div>`).join("")}</div>`; return; }
+  if (!items.length) { root.innerHTML = _wsEmptyState("✅", "Нет элементов, требующих внимания", "Все счета в порядке."); return; }
+  root.innerHTML = `<div class="ws-attention-list ws-bottom-safe-pad">${items.map(_wsRenderAttentionItem).join("")}</div>`;
+}
+
+// Frontend-only search/filter state for the All Payments tab — kept separate
+// from _wsState so filtering never touches the loaded data or fetch logic.
+const _wsAllPaymentsUI = { search: "", status: "all", period: "all", method: "all", visibility: "all" };
+
+function _wsAllPaymentsActiveFilterCount() {
+  return ["status", "period", "method", "visibility"].filter(k => _wsAllPaymentsUI[k] !== "all").length;
+}
+
+function _wsFilteredAllPayments() {
+  const all = _wsState.allPayments || [];
+  const term = _wsAllPaymentsUI.search.trim().toLowerCase();
+  return all.filter(pi => {
+    if (_wsAllPaymentsUI.status !== "all" && pi.status !== _wsAllPaymentsUI.status) return false;
+    if (_wsAllPaymentsUI.period !== "all" && (pi.period_month || "") !== _wsAllPaymentsUI.period) return false;
+    if (_wsAllPaymentsUI.method !== "all" && pi.payment_method !== _wsAllPaymentsUI.method) return false;
+    if (_wsAllPaymentsUI.visibility !== "all") {
+      const visible = (pi.client_visibility || "hidden") === "published";
+      if (_wsAllPaymentsUI.visibility === "visible" && !visible) return false;
+      if (_wsAllPaymentsUI.visibility === "hidden" && visible) return false;
+    }
+    if (!term) return true;
+    const haystack = [
+      pi.student_name, pi.mk_user_id, pi.public_id, pi.mk_invoice_id,
+    ].filter(Boolean).map(v => String(v).toLowerCase());
+    return haystack.some(v => v.includes(term));
+  });
+}
+
+function _wsAllPaymentsSearch(value) {
+  _wsAllPaymentsUI.search = value || "";
+  const root = $("wsTabContent");
+  if (root) _wsRenderAllPayments(root);
 }
 
 function _wsRenderAllPayments(root) {
   if (_wsState.allPayments === null) {
-    root.innerHTML = `<div class="notice">Загрузка платёжных счетов...</div>`;
+    root.innerHTML = `<div class="ws-attention-list">${Array.from({ length: 3 }).map(() => `<div class="ws-skeleton ws-skeleton-row"></div>`).join("")}</div>`;
     return;
   }
   if (!_wsState.allPayments.length) {
-    root.innerHTML = `<div class="notice">Платёжных счетов нет.</div>`;
+    root.innerHTML = _wsEmptyState("🗂", "Платёжных счетов пока нет", "Как только появится первый платёжный счёт, он отобразится здесь.");
+    return;
+  }
+
+  const filterCount = _wsAllPaymentsActiveFilterCount();
+  const filtered = _wsFilteredAllPayments();
+  const searchVal = escapeAttr(_wsAllPaymentsUI.search);
+
+  const controls = `
+    <div class="ws-search-row">
+      <label class="ws-search-bar">
+        <span aria-hidden="true">🔎</span>
+        <input type="text" placeholder="Имя, ID в МойКласс или номер счёта…" value="${searchVal}"
+               oninput="_wsAllPaymentsSearch(this.value)" aria-label="Поиск по платёжным счетам" />
+      </label>
+      <button class="secondary ws-filter-btn" onclick="openWsFiltersModal()" aria-label="Открыть фильтры">
+        ⚙ Фильтры${filterCount ? `<span class="ws-filter-btn__badge">${filterCount}</span>` : ""}
+      </button>
+    </div>
+    <div class="ws-results-count">Найдено: ${filtered.length}</div>
+  `;
+
+  root.innerHTML = controls;
+  if (!filtered.length) {
+    root.innerHTML += _wsEmptyState("🔍", "Ничего не найдено", "Попробуйте изменить поиск или сбросить фильтры.");
     return;
   }
   const el = document.createElement("div");
-  el.className = "ws-all-payments";
-  root.innerHTML = "";
+  el.className = "ws-all-payments ws-bottom-safe-pad";
   root.appendChild(el);
-  renderPaymentIntentList(el, _wsState.allPayments, {});
+  renderPaymentIntentList(el, filtered, {});
+}
+
+function _wsFilterSelectOptions(select, options, currentValue) {
+  if (!select) return;
+  select.innerHTML = options.map(o => `<option value="${escapeAttr(o.value)}"${o.value === currentValue ? " selected" : ""}>${escapeHtml(o.label)}</option>`).join("");
+}
+
+function openWsFiltersModal() {
+  const statusOptions = [{ value: "all", label: "Все статусы" }].concat(
+    Object.keys(PI_STATUS_LABELS).map(k => ({ value: k, label: PI_STATUS_LABELS[k].label }))
+  );
+  const methodOptions = [{ value: "all", label: "Любой способ" }].concat(
+    Object.keys(PI_METHOD_LABELS).map(k => ({ value: k, label: PI_METHOD_LABELS[k] }))
+  );
+  const periods = Array.from(new Set((_wsState.allPayments || []).map(pi => pi.period_month).filter(Boolean))).sort().reverse();
+  const periodOptions = [{ value: "all", label: "Любой период" }].concat(periods.map(p => ({ value: p, label: p })));
+
+  _wsFilterSelectOptions($("wsFilterStatus"), statusOptions, _wsAllPaymentsUI.status);
+  _wsFilterSelectOptions($("wsFilterMethod"), methodOptions, _wsAllPaymentsUI.method);
+  _wsFilterSelectOptions($("wsFilterPeriod"), periodOptions, _wsAllPaymentsUI.period);
+  const visSel = $("wsFilterVisibility");
+  if (visSel) visSel.value = _wsAllPaymentsUI.visibility;
+
+  piModalOpen($("wsFiltersModal"));
+}
+
+function closeWsFiltersModal() { piModalClose($("wsFiltersModal")); }
+
+function applyWsFilters() {
+  _wsAllPaymentsUI.status = $("wsFilterStatus")?.value || "all";
+  _wsAllPaymentsUI.period = $("wsFilterPeriod")?.value || "all";
+  _wsAllPaymentsUI.method = $("wsFilterMethod")?.value || "all";
+  _wsAllPaymentsUI.visibility = $("wsFilterVisibility")?.value || "all";
+  closeWsFiltersModal();
+  const root = $("wsTabContent");
+  if (root) _wsRenderAllPayments(root);
+}
+
+function resetWsFilters() {
+  _wsAllPaymentsUI.status = "all";
+  _wsAllPaymentsUI.period = "all";
+  _wsAllPaymentsUI.method = "all";
+  _wsAllPaymentsUI.visibility = "all";
+  ["wsFilterStatus", "wsFilterPeriod", "wsFilterMethod", "wsFilterVisibility"].forEach(id => { const el = $(id); if (el) el.value = "all"; });
+  const root = $("wsTabContent");
+  if (root) _wsRenderAllPayments(root);
+}
+
+const WS_PILOT_MODE_HINTS = {
+  review: "Проверка — действие подтверждает менеджер",
+  observe: "Наблюдение — агент только анализирует",
+  auto: "Авто — разрешён полный автоматический сценарий",
+  disabled: "Отключён — новые действия не выполняются",
+};
+
+function _wsUpdatePilotModeHint() {
+  const sel = $("pilotAddMode");
+  const hint = $("pilotAddModeHint");
+  if (sel && hint) hint.textContent = WS_PILOT_MODE_HINTS[sel.value] || "";
+}
+
+// error codes on a pilot client can be internal (e.g. "bepaid_amount_mismatch") —
+// client_manager only ever sees a friendly message; owner/admin (canAdminPilot)
+// additionally gets a collapsible "Техническая информация" block with the raw code.
+// Kept as its own function so canAdminPilot never appears inside _wsRenderPilotClients
+// itself — that function's own gate stays canManagePilotClients, unchanged.
+const WS_PILOT_ERROR_MESSAGES = {
+  bepaid_amount_mismatch: "Сумма счёта не совпадает с суммой в МойКласс. Проверьте данные и повторите действие.",
+  invalid_amount_format: "Не удалось обработать сумму платежа. Проверьте формат суммы и повторите попытку.",
+};
+function _wsPilotErrorDetail(c) {
+  if (!c.last_error_at) return "";
+  const code = c.last_error_code || "";
+  const friendly = WS_PILOT_ERROR_MESSAGES[code] || (code ? "Произошла ошибка при обработке платежа. Проверьте данные и повторите действие." : "");
+  let html = friendly ? `<div class="ws-error-message">${escapeHtml(friendly)}</div>` : "";
+  if (code && roleCaps().canAdminPilot) {
+    html += `<details class="ws-tech-details"><summary>Техническая информация</summary><code>${escapeHtml(code)}</code></details>`;
+  }
+  return html;
 }
 
 function _wsRenderPilotClients(root) {
@@ -14847,38 +15100,41 @@ function _wsRenderPilotClients(root) {
   const modeCls   = { observe: "ws-pilot-mode-observe", review: "ws-pilot-mode-review", auto: "ws-pilot-mode-auto", disabled: "ws-pilot-mode-disabled" };
   const addForm = canManage ? `
     <div class="ws-pilot-add-form">
-      <h3>Добавить / обновить клиента пилота</h3>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-        <label style="flex:1;min-width:120px"><span>MK User ID</span><input id="pilotAddUserId" type="text" inputmode="numeric" placeholder="12345" /></label>
-        <label style="flex:1;min-width:120px"><span>Режим</span>
-          <select id="pilotAddMode">
+      <h3>Добавить клиента в пилот</h3>
+      <div class="ws-pilot-form">
+        <label><span>ID клиента в МойКласс</span><input id="pilotAddUserId" type="text" inputmode="numeric" placeholder="12345" /></label>
+        <label>
+          <span>Режим</span>
+          <select id="pilotAddMode" onchange="_wsUpdatePilotModeHint()">
             <option value="review">Проверка</option>
             <option value="observe">Наблюдение</option>
             <option value="auto">Авто</option>
             <option value="disabled">Отключён</option>
           </select>
         </label>
-        <label style="flex:2;min-width:160px"><span>Примечание</span><input id="pilotAddNote" type="text" placeholder="Необязательно" /></label>
-        <button class="primary" onclick="_pilotAddClient()">Добавить</button>
+        <div class="ws-pilot-mode-hint" id="pilotAddModeHint">${escapeHtml(WS_PILOT_MODE_HINTS.review)}</div>
+        <label><span>Примечание</span><input id="pilotAddNote" type="text" placeholder="Необязательно" /></label>
+        <button class="primary" onclick="_pilotAddClient()">Добавить в пилот</button>
       </div>
       <div id="pilotAddResult" style="margin-top:6px;font-size:13px"></div>
     </div>` : "";
 
   if (!clients.length) {
-    root.innerHTML = `${addForm}<div class="notice">Пока ни один клиент не добавлен в пилот.</div>`;
+    root.innerHTML = `${addForm}${_wsEmptyState("👥", "Пока ни один клиент не добавлен в пилот", "Добавьте первого клиента через форму выше.")}`;
     return;
   }
 
   // Mobile cards
   const cards = clients.map(c => {
     const mid = escapeHtml(c.mk_user_id);
+    const midAttr = escapeAttr(String(c.mk_user_id));
     const mLabel = escapeHtml(modeLabel[c.mode] || c.mode);
     const mCls = modeCls[c.mode] || "ws-pilot-mode-disabled";
     const modeSelect = canManage ? `
-      <select onchange="_pilotChangeMode('${mid}',this.value)" style="font-size:13px;margin-top:6px;width:100%">
+      <select onchange="_pilotChangeMode('${midAttr}',this.value)" aria-label="Режим пилота для ${mid}">
         ${["observe","review","auto","disabled"].map(m => `<option value="${m}"${c.mode===m?" selected":""}>${modeLabel[m]||m}</option>`).join("")}
       </select>` : "";
-    const removeBtn = canManage ? `<button class="danger" style="font-size:12px;padding:4px 12px" onclick="_pilotRemove('${mid}',this)">Удалить из пилота</button>` : "";
+    const removeBtn = canManage ? `<button class="danger" onclick="_pilotRemove('${midAttr}','${mid}')">Удалить из пилота</button>` : "";
     return `
       <div class="ws-pilot-card">
         <div class="ws-pilot-card-header">
@@ -14886,13 +15142,15 @@ function _wsRenderPilotClients(root) {
           <span class="ws-pilot-mode-badge ${mCls}">${mLabel}</span>
         </div>
         <div class="ws-pilot-card-meta">
+          <span class="ws-pilot-card-meta-label">ID в МойКласс</span><span>${mid}</span>
           <span class="ws-pilot-card-meta-label">Статус</span><span>${c.enabled ? "Активен" : "Неактивен"}</span>
           ${c.note ? `<span class="ws-pilot-card-meta-label">Примечание</span><span>${escapeHtml(c.note)}</span>` : ""}
-          <span class="ws-pilot-card-meta-label">Успех</span><span>${c.last_success_at ? c.last_success_at.slice(0,16).replace("T"," ") : "—"}</span>
-          ${c.last_error_at ? `<span class="ws-pilot-card-meta-label">Ошибка</span><span style="color:var(--red,#e53)">${c.last_error_at.slice(0,16).replace("T"," ")}${c.last_error_code ? ": "+escapeHtml(c.last_error_code) : ""}</span>` : ""}
-          <span class="ws-pilot-card-meta-label">Добавлен</span><span>${(c.created_at||"").slice(0,10)}</span>
-          ${(c.updated_at && c.updated_at !== c.created_at) ? `<span class="ws-pilot-card-meta-label">Изменён</span><span>${c.updated_at.slice(0,10)}</span>` : ""}
+          <span class="ws-pilot-card-meta-label">Успех</span><span>${wsFormatDateTime(c.last_success_at)}</span>
+          <span class="ws-pilot-card-meta-label">Ошибка</span><span>${wsFormatDateTime(c.last_error_at)}</span>
+          <span class="ws-pilot-card-meta-label">Добавлен</span><span>${wsFormatDate(c.created_at)}</span>
+          ${(c.updated_at && c.updated_at !== c.created_at) ? `<span class="ws-pilot-card-meta-label">Изменён</span><span>${wsFormatDate(c.updated_at)}</span>` : ""}
         </div>
+        ${_wsPilotErrorDetail(c)}
         ${modeSelect}
         <div class="ws-pilot-card-actions">${removeBtn}</div>
       </div>`;
@@ -14901,27 +15159,28 @@ function _wsRenderPilotClients(root) {
   // Desktop table
   const tableRows = clients.map(c => {
     const mid = escapeHtml(c.mk_user_id);
+    const midAttr = escapeAttr(String(c.mk_user_id));
     const changeMode = canManage ? `
-      <select onchange="_pilotChangeMode('${mid}',this.value)" style="font-size:12px">
+      <select onchange="_pilotChangeMode('${midAttr}',this.value)" style="font-size:12px">
         ${["observe","review","auto","disabled"].map(m => `<option value="${m}"${c.mode===m?" selected":""}>${modeLabel[m]||m}</option>`).join("")}
       </select>` : escapeHtml(modeLabel[c.mode] || c.mode);
-    const removeBtn = canManage ? `<button class="danger" style="font-size:11px;padding:2px 8px" onclick="_pilotRemove('${mid}',this)">Удалить</button>` : "";
+    const removeBtn = canManage ? `<button class="danger" style="font-size:11px;padding:2px 8px" onclick="_pilotRemove('${midAttr}','${mid}')">Удалить</button>` : "";
     return `<tr>
       <td>${mid}</td>
       <td>${changeMode}</td>
       <td>${escapeHtml(c.note || "")}</td>
-      <td style="font-size:11px;color:var(--muted)">${c.last_success_at ? c.last_success_at.slice(0,16).replace("T"," ") : "—"}</td>
-      <td style="font-size:11px;color:var(--muted)">${c.last_error_at ? c.last_error_at.slice(0,10) : "—"}</td>
+      <td style="font-size:11px;color:var(--muted)">${wsFormatDateTime(c.last_success_at)}</td>
+      <td style="font-size:11px;color:var(--muted)">${wsFormatDate(c.last_error_at)}</td>
       <td>${removeBtn}</td>
     </tr>`;
   }).join("");
 
   root.innerHTML = `
     ${addForm}
-    <div class="ws-pilot-cards">${cards}</div>
+    <div class="ws-pilot-cards ws-bottom-safe-pad">${cards}</div>
     <div class="ws-pilot-table-wrap" style="overflow-x:auto;margin-top:12px">
       <table class="ws-pilot-table"><thead><tr>
-        <th>MK User ID</th><th>Режим</th><th>Примечание</th><th>Успех</th><th>Ошибка</th><th></th>
+        <th>ID в МойКласс</th><th>Режим</th><th>Примечание</th><th>Успех</th><th>Ошибка</th><th></th>
       </tr></thead><tbody>${tableRows}</tbody></table>
     </div>`;
 }
@@ -14949,7 +15208,7 @@ async function _pilotAddClient() {
   const mode = $("pilotAddMode")?.value || "review";
   const note = ($("pilotAddNote")?.value || "").trim() || null;
   const resultEl = $("pilotAddResult");
-  if (!userId) { if (resultEl) resultEl.textContent = "Укажите MK User ID."; return; }
+  if (!userId) { if (resultEl) resultEl.textContent = "Укажите ID клиента в МойКласс."; return; }
   try {
     const d = await _apiPostRaw("/api/pilot/clients", { mk_user_id: userId, mode, note });
     if (d.ok) {
@@ -14968,23 +15227,68 @@ async function _pilotChangeMode(mkUserId, newMode) {
   } catch (e) { setNotice(safeUserError(e), "error"); }
 }
 
-async function _pilotRemove(mkUserId, btn) {
-  if (!confirm(`Удалить клиента ${mkUserId} из пилота?\n\nСуществующие платёжные счета и платежи не удаляются — удаляется только участие клиента в дальнейшей автоматизации.`)) return;
-  if (btn) btn.disabled = true;
-  try {
-    const d = await _apiPostRaw(`/api/pilot/clients/${encodeURIComponent(mkUserId)}/remove`, {});
-    if (d.ok) _loadPilotClients();
-    else { setNotice(d.error || "Ошибка удаления", "error"); if (btn) btn.disabled = false; }
-  } catch (e) { setNotice(safeUserError(e), "error"); if (btn) btn.disabled = false; }
+// v7.1.6 — replaces the old browser confirm() with a managed bottom-sheet modal
+// (#pilotRemoveModal in index.html). _pilotRemove() is the entry point called
+// from the pilot card / table "Удалить" buttons; it just opens the modal and
+// stores the pending target — the actual API call happens in confirmPilotRemove()
+// only once the user explicitly taps "Удалить из пилота" in the modal. Cancelling
+// the modal never sends a request.
+let _pilotRemoveTarget = null;
+
+function _pilotRemove(mkUserId, displayName) {
+  _pilotRemoveTarget = mkUserId;
+  const info = $("pilotRemoveInfo");
+  if (info) info.textContent = `Удалить клиента ${displayName || mkUserId} из пилота?`;
+  $("pilotRemoveError")?.classList.add("hidden");
+  piModalOpen($("pilotRemoveModal"));
 }
 
-// ── v7.1.5.3 — iOS keyboard / bottom-nav handling ────────────────────────
+function closePilotRemoveModal() {
+  piModalClose($("pilotRemoveModal"), () => { _pilotRemoveTarget = null; });
+}
+
+async function confirmPilotRemove() {
+  if (!_pilotRemoveTarget) return;
+  const errEl = $("pilotRemoveError");
+  errEl?.classList.add("hidden");
+  const btn = $("pilotRemoveModalConfirm");
+  if (btn) { btn.disabled = true; btn.textContent = "Удаляю..."; }
+  try {
+    const d = await _apiPostRaw(`/api/pilot/clients/${encodeURIComponent(_pilotRemoveTarget)}/remove`, {});
+    if (d.ok) {
+      closePilotRemoveModal();
+      _loadPilotClients();
+      _loadWorkspaceStats(); // Overview "Клиентов в пилоте" count must reflect the removal
+    } else if (errEl) {
+      errEl.textContent = d.error || "Ошибка удаления"; errEl.classList.remove("hidden");
+    }
+  } catch (e) {
+    if (errEl) { errEl.textContent = safeUserError(e); errEl.classList.remove("hidden"); }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Удалить из пилота"; }
+  }
+}
+
+// ── v7.1.6 — iOS keyboard / bottom-nav handling ──────────────────────────
+// Builds on the v7.1.5.3 focusin/focusout state machine (kept, since it's the
+// fastest possible response — synchronous on the very event that starts the
+// keyboard animation) and adds visualViewport as the authoritative signal for
+// scroll timing and for iOS swipe-dismiss, which never fires a focusout.
 (function initKeyboardHandling() {
   let _kbActive = false;
   let _blurTimer = null;
+  let _scrollTarget = null;
+  let _scrollAttempts = 0;
+  let _scrollTimer = null;
+  const MAX_SCROLL_ATTEMPTS = 6; // bounded retry — 6 × 120ms ≈ 720ms, well past iOS's ~250-350ms keyboard animation
 
   function _isChatInput(el) {
     return el && (el.id === "askInput" || el.closest(".chat-form, .ask-form") !== null);
+  }
+
+  function _isFormField(el) {
+    const tag = (el && el.tagName || "").toUpperCase();
+    return ["INPUT", "TEXTAREA", "SELECT"].includes(tag);
   }
 
   function _setKeyboardOpen(open) {
@@ -14993,26 +15297,55 @@ async function _pilotRemove(mkUserId, btn) {
     document.body.classList.toggle("keyboard-open", open);
   }
 
+  function _elementVisibleInViewport(el) {
+    if (!window.visualViewport || !el.getBoundingClientRect) return true;
+    const r = el.getBoundingClientRect();
+    const top = window.visualViewport.offsetTop;
+    const bottom = window.visualViewport.offsetTop + window.visualViewport.height;
+    return r.top >= top && r.bottom <= bottom;
+  }
+
+  // Scrolls the active field into view once the visual viewport has actually
+  // stabilised, instead of a single fixed-delay attempt — a controlled series
+  // of short retries that stops as soon as the field is confirmed visible
+  // (or after MAX_SCROLL_ATTEMPTS), so it never turns into a resize/scroll loop.
+  function _attemptScrollIntoView() {
+    _scrollTimer = null;
+    if (!_scrollTarget || document.activeElement !== _scrollTarget) { _scrollTarget = null; return; }
+    if (_elementVisibleInViewport(_scrollTarget)) { _scrollTarget = null; return; }
+    _scrollAttempts += 1;
+    try { _scrollTarget.scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch (_) {}
+    if (_scrollAttempts >= MAX_SCROLL_ATTEMPTS) { _scrollTarget = null; return; }
+    _scrollTimer = setTimeout(_attemptScrollIntoView, 120);
+  }
+
+  function _scheduleScrollIntoView(el) {
+    _scrollTarget = el;
+    _scrollAttempts = 0;
+    if (_scrollTimer) clearTimeout(_scrollTimer);
+    _attemptScrollIntoView();
+  }
+
   document.addEventListener("focusin", function(e) {
-    const tag = (e.target.tagName || "").toUpperCase();
-    if (!["INPUT","TEXTAREA","SELECT"].includes(tag)) return;
+    if (!_isFormField(e.target)) return;
     if (_isChatInput(e.target)) return;
     if (_blurTimer) { clearTimeout(_blurTimer); _blurTimer = null; }
     _setKeyboardOpen(true);
-    setTimeout(function() {
-      try { e.target.scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch (_) {}
-    }, 300);
+    _scheduleScrollIntoView(e.target);
   });
 
   document.addEventListener("focusout", function(e) {
-    const tag = (e.target.tagName || "").toUpperCase();
-    if (!["INPUT","TEXTAREA","SELECT"].includes(tag)) return;
+    if (!_isFormField(e.target)) return;
     if (_isChatInput(e.target)) return;
     if (_blurTimer) clearTimeout(_blurTimer);
     _blurTimer = setTimeout(function() {
       const active = document.activeElement;
-      if (!active || !["INPUT","TEXTAREA","SELECT"].includes(active.tagName)) {
+      // Tabbing/tapping straight from one field to the next must not flash
+      // the bottom nav back in between — only close when focus landed
+      // somewhere that isn't a form field at all.
+      if (!_isFormField(active) || _isChatInput(active)) {
         _setKeyboardOpen(false);
+        _scrollTarget = null;
       }
     }, 200);
   });
@@ -15022,16 +15355,27 @@ async function _pilotRemove(mkUserId, btn) {
     const tag = (e.target.tagName || "").toUpperCase();
     if (["INPUT","TEXTAREA","SELECT","LABEL","BUTTON"].includes(tag)) return;
     const active = document.activeElement;
-    if (active && ["INPUT","TEXTAREA","SELECT"].includes(active.tagName) && !_isChatInput(active)) {
-      active.blur();
-    }
+    if (_isFormField(active) && !_isChatInput(active)) active.blur();
   }, { passive: true });
 
+  // visualViewport.height/.offsetTop is the authoritative signal for iOS
+  // swipe-dismiss, which never fires a focusout — the viewport just grows
+  // back while the field stays focused. Re-derive keyboard-open from the
+  // real geometry on every resize instead of trusting focus state alone.
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", function() {
       const gap = (window.innerHeight - window.visualViewport.height) | 0;
-      if (gap > 100) _setKeyboardOpen(true);
-      else if (gap < 50) _setKeyboardOpen(false);
+      if (gap > 100) {
+        _setKeyboardOpen(true);
+        if (_isFormField(document.activeElement)) _scheduleScrollIntoView(document.activeElement);
+      } else if (gap < 50) {
+        _setKeyboardOpen(false);
+        _scrollTarget = null;
+      }
+    });
+    window.visualViewport.addEventListener("scroll", function() {
+      const gap = (window.innerHeight - window.visualViewport.height) | 0;
+      if (gap <= 50) { _setKeyboardOpen(false); _scrollTarget = null; }
     });
   }
 })();
@@ -15145,4 +15489,16 @@ document.addEventListener("DOMContentLoaded", () => {
     const periodMonth = btn.dataset.periodMonth || "";
     if (intentId) showPaymentIntent(intentId, periodMonth);
   });
+
+  // Pilot removal modal (v7.1.6)
+  $("pilotRemoveModalConfirm")?.addEventListener("click", confirmPilotRemove);
+  $("pilotRemoveModalBack")?.addEventListener("click", closePilotRemoveModal);
+  $("pilotRemoveModalClose")?.addEventListener("click", closePilotRemoveModal);
+  $("pilotRemoveModal")?.addEventListener("click", e => { if (e.target === $("pilotRemoveModal")) closePilotRemoveModal(); });
+
+  // All Payments filter sheet (v7.1.6)
+  $("wsFiltersApply")?.addEventListener("click", applyWsFilters);
+  $("wsFiltersReset")?.addEventListener("click", resetWsFilters);
+  $("wsFiltersModalClose")?.addEventListener("click", closeWsFiltersModal);
+  $("wsFiltersModal")?.addEventListener("click", e => { if (e.target === $("wsFiltersModal")) closeWsFiltersModal(); });
 });

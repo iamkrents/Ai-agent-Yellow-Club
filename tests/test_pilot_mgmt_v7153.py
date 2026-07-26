@@ -34,7 +34,7 @@ Tests:
  T31  bottom-tabbar hidden when keyboard-open (CSS)
  T32  visualViewport resize used in keyboard handler
  T33  Pilot fail-closed (not_in_pilot / disabled) preserved
- T34  Cache-bust and version marker are v7.1.5.3
+ T34  Cache-bust and version marker are v7.1.6
 
 Run:
     python -m unittest tests.test_pilot_mgmt_v7153 -v
@@ -136,12 +136,21 @@ def _render_pilot_fn() -> str:
 
 
 def _remove_fn() -> str:
+    """v7.1.6: _pilotRemove() now just opens the managed #pilotRemoveModal; the
+    actual destructive call moved to confirmPilotRemove(). Slice covers both so
+    tests can check the whole open->confirm flow, not just the entry point."""
     js = _js()
-    start = js.find("async function _pilotRemove(")
-    end = js.find("\nasync function ", start + 1)
-    if end == -1:
-        end = js.find("\nfunction ", start + 1)
-    return js[start:end]
+    start = js.find("function _pilotRemove(")
+    assert start != -1, "_pilotRemove not found in app.js"
+    conf_start = js.find("async function confirmPilotRemove(", start)
+    if conf_start == -1:
+        return js[start : start + 1500]
+    conf_end = js.find("\nasync function ", conf_start + 1)
+    if conf_end == -1:
+        conf_end = js.find("\nfunction ", conf_start + 1)
+    if conf_end == -1:
+        conf_end = conf_start + 1500
+    return js[start:conf_end]
 
 
 def _keyboard_iife() -> str:
@@ -149,8 +158,9 @@ def _keyboard_iife() -> str:
     start = js.find("initKeyboardHandling")
     if start == -1:
         return ""
-    # Get a reasonable chunk around it
-    return js[start : start + 2000]
+    # v7.1.6: the handler grew (visualViewport-driven scroll retries, swipe-dismiss
+    # recovery) — widened from 2000 to comfortably cover the whole IIFE.
+    return js[start : start + 6000]
 
 
 # ---------------------------------------------------------------------------
@@ -302,20 +312,36 @@ class TestFrontendPilotUI(unittest.TestCase):
             self.assertIn(cls, fn, f"Mobile card must reference mode badge class: {cls}")
 
     def test_23_remove_confirm_mentions_payment_intents_not_deleted(self):
-        """_pilotRemove confirm must explicitly state Payment Intents are not deleted."""
-        fn = _remove_fn()
+        """Pilot removal flow must explicitly state payments/invoices are not deleted.
+
+        v7.1.6: the warning text moved from a browser confirm() string into the
+        static #pilotRemoveModal markup in index.html.
+        """
+        html = _html()
+        modal_start = html.find('id="pilotRemoveModal"')
+        self.assertNotEqual(modal_start, -1, "#pilotRemoveModal not found in index.html")
+        modal_chunk = html[modal_start : modal_start + 1200]
         self.assertTrue(
-            "платёж" in fn.lower() or "счет" in fn.lower() or "счёт" in fn.lower(),
-            "_pilotRemove confirm message must mention payments/invoices are not deleted",
+            "платёж" in modal_chunk.lower() or "счет" in modal_chunk.lower() or "счёт" in modal_chunk.lower(),
+            "pilotRemoveModal must mention payments/invoices are not deleted",
         )
+        self.assertIn("не удаляются", modal_chunk, "pilotRemoveModal must state existing data is not deleted")
 
     def test_24_remove_confirm_explains_automation_only(self):
-        """_pilotRemove confirm must clarify only automation participation is removed."""
+        """v7.1.6: destructive pilot removal must use the managed modal, not browser confirm()."""
         fn = _remove_fn()
-        self.assertIn("confirm(", fn, "_pilotRemove must use confirm()")
+        self.assertNotIn("confirm(", fn, "_pilotRemove must no longer use browser confirm()")
+        self.assertIn("piModalOpen", fn, "_pilotRemove must open the managed #pilotRemoveModal")
+        self.assertIn(
+            "/remove", fn,
+            "confirmPilotRemove must still call the existing pilot remove endpoint",
+        )
+        html = _html()
+        modal_start = html.find('id="pilotRemoveModal"')
+        modal_chunk = html[modal_start : modal_start + 1200]
         self.assertTrue(
-            "автоматизац" in fn or "участие" in fn,
-            "confirm message must clarify that only automation participation is removed",
+            "автоматизац" in modal_chunk or "участие" in modal_chunk,
+            "pilotRemoveModal text must clarify that only automation participation is removed",
         )
 
 
@@ -411,14 +437,14 @@ class TestPilotSafety(unittest.TestCase):
 class TestVersionV7153(unittest.TestCase):
 
     def test_34_cache_bust_and_version_are_v7153(self):
-        """index.html cache-bust and app.js console version must be v7.1.5.3."""
+        """index.html cache-bust and app.js console version must be v7.1.6."""
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.5.3", html, "index.html cache-bust must be v=7.1.5.3")
+        self.assertIn("v=7.1.6", html, "index.html cache-bust must be v=7.1.6")
         self.assertIn(
-            'console.log("MiniApp version: v7.1.5.3")',
+            'console.log("MiniApp version: v7.1.6")',
             js,
-            "app.js must log v7.1.5.3",
+            "app.js must log v7.1.6",
         )
 
 

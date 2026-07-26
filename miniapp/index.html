@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.1.5.3" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.1.6" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -1039,8 +1039,66 @@
       </div>
     </div>
 
+    <!-- Pilot client removal confirm modal (v7.1.6) -->
+    <div id="pilotRemoveModal" class="pi-modal hidden">
+      <div class="pi-modal-sheet pi-modal-sheet-sm">
+        <div class="pi-modal-head">
+          <h3>Удалить из пилота?</h3>
+          <button class="pi-modal-close" id="pilotRemoveModalClose" type="button">✕</button>
+        </div>
+        <div class="pi-modal-body">
+          <p id="pilotRemoveInfo" style="margin:0 0 10px"></p>
+          <div class="ws-remove-warning">
+            Клиент будет исключён только из дальнейшей автоматизации. Существующие платёжные
+            счета, оплаты и данные МойКласс не удаляются.
+          </div>
+          <div id="pilotRemoveError" class="pi-form-error hidden"></div>
+        </div>
+        <div class="pi-modal-footer">
+          <button class="secondary" id="pilotRemoveModalBack" type="button">Отмена</button>
+          <button class="danger" id="pilotRemoveModalConfirm" type="button">Удалить из пилота</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- All Payments filter bottom sheet (v7.1.6) -->
+    <div id="wsFiltersModal" class="pi-modal hidden">
+      <div class="pi-modal-sheet pi-modal-sheet-sm">
+        <div class="pi-modal-head">
+          <h3>Фильтры</h3>
+          <button class="pi-modal-close" id="wsFiltersModalClose" type="button">✕</button>
+        </div>
+        <div class="pi-modal-body">
+          <label>
+            <span>Статус</span>
+            <select id="wsFilterStatus"></select>
+          </label>
+          <label>
+            <span>Период</span>
+            <select id="wsFilterPeriod"></select>
+          </label>
+          <label>
+            <span>Способ оплаты</span>
+            <select id="wsFilterMethod"></select>
+          </label>
+          <label>
+            <span>Видимость родителю</span>
+            <select id="wsFilterVisibility">
+              <option value="all">Любая</option>
+              <option value="visible">Видно родителю</option>
+              <option value="hidden">Скрыто от родителя</option>
+            </select>
+          </label>
+        </div>
+        <div class="pi-modal-footer">
+          <button class="secondary" id="wsFiltersReset" type="button">Сбросить</button>
+          <button class="primary" id="wsFiltersApply" type="button">Показать</button>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.1.5.3"></script>
+  <script src="/static/app.js?v=7.1.6"></script>
 </body>
 </html>

@@ -8432,3 +8432,236 @@ body.keyboard-open .tabs.bottom-tabbar {
 @media (max-width: 540px) {
   .ws-pilot-table-wrap { display: none !important; }
 }
+
+/* v7.1.6 — Payments Workspace redesign (from approved figma-yellow-club prototype) ── */
+
+/* System bottom-safe-area class — used instead of ad-hoc inline padding on
+   individual workspace screens. .app-shell already reserves space for the
+   global bottom-tabbar; this exists for content fragments rendered inside
+   #paymentsWorkspaceRoot that need their own explicit bottom breathing room
+   (e.g. the last card in a list, right above the tab bar). */
+.ws-bottom-safe-pad {
+  padding-bottom: calc(24px + env(safe-area-inset-bottom));
+}
+
+/* ── Attention cards (previously unstyled plain divs) ─────────────────── */
+.ws-attention-list { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+.ws-attention-item {
+  background: var(--surface, #fff);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: 0 2px 10px rgba(26, 38, 66, .05);
+}
+.ws-attention-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.ws-stage-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: var(--line);
+  color: var(--ink);
+  white-space: nowrap;
+}
+.ws-stage-badge-pending_review        { background: #fff3e0; color: #e65100; }
+.ws-stage-badge-requires_check        { background: #fff8e1; color: #8d6e00; }
+.ws-stage-badge-error                 { background: #fdecea; color: #a82d2d; }
+.ws-stage-badge-missing_parent_link   { background: #fdecea; color: #a82d2d; }
+.ws-stage-badge-ambiguous_parent_link { background: #fff3e0; color: #e65100; }
+.ws-intent-id { font-size: 11px; color: var(--muted); font-family: inherit; }
+.ws-student { font-size: 13px; font-weight: 700; color: var(--ink); }
+.ws-attention-amount { font-size: 14px; font-weight: 700; color: var(--ink); margin-left: auto; }
+.ws-reason {
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--bg, #f6f7fb);
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  line-height: 1.4;
+}
+.ws-attention-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+
+/* ── Friendly error text + owner/admin-only technical details ─────────── */
+.ws-error-message {
+  font-size: 12px;
+  color: #a82d2d;
+  background: #fdecea;
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  line-height: 1.4;
+}
+.ws-tech-details { margin: 4px 0; font-size: 11px; }
+.ws-tech-details summary {
+  color: var(--muted);
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+.ws-tech-details summary::-webkit-details-marker { display: none; }
+.ws-tech-details summary::before { content: "▸ "; }
+.ws-tech-details[open] summary::before { content: "▾ "; }
+.ws-tech-details code {
+  display: block;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--bg, #f6f7fb);
+  color: var(--muted);
+  font-family: 'SFMono-Regular', Consolas, Menlo, monospace;
+  font-size: 10px;
+  word-break: break-all;
+}
+
+/* ── Empty / loading / error states (shared look across workspace tabs) ── */
+.ws-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  padding: 36px 18px;
+  border: 1px dashed var(--line);
+  border-radius: 16px;
+  background: var(--surface, #fff);
+}
+.ws-empty-state-icon { font-size: 26px; line-height: 1; opacity: .7; }
+.ws-empty-state-title { font-weight: 700; font-size: 14px; color: var(--ink); }
+.ws-empty-state-desc { font-size: 12px; color: var(--muted); max-width: 260px; }
+.ws-error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 28px 18px;
+  border-radius: 16px;
+  background: #fff0f0;
+  border: 1px solid rgba(216, 76, 76, .25);
+}
+.ws-error-state-title { font-weight: 700; font-size: 14px; color: #a82d2d; }
+.ws-error-state-desc { font-size: 12px; color: #a82d2d; opacity: .85; }
+.ws-skeleton {
+  border-radius: 14px;
+  background: linear-gradient(90deg, var(--line) 25%, #eef0f5 37%, var(--line) 63%);
+  background-size: 400% 100%;
+  animation: wsShimmer 1.4s ease infinite;
+}
+@keyframes wsShimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+.ws-skeleton-stat { height: 70px; }
+.ws-skeleton-row { height: 64px; margin-bottom: 10px; }
+
+/* ── Pilot add-client form: vertical, one field per row ────────────────── */
+.ws-pilot-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ws-pilot-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.ws-pilot-form input,
+.ws-pilot-form select {
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--ink);
+  background: #fff;
+}
+.ws-pilot-mode-hint {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 400;
+  margin-top: -2px;
+}
+.ws-pilot-form > button { min-height: 44px; margin-top: 2px; }
+
+/* ── Pilot card: note wrapping + destructive-action divider ───────────── */
+.ws-pilot-card-meta span { word-break: break-word; }
+.ws-pilot-card-actions {
+  padding-top: 10px;
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.ws-pilot-card-actions .danger,
+.ws-pilot-card-actions button {
+  min-height: 44px;
+}
+.ws-pilot-card select { min-height: 44px; }
+
+/* ── All Payments: compact search + filter trigger ─────────────────────── */
+.ws-search-row { display: flex; gap: 8px; margin: 12px 0; align-items: stretch; }
+.ws-search-bar {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+.ws-search-bar input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--ink);
+}
+.ws-filter-btn {
+  position: relative;
+  flex: 0 0 auto;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ws-filter-btn__badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 20px;
+  background: var(--red, #d84c4c);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+}
+.ws-results-count { font-size: 12px; color: var(--muted); margin: 4px 0 10px; }
+.ws-remove-warning {
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--bg, #f6f7fb);
+  border-radius: 10px;
+  padding: 8px 10px;
+  line-height: 1.4;
+}
