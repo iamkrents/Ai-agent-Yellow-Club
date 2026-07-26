@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.6");
+console.log("MiniApp version: v7.1.6.1");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12275,6 +12275,7 @@ const PI_STATUS_LABELS = {
   partial_ready:          { label: "Частично готов",         cls: "chip-pi-creating" },
   awaiting_payment:       { label: "Ожидает оплаты",        cls: "chip-pi-bepaid" },
   bepaid_requires_check:  { label: "Требует проверки",       cls: "chip-pi-requires-check" },
+  requires_check:         { label: "Требует проверки",       cls: "chip-pi-requires-check" },
   paid:                   { label: "Оплачено bePaid",        cls: "chip-pi-paid" },
   posted_to_moyklass:     { label: "Внесено в МойКласс",    cls: "chip-pi-posted" },
   cancelled:              { label: "Отменён",                cls: "chip-pi-cancel" },
@@ -14690,7 +14691,7 @@ window.automationItemAction = async function(itemId, action, evOrBtn) {
 
 // ── v7.1.5 — Payments workspace ───────────────────────────────────────────
 
-const _wsState = { tab: "overview", stats: null, attention: null, pilotClients: [], allPayments: null, statsLoading: false };
+const _wsState = { tab: "overview", stats: null, attention: null, pilotClients: null, allPayments: null, statsLoading: false };
 
 function loadPaymentsWorkspace() {
   const root = $("paymentsWorkspaceRoot");
@@ -14712,6 +14713,26 @@ async function _loadWorkspaceAttentionPreview() {
   } catch (e) { /* best-effort preview only */ }
 }
 
+// v7.1.6.1 — small inline SVG icons (safe, self-contained, no external refs).
+// Used instead of emoji for the Overview stat cards / header / empty state,
+// per the approved figma-yellow-club visual spec.
+const WS_ICON_REFRESH = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.3-6.4L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.3 6.4L3 16"/><path d="M3 21v-5h5"/></svg>`;
+const WS_ICON_CLOCK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`;
+const WS_ICON_ALERT_TRIANGLE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 3 19h18L12 3.5Z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>`;
+const WS_ICON_WALLET = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><circle cx="16" cy="14" r="1.1" fill="currentColor" stroke="none"/></svg>`;
+const WS_ICON_CHECK_CIRCLE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.5 2.3 2.3L16 10"/></svg>`;
+const WS_ICON_FILE_CHECK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 7 21h10a1.5 1.5 0 0 0 1.5-1.5V8Z"/><path d="M14 3v4.5A1.5 1.5 0 0 0 15.5 9H20"/><path d="m9 14 2 2 4-4"/></svg>`;
+const WS_ICON_USERS = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20c0-3.3 2.5-5.5 5.5-5.5s5.5 2.2 5.5 5.5"/><path d="M16 8.2c1.4.3 2.4 1.5 2.4 3 0 1-.5 1.9-1.3 2.4"/><path d="M15.2 14.7c2.2.4 3.8 2.1 3.8 4.3v1"/></svg>`;
+const WS_ICON_CHECK_BIG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5"/><path d="m8 12.5 2.7 2.7L16 9.5"/></svg>`;
+
+// v7.1.6.1 step 3 — All Payments icons (same inline-SVG convention as above).
+const WS_ICON_SEARCH = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>`;
+const WS_ICON_FILTER = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M7 12h10"/><path d="M10 18h4"/></svg>`;
+const WS_ICON_EYE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>`;
+const WS_ICON_EYE_OFF = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.6 5.2A10.4 10.4 0 0 1 12 5c6.4 0 10 7 10 7a15.3 15.3 0 0 1-3.2 4.1M6.5 6.6C4 8.3 2 12 2 12s3.6 7 10 7a9.6 9.6 0 0 0 3.5-.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>`;
+const WS_ICON_CHEVRON_DOWN = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`;
+const WS_ICON_INBOX = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h4l2 3h4l2-3h4"/><path d="M5.5 5h13l2 7v6a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-6l2-7Z"/></svg>`;
+
 function _renderWorkspaceSkeleton(root) {
   const caps = roleCaps();
   const canAdmin = caps.canAdminPilot;
@@ -14722,9 +14743,13 @@ function _renderWorkspaceSkeleton(root) {
     ...(caps.canUsePaymentsWorkspace ? [{ id: "pilot-clients", label: "Клиенты пилота" }] : []),
   ].filter(Boolean);
   root.innerHTML = `
-    <div class="section-head">
-      <div><h2>Рабочее пространство платежей</h2></div>
-      <button class="secondary" id="wsRefreshBtn" onclick="loadPaymentsWorkspace()">Обновить</button>
+    <div class="ws-header">
+      <div>
+        <p class="ws-header__eyebrow">Yellow Club Agent</p>
+        <h2 class="ws-header__title">Оплаты</h2>
+        <p class="ws-header__subtitle">Рабочее пространство оплат</p>
+      </div>
+      <button class="ws-refresh-btn" id="wsRefreshBtn" onclick="loadPaymentsWorkspace()" aria-label="Обновить данные">${WS_ICON_REFRESH}</button>
     </div>
     <nav class="ws-subtabs" id="wsSubtabs">
       ${tabs.map(t => `<button class="ws-subtab${_wsState.tab === t.id ? " active" : ""}" data-ws-tab="${escapeHtml(t.id)}" onclick="_wsActivateTab('${escapeHtml(t.id)}')">${escapeHtml(t.label)}</button>`).join("")}
@@ -14817,6 +14842,42 @@ const WS_ATTENTION_STAGE_LABELS = {
   ambiguous_parent_link: "Несколько родителей",
 };
 
+// v7.1.6.1 step 3 — single user-facing status mapping for payment intents,
+// shared by the All Payments compact card AND Overview's "Последние операции"
+// preview (see _wsRenderOverview). Never show pi.status raw to the user —
+// this is the one place that decides the label. client_manager/owner/admin
+// all see the same friendly text; withdrawn is a client_visibility flag, not
+// a status value, so it's handled separately in _wsPiStatusBadge below.
+const WS_PI_STATUS_LABELS = {
+  draft:                 { label: "Черновик",             tone: "muted" },
+  ready:                 { label: "Готов к выставлению",  tone: "info" },
+  bepaid_creating:       { label: "Выставляется...",      tone: "pending" },
+  bepaid_created:        { label: "Ожидает оплаты",       tone: "pending" },
+  partial_ready:         { label: "Частично готов",       tone: "pending" },
+  awaiting_payment:      { label: "Ожидает оплаты",       tone: "pending" },
+  bepaid_requires_check: { label: "Требует проверки",     tone: "warning" },
+  requires_check:        { label: "Требует проверки",     tone: "warning" },
+  paid:                  { label: "Оплачено",             tone: "success" },
+  posted_to_moyklass:    { label: "Внесено в МойКласс",   tone: "success" },
+  cancelled:             { label: "Отменён",              tone: "muted" },
+  error:                 { label: "Ошибка",               tone: "danger" },
+};
+
+function _wsPiStatusBadge(pi) {
+  const withdrawn = (pi.client_visibility || "") === "withdrawn";
+  const meta = withdrawn
+    ? { label: "Отозван", tone: "muted" }
+    : (WS_PI_STATUS_LABELS[pi.status] || { label: pi.status || "—", tone: "muted" });
+  return `<span class="ws-status-badge ws-status-badge--${meta.tone}">${escapeHtml(meta.label)}</span>`;
+}
+
+function _wsPiVisibilityBadge(pi) {
+  const visible = (pi.client_visibility || "hidden") === "published";
+  const icon = visible ? WS_ICON_EYE : WS_ICON_EYE_OFF;
+  const label = visible ? "Видно родителю" : "Скрыто от родителя";
+  return `<span class="ws-pi-visibility${visible ? " ws-pi-visibility--visible" : ""}">${icon}${label}</span>`;
+}
+
 function _wsEmptyState(icon, title, desc) {
   return `<div class="ws-empty-state">
     <div class="ws-empty-state-icon">${icon}</div>
@@ -14839,80 +14900,118 @@ function _wsStatsSkeleton() {
   ).join("")}</div>`;
 }
 
+// label / icon / tone for each of the 6 real stats.workspace/stats fields —
+// tone follows the approved macet: success=green, pending=yellow, danger=red,
+// info=blue (pilot). Order and field names are unchanged from the real API.
+const WS_OVERVIEW_STAT_META = [
+  { field: "pending_review",      label: "На проверке",           tone: "pending", icon: WS_ICON_CLOCK },
+  { field: "requires_check",      label: "Требуют внимания",      tone: "danger",  icon: WS_ICON_ALERT_TRIANGLE },
+  { field: "awaiting_payment",    label: "Ожидают оплаты",        tone: "pending", icon: WS_ICON_WALLET },
+  { field: "paid",                label: "Оплачено",              tone: "success", icon: WS_ICON_CHECK_CIRCLE },
+  { field: "posted_to_moyklass",  label: "Внесено в МойКласс",    tone: "success", icon: WS_ICON_FILE_CHECK },
+  { field: "pilot_clients_count", label: "Клиентов в пилоте",     tone: "info",    icon: WS_ICON_USERS },
+];
+
 function _wsRenderOverview(root) {
   const s = _wsState.stats;
   if (!s) { root.innerHTML = _wsStatsSkeleton(); return; }
   const fmtNum = _wsFmtNum;
   let html = `
     <div class="ws-stats-grid">
-      <div class="ws-stat-card"><div class="ws-stat-value">${fmtNum(s.pending_review)}</div><div class="ws-stat-label">На проверке</div></div>
-      <div class="ws-stat-card"><div class="ws-stat-value">${fmtNum(s.requires_check)}</div><div class="ws-stat-label">Требуют внимания</div></div>
-      <div class="ws-stat-card"><div class="ws-stat-value">${fmtNum(s.awaiting_payment)}</div><div class="ws-stat-label">Ожидают оплаты</div></div>
-      <div class="ws-stat-card"><div class="ws-stat-value">${fmtNum(s.paid)}</div><div class="ws-stat-label">Оплачено</div></div>
-      <div class="ws-stat-card"><div class="ws-stat-value">${fmtNum(s.posted_to_moyklass)}</div><div class="ws-stat-label">Внесено в МойКласс</div></div>
-      <div class="ws-stat-card"><div class="ws-stat-value">${fmtNum(s.pilot_clients_count)}</div><div class="ws-stat-label">Клиентов в пилоте</div></div>
+      ${WS_OVERVIEW_STAT_META.map(m => `
+        <div class="ws-stat-card ws-stat-card--${m.tone}">
+          <div class="ws-stat-card__top">
+            <span class="ws-stat-label">${m.label}</span>
+            <span class="ws-stat-card__icon">${m.icon}</span>
+          </div>
+          <div class="ws-stat-value">${fmtNum(s[m.field])}</div>
+        </div>
+      `).join("")}
     </div>
   `;
 
-  // Preview blocks only render when the underlying data is already available
+  // Preview blocks only render once the underlying data is actually available
   // (loaded via the same real endpoints the Attention / All Payments tabs use)
   // — no decorative-only backend calls are added for this preview.
   const attention = _wsState.attention;
-  if (Array.isArray(attention) && attention.length) {
-    const preview = attention.slice(0, 3);
+  if (Array.isArray(attention)) {
     html += `
-      <div class="section-head" style="margin-top:18px">
-        <div><h3 style="margin:0;font-size:15px">Требуют внимания</h3></div>
+      <div class="ws-mini-head">
+        <h3>Требуют внимания</h3>
         <button class="secondary" style="font-size:12px;padding:4px 10px" onclick="_wsActivateTab('attention')">Все</button>
       </div>
-      <div class="ws-attention-list">${preview.map(_wsRenderAttentionItem).join("")}</div>
     `;
+    html += attention.length
+      ? `<div class="ws-attention-list">${attention.slice(0, 3).map(_wsRenderAttentionItem).join("")}</div>`
+      : `<div class="ws-empty-state">
+          <div class="ws-empty-state-icon ws-empty-state-icon--success">${WS_ICON_CHECK_BIG}</div>
+          <div class="ws-empty-state-title">Нет элементов, требующих внимания</div>
+          <div class="ws-empty-state-desc">Все счета в порядке.</div>
+        </div>`;
   }
 
   if (Array.isArray(_wsState.allPayments) && _wsState.allPayments.length) {
     const recent = _wsState.allPayments.slice(0, 3);
     html += `
-      <div class="section-head" style="margin-top:18px">
-        <div><h3 style="margin:0;font-size:15px">Последние операции</h3></div>
+      <div class="ws-mini-head">
+        <h3>Последние операции</h3>
         <button class="secondary" style="font-size:12px;padding:4px 10px" onclick="_wsActivateTab('all-payments')">Все</button>
       </div>
-      <div class="ws-attention-list">${recent.map(pi => {
+      <div class="ws-recent-list ws-bottom-safe-pad">${recent.map(pi => {
         const st = PI_STATUS_LABELS[pi.status] || { label: pi.status || "—", cls: "chip-pi-draft" };
         const name = pi.student_name ? escapeHtml(pi.student_name) : `Клиент МойКласс #${escapeHtml(String(pi.mk_user_id))}`;
-        return `<div class="ws-attention-item">
-          <div class="ws-attention-meta">
-            <span class="chip ${st.cls}" style="font-size:10px">${escapeHtml(st.label)}</span>
-            <span class="ws-student">${name}</span>
-            <span class="ws-attention-amount">${fmtByn(paymentIntentAmountByn(pi))}</span>
-          </div>
+        return `<div class="ws-recent-row">
+          <span class="chip ${st.cls}" style="font-size:10px">${escapeHtml(st.label)}</span>
+          <span class="ws-recent-row__name">${name}</span>
+          <span class="ws-recent-row__amount">${fmtByn(paymentIntentAmountByn(pi))}</span>
         </div>`;
       }).join("")}</div>
     `;
+  } else {
+    html += `<div class="ws-bottom-safe-pad"></div>`;
   }
 
   root.innerHTML = html;
 }
 
+// Fallback sentences — used ONLY when the backend hasn't sent a readable_reason
+// for a given stage. Whenever item.readable_reason is present (backend already
+// returns a safe, human sentence for most stages), that real value wins — see
+// _wsAttentionReasonHtml below. Never overrides a real backend value.
+const WS_ATTENTION_FALLBACK_REASON = {
+  pending_review: "Черновик ждёт подтверждения клиент-менеджера перед отправкой в bePaid.",
+  requires_check: "Статус платёжного счёта требует ручной сверки.",
+  error: "Не удалось выполнить действие. Проверьте данные и повторите попытку.",
+  missing_parent_link: "В МойКласс не найден связанный аккаунт родителя.",
+  ambiguous_parent_link: "Найдено несколько связанных родительских аккаунтов — нужно выбрать нужный вручную.",
+};
+
 function _wsRenderAttentionItem(item) {
   const stage = item.current_stage || "";
   const pid = escapeHtml(item.intent_public_id || "");
+  const mkId = item.mk_user_id != null && item.mk_user_id !== "" ? escapeHtml(String(item.mk_user_id)) : "";
   const stageLabel = WS_ATTENTION_STAGE_LABELS[stage] || stage;
   const canApprove = roleCaps().canApprovePilotIntents;
   const approveBtn = (stage === "pending_review" && canApprove && pid)
-    ? `<button class="primary" style="font-size:12px;padding:4px 10px" onclick="approvePaymentIntent('${pid}',this)">Подтвердить и отправить</button>`
+    ? `<div class="ws-attention-actions"><button class="ws-attention-approve" onclick="approvePaymentIntent('${pid}',this)">Подтвердить и отправить</button></div>`
     : "";
-  const reasonHtml = stage === "error"
-    ? _wsFriendlyAttentionError(item)
-    : (item.readable_reason ? `<div class="ws-reason">${escapeHtml(item.readable_reason)}</div>` : "");
+  const name = escapeHtml(item.pi_student_name || item.student_name || (mkId ? `Клиент МойКласс #${mkId}` : "Клиент"));
+  const amount = fmtByn(item.amount_byn);
+  const reasonHtml = _wsAttentionReasonHtml(item, stage);
+  const dateHtml = item.updated_at ? `<span class="ws-attn-date">${wsFormatDate(item.updated_at)}</span>` : "";
   return `
     <div class="ws-attention-item">
-      <div class="ws-attention-meta">
-        <span class="ws-stage-badge ws-stage-badge-${escapeHtml(stage)}">${escapeHtml(stageLabel)}</span>
-        ${pid ? `<span class="ws-intent-id">${pid}</span>` : ""}
-        <span class="ws-student">${escapeHtml(item.pi_student_name || item.student_name || "")}</span>
+      <div class="ws-attn-row">
+        <span class="ws-attn-name">${name}</span>
+        <span class="ws-attn-amount">${amount}</span>
       </div>
+      <div class="ws-attn-sub">${pid ? `${pid} · ` : ""}ID в МойКласс: ${mkId || "—"}</div>
       ${reasonHtml}
-      <div class="ws-attention-actions">${approveBtn}</div>
+      <div class="ws-attn-row ws-attn-row--bottom">
+        <span class="ws-stage-badge ws-stage-badge-${escapeHtml(stage)}">${escapeHtml(stageLabel)}</span>
+        ${dateHtml}
+      </div>
+      ${approveBtn}
     </div>`;
 }
 
@@ -14925,8 +15024,8 @@ function _wsFriendlyAttentionError(item) {
   const raw = item.readable_reason || "";
   const looksTechnical = /^Error:|Traceback|Exception/i.test(raw);
   const friendly = looksTechnical
-    ? "Не удалось обработать счёт из-за внутренней ошибки. Информация передана администратору."
-    : raw;
+    ? WS_ATTENTION_FALLBACK_REASON.error
+    : (raw || WS_ATTENTION_FALLBACK_REASON.error);
   let html = friendly ? `<div class="ws-error-message">${escapeHtml(friendly)}</div>` : "";
   if (looksTechnical && roleCaps().canAdminPilot) {
     html += `<details class="ws-tech-details"><summary>Техническая информация</summary><code>${escapeHtml(raw)}</code></details>`;
@@ -14934,11 +15033,52 @@ function _wsFriendlyAttentionError(item) {
   return html;
 }
 
+// Real backend readable_reason (when present and safe) always wins; the
+// per-stage fallback in WS_ATTENTION_FALLBACK_REASON only fills the gap when
+// backend sent nothing. error-stage keeps its own canAdminPilot-gated helper
+// since that's the one stage backend can (rarely) fill with technical text.
+function _wsAttentionReasonHtml(item, stage) {
+  if (stage === "error") return _wsFriendlyAttentionError(item);
+  const text = item.readable_reason || WS_ATTENTION_FALLBACK_REASON[stage] || "";
+  return text ? `<div class="ws-reason">${escapeHtml(text)}</div>` : "";
+}
+
+function _wsQueueHead(count) {
+  return `
+    <div class="ws-queue-head">
+      <div class="ws-queue-head__copy">
+        <h2 class="ws-queue-head__title">Требуют внимания</h2>
+        <p class="ws-queue-head__subtitle">Каждая позиция — отдельная причина, по которой счёт требует обработки</p>
+      </div>
+      ${typeof count === "number" ? `<span class="ws-queue-count">${count}</span>` : ""}
+    </div>
+  `;
+}
+
+function _wsAttentionSkeletonCard() {
+  return `<div class="ws-attention-skeleton-card">
+    <div class="ws-skeleton ws-attention-skeleton-line-top"></div>
+    <div class="ws-skeleton ws-attention-skeleton-line-sub"></div>
+    <div class="ws-skeleton ws-attention-skeleton-block"></div>
+    <div class="ws-skeleton ws-attention-skeleton-line-bottom"></div>
+  </div>`;
+}
+
 function _wsRenderAttention(root) {
   const items = _wsState.attention;
-  if (items === null) { root.innerHTML = `<div class="ws-attention-list">${Array.from({ length: 3 }).map(() => `<div class="ws-skeleton ws-skeleton-row"></div>`).join("")}</div>`; return; }
-  if (!items.length) { root.innerHTML = _wsEmptyState("✅", "Нет элементов, требующих внимания", "Все счета в порядке."); return; }
-  root.innerHTML = `<div class="ws-attention-list ws-bottom-safe-pad">${items.map(_wsRenderAttentionItem).join("")}</div>`;
+  if (items === null) {
+    root.innerHTML = _wsQueueHead() + `<div class="ws-attention-list">${Array.from({ length: 3 }).map(_wsAttentionSkeletonCard).join("")}</div>`;
+    return;
+  }
+  if (!items.length) {
+    root.innerHTML = _wsQueueHead(0) + `<div class="ws-empty-state">
+      <div class="ws-empty-state-icon ws-empty-state-icon--success">${WS_ICON_CHECK_BIG}</div>
+      <div class="ws-empty-state-title">Нет элементов, требующих внимания</div>
+      <div class="ws-empty-state-desc">Все счета в порядке.</div>
+    </div>`;
+    return;
+  }
+  root.innerHTML = _wsQueueHead(items.length) + `<div class="ws-attention-list ws-bottom-safe-pad">${items.map(_wsRenderAttentionItem).join("")}</div>`;
 }
 
 // Frontend-only search/filter state for the All Payments tab — kept separate
@@ -14969,19 +15109,245 @@ function _wsFilteredAllPayments() {
   });
 }
 
+// v7.1.6.1 step 3 — dedicated compact card for the Workspace All Payments
+// tab. Deliberately NOT renderPaymentIntentCard(): that function also backs
+// the legacy admin "Платежи" list (#piList, see loadPaymentIntents()), which
+// this phase must not touch. All capability checks, endpoints and onclick
+// handlers below are copied verbatim from renderPaymentIntentCard() so
+// semantics never drift between the two cards — only the layout differs:
+// name+amount / public+MK id / period+method+date / status+visibility, with
+// every technical block and every action moved into a collapsible
+// "Подробнее" section instead of always being on screen.
+function _wsRenderPaymentCard(pi) {
+  const amountVal = paymentIntentAmountByn(pi);
+  const amount = fmtByn(amountVal);
+  const name = pi.student_name ? escapeHtml(pi.student_name) : `Клиент МойКласс #${escapeHtml(String(pi.mk_user_id))}`;
+  const pid = escapeHtml(pi.public_id || "");
+  const mkId = pi.mk_user_id != null ? escapeHtml(String(pi.mk_user_id)) : "—";
+  const methodLabel = PI_METHOD_LABELS[pi.payment_method] || pi.payment_method || "—";
+  const period = pi.period_month ? escapeHtml(pi.period_month) : "—";
+  const dateLabel = wsFormatDate(pi.created_at);
+
+  const clientVis = pi.client_visibility || "hidden";
+  const isWithdrawn = clientVis === "withdrawn";
+  const safeName = escapeHtml(String(pi.student_name || pi.mk_user_id || "?"));
+
+  const canCancel = ["draft", "ready"].includes(pi.status) && !isWithdrawn;
+  const cancelBtn = canCancel
+    ? `<button class="secondary ws-pi-action-btn" onclick="openCancelIntent('${pid}','${safeName}',${amountVal})">Отменить</button>`
+    : "";
+
+  const canCreateBePaid = pi.payment_method === "erip"
+    && ["draft", "ready"].includes(pi.status)
+    && !pi.bepaid_uid
+    && !["bepaid_creating", "bepaid_requires_check"].includes(pi.status)
+    && canUsePaymentIntents()
+    && !isWithdrawn;
+  const bePaidBtn = canCreateBePaid
+    ? `<button class="primary ws-pi-action-btn" onclick="openBePaidConfirm('${pid}','${safeName}',${amountVal})">Выставить счёт bePaid</button>`
+    : "";
+
+  const acqOption = (pi.payment_options || []).find(o => o.channel === "acquiring");
+  const canOpenAcquiring = !["paid", "posted_to_moyklass", "cancelled"].includes(pi.status)
+    && canUsePaymentIntents()
+    && (pi.payment_method === "acquiring" || acqOption)
+    && !isWithdrawn;
+  const acquiringBtn = canOpenAcquiring
+    ? `<button class="primary ws-pi-action-btn" onclick="openAcquiringCheckout('${pid}')">Открыть страницу оплаты картой</button>`
+    : "";
+  const acqReadyBadge = acqOption?.has_checkout
+    ? `<div class="ws-pi-info-block">Эквайринг: <strong>Checkout создан</strong></div>`
+    : "";
+
+  const canVerifyAcquiring = !["paid", "posted_to_moyklass", "cancelled"].includes(pi.status)
+    && acqOption?.has_checkout
+    && canPostToMoyklass()
+    && !isWithdrawn;
+  const verifyAcquiringBtn = canVerifyAcquiring
+    ? `<button class="secondary ws-pi-action-btn" onclick="verifyAcquiringPayment('${pid}')">Подтвердить оплату через bePaid</button>`
+    : "";
+
+  const bePaidCreatingBlock = pi.status === "bepaid_creating"
+    ? `<div class="ws-pi-info-block">Счёт bePaid создаётся... Обновите страницу через несколько секунд.</div>`
+    : "";
+
+  // Owner/admin-only technical identifiers (order_id/tracking_id/UID) — same
+  // canAdminPilot gate + collapsible "Техническая информация" pattern used by
+  // the Attention tab's raw-error details. client_manager still sees the
+  // friendly state, reason, result and the ERIP account number — just not
+  // these internal bePaid ids. Data itself is never removed from pi, only
+  // not rendered for roles without canAdminPilot.
+  const canSeeBePaidTech = roleCaps().canAdminPilot;
+
+  const bePaidRequiresCheckTech = canSeeBePaidTech && (pi.bepaid_order_id || pi.bepaid_tracking_id)
+    ? `<details class="ws-tech-details"><summary>Техническая информация</summary>
+        ${pi.bepaid_order_id ? `<div class="ws-pi-info-line">order_id: ${escapeHtml(pi.bepaid_order_id)}</div>` : ""}
+        ${pi.bepaid_tracking_id ? `<div class="ws-pi-info-line">tracking_id: ${escapeHtml(pi.bepaid_tracking_id)}</div>` : ""}
+      </details>`
+    : "";
+  const bePaidRequiresCheckBlock = pi.status === "bepaid_requires_check"
+    ? `<div class="ws-pi-info-block ws-pi-info-block--warn">
+        <strong>Требуется проверка в bePaid</strong>
+        <div>Статус счёта неизвестен. Проверьте операцию вручную в личном кабинете bePaid до создания нового счёта.</div>
+        ${pi.bepaid_account_number ? `<div class="ws-pi-info-line">Номер ЕРИП: ${escapeHtml(pi.bepaid_account_number)}</div>` : ""}
+        ${bePaidRequiresCheckTech}
+       </div>`
+    : "";
+
+  const bePaidInfo = pi.bepaid_uid
+    ? `<div class="ws-pi-info-block">Номер ЕРИП: <strong>${escapeHtml(pi.bepaid_account_number || "—")}</strong>
+        ${canSeeBePaidTech ? `<details class="ws-tech-details"><summary>Техническая информация</summary><div class="ws-pi-info-line">UID: ${escapeHtml(pi.bepaid_uid)}</div></details>` : ""}
+       </div>`
+    : "";
+
+  const isDuplicateCancelled = pi.status === "cancelled" && (pi.cancel_reason || "").startsWith("duplicate_automation_intent");
+  const cancelInfo = pi.status === "cancelled" && pi.cancel_reason
+    ? `<div class="ws-pi-info-line">Причина отмены: ${escapeHtml(pi.cancel_reason)}</div>`
+    : "";
+  const duplicateBadge = isDuplicateCancelled
+    ? `<div class="ws-pi-info-block ws-pi-info-block--warn">Дубликат — оплата заблокирована</div>`
+    : "";
+
+  const paidChannelLabel = pi.paid_channel === "acquiring" ? "Оплачено банковской картой (эквайринг)"
+    : pi.paid_channel === "erip" ? "Оплачено через ЕРИП"
+    : "Оплачено в bePaid";
+  const bePaidPaidBlock = (pi.status === "paid" || pi.status === "posted_to_moyklass")
+    ? `<div class="ws-pi-info-block">
+        <strong>${escapeHtml(paidChannelLabel)}</strong>
+        ${pi.paid_at ? `<div class="ws-pi-info-line">Дата оплаты: ${wsFormatDateTime(pi.paid_at)}</div>` : ""}
+        ${(pi.paid_amount_byn != null) ? `<div class="ws-pi-info-line">Сумма: ${fmtByn(pi.paid_amount_byn)}</div>` : ""}
+        ${pi.paid_transaction_uid && canSeeBePaidTech ? `<details class="ws-tech-details"><summary>Техническая информация</summary><div class="ws-pi-info-line">UID: ${escapeHtml(pi.paid_transaction_uid)}</div></details>` : ""}
+        ${pi.status === "paid" ? `<div class="ws-pi-info-line">В МойКласс ещё не внесено</div>` : ""}
+       </div>`
+    : "";
+
+  const mkPostedBlock = pi.status === "posted_to_moyklass"
+    ? `<div class="ws-pi-info-block">
+        <strong>Внесено в МойКласс</strong>
+        ${pi.mk_payment_id ? `<div class="ws-pi-info-line">MK payment ID: ${escapeHtml(String(pi.mk_payment_id))}</div>` : ""}
+        ${pi.mk_posted_at ? `<div class="ws-pi-info-line">Дата внесения: ${wsFormatDate(pi.mk_posted_at)}</div>` : ""}
+        ${pi.mk_invoice_id ? `<div class="ws-pi-info-line">Счёт МК: ${escapeHtml(String(pi.mk_invoice_id))}</div>` : ""}
+       </div>`
+    : "";
+
+  const canMkPost = pi.status === "paid" && canPostToMoyklass() && !isWithdrawn;
+  const mkPostBtn = canMkPost
+    ? `<button class="primary ws-pi-action-btn" onclick="openMkPostModal('${pid}','${safeName}',${amountVal})">Внести в МойКласс</button>`
+    : "";
+
+  const canPublishToParent = canUsePaymentIntents() && !["cancelled"].includes(pi.status) && clientVis !== "published" && !isWithdrawn;
+  const publishToParentBtn = canPublishToParent
+    ? `<button class="secondary ws-pi-action-btn" data-publish-btn="${pid}" onclick="openPublishToParentModal('${pid}')">Открыть оплату родителю</button>`
+    : "";
+
+  const withdrawalInfoBlock = isWithdrawn && pi.withdrawal
+    ? `<div class="ws-pi-withdrawal-block">${_renderWithdrawalResultBlock(pi.withdrawal)}</div>`
+    : "";
+  const canWithdrawFrontend = canWithdrawInvoice()
+    && !isWithdrawn
+    && !["paid", "posted_to_moyklass", "cancelled", "error"].includes(pi.status || "")
+    && !pi.mk_payment_id;
+  const withdrawBtn = canWithdrawFrontend
+    ? `<button class="danger ws-pi-action-btn" data-pi-withdraw-btn="${pid}" onclick="openWithdrawModal('${pid}','${safeName}',${amountVal},'${escapeHtml(String(pi.mk_invoice_id||''))}')">Отозвать счёт</button>`
+    : "";
+
+  const isPilotReviewDraft = pi.status === "draft"
+    && pi.source === "moyklass_invoice_automation"
+    && !pi.bepaid_uid
+    && !(pi.payment_options || []).some(function(o) { return o.uid; })
+    && roleCaps().canApprovePilotIntents;
+  const approveReviewBtn = isPilotReviewDraft
+    ? `<button class="primary ws-pi-action-btn" data-approve-btn="${pid}" onclick="approvePaymentIntent('${pid}',this)">Подтвердить и отправить</button>`
+    : "";
+
+  const hasEripUid = pi.bepaid_uid || (pi.payment_options || []).some(function(o) { return o.channel === "erip" && o.uid; });
+  const wdRemoteStatus = (pi.withdrawal || {}).remote_cancel_status || (pi.withdrawal || {}).erip_cancel_status || "";
+  const canRetryRemote = isWithdrawn && canWithdrawInvoice() && !!hasEripUid
+    && !["cancelled", "already_cancelled"].includes(wdRemoteStatus)
+    && wdRemoteStatus !== "no_erip_uid";
+  const retryRemoteCancelBtn = canRetryRemote
+    ? `<button class="secondary ws-pi-action-btn" data-retry-remote-cancel="${pid}" onclick="retryRemoteCancel('${pid}')">Повторить отмену в bePaid</button>`
+    : "";
+
+  const sourceLabel = pi.source === "moyklass_invoice" ? "Данные проверены в МойКласс"
+    : pi.source === "moyklass_invoice_automation" ? "Автоматизация счетов"
+    : "Ручной ввод";
+  const purposeLabel = pi.purpose ? (PI_PURPOSE_LABELS[pi.purpose] || pi.purpose) : "";
+  const comment = pi.comment ? `<div class="ws-pi-info-line">Комментарий: ${escapeHtml(pi.comment)}</div>` : "";
+  const createdBy = pi.created_by_name ? `<div class="ws-pi-info-line">Создал: ${escapeHtml(pi.created_by_name)}</div>` : "";
+
+  const detailsBody = [
+    `<div class="ws-pi-info-line">Источник: ${escapeHtml(sourceLabel)}</div>`,
+    purposeLabel ? `<div class="ws-pi-info-line">Назначение: ${escapeHtml(purposeLabel)}</div>` : "",
+    comment, createdBy, cancelInfo,
+    duplicateBadge, bePaidCreatingBlock, bePaidRequiresCheckBlock, bePaidInfo,
+    acqReadyBadge, bePaidPaidBlock, mkPostedBlock, withdrawalInfoBlock,
+  ].filter(Boolean).join("");
+
+  const actionsRow = [
+    approveReviewBtn, bePaidBtn, acquiringBtn, verifyAcquiringBtn, mkPostBtn,
+    publishToParentBtn, retryRemoteCancelBtn, cancelBtn, withdrawBtn,
+  ].filter(Boolean).join("");
+
+  return `<div class="ws-pi-card" data-intent-public-id="${pid}">
+    <div class="ws-pi-row">
+      <span class="ws-pi-name">${name}</span>
+      <span class="ws-pi-amount">${amount}</span>
+    </div>
+    <div class="ws-pi-sub">${pid} · ID в МойКласс: ${mkId}</div>
+    <div class="ws-pi-meta">
+      <span>Период: <strong>${period}</strong></span>
+      <span>Способ: <strong>${escapeHtml(methodLabel)}</strong></span>
+      <span>Дата: <strong>${dateLabel}</strong></span>
+    </div>
+    <div class="ws-pi-row ws-pi-row--bottom">
+      ${_wsPiStatusBadge(pi)}
+      ${_wsPiVisibilityBadge(pi)}
+    </div>
+    <details class="ws-pi-more">
+      <summary><span>Подробнее</span>${WS_ICON_CHEVRON_DOWN}</summary>
+      <div class="ws-pi-more-body">
+        ${detailsBody}
+        ${actionsRow ? `<div class="ws-pi-more-actions">${actionsRow}</div>` : ""}
+      </div>
+    </details>
+  </div>`;
+}
+
 function _wsAllPaymentsSearch(value) {
   _wsAllPaymentsUI.search = value || "";
   const root = $("wsTabContent");
   if (root) _wsRenderAllPayments(root);
 }
 
+function _wsSearchSkeleton() {
+  return `<div class="ws-search-row">
+    <div class="ws-skeleton ws-skeleton-search"></div>
+    <div class="ws-skeleton ws-skeleton-filter-btn"></div>
+  </div>`;
+}
+
+function _wsAllPaymentsSkeletonCard() {
+  return `<div class="ws-attention-skeleton-card">
+    <div class="ws-skeleton ws-attention-skeleton-line-top"></div>
+    <div class="ws-skeleton ws-attention-skeleton-line-sub"></div>
+    <div class="ws-skeleton ws-attention-skeleton-line-sub"></div>
+    <div class="ws-skeleton ws-attention-skeleton-line-bottom"></div>
+  </div>`;
+}
+
 function _wsRenderAllPayments(root) {
   if (_wsState.allPayments === null) {
-    root.innerHTML = `<div class="ws-attention-list">${Array.from({ length: 3 }).map(() => `<div class="ws-skeleton ws-skeleton-row"></div>`).join("")}</div>`;
+    root.innerHTML = _wsSearchSkeleton()
+      + `<div class="ws-pi-list">${Array.from({ length: 3 }).map(_wsAllPaymentsSkeletonCard).join("")}</div>`;
     return;
   }
   if (!_wsState.allPayments.length) {
-    root.innerHTML = _wsEmptyState("🗂", "Платёжных счетов пока нет", "Как только появится первый платёжный счёт, он отобразится здесь.");
+    root.innerHTML = `<div class="ws-empty-state">
+      <div class="ws-empty-state-icon ws-empty-state-icon--neutral">${WS_ICON_INBOX}</div>
+      <div class="ws-empty-state-title">Платёжных счетов пока нет</div>
+      <div class="ws-empty-state-desc">Как только появится первый платёжный счёт, он отобразится здесь.</div>
+    </div>`;
     return;
   }
 
@@ -14992,12 +15358,12 @@ function _wsRenderAllPayments(root) {
   const controls = `
     <div class="ws-search-row">
       <label class="ws-search-bar">
-        <span aria-hidden="true">🔎</span>
-        <input type="text" placeholder="Имя, ID в МойКласс или номер счёта…" value="${searchVal}"
+        ${WS_ICON_SEARCH}
+        <input type="text" placeholder="Имя, ID или номер счёта…" value="${searchVal}"
                oninput="_wsAllPaymentsSearch(this.value)" aria-label="Поиск по платёжным счетам" />
       </label>
       <button class="secondary ws-filter-btn" onclick="openWsFiltersModal()" aria-label="Открыть фильтры">
-        ⚙ Фильтры${filterCount ? `<span class="ws-filter-btn__badge">${filterCount}</span>` : ""}
+        ${WS_ICON_FILTER}Фильтры${filterCount ? `<span class="ws-filter-btn__badge">${filterCount}</span>` : ""}
       </button>
     </div>
     <div class="ws-results-count">Найдено: ${filtered.length}</div>
@@ -15005,13 +15371,26 @@ function _wsRenderAllPayments(root) {
 
   root.innerHTML = controls;
   if (!filtered.length) {
-    root.innerHTML += _wsEmptyState("🔍", "Ничего не найдено", "Попробуйте изменить поиск или сбросить фильтры.");
+    root.innerHTML += `<div class="ws-empty-state">
+      <div class="ws-empty-state-icon ws-empty-state-icon--neutral">${WS_ICON_SEARCH}</div>
+      <div class="ws-empty-state-title">Ничего не найдено</div>
+      <div class="ws-empty-state-desc">Измените поиск или сбросьте фильтры.</div>
+      ${filterCount || searchVal ? `<button class="secondary" style="font-size:12px;padding:6px 14px" onclick="_wsResetAllPaymentsSearchAndFilters()">Сбросить фильтры</button>` : ""}
+    </div>`;
     return;
   }
   const el = document.createElement("div");
-  el.className = "ws-all-payments ws-bottom-safe-pad";
+  el.className = "ws-pi-list ws-bottom-safe-pad";
   root.appendChild(el);
-  renderPaymentIntentList(el, filtered, {});
+  el.innerHTML = filtered.map(_wsRenderPaymentCard).join("");
+}
+
+// Used only by the "Ничего не найдено" empty state's reset action — clears
+// both the search term and the four dropdown filters in one step, unlike
+// resetWsFilters() (bottom-sheet-only) which leaves an active search term.
+function _wsResetAllPaymentsSearchAndFilters() {
+  _wsAllPaymentsUI.search = "";
+  resetWsFilters();
 }
 
 function _wsFilterSelectOptions(select, options, currentValue) {
@@ -15020,8 +15399,16 @@ function _wsFilterSelectOptions(select, options, currentValue) {
 }
 
 function openWsFiltersModal() {
+  // Built from WS_PI_STATUS_LABELS (the unified All Payments mapping), deduped
+  // by label — bepaid_requires_check and requires_check both read "Требует
+  // проверки" to the user, so they collapse into one dropdown option; picking
+  // either raw value still filters correctly since _wsFilteredAllPayments
+  // compares the exact pi.status, not the label.
+  const seenLabels = new Set();
   const statusOptions = [{ value: "all", label: "Все статусы" }].concat(
-    Object.keys(PI_STATUS_LABELS).map(k => ({ value: k, label: PI_STATUS_LABELS[k].label }))
+    Object.keys(WS_PI_STATUS_LABELS)
+      .filter(k => { const l = WS_PI_STATUS_LABELS[k].label; if (seenLabels.has(l)) return false; seenLabels.add(l); return true; })
+      .map(k => ({ value: k, label: WS_PI_STATUS_LABELS[k].label }))
   );
   const methodOptions = [{ value: "all", label: "Любой способ" }].concat(
     Object.keys(PI_METHOD_LABELS).map(k => ({ value: k, label: PI_METHOD_LABELS[k] }))
@@ -15035,10 +15422,46 @@ function openWsFiltersModal() {
   const visSel = $("wsFilterVisibility");
   if (visSel) visSel.value = _wsAllPaymentsUI.visibility;
 
+  _wsUpdateFiltersPreviewCount();
   piModalOpen($("wsFiltersModal"));
 }
 
 function closeWsFiltersModal() { piModalClose($("wsFiltersModal")); }
+
+// Live "Показать: N" count on the Apply button — reads the DRAFT select
+// values (not yet committed to _wsAllPaymentsUI), so it previews what
+// applying the current sheet selection would show. Deliberately duplicates
+// _wsFilteredAllPayments's four conditions rather than sharing code with it,
+// so existing tests asserting on _wsFilteredAllPayments's own body keep
+// passing unchanged.
+function _wsFiltersPreviewCount() {
+  const status = $("wsFilterStatus")?.value || "all";
+  const period = $("wsFilterPeriod")?.value || "all";
+  const method = $("wsFilterMethod")?.value || "all";
+  const visibility = $("wsFilterVisibility")?.value || "all";
+  const term = _wsAllPaymentsUI.search.trim().toLowerCase();
+  const all = _wsState.allPayments || [];
+  return all.filter(pi => {
+    if (status !== "all" && pi.status !== status) return false;
+    if (period !== "all" && (pi.period_month || "") !== period) return false;
+    if (method !== "all" && pi.payment_method !== method) return false;
+    if (visibility !== "all") {
+      const visible = (pi.client_visibility || "hidden") === "published";
+      if (visibility === "visible" && !visible) return false;
+      if (visibility === "hidden" && visible) return false;
+    }
+    if (!term) return true;
+    const haystack = [
+      pi.student_name, pi.mk_user_id, pi.public_id, pi.mk_invoice_id,
+    ].filter(Boolean).map(v => String(v).toLowerCase());
+    return haystack.some(v => v.includes(term));
+  }).length;
+}
+
+function _wsUpdateFiltersPreviewCount() {
+  const btn = $("wsFiltersApply");
+  if (btn) btn.textContent = `Показать: ${_wsFiltersPreviewCount()}`;
+}
 
 function applyWsFilters() {
   _wsAllPaymentsUI.status = $("wsFilterStatus")?.value || "all";
@@ -15056,6 +15479,7 @@ function resetWsFilters() {
   _wsAllPaymentsUI.method = "all";
   _wsAllPaymentsUI.visibility = "all";
   ["wsFilterStatus", "wsFilterPeriod", "wsFilterMethod", "wsFilterVisibility"].forEach(id => { const el = $(id); if (el) el.value = "all"; });
+  _wsUpdateFiltersPreviewCount();
   const root = $("wsTabContent");
   if (root) _wsRenderAllPayments(root);
 }
@@ -15081,6 +15505,7 @@ function _wsUpdatePilotModeHint() {
 const WS_PILOT_ERROR_MESSAGES = {
   bepaid_amount_mismatch: "Сумма счёта не совпадает с суммой в МойКласс. Проверьте данные и повторите действие.",
   invalid_amount_format: "Не удалось обработать сумму платежа. Проверьте формат суммы и повторите попытку.",
+  bepaid_creation_failed: "Не удалось создать платёжный счёт. Проверьте данные и повторите действие.",
 };
 function _wsPilotErrorDetail(c) {
   if (!c.last_error_at) return "";
@@ -15093,12 +15518,23 @@ function _wsPilotErrorDetail(c) {
   return html;
 }
 
-function _wsRenderPilotClients(root) {
-  const clients = _wsState.pilotClients;
-  const canManage = roleCaps().canManagePilotClients;
-  const modeLabel = { observe: "Наблюдение", review: "Проверка", auto: "Авто", disabled: "Отключён" };
-  const modeCls   = { observe: "ws-pilot-mode-observe", review: "ws-pilot-mode-review", auto: "ws-pilot-mode-auto", disabled: "ws-pilot-mode-disabled" };
-  const addForm = canManage ? `
+// v7.1.6.1 step 4 — same title+subtitle+yellow-count pattern as Attention's
+// _wsQueueHead, kept as its own function (not a shared refactor) so
+// Attention's own code stays untouched. Count = active pilot clients only.
+function _wsPilotHead(count) {
+  return `
+    <div class="ws-queue-head">
+      <div class="ws-queue-head__copy">
+        <h2 class="ws-queue-head__title">Клиенты пилота</h2>
+        <p class="ws-queue-head__subtitle">Режимы и статусы автоматизации</p>
+      </div>
+      ${typeof count === "number" ? `<span class="ws-queue-count">${count}</span>` : ""}
+    </div>
+  `;
+}
+
+function _wsPilotFormCard() {
+  return `
     <div class="ws-pilot-add-form">
       <h3>Добавить клиента в пилот</h3>
       <div class="ws-pilot-form">
@@ -15116,54 +15552,111 @@ function _wsRenderPilotClients(root) {
         <label><span>Примечание</span><input id="pilotAddNote" type="text" placeholder="Необязательно" /></label>
         <button class="primary" onclick="_pilotAddClient()">Добавить в пилот</button>
       </div>
-      <div id="pilotAddResult" style="margin-top:6px;font-size:13px"></div>
-    </div>` : "";
+      <div id="pilotAddResult" class="ws-pilot-add-result"></div>
+    </div>`;
+}
 
-  if (!clients.length) {
-    root.innerHTML = `${addForm}${_wsEmptyState("👥", "Пока ни один клиент не добавлен в пилот", "Добавьте первого клиента через форму выше.")}`;
+function _wsPilotCardSkeleton() {
+  return `<div class="ws-attention-skeleton-card">
+    <div class="ws-skeleton ws-attention-skeleton-line-top"></div>
+    <div class="ws-skeleton ws-attention-skeleton-line-sub"></div>
+    <div class="ws-skeleton ws-attention-skeleton-block"></div>
+    <div class="ws-skeleton ws-attention-skeleton-block"></div>
+  </div>`;
+}
+
+const WS_PILOT_MODE_LABEL = { observe: "Наблюдение", review: "Проверка", auto: "Авто", disabled: "Отключён" };
+const WS_PILOT_MODE_CLS   = { observe: "ws-pilot-mode-observe", review: "ws-pilot-mode-review", auto: "ws-pilot-mode-auto", disabled: "ws-pilot-mode-disabled" };
+
+function _wsPilotClientCard(c, canManage) {
+  const mid = escapeHtml(String(c.mk_user_id));
+  const midAttr = escapeAttr(String(c.mk_user_id));
+  const mLabel = escapeHtml(WS_PILOT_MODE_LABEL[c.mode] || c.mode);
+  const mCls = WS_PILOT_MODE_CLS[c.mode] || "ws-pilot-mode-disabled";
+  const name = c.name ? escapeHtml(c.name) : `Клиент МойКласс #${mid}`;
+  const modeHint = WS_PILOT_MODE_HINTS[c.mode] || "";
+
+  const statusValue = c.enabled
+    ? `<span class="ws-pilot-value--active">Активен</span>`
+    : `<span class="ws-pilot-value--disabled">Отключён</span>`;
+  const successValue = c.last_success_at
+    ? `<span class="ws-pilot-value--success">${wsFormatDateTime(c.last_success_at)}</span>`
+    : `<span>—</span>`;
+  const errorValue = c.last_error_at
+    ? `<span class="ws-pilot-value--error">${wsFormatDateTime(c.last_error_at)}</span>`
+    : `<span>—</span>`;
+
+  const rows = [
+    ["ID клиента в МойКласс", `<span>${mid}</span>`],
+    ["Статус", statusValue],
+    c.note ? ["Примечание", `<span>${escapeHtml(c.note)}</span>`] : null,
+    ["Последний успех", successValue],
+    ["Последняя ошибка", errorValue],
+    ["Добавлен", `<span>${wsFormatDate(c.created_at)}</span>`],
+    (c.updated_at && c.updated_at !== c.created_at) ? ["Изменён", `<span>${wsFormatDate(c.updated_at)}</span>`] : null,
+  ].filter(Boolean);
+
+  const grid = rows.map(([label, valueHtml]) => `
+    <div class="ws-pilot-row">
+      <span class="ws-pilot-row-label">${escapeHtml(label)}</span>
+      ${valueHtml}
+    </div>`).join("");
+
+  const modeSelect = canManage ? `
+    <div class="ws-pilot-mode-change">
+      <span class="ws-pilot-mode-change-label">Режим автоматизации</span>
+      <select id="pilotMode-${midAttr}" onchange="_pilotChangeMode('${midAttr}',this.value)" aria-label="Режим пилота для ${mid}">
+        ${["observe","review","auto","disabled"].map(m => `<option value="${m}"${c.mode===m?" selected":""}>${WS_PILOT_MODE_LABEL[m]||m}</option>`).join("")}
+      </select>
+    </div>` : "";
+  const removeBtn = canManage ? `<button class="ws-pilot-remove-btn" onclick="_pilotRemove('${midAttr}','${escapeHtml(String(c.name || c.mk_user_id))}')">Удалить из пилота</button>` : "";
+
+  return `
+    <div class="ws-pilot-card">
+      <div class="ws-pilot-card-header">
+        <span class="ws-pilot-card-id">${name}</span>
+        <span class="ws-pilot-mode-badge ${mCls}">${mLabel}</span>
+      </div>
+      ${modeHint ? `<p class="ws-pilot-card-hint">${escapeHtml(modeHint)}</p>` : ""}
+      <div class="ws-pilot-card-grid">${grid}</div>
+      ${_wsPilotErrorDetail(c)}
+      ${modeSelect}
+      ${removeBtn ? `<div class="ws-pilot-card-actions">${removeBtn}</div>` : ""}
+    </div>`;
+}
+
+function _wsRenderPilotClients(root) {
+  const clients = _wsState.pilotClients;
+  const canManage = roleCaps().canManagePilotClients;
+  const formHtml = canManage ? _wsPilotFormCard() : "";
+
+  if (clients === null) {
+    root.innerHTML = formHtml + _wsPilotHead()
+      + `<div class="ws-pilot-cards">${Array.from({ length: 2 }).map(_wsPilotCardSkeleton).join("")}</div>`;
     return;
   }
 
-  // Mobile cards
-  const cards = clients.map(c => {
-    const mid = escapeHtml(c.mk_user_id);
-    const midAttr = escapeAttr(String(c.mk_user_id));
-    const mLabel = escapeHtml(modeLabel[c.mode] || c.mode);
-    const mCls = modeCls[c.mode] || "ws-pilot-mode-disabled";
-    const modeSelect = canManage ? `
-      <select onchange="_pilotChangeMode('${midAttr}',this.value)" aria-label="Режим пилота для ${mid}">
-        ${["observe","review","auto","disabled"].map(m => `<option value="${m}"${c.mode===m?" selected":""}>${modeLabel[m]||m}</option>`).join("")}
-      </select>` : "";
-    const removeBtn = canManage ? `<button class="danger" onclick="_pilotRemove('${midAttr}','${mid}')">Удалить из пилота</button>` : "";
-    return `
-      <div class="ws-pilot-card">
-        <div class="ws-pilot-card-header">
-          <span class="ws-pilot-card-id">${mid}</span>
-          <span class="ws-pilot-mode-badge ${mCls}">${mLabel}</span>
-        </div>
-        <div class="ws-pilot-card-meta">
-          <span class="ws-pilot-card-meta-label">ID в МойКласс</span><span>${mid}</span>
-          <span class="ws-pilot-card-meta-label">Статус</span><span>${c.enabled ? "Активен" : "Неактивен"}</span>
-          ${c.note ? `<span class="ws-pilot-card-meta-label">Примечание</span><span>${escapeHtml(c.note)}</span>` : ""}
-          <span class="ws-pilot-card-meta-label">Успех</span><span>${wsFormatDateTime(c.last_success_at)}</span>
-          <span class="ws-pilot-card-meta-label">Ошибка</span><span>${wsFormatDateTime(c.last_error_at)}</span>
-          <span class="ws-pilot-card-meta-label">Добавлен</span><span>${wsFormatDate(c.created_at)}</span>
-          ${(c.updated_at && c.updated_at !== c.created_at) ? `<span class="ws-pilot-card-meta-label">Изменён</span><span>${wsFormatDate(c.updated_at)}</span>` : ""}
-        </div>
-        ${_wsPilotErrorDetail(c)}
-        ${modeSelect}
-        <div class="ws-pilot-card-actions">${removeBtn}</div>
-      </div>`;
-  }).join("");
+  if (!clients.length) {
+    root.innerHTML = formHtml + `<div class="ws-empty-state">
+      <div class="ws-empty-state-icon ws-empty-state-icon--neutral">${WS_ICON_USERS}</div>
+      <div class="ws-empty-state-title">Пока ни один клиент не добавлен в пилот</div>
+      <div class="ws-empty-state-desc">Добавьте клиента с помощью формы выше.</div>
+    </div>`;
+    return;
+  }
 
-  // Desktop table
+  const activeCount = clients.filter(c => c.enabled).length;
+  const cards = clients.map(c => _wsPilotClientCard(c, canManage)).join("");
+
+  // Desktop table — unchanged from the pre-existing implementation; this
+  // phase only restructures the mobile card view per the approved mock.
   const tableRows = clients.map(c => {
     const mid = escapeHtml(c.mk_user_id);
     const midAttr = escapeAttr(String(c.mk_user_id));
     const changeMode = canManage ? `
       <select onchange="_pilotChangeMode('${midAttr}',this.value)" style="font-size:12px">
-        ${["observe","review","auto","disabled"].map(m => `<option value="${m}"${c.mode===m?" selected":""}>${modeLabel[m]||m}</option>`).join("")}
-      </select>` : escapeHtml(modeLabel[c.mode] || c.mode);
+        ${["observe","review","auto","disabled"].map(m => `<option value="${m}"${c.mode===m?" selected":""}>${WS_PILOT_MODE_LABEL[m]||m}</option>`).join("")}
+      </select>` : escapeHtml(WS_PILOT_MODE_LABEL[c.mode] || c.mode);
     const removeBtn = canManage ? `<button class="danger" style="font-size:11px;padding:2px 8px" onclick="_pilotRemove('${midAttr}','${mid}')">Удалить</button>` : "";
     return `<tr>
       <td>${mid}</td>
@@ -15176,7 +15669,8 @@ function _wsRenderPilotClients(root) {
   }).join("");
 
   root.innerHTML = `
-    ${addForm}
+    ${formHtml}
+    ${_wsPilotHead(activeCount)}
     <div class="ws-pilot-cards ws-bottom-safe-pad">${cards}</div>
     <div class="ws-pilot-table-wrap" style="overflow-x:auto;margin-top:12px">
       <table class="ws-pilot-table"><thead><tr>
@@ -15203,28 +15697,66 @@ async function approvePaymentIntent(publicId, btn) {
   }
 }
 
+function _wsPilotAddResult(text, kind) {
+  const resultEl = $("pilotAddResult");
+  if (!resultEl) return;
+  resultEl.textContent = text;
+  resultEl.className = `ws-pilot-add-result${kind ? ` ws-pilot-add-result--${kind}` : ""}`;
+}
+
+function _wsPilotAddResetForm() {
+  const userIdInput = $("pilotAddUserId");
+  const noteInput = $("pilotAddNote");
+  const modeInput = $("pilotAddMode");
+  if (userIdInput) userIdInput.value = "";
+  if (noteInput) noteInput.value = "";
+  if (modeInput) { modeInput.value = "review"; _wsUpdatePilotModeHint(); }
+}
+
 async function _pilotAddClient() {
   const userId = ($("pilotAddUserId")?.value || "").trim();
   const mode = $("pilotAddMode")?.value || "review";
   const note = ($("pilotAddNote")?.value || "").trim() || null;
-  const resultEl = $("pilotAddResult");
-  if (!userId) { if (resultEl) resultEl.textContent = "Укажите ID клиента в МойКласс."; return; }
+  if (!userId) { _wsPilotAddResult("Укажите ID клиента в МойКласс.", "error"); return; }
+  if (!/^\d+$/.test(userId)) { _wsPilotAddResult("ID клиента в МойКласс должен содержать только цифры.", "error"); return; }
+
   try {
     const d = await _apiPostRaw("/api/pilot/clients", { mk_user_id: userId, mode, note });
     if (d.ok) {
-      if (resultEl) resultEl.textContent = "✓ Сохранено.";
-      _loadPilotClients();
+      _wsPilotAddResetForm();
+      await _loadPilotClients();
+      _loadWorkspaceStats(); // Overview "Клиентов в пилоте" count must reflect the addition
+      setNotice("Клиент добавлен в пилот.", "success");
     } else {
-      if (resultEl) resultEl.textContent = d.error || "Ошибка";
+      _wsPilotAddResult(d.error || "Не удалось добавить клиента.", "error");
     }
-  } catch (e) { if (resultEl) resultEl.textContent = safeUserError(e); }
+  } catch (e) {
+    _wsPilotAddResult(safeUserError(e), "error");
+  }
 }
 
 async function _pilotChangeMode(mkUserId, newMode) {
+  const selectEl = $(`pilotMode-${mkUserId}`);
+  const client = (_wsState.pilotClients || []).find(c => String(c.mk_user_id) === String(mkUserId));
+  const prevMode = client ? client.mode : null;
+  if (selectEl) selectEl.disabled = true;
+
   try {
     const d = await _apiPostRaw(`/api/pilot/clients/${encodeURIComponent(mkUserId)}/mode`, { mode: newMode });
-    if (!d.ok) setNotice(d.error || "Ошибка смены режима", "error");
-  } catch (e) { setNotice(safeUserError(e), "error"); }
+    if (d.ok) {
+      if (client) { client.mode = newMode; client.updated_at = new Date().toISOString(); }
+      setNotice("Режим изменён.", "success");
+      _wsRenderPilotClients($("wsTabContent"));
+    } else {
+      if (selectEl && prevMode) selectEl.value = prevMode;
+      if (selectEl) selectEl.disabled = false;
+      setNotice(d.error || "Не удалось изменить режим.", "error");
+    }
+  } catch (e) {
+    if (selectEl && prevMode) selectEl.value = prevMode;
+    if (selectEl) selectEl.disabled = false;
+    setNotice(safeUserError(e), "error");
+  }
 }
 
 // v7.1.6 — replaces the old browser confirm() with a managed bottom-sheet modal
@@ -15253,6 +15785,7 @@ async function confirmPilotRemove() {
   errEl?.classList.add("hidden");
   const btn = $("pilotRemoveModalConfirm");
   if (btn) { btn.disabled = true; btn.textContent = "Удаляю..."; }
+
   try {
     const d = await _apiPostRaw(`/api/pilot/clients/${encodeURIComponent(_pilotRemoveTarget)}/remove`, {});
     if (d.ok) {
@@ -15501,4 +16034,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("wsFiltersReset")?.addEventListener("click", resetWsFilters);
   $("wsFiltersModalClose")?.addEventListener("click", closeWsFiltersModal);
   $("wsFiltersModal")?.addEventListener("click", e => { if (e.target === $("wsFiltersModal")) closeWsFiltersModal(); });
+  // v7.1.6.1 step 3 — live "Показать: N" preview count as draft filters change
+  ["wsFilterStatus", "wsFilterPeriod", "wsFilterMethod", "wsFilterVisibility"].forEach(id => {
+    $(id)?.addEventListener("change", _wsUpdateFiltersPreviewCount);
+  });
 });

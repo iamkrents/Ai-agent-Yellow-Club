@@ -1273,10 +1273,20 @@ class TestHotfix98_2(unittest.TestCase):
                       f"canPublishToParent must include !isWithdrawn check, got: {line!r}")
 
     def test_82_app_js_no_duplicate_is_withdrawn_definition(self):
-        """isWithdrawn must be defined only once in the card renderer."""
+        """isWithdrawn must be defined exactly once per independent card renderer.
+
+        v7.1.6.1 step 3 added _wsRenderPaymentCard() — a dedicated compact
+        card for the Workspace All Payments tab, deliberately separate from
+        the legacy renderPaymentIntentCard() (which still backs the
+        unrelated admin #piList screen and must not be touched by workspace
+        changes). Each renderer legitimately computes its own local
+        isWithdrawn; the guard here is against an accidental duplicate
+        definition *within* a single renderer, not against two renderers
+        existing.
+        """
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
         count = js.count("const isWithdrawn = clientVis")
-        self.assertEqual(count, 1, f"isWithdrawn defined {count} times; expected exactly 1")
+        self.assertEqual(count, 2, f"isWithdrawn defined {count} times; expected exactly 1 per card renderer (2 renderers total)")
 
     # ── Fix 4: _renderWithdrawalResultBlock improvements ─────────────────────
 
@@ -1862,11 +1872,11 @@ class TestRemoteCancelV714(unittest.TestCase):
     # ── Version and cache-bust ────────────────────────────────────────────────
 
     def test_127_cache_bust_v714(self):
-        """index.html has v=7.1.6 and app.js has MiniApp version: v7.1.6."""
+        """index.html has v=7.1.6.1 and app.js has MiniApp version: v7.1.6.1."""
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v=7.1.6", html, "index.html cache-bust must be v=7.1.6")
-        self.assertIn("v7.1.6", js, "app.js version marker must contain v7.1.6")
+        self.assertIn("v=7.1.6.1", html, "index.html cache-bust must be v=7.1.6.1")
+        self.assertIn("v7.1.6.1", js, "app.js version marker must contain v7.1.6.1")
 
 
 # ---------------------------------------------------------------------------
@@ -2274,11 +2284,11 @@ class TestRemoteCancelRetryV7141(unittest.TestCase):
         )
 
     def test_157_cache_bust_v7142(self):
-        """index.html has v=7.1.6 and app.js has MiniApp version: v7.1.6."""
+        """index.html has v=7.1.6.1 and app.js has MiniApp version: v7.1.6.1."""
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v=7.1.6", html, "index.html cache-bust must be v=7.1.6")
-        self.assertIn("v7.1.6", js, "app.js version marker must contain v7.1.6")
+        self.assertIn("v=7.1.6.1", html, "index.html cache-bust must be v=7.1.6.1")
+        self.assertIn("v7.1.6.1", js, "app.js version marker must contain v7.1.6.1")
 
 
 # ---------------------------------------------------------------------------
@@ -2652,11 +2662,11 @@ class TestEripClientWiringV7142(unittest.TestCase):
     # ── Group 8: Version ──────────────────────────────────────────────────────
 
     def test_182_cache_bust_v7142(self):
-        """index.html has v=7.1.6 and app.js has MiniApp version: v7.1.6."""
+        """index.html has v=7.1.6.1 and app.js has MiniApp version: v7.1.6.1."""
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v=7.1.6", html, "index.html cache-bust must be v=7.1.6")
-        self.assertIn("v7.1.6", js, "app.js version marker must contain v7.1.6")
+        self.assertIn("v=7.1.6.1", html, "index.html cache-bust must be v=7.1.6.1")
+        self.assertIn("v7.1.6.1", js, "app.js version marker must contain v7.1.6.1")
 
 
 if __name__ == "__main__":

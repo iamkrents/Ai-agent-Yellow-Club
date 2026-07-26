@@ -5,7 +5,7 @@ UX fix). Business logic, capabilities, and API endpoints are unchanged — this
 release is a UI layer on top of them.
 
 Tests:
- T01  Cache-bust and version marker are v7.1.6
+ T01  Cache-bust and version marker are v7.1.6.1
  T02  Four workspace tabs are defined (ids + labels)
  T03  Client manager can see the Pilot Clients tab (WORKSPACE_VIEW_ROLES)
  T04  Owner/admin can see the Pilot Clients tab (WORKSPACE_VIEW_ROLES)
@@ -159,9 +159,9 @@ class TestVersion(unittest.TestCase):
     def test_01_cache_bust_and_version_are_v716(self):
         html = _html()
         js = _js()
-        self.assertIn("styles.css?v=7.1.6", html)
-        self.assertIn("app.js?v=7.1.6", html)
-        self.assertIn('console.log("MiniApp version: v7.1.6")', js)
+        self.assertIn("styles.css?v=7.1.6.1", html)
+        self.assertIn("app.js?v=7.1.6.1", html)
+        self.assertIn('console.log("MiniApp version: v7.1.6.1")', js)
 
 
 # ---------------------------------------------------------------------------
@@ -208,9 +208,17 @@ class TestTabsAndCapabilities(unittest.TestCase):
 class TestRealApiUsage(unittest.TestCase):
 
     def test_08_overview_uses_real_stats_fields(self):
-        fn = _js_fn("_wsRenderOverview")
+        """v7.1.6.1: field access is data-driven via WS_OVERVIEW_STAT_META (s[m.field])
+        instead of six hardcoded s.<field> accesses — same real API fields, no new backend."""
+        js = _js()
+        meta_start = js.find("const WS_OVERVIEW_STAT_META")
+        self.assertNotEqual(meta_start, -1, "WS_OVERVIEW_STAT_META not found in app.js")
+        meta_block = js[meta_start : meta_start + 900]
         for field in ("pending_review", "requires_check", "awaiting_payment", "paid", "posted_to_moyklass", "pilot_clients_count"):
-            self.assertIn(f"s.{field}", fn, f"_wsRenderOverview must render stats.{field}")
+            self.assertIn(f'"{field}"', meta_block, f"WS_OVERVIEW_STAT_META must reference stats.{field}")
+        fn = _js_fn("_wsRenderOverview")
+        self.assertIn("WS_OVERVIEW_STAT_META", fn)
+        self.assertIn("s[m.field]", fn)
 
     def test_09_attention_uses_existing_endpoint(self):
         fn = _js_fn("_loadWorkspaceAttention", is_async=True)
@@ -223,7 +231,11 @@ class TestRealApiUsage(unittest.TestCase):
     def test_11_all_payments_uses_existing_intents_endpoint(self):
         fn = _js_fn("_loadWorkspaceAllPayments", is_async=True)
         self.assertIn("/api/payments/intents", fn)
-        self.assertIn("renderPaymentIntentList", _js_fn("_wsRenderAllPayments"))
+        # v7.1.6.1 step 3: All Payments now renders via its own dedicated
+        # _wsRenderPaymentCard() (compact card + collapsible details) rather
+        # than the shared renderPaymentIntentList() — the endpoint above is
+        # unchanged, only the rendering delegate changed.
+        self.assertIn("_wsRenderPaymentCard", _js_fn("_wsRenderAllPayments"))
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +300,9 @@ class TestPilotFormAndCard(unittest.TestCase):
         self.assertIn("flex-direction: column", block)
 
     def test_21_user_facing_label_id_klienta_v_moyklass(self):
-        fn = _js_fn("_wsRenderPilotClients")
+        # v7.1.6.1 step 4: the add-form markup moved into its own
+        # _wsPilotFormCard() function (still rendered by _wsRenderPilotClients).
+        fn = _js_fn("_wsPilotFormCard")
         self.assertIn("ID клиента в МойКласс", fn)
 
     def test_22_all_four_mode_descriptions_present(self):
@@ -302,7 +316,8 @@ class TestPilotFormAndCard(unittest.TestCase):
         self.assertIn("новые действия не выполняются", block)
 
     def test_23_pilot_card_shows_formatted_dates(self):
-        fn = _js_fn("_wsRenderPilotClients")
+        # v7.1.6.1 step 4: per-client card markup moved into _wsPilotClientCard().
+        fn = _js_fn("_wsPilotClientCard")
         self.assertIn("wsFormatDateTime(c.last_success_at)", fn)
         self.assertIn("wsFormatDateTime(c.last_error_at)", fn)
 
@@ -405,14 +420,34 @@ class TestEmptyLoadingErrorStates(unittest.TestCase):
     def test_35_empty_state_helper_used(self):
         js = _js()
         self.assertIn("function _wsEmptyState(", js)
-        for fn_name in ("_wsRenderAttention", "_wsRenderAllPayments", "_wsRenderPilotClients"):
-            self.assertIn("_wsEmptyState(", _js_fn(fn_name))
+        # v7.1.6.1 step 2: Attention's own empty state was intentionally
+        # migrated off the shared _wsEmptyState() helper to the same inline
+        # SVG green-check pattern Overview already uses — still a real empty
+        # state (icon + title + description), just not via that helper call.
+        attention = _js_fn("_wsRenderAttention")
+        self.assertNotIn("_wsEmptyState(", attention)
+        self.assertIn("ws-empty-state-icon--success", attention)
+        # v7.1.6.1 step 3: All Payments' two empty states (no payments / no
+        # search results) were built the same SVG-icon way from the start —
+        # never used _wsEmptyState() — using the new neutral icon tone.
+        all_payments = _js_fn("_wsRenderAllPayments")
+        self.assertNotIn("_wsEmptyState(", all_payments)
+        self.assertIn("ws-empty-state-icon--neutral", all_payments)
+        # v7.1.6.1 step 4: Pilot Clients' empty state was migrated the same
+        # way — SVG users-icon instead of the old "👥" emoji + _wsEmptyState().
+        pilot = _js_fn("_wsRenderPilotClients")
+        self.assertNotIn("_wsEmptyState(", pilot)
+        self.assertIn("ws-empty-state-icon--neutral", pilot)
+        self.assertIn("WS_ICON_USERS", pilot)
 
     def test_36_loading_state_uses_skeletons(self):
         js = _js()
         self.assertIn(".ws-skeleton", _css())
         self.assertIn("ws-skeleton", _js_fn("_wsStatsSkeleton"))
-        self.assertIn("ws-skeleton-row", _js_fn("_wsRenderAttention"))
+        # v7.1.6.1 step 2: Attention's loading state was intentionally
+        # upgraded from a generic row skeleton to a card-shaped skeleton.
+        self.assertIn("_wsAttentionSkeletonCard", _js_fn("_wsRenderAttention"))
+        self.assertIn("ws-attention-skeleton-card", _js_fn("_wsAttentionSkeletonCard"))
 
     def test_37_error_state_has_retry(self):
         js = _js()

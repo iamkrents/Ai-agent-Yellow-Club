@@ -34,7 +34,7 @@ Tests:
  T31  bottom-tabbar hidden when keyboard-open (CSS)
  T32  visualViewport resize used in keyboard handler
  T33  Pilot fail-closed (not_in_pilot / disabled) preserved
- T34  Cache-bust and version marker are v7.1.6
+ T34  Cache-bust and version marker are v7.1.6.1
 
 Run:
     python -m unittest tests.test_pilot_mgmt_v7153 -v
@@ -131,6 +131,15 @@ def _pilot_remove_fn() -> str:
 def _render_pilot_fn() -> str:
     js = _js()
     start = js.find("function _wsRenderPilotClients(")
+    end = js.find("\nfunction ", start + 1)
+    return js[start:end]
+
+
+def _pilot_client_card_fn() -> str:
+    """v7.1.6.1 step 4: the per-client card markup was extracted out of
+    _wsRenderPilotClients into its own _wsPilotClientCard() function."""
+    js = _js()
+    start = js.find("function _wsPilotClientCard(")
     end = js.find("\nfunction ", start + 1)
     return js[start:end]
 
@@ -306,10 +315,21 @@ class TestFrontendPilotUI(unittest.TestCase):
         )
 
     def test_22_mobile_card_mode_badge_classes(self):
-        """_wsRenderPilotClients must output mode-specific badge CSS classes."""
-        fn = _render_pilot_fn()
+        """The per-client card must output mode-specific badge CSS classes.
+
+        v7.1.6.1 step 4: this markup moved from inline in _wsRenderPilotClients
+        into its own _wsPilotClientCard() function, and the class names became
+        data-driven via the WS_PILOT_MODE_CLS lookup (same pattern used for
+        Overview's WS_OVERVIEW_STAT_META) rather than inline per-mode literals.
+        """
+        fn = _pilot_client_card_fn()
+        self.assertIn("WS_PILOT_MODE_CLS[c.mode]", fn)
+        js = _js()
+        idx = js.find("const WS_PILOT_MODE_CLS")
+        self.assertNotEqual(idx, -1, "WS_PILOT_MODE_CLS not found in app.js")
+        cls_block = js[idx : idx + 300]
         for cls in ("ws-pilot-mode-observe", "ws-pilot-mode-review", "ws-pilot-mode-auto", "ws-pilot-mode-disabled"):
-            self.assertIn(cls, fn, f"Mobile card must reference mode badge class: {cls}")
+            self.assertIn(cls, cls_block, f"Mobile card must reference mode badge class: {cls}")
 
     def test_23_remove_confirm_mentions_payment_intents_not_deleted(self):
         """Pilot removal flow must explicitly state payments/invoices are not deleted.
@@ -437,14 +457,14 @@ class TestPilotSafety(unittest.TestCase):
 class TestVersionV7153(unittest.TestCase):
 
     def test_34_cache_bust_and_version_are_v7153(self):
-        """index.html cache-bust and app.js console version must be v7.1.6."""
+        """index.html cache-bust and app.js console version must be v7.1.6.1."""
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.6", html, "index.html cache-bust must be v=7.1.6")
+        self.assertIn("v=7.1.6.1", html, "index.html cache-bust must be v=7.1.6.1")
         self.assertIn(
-            'console.log("MiniApp version: v7.1.6")',
+            'console.log("MiniApp version: v7.1.6.1")',
             js,
-            "app.js must log v7.1.6",
+            "app.js must log v7.1.6.1",
         )
 
 

@@ -268,15 +268,21 @@ class TestAllPaymentsImpl(unittest.TestCase):
         )
 
     def test_18_ws_render_all_payments_uses_render_payment_intent_list(self):
-        """_wsRenderAllPayments must delegate to renderPaymentIntentList."""
+        """_wsRenderAllPayments must delegate to a real payment-intent card renderer.
+
+        v7.1.6.1 step 3: switched from the shared renderPaymentIntentList()
+        (which also backs the unrelated legacy admin #piList screen) to a
+        dedicated _wsRenderPaymentCard() compact-card renderer. Endpoint and
+        data are unchanged — only the render delegate.
+        """
         js = _js()
         fn_start = js.find("function _wsRenderAllPayments(")
         self.assertNotEqual(fn_start, -1)
         fn_end = js.find("\nfunction ", fn_start + 1)
         fn_body = js[fn_start : fn_end if fn_end != -1 else fn_start + 600]
         self.assertIn(
-            "renderPaymentIntentList", fn_body,
-            "_wsRenderAllPayments must call renderPaymentIntentList",
+            "_wsRenderPaymentCard", fn_body,
+            "_wsRenderAllPayments must call _wsRenderPaymentCard",
         )
         self.assertNotIn(
             "используйте раздел",
@@ -314,14 +320,14 @@ class TestAllPaymentsImpl(unittest.TestCase):
 class TestVersionV7152(unittest.TestCase):
 
     def test_21_cache_bust_and_version_are_v7153(self):
-        """index.html cache-bust and app.js version marker must be v7.1.6."""
+        """index.html cache-bust and app.js version marker must be v7.1.6.1."""
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.6", html, "index.html cache-bust must be v=7.1.6")
+        self.assertIn("v=7.1.6.1", html, "index.html cache-bust must be v=7.1.6.1")
         self.assertIn(
-            'console.log("MiniApp version: v7.1.6")',
+            'console.log("MiniApp version: v7.1.6.1")',
             js,
-            "app.js must contain version marker v7.1.6",
+            "app.js must contain version marker v7.1.6.1",
         )
 
 

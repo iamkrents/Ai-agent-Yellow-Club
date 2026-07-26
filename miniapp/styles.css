@@ -8322,58 +8322,89 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
   .ws-stats-grid { grid-template-columns: 1fr; }
 }
 .ws-stat-card {
-  background: var(--surface, #fff);
+  background: var(--card, #fff);
   border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 12px 10px;
+  border-radius: 15px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  min-height: 70px;
+  justify-content: space-between;
+  min-height: 96px;
+  box-shadow: 0 4px 14px rgba(23, 32, 51, .05);
 }
+.ws-stat-card__top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ws-stat-card__icon {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 9px;
+}
+.ws-stat-card__icon svg { display: block; width: 16px; height: 16px; }
+.ws-stat-card--pending .ws-stat-card__icon { color: #9b6b05; background: #fff7df; }
+.ws-stat-card--danger  .ws-stat-card__icon { color: #b14343; background: #fceeee; }
+.ws-stat-card--success .ws-stat-card__icon { color: #267b4e; background: #eaf6ef; }
+.ws-stat-card--info    .ws-stat-card__icon { color: #3457a6; background: #eaf0fd; }
 .ws-stat-value {
-  font-size: 26px;
-  font-weight: 700;
+  margin-top: 10px;
+  font-size: 22px;
+  font-weight: 800;
   line-height: 1.1;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ws-stat-value small {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
 }
 .ws-stat-label {
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 650;
   color: var(--muted);
-  margin-top: 4px;
   line-height: 1.3;
 }
 .ws-subtabs {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   overflow-x: auto;
   flex-wrap: nowrap;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
-  padding-bottom: 4px;
+  padding: 4px;
   margin: 0 0 14px;
+  background: var(--card, #fff);
+  border: 1px solid var(--line);
+  border-radius: 14px;
 }
 .ws-subtabs::-webkit-scrollbar { display: none; }
 .ws-subtab {
   flex: 0 0 auto;
   white-space: nowrap;
-  padding: 6px 14px;
-  border-radius: 20px;
-  border: 1px solid var(--line);
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 14px;
+  border-radius: 11px;
+  border: 0;
   background: transparent;
   font-size: 13px;
+  font-weight: 700;
   cursor: pointer;
-  color: var(--ink);
-  line-height: 1.4;
+  color: var(--muted);
+  line-height: 1;
   font-family: inherit;
 }
 .ws-subtab.active {
-  background: var(--ink);
-  color: #fff;
-  border-color: transparent;
+  background: var(--yellow, #ffcb1f);
+  color: var(--ink);
 }
 @media (max-width: 420px) {
   .topbar h1 { font-size: 18px; }
@@ -8444,22 +8475,194 @@ body.keyboard-open .tabs.bottom-tabbar {
   padding-bottom: calc(24px + env(safe-area-inset-bottom));
 }
 
-/* ── Attention cards (previously unstyled plain divs) ─────────────────── */
+/* v7.1.6.1 — Overview visual pass (figma-yellow-club Client Manager → Overview).
+   Dedicated compact header for Payments Workspace only — deliberately NOT
+   reusing .section-head (font-size:26px!important, shared by every other tab)
+   so other screens stay untouched. */
+.ws-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 2px 0 14px;
+}
+.ws-header__eyebrow {
+  margin: 0 0 2px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: #9a7d00;
+}
+.ws-header__title {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 800;
+  color: var(--ink);
+  line-height: 1.15;
+}
+.ws-header__subtitle {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.3;
+}
+.ws-refresh-btn {
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card, #fff);
+  color: var(--ink);
+  cursor: pointer;
+}
+.ws-refresh-btn svg { display: block; width: 17px; height: 17px; }
+.ws-refresh-btn:active { transform: scale(.95); }
+
+/* Overview mini section headers ("Требуют внимания" / "Последние операции"
+   previews) — a smaller sibling of .ws-header, not the global .section-head. */
+.ws-mini-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 18px 0 8px;
+}
+.ws-mini-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+/* "Последние операции" preview on Overview — compact single-line rows,
+   distinct from the full Payment-Intent card used on the All Payments tab. */
+.ws-recent-list { display: flex; flex-direction: column; gap: 8px; }
+.ws-recent-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--card, #fff);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  box-shadow: 0 3px 10px rgba(23, 32, 51, .04);
+}
+.ws-recent-row__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-recent-row__amount {
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+/* Tone-coloured circular icon for the Overview attention-preview empty state
+   (green check) — the base .ws-empty-state-icon (font-size:26px, for emoji)
+   stays untouched since other tabs' empty states still use it as-is. */
+.ws-empty-state-icon--success {
+  width: 46px;
+  height: 46px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #eaf6ef;
+  color: #267b4e;
+  font-size: 0;
+}
+.ws-empty-state-icon--success svg { display: block; width: 20px; height: 20px; }
+
+/* ── v7.1.6.1 step 2 — Attention queue header (title/subtitle + yellow count) ── */
+.ws-queue-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 4px 0 12px;
+}
+.ws-queue-head__copy { flex: 1 1 auto; min-width: 0; }
+.ws-queue-head__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--ink);
+  line-height: 1.2;
+}
+.ws-queue-head__subtitle {
+  margin: 3px 0 0;
+  font-size: 13px;
+  color: #4d566c;
+  line-height: 1.45;
+}
+.ws-queue-count {
+  flex: 0 0 auto;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 7px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--yellow, #ffcb1f);
+  color: #665100;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+/* ── Attention cards ────────────────────────────────────────────────────
+   Row 1: name + amount · Row 2 (sub): public id + MK id · reason block ·
+   Row bottom: status badge + date · optional approve action. */
 .ws-attention-list { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
 .ws-attention-item {
-  background: var(--surface, #fff);
+  background: var(--card, #fff);
   border: 1px solid var(--line);
   border-radius: 14px;
   padding: 14px;
   box-shadow: 0 2px 10px rgba(26, 38, 66, .05);
 }
-.ws-attention-meta {
+.ws-attn-row {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
+  justify-content: space-between;
+  gap: 10px;
 }
+.ws-attn-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+.ws-attn-amount {
+  flex: 0 0 auto;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.ws-attn-sub {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #4d566c;
+  line-height: 1.4;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+.ws-attn-row--bottom { margin-top: 8px; flex-wrap: wrap; }
+.ws-attn-date { font-size: 12px; color: #4d566c; }
 .ws-stage-badge {
   font-size: 11px;
   font-weight: 700;
@@ -8469,11 +8672,13 @@ body.keyboard-open .tabs.bottom-tabbar {
   color: var(--ink);
   white-space: nowrap;
 }
-.ws-stage-badge-pending_review        { background: #fff3e0; color: #e65100; }
-.ws-stage-badge-requires_check        { background: #fff8e1; color: #8d6e00; }
-.ws-stage-badge-error                 { background: #fdecea; color: #a82d2d; }
-.ws-stage-badge-missing_parent_link   { background: #fdecea; color: #a82d2d; }
-.ws-stage-badge-ambiguous_parent_link { background: #fff3e0; color: #e65100; }
+/* Semantic mapping: pending_review=yellow, requires_check/ambiguous_parent_link=orange,
+   error/missing_parent_link=red — same fg/bg pairs used by .ws-stat-card tones. */
+.ws-stage-badge-pending_review        { background: #fff7df; color: #9b6b05; }
+.ws-stage-badge-requires_check        { background: #fef0e4; color: #c2570d; }
+.ws-stage-badge-error                 { background: #fceeee; color: #b14343; }
+.ws-stage-badge-missing_parent_link   { background: #fceeee; color: #b14343; }
+.ws-stage-badge-ambiguous_parent_link { background: #fef0e4; color: #c2570d; }
 .ws-intent-id { font-size: 11px; color: var(--muted); font-family: inherit; }
 .ws-student { font-size: 13px; font-weight: 700; color: var(--ink); }
 .ws-attention-amount { font-size: 14px; font-weight: 700; color: var(--ink); margin-left: auto; }
@@ -8483,10 +8688,45 @@ body.keyboard-open .tabs.bottom-tabbar {
   background: var(--bg, #f6f7fb);
   border-radius: 10px;
   padding: 8px 10px;
-  margin: 6px 0;
+  margin: 8px 0 0;
   line-height: 1.4;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
-.ws-attention-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.ws-attention-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.ws-attention-approve {
+  flex: 0 0 auto;
+  min-height: 44px;
+  max-width: 100%;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 11px;
+  background: var(--yellow, #ffcb1f);
+  color: #171717;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* Skeleton shaped like the real card above, not a generic bar, per the
+   "structure must match the future card" requirement. */
+.ws-attention-skeleton-card {
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--card, #fff);
+}
+.ws-attention-skeleton-card .ws-skeleton { margin-bottom: 8px; }
+.ws-attention-skeleton-card .ws-skeleton:last-child { margin-bottom: 0; }
+.ws-attention-skeleton-line-top { height: 16px; width: 60%; }
+.ws-attention-skeleton-line-sub { height: 10px; width: 40%; }
+.ws-attention-skeleton-block { height: 32px; width: 100%; }
+.ws-attention-skeleton-line-bottom { height: 20px; width: 30%; }
 
 /* ── Friendly error text + owner/admin-only technical details ─────────── */
 .ws-error-message {
@@ -8609,6 +8849,85 @@ body.keyboard-open .tabs.bottom-tabbar {
 }
 .ws-pilot-card select { min-height: 44px; }
 
+/* ── v7.1.6.1 step 4 — Pilot Clients visual pass ─────────────────────────── */
+.ws-pilot-add-form {
+  background: var(--card, #fff);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+  margin: 12px 0;
+}
+.ws-pilot-add-form h3 { margin: 0 0 12px; font-size: 15px; font-weight: 800; color: var(--ink); }
+.ws-pilot-add-result { margin-top: 8px; font-size: 12px; line-height: 1.4; }
+.ws-pilot-add-result--success { color: #267b4e; }
+.ws-pilot-add-result--error { color: #b14343; }
+
+.ws-pilot-card-hint { margin: 0 0 10px; font-size: 12px; color: #4d566c; line-height: 1.4; }
+
+/* Label-left / value-right rows with hairline dividers (replaces the older
+   two-column .ws-pilot-card-meta grid, kept below unused for minimal diff). */
+.ws-pilot-card-grid { display: flex; flex-direction: column; }
+.ws-pilot-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.ws-pilot-row:last-child { border-bottom: 0; }
+.ws-pilot-row-label { flex: 0 0 auto; color: var(--muted); white-space: nowrap; }
+.ws-pilot-row > span:last-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: right;
+  color: var(--ink);
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+.ws-pilot-value--success { color: #267b4e; font-weight: 700; }
+.ws-pilot-value--error   { color: #b14343; font-weight: 700; }
+.ws-pilot-value--active  { color: #267b4e; font-weight: 700; }
+.ws-pilot-value--disabled { color: var(--muted); }
+
+/* Mode select — its own label, separated by a divider from the grid above
+   and from the destructive delete button below (see .ws-pilot-card-actions). */
+.ws-pilot-mode-change {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.ws-pilot-mode-change-label { font-size: 12px; font-weight: 600; color: var(--muted); }
+.ws-pilot-mode-change select {
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--ink);
+  background: #fff;
+}
+
+.ws-pilot-remove-btn {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 11px;
+  border: 1.5px solid #f3b4b4;
+  background: #fceeee;
+  color: #b14343;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+}
+
 /* ── All Payments: compact search + filter trigger ─────────────────────── */
 .ws-search-row { display: flex; gap: 8px; margin: 12px 0; align-items: stretch; }
 .ws-search-bar {
@@ -8665,3 +8984,166 @@ body.keyboard-open .tabs.bottom-tabbar {
   padding: 8px 10px;
   line-height: 1.4;
 }
+
+/* All Payments search/filter now use inline SVG instead of emoji glyphs. */
+.ws-search-bar svg { flex: 0 0 auto; width: 17px; height: 17px; color: var(--muted); }
+.ws-filter-btn svg { width: 17px; height: 17px; }
+.ws-skeleton-search { flex: 1 1 auto; min-width: 0; height: 44px; border-radius: 12px; }
+.ws-skeleton-filter-btn { flex: 0 0 auto; width: 96px; height: 44px; border-radius: 12px; }
+
+/* Neutral (non-success) tone for the All Payments empty states — the
+   .ws-empty-state-icon base stays untouched for other tabs' emoji usage. */
+.ws-empty-state-icon--neutral {
+  width: 46px;
+  height: 46px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--bg, #f6f7fb);
+  color: var(--muted);
+  font-size: 0;
+}
+.ws-empty-state-icon--neutral svg { display: block; width: 22px; height: 22px; }
+
+/* ── v7.1.6.1 step 3 — All Payments compact card ─────────────────────────
+   Row 1: name + amount · Row 2 (sub): public id + MK id · meta: period/
+   method/date · bottom row: status badge + parent-visibility · collapsible
+   "Подробнее" holds every technical block + every action button. */
+.ws-pi-list { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+.ws-pi-card {
+  background: var(--card, #fff);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: 0 2px 10px rgba(26, 38, 66, .05);
+}
+.ws-pi-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ws-pi-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+.ws-pi-amount { flex: 0 0 auto; font-size: 14px; font-weight: 800; color: var(--ink); white-space: nowrap; }
+.ws-pi-sub {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #4d566c;
+  line-height: 1.4;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+.ws-pi-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: #4d566c;
+}
+.ws-pi-meta strong { color: var(--ink); font-weight: 700; }
+.ws-pi-row--bottom { margin-top: 10px; flex-wrap: wrap; }
+
+.ws-status-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: var(--line);
+  color: var(--ink);
+  white-space: nowrap;
+}
+.ws-status-badge--muted   { background: var(--line); color: var(--muted); }
+.ws-status-badge--info    { background: #eaf0fd; color: #3457a6; }
+.ws-status-badge--pending { background: #fff7df; color: #9b6b05; }
+.ws-status-badge--warning { background: #fef0e4; color: #c2570d; }
+.ws-status-badge--success { background: #eaf6ef; color: #267b4e; }
+.ws-status-badge--danger  { background: #fceeee; color: #b14343; }
+
+.ws-pi-visibility {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: auto;
+}
+.ws-pi-visibility svg { width: 14px; height: 14px; }
+.ws-pi-visibility--visible { color: #267b4e; }
+
+/* Collapsible "Подробнее" — closed by default, no marker triangle (custom
+   chevron icon rotates instead), holds technical blocks + action buttons. */
+.ws-pi-more { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+.ws-pi-more summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  cursor: pointer;
+  list-style: none;
+  padding: 4px 0;
+}
+.ws-pi-more summary::-webkit-details-marker { display: none; }
+.ws-pi-more summary svg { width: 15px; height: 15px; transition: transform 160ms ease; }
+.ws-pi-more[open] summary svg { transform: rotate(180deg); }
+.ws-pi-more-body { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.ws-pi-info-line { font-size: 12px; color: #4d566c; line-height: 1.45; overflow-wrap: break-word; word-break: break-word; }
+.ws-pi-info-block {
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--bg, #f6f7fb);
+  border-radius: 10px;
+  padding: 9px 10px;
+  line-height: 1.5;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+.ws-pi-info-block strong { display: block; margin-bottom: 2px; }
+.ws-pi-info-block--warn { background: #fef0e4; color: #9a5215; }
+/* Technical identifiers (order_id/tracking_id/UID) live inside a collapsed
+   .ws-tech-details — deliberately smaller/muted (see its own rules) so they
+   never visually compete with the primary state/reason text above them. */
+.ws-pi-info-block .ws-tech-details { margin-top: 6px; }
+.ws-pi-withdrawal-block { font-size: 12px; }
+.ws-pi-more-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+.ws-pi-action-btn { flex: 0 0 auto; min-height: 44px; padding: 0 14px; font-size: 12px; }
+.ws-pi-action-btn.danger { order: 99; }
+
+/* ── v7.1.6.1 step 3 — light filter bottom sheet (scoped to #wsFiltersModal
+   only; other pi-modals keep following the device light/dark theme). ──── */
+#wsFiltersModal .pi-modal-sheet { background: #fff; color: #172033; }
+#wsFiltersModal .pi-modal-sheet::before {
+  content: "";
+  display: block;
+  width: 36px;
+  height: 4px;
+  margin: 8px auto 0;
+  border-radius: 4px;
+  background: var(--line, #e8ecf4);
+  flex: 0 0 auto;
+}
+#wsFiltersModal .pi-modal-head { border-bottom-color: #e8ecf4; }
+#wsFiltersModal .pi-modal-head h3 { color: #172033; }
+#wsFiltersModal .pi-modal-close { color: #657089; }
+#wsFiltersModal .pi-modal-body label { color: #657089; }
+#wsFiltersModal .pi-modal-body select {
+  background: #f6f7fb;
+  border-color: #e0e4ef;
+  color: #172033;
+  min-height: 44px;
+}
+#wsFiltersModal .pi-modal-footer { border-top-color: #e8ecf4; }
+#wsFiltersModal .pi-modal-footer button { min-height: 44px; }

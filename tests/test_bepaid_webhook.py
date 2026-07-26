@@ -558,7 +558,7 @@ class TestUIStatusLabels(unittest.TestCase):
     def test_posted_to_moyklass_label(self):
         src = self._app()
         idx = src.find("PI_STATUS_LABELS")
-        block = src[idx:idx + 800]
+        block = src[idx:idx + 1000]
         self.assertIn("Внесено в МойКласс", block,
                       "posted_to_moyklass label must be 'Внесено в МойКласс'")
 
@@ -618,7 +618,7 @@ class TestCSS(unittest.TestCase):
 
 # ── Cache-bust ────────────────────────────────────────────────────────────────
 
-CURRENT_MINIAPP_VERSION = "7.1.6"
+CURRENT_MINIAPP_VERSION = "7.1.6.1"
 
 
 class TestCacheBust(unittest.TestCase):
