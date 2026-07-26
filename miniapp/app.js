@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.5.2");
+console.log("MiniApp version: v7.1.5.3");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -14842,13 +14842,14 @@ function _wsRenderAllPayments(root) {
 
 function _wsRenderPilotClients(root) {
   const clients = _wsState.pilotClients;
-  const canAdmin = roleCaps().canAdminPilot;
+  const canManage = roleCaps().canManagePilotClients;
   const modeLabel = { observe: "Наблюдение", review: "Проверка", auto: "Авто", disabled: "Отключён" };
-  const addForm = canAdmin ? `
+  const modeCls   = { observe: "ws-pilot-mode-observe", review: "ws-pilot-mode-review", auto: "ws-pilot-mode-auto", disabled: "ws-pilot-mode-disabled" };
+  const addForm = canManage ? `
     <div class="ws-pilot-add-form">
       <h3>Добавить / обновить клиента пилота</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-        <label style="flex:1;min-width:120px"><span>MK User ID</span><input id="pilotAddUserId" type="text" placeholder="12345" /></label>
+        <label style="flex:1;min-width:120px"><span>MK User ID</span><input id="pilotAddUserId" type="text" inputmode="numeric" placeholder="12345" /></label>
         <label style="flex:1;min-width:120px"><span>Режим</span>
           <select id="pilotAddMode">
             <option value="review">Проверка</option>
@@ -14862,25 +14863,66 @@ function _wsRenderPilotClients(root) {
       </div>
       <div id="pilotAddResult" style="margin-top:6px;font-size:13px"></div>
     </div>` : "";
+
+  if (!clients.length) {
+    root.innerHTML = `${addForm}<div class="notice">Пока ни один клиент не добавлен в пилот.</div>`;
+    return;
+  }
+
+  // Mobile cards
+  const cards = clients.map(c => {
+    const mid = escapeHtml(c.mk_user_id);
+    const mLabel = escapeHtml(modeLabel[c.mode] || c.mode);
+    const mCls = modeCls[c.mode] || "ws-pilot-mode-disabled";
+    const modeSelect = canManage ? `
+      <select onchange="_pilotChangeMode('${mid}',this.value)" style="font-size:13px;margin-top:6px;width:100%">
+        ${["observe","review","auto","disabled"].map(m => `<option value="${m}"${c.mode===m?" selected":""}>${modeLabel[m]||m}</option>`).join("")}
+      </select>` : "";
+    const removeBtn = canManage ? `<button class="danger" style="font-size:12px;padding:4px 12px" onclick="_pilotRemove('${mid}',this)">Удалить из пилота</button>` : "";
+    return `
+      <div class="ws-pilot-card">
+        <div class="ws-pilot-card-header">
+          <span class="ws-pilot-card-id">${mid}</span>
+          <span class="ws-pilot-mode-badge ${mCls}">${mLabel}</span>
+        </div>
+        <div class="ws-pilot-card-meta">
+          <span class="ws-pilot-card-meta-label">Статус</span><span>${c.enabled ? "Активен" : "Неактивен"}</span>
+          ${c.note ? `<span class="ws-pilot-card-meta-label">Примечание</span><span>${escapeHtml(c.note)}</span>` : ""}
+          <span class="ws-pilot-card-meta-label">Успех</span><span>${c.last_success_at ? c.last_success_at.slice(0,16).replace("T"," ") : "—"}</span>
+          ${c.last_error_at ? `<span class="ws-pilot-card-meta-label">Ошибка</span><span style="color:var(--red,#e53)">${c.last_error_at.slice(0,16).replace("T"," ")}${c.last_error_code ? ": "+escapeHtml(c.last_error_code) : ""}</span>` : ""}
+          <span class="ws-pilot-card-meta-label">Добавлен</span><span>${(c.created_at||"").slice(0,10)}</span>
+          ${(c.updated_at && c.updated_at !== c.created_at) ? `<span class="ws-pilot-card-meta-label">Изменён</span><span>${c.updated_at.slice(0,10)}</span>` : ""}
+        </div>
+        ${modeSelect}
+        <div class="ws-pilot-card-actions">${removeBtn}</div>
+      </div>`;
+  }).join("");
+
+  // Desktop table
   const tableRows = clients.map(c => {
-    const changeMode = canAdmin ? `
-      <select onchange="_pilotChangeMode('${escapeHtml(c.mk_user_id)}',this.value)" style="font-size:12px">
+    const mid = escapeHtml(c.mk_user_id);
+    const changeMode = canManage ? `
+      <select onchange="_pilotChangeMode('${mid}',this.value)" style="font-size:12px">
         ${["observe","review","auto","disabled"].map(m => `<option value="${m}"${c.mode===m?" selected":""}>${modeLabel[m]||m}</option>`).join("")}
       </select>` : escapeHtml(modeLabel[c.mode] || c.mode);
-    const removeBtn = canAdmin ? `<button class="danger" style="font-size:11px;padding:2px 8px" onclick="_pilotRemove('${escapeHtml(c.mk_user_id)}',this)">Удалить</button>` : "";
+    const removeBtn = canManage ? `<button class="danger" style="font-size:11px;padding:2px 8px" onclick="_pilotRemove('${mid}',this)">Удалить</button>` : "";
     return `<tr>
-      <td>${escapeHtml(c.mk_user_id)}</td>
+      <td>${mid}</td>
       <td>${changeMode}</td>
       <td>${escapeHtml(c.note || "")}</td>
-      <td style="font-size:11px;color:var(--muted)">${c.last_success_at ? c.last_success_at.slice(0,16) : "—"}</td>
+      <td style="font-size:11px;color:var(--muted)">${c.last_success_at ? c.last_success_at.slice(0,16).replace("T"," ") : "—"}</td>
+      <td style="font-size:11px;color:var(--muted)">${c.last_error_at ? c.last_error_at.slice(0,10) : "—"}</td>
       <td>${removeBtn}</td>
     </tr>`;
   }).join("");
+
   root.innerHTML = `
     ${addForm}
+    <div class="ws-pilot-cards">${cards}</div>
     <div class="ws-pilot-table-wrap" style="overflow-x:auto;margin-top:12px">
-      ${clients.length ? `<table class="ws-pilot-table"><thead><tr><th>MK User ID</th><th>Режим</th><th>Примечание</th><th>Последний успех</th><th></th></tr></thead><tbody>${tableRows}</tbody></table>`
-        : `<div class="notice">Пока ни один клиент не добавлен в пилот.</div>`}
+      <table class="ws-pilot-table"><thead><tr>
+        <th>MK User ID</th><th>Режим</th><th>Примечание</th><th>Успех</th><th>Ошибка</th><th></th>
+      </tr></thead><tbody>${tableRows}</tbody></table>
     </div>`;
 }
 
@@ -14927,7 +14969,7 @@ async function _pilotChangeMode(mkUserId, newMode) {
 }
 
 async function _pilotRemove(mkUserId, btn) {
-  if (!confirm(`Удалить клиента ${mkUserId} из пилота?`)) return;
+  if (!confirm(`Удалить клиента ${mkUserId} из пилота?\n\nСуществующие платёжные счета и платежи не удаляются — удаляется только участие клиента в дальнейшей автоматизации.`)) return;
   if (btn) btn.disabled = true;
   try {
     const d = await _apiPostRaw(`/api/pilot/clients/${encodeURIComponent(mkUserId)}/remove`, {});
@@ -14935,6 +14977,64 @@ async function _pilotRemove(mkUserId, btn) {
     else { setNotice(d.error || "Ошибка удаления", "error"); if (btn) btn.disabled = false; }
   } catch (e) { setNotice(safeUserError(e), "error"); if (btn) btn.disabled = false; }
 }
+
+// ── v7.1.5.3 — iOS keyboard / bottom-nav handling ────────────────────────
+(function initKeyboardHandling() {
+  let _kbActive = false;
+  let _blurTimer = null;
+
+  function _isChatInput(el) {
+    return el && (el.id === "askInput" || el.closest(".chat-form, .ask-form") !== null);
+  }
+
+  function _setKeyboardOpen(open) {
+    if (_kbActive === open) return;
+    _kbActive = open;
+    document.body.classList.toggle("keyboard-open", open);
+  }
+
+  document.addEventListener("focusin", function(e) {
+    const tag = (e.target.tagName || "").toUpperCase();
+    if (!["INPUT","TEXTAREA","SELECT"].includes(tag)) return;
+    if (_isChatInput(e.target)) return;
+    if (_blurTimer) { clearTimeout(_blurTimer); _blurTimer = null; }
+    _setKeyboardOpen(true);
+    setTimeout(function() {
+      try { e.target.scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch (_) {}
+    }, 300);
+  });
+
+  document.addEventListener("focusout", function(e) {
+    const tag = (e.target.tagName || "").toUpperCase();
+    if (!["INPUT","TEXTAREA","SELECT"].includes(tag)) return;
+    if (_isChatInput(e.target)) return;
+    if (_blurTimer) clearTimeout(_blurTimer);
+    _blurTimer = setTimeout(function() {
+      const active = document.activeElement;
+      if (!active || !["INPUT","TEXTAREA","SELECT"].includes(active.tagName)) {
+        _setKeyboardOpen(false);
+      }
+    }, 200);
+  });
+
+  document.addEventListener("touchend", function(e) {
+    if (!_kbActive) return;
+    const tag = (e.target.tagName || "").toUpperCase();
+    if (["INPUT","TEXTAREA","SELECT","LABEL","BUTTON"].includes(tag)) return;
+    const active = document.activeElement;
+    if (active && ["INPUT","TEXTAREA","SELECT"].includes(active.tagName) && !_isChatInput(active)) {
+      active.blur();
+    }
+  }, { passive: true });
+
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", function() {
+      const gap = (window.innerHeight - window.visualViewport.height) | 0;
+      if (gap > 100) _setKeyboardOpen(true);
+      else if (gap < 50) _setKeyboardOpen(false);
+    });
+  }
+})();
 
 // ── Wire up event listeners ───────────────────────────────────────────────
 

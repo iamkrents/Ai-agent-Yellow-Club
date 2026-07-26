@@ -135,7 +135,8 @@ AUTOMATION_ADMIN_ROLES = {"owner", "admin"}       # v7.0.94.0
 AUTOMATION_VIEW_ROLES = {"owner", "admin", "operations"}  # v7.0.94.0
 WITHDRAW_INVOICE_ROLES = {"owner", "admin", "operations"}  # v7.0.98.0
 PAYMENT_TERMS_ROLES = {"owner", "admin", "operations"}  # v7.1.0 — pricing/terms admin
-PILOT_ADMIN_ROLES = {"owner", "admin"}                 # v7.1.5 — pilot client CRUD
+PILOT_ADMIN_ROLES = {"owner", "admin"}                 # v7.1.5 — global pilot/automation admin
+PILOT_MANAGE_ROLES = {"owner", "admin", "operations", "client_manager"}  # v7.1.5.3 — pilot client CRUD
 PAYMENT_APPROVAL_ROLES = {"owner", "admin", "operations", "client_manager"}  # v7.1.5 — review approve
 WORKSPACE_VIEW_ROLES = {"owner", "admin", "operations", "client_manager"}    # v7.1.5 — workspace read
 
@@ -1952,6 +1953,7 @@ class MiniAppContext:
             "canUsePaymentsWorkspace": role in WORKSPACE_VIEW_ROLES,
             "canApprovePilotIntents": role in PAYMENT_APPROVAL_ROLES,
             "canAdminPilot": role in PILOT_ADMIN_ROLES,
+            "canManagePilotClients": role in PILOT_MANAGE_ROLES,
         }
 
     def me(self, auth: dict[str, Any]) -> dict[str, Any]:
@@ -14170,8 +14172,8 @@ class MiniAppContext:
 
     def pilot_upsert_client(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         role = self._role_for_user(int(auth["user_id"]))
-        if role not in PILOT_ADMIN_ROLES:
-            return {"ok": False, "error": "Управление пилотом доступно только owner и admin."}
+        if role not in PILOT_MANAGE_ROLES:
+            return {"ok": False, "error": "Управление клиентами пилота недоступно для данной роли."}
         mk_user_id = str(body.get("mk_user_id") or "").strip()
         if not mk_user_id:
             return {"ok": False, "error": "mk_user_id обязателен."}
@@ -14190,22 +14192,24 @@ class MiniAppContext:
             added_by_name=str(auth.get("full_name") or ""),
             now=now,
         )
+        actor_name = str(auth.get("full_name") or "").strip() or None
         self.storage.create_pilot_audit_event({
             "created_at": now,
             "event_type": "pilot_client_upserted",
             "mk_user_id": mk_user_id,
+            "pilot_client_id": client.get("id"),
             "old_mode": old_mode,
             "new_mode": mode,
             "actor_tg_id": str(auth.get("user_id") or ""),
-            "actor_name": str(auth.get("full_name") or ""),
+            "actor_name": actor_name,
             "note": note,
         })
         return {"ok": True, "client": client}
 
     def pilot_update_mode(self, auth: dict[str, Any], mk_user_id: str, body: dict[str, Any]) -> dict[str, Any]:
         role = self._role_for_user(int(auth["user_id"]))
-        if role not in PILOT_ADMIN_ROLES:
-            return {"ok": False, "error": "Управление пилотом доступно только owner и admin."}
+        if role not in PILOT_MANAGE_ROLES:
+            return {"ok": False, "error": "Управление клиентами пилота недоступно для данной роли."}
         mk_user_id = str(mk_user_id).strip()
         existing = self.storage.get_pilot_client(mk_user_id)
         if not existing:
@@ -14215,36 +14219,41 @@ class MiniAppContext:
             return {"ok": False, "error": "Допустимые режимы: observe, review, auto, disabled."}
         now = now_iso()
         old_mode = existing.get("mode")
+        actor_name = str(auth.get("full_name") or "").strip() or None
         client = self.storage.update_pilot_mode(mk_user_id, new_mode, now=now)
         self.storage.create_pilot_audit_event({
             "created_at": now,
             "event_type": "pilot_mode_changed",
             "mk_user_id": mk_user_id,
+            "pilot_client_id": existing.get("id"),
             "old_mode": old_mode,
             "new_mode": new_mode,
             "actor_tg_id": str(auth.get("user_id") or ""),
-            "actor_name": str(auth.get("full_name") or ""),
+            "actor_name": actor_name,
         })
         return {"ok": True, "client": client}
 
     def pilot_remove_client(self, auth: dict[str, Any], mk_user_id: str) -> dict[str, Any]:
         role = self._role_for_user(int(auth["user_id"]))
-        if role not in PILOT_ADMIN_ROLES:
-            return {"ok": False, "error": "Управление пилотом доступно только owner и admin."}
+        if role not in PILOT_MANAGE_ROLES:
+            return {"ok": False, "error": "Управление клиентами пилота недоступно для данной роли."}
         mk_user_id = str(mk_user_id).strip()
         now = now_iso()
         existing = self.storage.get_pilot_client(mk_user_id)
         if not existing:
             return {"ok": False, "error": "Клиент не найден в пилоте."}
+        pilot_client_id = existing.get("id")
+        actor_name = str(auth.get("full_name") or "").strip() or None
         removed = self.storage.remove_pilot_client(mk_user_id)
         if removed:
             self.storage.create_pilot_audit_event({
                 "created_at": now,
                 "event_type": "pilot_client_removed",
                 "mk_user_id": mk_user_id,
+                "pilot_client_id": pilot_client_id,
                 "old_mode": existing.get("mode"),
                 "actor_tg_id": str(auth.get("user_id") or ""),
-                "actor_name": str(auth.get("full_name") or ""),
+                "actor_name": actor_name,
             })
         return {"ok": removed, "removed": removed}
 

@@ -524,11 +524,12 @@ class TestPilotManagementEndpoints(unittest.TestCase):
             result = self.ctx.pilot_list_clients(_TEACHER_AUTH)
         self.assertFalse(result.get("ok"))
 
-    def test_31_pilot_upsert_denied_for_client_manager(self):
+    def test_31_pilot_upsert_allowed_for_client_manager(self):
+        """v7.1.5.3: client_manager is now in PILOT_MANAGE_ROLES and may upsert pilot clients."""
         with patch.object(self.ctx, "_role_for_user", return_value="client_manager"):
             result = self.ctx.pilot_upsert_client(_CM_AUTH, {"mk_user_id": "9001", "mode": "review"})
-        self.assertFalse(result.get("ok"))
-        self.assertIn("owner", result.get("error", "").lower())
+        self.assertTrue(result.get("ok"), f"client_manager must be allowed to upsert pilot: {result}")
+        self.assertEqual(result["client"]["mode"], "review")
 
     def test_32_pilot_upsert_by_owner_creates_client(self):
         with patch.object(self.ctx, "_role_for_user", return_value="owner"):
