@@ -8,6 +8,7 @@ import json
 import logging
 import mimetypes
 import os
+import random
 import re
 import threading
 import time
@@ -41,7 +42,7 @@ from moyklass_client import (
 )
 from bepaid_client import BePaidClient, build_erip_description
 from food_menu_ocr import ocr_image_to_text
-from storage import Storage
+from storage import Storage, CLIENT_LINK_CODE_TTL_HOURS as _STORAGE_CLIENT_LINK_CODE_TTL_HOURS
 from llm import OllamaClient
 from agent_core import AgentCore, AnswerContext
 from query_tools import build_query_profile
@@ -130,7 +131,10 @@ FOOD_ADMIN_EDIT_ROLES = {"owner", "admin", "operations"}
 BEPAID_RECONCILE_ROLES = {"owner", "admin", "director", "operations", "client_manager"}
 PAYMENT_INTENT_ROLES = {"owner", "admin", "director", "operations", "client_manager"}
 PAYMENT_MK_POST_ROLES = {"owner", "admin"}  # only senior roles may post to MoyKlass
-CLIENT_LINK_ADMIN_ROLES = {"owner", "admin", "operations"}
+CLIENT_LINK_ADMIN_ROLES = {"owner", "admin", "operations", "client_manager"}  # v7.1.7 — client_manager can manage CL- link codes
+CLIENT_LINK_CODE_TTL_HOURS = _STORAGE_CLIENT_LINK_CODE_TTL_HOURS  # v7.1.7 — single source of truth is storage.py
+CLIENT_LINK_MAX_FAILED_ATTEMPTS = 5      # v7.1.7 — brute-force guard on POST /api/client/children/link
+CLIENT_LINK_RATE_LIMIT_WINDOW_MINUTES = 15
 AUTOMATION_ADMIN_ROLES = {"owner", "admin"}       # v7.0.94.0
 AUTOMATION_VIEW_ROLES = {"owner", "admin", "operations"}  # v7.0.94.0
 WITHDRAW_INVOICE_ROLES = {"owner", "admin", "operations"}  # v7.0.98.0
@@ -1954,6 +1958,7 @@ class MiniAppContext:
             "canApprovePilotIntents": role in PAYMENT_APPROVAL_ROLES,
             "canAdminPilot": role in PILOT_ADMIN_ROLES,
             "canManagePilotClients": role in PILOT_MANAGE_ROLES,
+            "canManageClientLinks": role in CLIENT_LINK_ADMIN_ROLES,  # v7.1.7
         }
 
     def me(self, auth: dict[str, Any]) -> dict[str, Any]:
@@ -11557,25 +11562,175 @@ class MiniAppContext:
             "food_count": len(food_children),
         }
 
+    # v7.1.7 — maps storage-layer reason_code → audit event_type for failed
+    # code-use attempts. Several distinct reason_codes intentionally collapse
+    # into the same (required-minimum) event_type bucket; reason_code itself
+    # (stored separately in the audit row) keeps the precise detail.
+    _CLIENT_LINK_FAILURE_EVENT_BY_REASON = {
+        "code_not_found": "code_use_failed_invalid",
+        "invalid_code_format": "code_use_failed_invalid",
+        "code_invalidated": "code_use_failed_invalid",
+        "telegram_already_linked": "code_use_failed_conflict",
+        "code_expired": "code_use_failed_expired",
+        "code_already_used": "code_use_failed_used",
+    }
+
+    # v7.1.7 (security correction) — retention cutoff for client_link_rate_limit_attempts,
+    # applied opportunistically (see _maybe_cleanup_client_link_rate_limit below)
+    # rather than on every request, so it never adds latency to the hot path.
+    _CLIENT_LINK_RATE_LIMIT_RETENTION_HOURS = 24
+    _CLIENT_LINK_RATE_LIMIT_CLEANUP_PROBABILITY = 0.01
+
+    def _safe_client_link_audit(self, **kwargs: Any) -> None:
+        """Call log_client_link_audit_event, swallowing any exception.
+
+        log_client_link_audit_event already catches its own errors internally;
+        this is a second, defensive layer specifically so that nothing audit-
+        related can ever reach the security-critical rate-limit path in
+        client_link_child, even if that internal handling were ever changed.
+        """
+        try:
+            self.storage.log_client_link_audit_event(**kwargs)
+        except Exception as exc:
+            log.warning("client_link_audit_call_failed error=%s", exc)
+
+    def _maybe_cleanup_client_link_rate_limit(self, now_dt: datetime) -> None:
+        if random.random() >= self._CLIENT_LINK_RATE_LIMIT_CLEANUP_PROBABILITY:
+            return
+        cutoff = (now_dt - timedelta(hours=self._CLIENT_LINK_RATE_LIMIT_RETENTION_HOURS)).strftime("%Y-%m-%dT%H:%M:%S")
+        self.storage.cleanup_old_client_link_rate_limit_attempts(cutoff)
+
     def client_link_child(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
-        """POST /api/client/children/link — parent enters CL- code to link a child."""
+        """POST /api/client/children/link — parent enters CL- code to link a child.
+
+        v7.1.7 (security correction): the rate limiter reads/writes
+        client_link_rate_limit_attempts, never client_link_audit_log. Reads and
+        writes to that table are allowed to raise; if they do, this method
+        fails closed (HTTP 503, reason_code=rate_limit_unavailable) instead of
+        letting code-guessing continue unlimited and uncounted. Audit logging
+        (_safe_client_link_audit) remains fail-open by design and never
+        affects this decision either way.
+        """
         role = self._role_for_user(int(auth["user_id"]))
         if role != "parent":
             return {"ok": False, "error": "Доступ только для родителей."}
         parent_tid = str(auth["user_id"])
+        now_dt = datetime.utcnow()
+        unavailable = {
+            "ok": False,
+            "error": "Сервис временно недоступен. Попробуйте позже.",
+            "reason_code": "rate_limit_unavailable",
+        }
+
+        # Step 1: check the current limit. A read failure must NOT be treated
+        # as "no recent failures" — that would fail open — so it is fatal here.
+        window_start = (now_dt - timedelta(minutes=CLIENT_LINK_RATE_LIMIT_WINDOW_MINUTES)).strftime("%Y-%m-%dT%H:%M:%S")
+        try:
+            fail_count, oldest_failure = self.storage.count_recent_client_link_rate_limit_failures(parent_tid, window_start)
+        except Exception as exc:
+            log.warning("client_link_rate_limit_read_failed actor=%s error=%s", parent_tid, exc)
+            return unavailable
+
+        if fail_count >= CLIENT_LINK_MAX_FAILED_ATTEMPTS:
+            retry_after = CLIENT_LINK_RATE_LIMIT_WINDOW_MINUTES * 60
+            if oldest_failure:
+                try:
+                    oldest_dt = datetime.strptime(oldest_failure, "%Y-%m-%dT%H:%M:%S")
+                    retry_after = max(1, int(CLIENT_LINK_RATE_LIMIT_WINDOW_MINUTES * 60 - (now_dt - oldest_dt).total_seconds()))
+                except ValueError:
+                    pass
+            # Best-effort marker row + audit event; neither affects the count
+            # (only 'failed' rows are counted), so failures here are non-fatal.
+            try:
+                self.storage.record_client_link_rate_limit_attempt(parent_tid, "rate_limited", "rate_limited")
+            except Exception as exc:
+                log.warning("client_link_rate_limit_marker_write_failed actor=%s error=%s", parent_tid, exc)
+            self._safe_client_link_audit(
+                event_type="code_use_rate_limited",
+                parent_telegram_user_id=parent_tid, actor_telegram_user_id=parent_tid,
+                actor_role=role, result="blocked", reason_code="rate_limited",
+            )
+            return {
+                "ok": False,
+                "error": "Слишком много неудачных попыток. Попробуйте позже.",
+                "reason_code": "rate_limited",
+                "retry_after_seconds": retry_after,
+            }
+
         code = str(body.get("code") or "").strip().upper()
-        if not code:
-            return {"ok": False, "error": "Введите код привязки."}
-        if not code.startswith("CL-") or len(code) != 11:
-            return {"ok": False, "error": "Неверный формат кода. Ожидается CL-XXXXXXXX."}
-        now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
-        return self.storage.link_client_child(parent_tid, code, now)
+        if not code or not code.startswith("CL-") or len(code) != 11:
+            # Step 3: record the failed attempt. A write failure here IS fatal —
+            # if it silently didn't count, this guess (and every subsequent one
+            # until the storage recovers) would bypass the limiter entirely.
+            try:
+                self.storage.record_client_link_rate_limit_attempt(parent_tid, "failed", "invalid_code_format")
+            except Exception as exc:
+                log.warning("client_link_rate_limit_write_failed actor=%s error=%s", parent_tid, exc)
+                return unavailable
+            self._safe_client_link_audit(
+                event_type="code_use_failed_invalid",
+                parent_telegram_user_id=parent_tid, actor_telegram_user_id=parent_tid,
+                actor_role=role, result="failed", reason_code="invalid_code_format",
+            )
+            self._maybe_cleanup_client_link_rate_limit(now_dt)
+            msg = "Введите код привязки." if not code else "Неверный формат кода. Ожидается CL-XXXXXXXX."
+            return {"ok": False, "error": msg, "reason_code": "invalid_code_format"}
+
+        # Step 2: check/consume the code (unrelated storage — client_child_link_codes).
+        now = now_dt.strftime("%Y-%m-%dT%H:%M:%S")
+        result = self.storage.link_client_child(parent_tid, code, now)
+
+        # Strip internal fields (mk_user_id/code_id) before they ever reach the
+        # parent-facing response — mk_user_id must not be exposed to the client
+        # before/without a fully successful link.
+        mk_user_id = result.pop("mk_user_id", None)
+        code_id = result.pop("code_id", None)
+
+        if result.get("ok"):
+            # Step 4: clear failures on success. Best-effort: the link itself is
+            # already committed and real, so a bookkeeping failure here must not
+            # undo it — worst case the user's prior failure count isn't reset,
+            # which fails toward MORE restrictive (safe), never toward bypass.
+            try:
+                self.storage.record_client_link_rate_limit_attempt(parent_tid, "success")
+            except Exception as exc:
+                log.warning("client_link_rate_limit_success_write_failed actor=%s error=%s", parent_tid, exc)
+            # Step 5: audit, separately, still fail-open.
+            self._safe_client_link_audit(
+                event_type="code_used", mk_user_id=mk_user_id, code_id=code_id,
+                parent_telegram_user_id=parent_tid, actor_telegram_user_id=parent_tid,
+                actor_role=role, result="success",
+                note="already_linked" if result.get("already_linked") else None,
+            )
+            result["mk_user_id"] = mk_user_id  # restore: legitimate post-success field, unchanged existing contract
+        else:
+            reason_code = result.get("reason_code") or "code_not_found"
+            # Step 3: record the failed attempt — fatal on write failure (see above).
+            try:
+                self.storage.record_client_link_rate_limit_attempt(parent_tid, "failed", reason_code)
+            except Exception as exc:
+                log.warning("client_link_rate_limit_write_failed actor=%s error=%s", parent_tid, exc)
+                return unavailable
+            event_type = self._CLIENT_LINK_FAILURE_EVENT_BY_REASON.get(reason_code, "code_use_failed_invalid")
+            self._safe_client_link_audit(
+                event_type=event_type, mk_user_id=mk_user_id, code_id=code_id,
+                parent_telegram_user_id=parent_tid, actor_telegram_user_id=parent_tid,
+                actor_role=role, result="failed", reason_code=reason_code,
+            )
+
+        self._maybe_cleanup_client_link_rate_limit(now_dt)
+        return result
 
     def admin_client_generate_code(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
-        """POST /api/client/admin/link-codes — admin creates a CL- code for a student."""
+        """POST /api/client/admin/link-codes — admin creates a CL- code for a student.
+
+        expires_at defaults to CLIENT_LINK_CODE_TTL_HOURS from now if the caller
+        doesn't pass one (enforced in storage.create_client_link_code).
+        """
         denied = self._require_client_link_admin_access(auth)
         if denied:
             return denied
+        role = self._role_for_user(int(auth["user_id"]))
         mk_user_id = str(body.get("mk_user_id") or "").strip()
         child_display_name = str(body.get("child_display_name") or "").strip()
         expires_at = str(body.get("expires_at") or "").strip() or None
@@ -11584,13 +11739,26 @@ class MiniAppContext:
         if not child_display_name:
             return {"ok": False, "error": "child_display_name обязателен"}
         created_by = str(auth.get("user_id") or "")
-        return self.storage.create_client_link_code(mk_user_id, child_display_name, created_by, expires_at)
+        result = self.storage.create_client_link_code(mk_user_id, child_display_name, created_by, expires_at)
+        if result.get("ok"):
+            self._safe_client_link_audit(
+                event_type="code_created", mk_user_id=mk_user_id, code_id=result.get("code_id"),
+                actor_telegram_user_id=created_by, actor_role=role, result="success",
+            )
+        elif result.get("reason_code") == "client_already_linked":
+            self._safe_client_link_audit(
+                event_type="code_create_blocked_already_linked", mk_user_id=mk_user_id,
+                actor_telegram_user_id=created_by, actor_role=role,
+                result="blocked", reason_code="client_already_linked",
+            )
+        return result
 
     def admin_client_invalidate_code(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         """POST /api/client/admin/link-codes/invalidate — admin invalidates a code by id."""
         denied = self._require_client_link_admin_access(auth)
         if denied:
             return denied
+        role = self._role_for_user(int(auth["user_id"]))
         try:
             code_id = int(body.get("code_id") or 0)
         except (TypeError, ValueError):
@@ -11599,20 +11767,35 @@ class MiniAppContext:
             return {"ok": False, "error": "code_id обязателен"}
         now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
         invalidated_by = str(auth.get("user_id") or "")
-        return self.storage.invalidate_client_link_code(code_id, invalidated_by, now)
+        result = self.storage.invalidate_client_link_code(code_id, invalidated_by, now)
+        mk_user_id = result.pop("mk_user_id", None)  # internal-only, for the audit call below
+        if result.get("ok"):
+            self._safe_client_link_audit(
+                event_type="code_invalidated", code_id=code_id, mk_user_id=mk_user_id,
+                actor_telegram_user_id=invalidated_by, actor_role=role, result="success",
+            )
+        return result
 
     def admin_client_unlink_child(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         """POST /api/client/admin/unlink — admin unlinks a parent from a student."""
         denied = self._require_client_link_admin_access(auth)
         if denied:
             return denied
+        role = self._role_for_user(int(auth["user_id"]))
         parent_telegram_user_id = str(body.get("parent_telegram_user_id") or "").strip()
         mk_user_id = str(body.get("mk_user_id") or "").strip()
         if not parent_telegram_user_id or not mk_user_id:
             return {"ok": False, "error": "parent_telegram_user_id и mk_user_id обязательны"}
         now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
         unlinked_by = str(auth.get("user_id") or "")
-        return self.storage.unlink_client_child(parent_telegram_user_id, mk_user_id, unlinked_by, now)
+        result = self.storage.unlink_client_child(parent_telegram_user_id, mk_user_id, unlinked_by, now)
+        if result.get("ok"):
+            self._safe_client_link_audit(
+                event_type="client_unlinked", mk_user_id=mk_user_id,
+                parent_telegram_user_id=parent_telegram_user_id,
+                actor_telegram_user_id=unlinked_by, actor_role=role, result="success",
+            )
+        return result
 
     def admin_client_link_status(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
         """GET /api/client/admin/link-status?mk_user_id=... — admin views link status for a student."""
@@ -11623,7 +11806,22 @@ class MiniAppContext:
         if not mk_user_id:
             return {"ok": False, "error": "mk_user_id обязателен"}
         data = self.storage.get_client_link_status_for_student(mk_user_id)
-        return {"ok": True, **data}
+        links = data.get("links") or []
+        codes = data.get("codes") or []
+        active_link = next((l for l in links if l.get("status") == "active"), None)
+        active_code = next((c for c in codes if c.get("status") == "active"), None)
+        # v7.1.7 — safe derived summary fields for future UI; never includes
+        # code_hash or the plaintext of a used code (get_client_link_status_for_student
+        # already excludes code_hash from its SELECT).
+        return {
+            "ok": True,
+            **data,
+            "linked": bool(active_link),
+            "linked_at": active_link.get("linked_at") if active_link else None,
+            "active_code_exists": bool(active_code),
+            "code_expires_at": active_code.get("expires_at") if active_code else None,
+            "code_created_at": active_code.get("created_at") if active_code else None,
+        }
 
     def admin_client_search_students(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
         """GET /api/client/admin/search-students?q=... — search MoyKlass students for link management.
@@ -16781,7 +16979,13 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             if path == "/api/food/link-child":
                 return self._send_json(CTX.food_link_child(auth, body))
             if path == "/api/client/children/link":
-                return self._send_json(CTX.client_link_child(auth, body))
+                _cl_res = CTX.client_link_child(auth, body)
+                _cl_status = 200
+                if _cl_res.get("reason_code") == "rate_limited":
+                    _cl_status = 429
+                elif _cl_res.get("reason_code") == "rate_limit_unavailable":
+                    _cl_status = 503
+                return self._send_json(_cl_res, status=_cl_status)
             if path == "/api/client/admin/link-codes":
                 return self._send_json(CTX.admin_client_generate_code(auth, body))
             if path == "/api/client/admin/link-codes/invalidate":

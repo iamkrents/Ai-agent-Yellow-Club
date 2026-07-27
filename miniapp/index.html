@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.1.6.2" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.1.7" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -1097,8 +1097,62 @@
       </div>
     </div>
 
+    <!-- Connection tab: revoke code confirm (v7.1.7) -->
+    <div id="wsConnRevokeModal" class="pi-modal hidden">
+      <div class="pi-modal-sheet pi-modal-sheet-sm">
+        <div class="pi-modal-head">
+          <h3>Отозвать код?</h3>
+          <button class="pi-modal-close" id="wsConnRevokeModalClose" type="button">✕</button>
+        </div>
+        <div class="pi-modal-body">
+          <p style="margin:0 0 10px">После отзыва этот код больше нельзя будет использовать. Существующая привязка клиента не изменится.</p>
+          <div id="wsConnRevokeError" class="pi-form-error hidden"></div>
+        </div>
+        <div class="pi-modal-footer">
+          <button class="secondary" id="wsConnRevokeModalBack" type="button">Отмена</button>
+          <button class="danger" id="wsConnRevokeConfirmBtn" type="button">Отозвать код</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Connection tab: create-new-code confirm (v7.1.7) -->
+    <div id="wsConnNewCodeConfirmModal" class="pi-modal hidden">
+      <div class="pi-modal-sheet pi-modal-sheet-sm">
+        <div class="pi-modal-head">
+          <h3>Создать новый код?</h3>
+          <button class="pi-modal-close" id="wsConnNewCodeConfirmModalClose" type="button">✕</button>
+        </div>
+        <div class="pi-modal-body">
+          <p style="margin:0 0 10px">Предыдущий активный код станет недействительным. Новый код можно будет показать только один раз, сразу после создания.</p>
+          <div id="wsConnNewCodeConfirmError" class="pi-form-error hidden"></div>
+        </div>
+        <div class="pi-modal-footer">
+          <button class="secondary" id="wsConnNewCodeConfirmModalBack" type="button">Отмена</button>
+          <button class="primary" id="wsConnNewCodeConfirmBtn" type="button">Создать новый код</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Connection tab: unlink Telegram confirm (v7.1.7) -->
+    <div id="wsConnUnlinkModal" class="pi-modal hidden">
+      <div class="pi-modal-sheet pi-modal-sheet-sm">
+        <div class="pi-modal-head">
+          <h3>Отвязать Telegram-аккаунт?</h3>
+          <button class="pi-modal-close" id="wsConnUnlinkModalClose" type="button">✕</button>
+        </div>
+        <div class="pi-modal-body">
+          <p style="margin:0 0 10px">Клиент потеряет доступ к своему кабинету в этом Telegram-аккаунте. Платёжные счета, оплаты, данные МойКласс и история не удаляются.</p>
+          <div id="wsConnUnlinkError" class="pi-form-error hidden"></div>
+        </div>
+        <div class="pi-modal-footer">
+          <button class="secondary" id="wsConnUnlinkModalBack" type="button">Отмена</button>
+          <button class="danger" id="wsConnUnlinkConfirmBtn" type="button">Отвязать</button>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.1.6.2"></script>
+  <script src="/static/app.js?v=7.1.7"></script>
 </body>
 </html>

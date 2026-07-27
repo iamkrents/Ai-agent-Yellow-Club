@@ -24,7 +24,7 @@ Tests:
  T15  Overview's own renderer/layout code is untouched by this phase
  T16  All Payments / Pilot Clients renderers untouched
  T17  WORKSPACE_VIEW_ROLES / PILOT_ADMIN_ROLES / PAYMENT_APPROVAL_ROLES unchanged
- T19  Version / cache-bust is v7.1.6.2
+ T19  Version / cache-bust is v7.1.7
  (T18/T20/T21 — local dev-preview wiring — removed once dev preview was deleted)
 
 Run:
@@ -308,8 +308,8 @@ class TestVersionUnchanged(unittest.TestCase):
     def test_19_version_is_v7161(self):
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.6.2", html)
-        self.assertIn('console.log("MiniApp version: v7.1.6.2")', js)
+        self.assertIn("v=7.1.7", html)
+        self.assertIn('console.log("MiniApp version: v7.1.7")', js)
 
 
 if __name__ == "__main__":

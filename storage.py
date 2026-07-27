@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -15,6 +17,13 @@ from payment_domain import (
     is_source_reference_valid as _is_src_ref_valid,
     build_invoice_deduplication_key as _dedup_key,
 )
+
+log = logging.getLogger("yellow_club_storage")
+
+# v7.1.7 — default validity window for client link codes (CL-XXXXXXXX) when
+# the caller does not pass an explicit expires_at. Enforced in storage, not
+# only in the frontend, so the TTL holds regardless of caller.
+CLIENT_LINK_CODE_TTL_HOURS = 72
 
 
 _ONLINE_INDICATORS = frozenset(("онлайн", "online", "yc0", "remote", "дистанционно", "дистанц"))
@@ -1146,6 +1155,50 @@ class Storage:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cpcl_parent ON client_parent_child_links(parent_telegram_user_id, status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cpcl_mk_user ON client_parent_child_links(mk_user_id, status)")
+
+        # v7.1.7 — audit trail for client link code lifecycle events. Never stores
+        # the plaintext code, code_hash, initData, tokens, or raw API payloads —
+        # only enough to answer "who did what, when, and why" for investigation.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_link_audit_log (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at               TEXT NOT NULL,
+                event_type               TEXT NOT NULL,
+                mk_user_id               TEXT,
+                code_id                  INTEGER,
+                parent_telegram_user_id  TEXT,
+                actor_telegram_user_id   TEXT,
+                actor_role               TEXT,
+                result                   TEXT,
+                reason_code              TEXT,
+                note                     TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_clal_mk_user ON client_link_audit_log(mk_user_id, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_clal_actor ON client_link_audit_log(actor_telegram_user_id, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_clal_event ON client_link_audit_log(event_type, created_at)")
+
+        # v7.1.7 (security correction) — dedicated, hard-fail rate-limit state
+        # for POST /api/client/children/link. Deliberately separate from
+        # client_link_audit_log: the audit log is fail-open (a write failure is
+        # logged and swallowed so it never blocks the main operation), which is
+        # correct for an investigation trail but wrong for a security control —
+        # if the audit table silently stopped accepting writes, brute-force
+        # attempts would stop being counted and the rate limit would be
+        # bypassed. This table's reads/writes are allowed to raise; the caller
+        # (web_app_server.client_link_child) must treat a failure here as
+        # "cannot verify the limit" and fail closed (HTTP 503), not proceed.
+        # Never stores the plaintext code or its hash.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_link_rate_limit_attempts (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_telegram_user_id   TEXT NOT NULL,
+                attempted_at             TEXT NOT NULL,
+                result                   TEXT NOT NULL,
+                reason_code              TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cl_rla_actor_time ON client_link_rate_limit_attempts(actor_telegram_user_id, attempted_at)")
 
     # ── v7.0.94.0 — Invoice Automation tables ────────────────────────────────
 
@@ -6131,14 +6184,49 @@ class Storage:
         Automatically invalidates any previously active code for the same mk_user_id.
         Returns the plaintext code (shown once) and the stored code_id.
         Does NOT touch food parent_child_links or camp_children.
+
+        v7.1.7:
+          - If `expires_at` is not passed (or blank), defaults to
+            created_at + CLIENT_LINK_CODE_TTL_HOURS, enforced here so the TTL
+            holds regardless of what the frontend/API caller sends.
+          - Refuses to create a code while an active client_parent_child_links
+            row already exists for this mk_user_id (MVP rule: one active
+            Telegram parent per student in the Client Module). Caller must
+            unlink first. Does not touch the existing link.
         """
         mk_user_id = str(mk_user_id or "").strip()
         child_display_name = str(child_display_name or "").strip()
         if not mk_user_id:
-            return {"ok": False, "error": "mk_user_id обязателен"}
+            return {"ok": False, "error": "mk_user_id обязателен", "reason_code": "invalid_request"}
         if not child_display_name:
-            return {"ok": False, "error": "child_display_name обязателен"}
+            return {"ok": False, "error": "child_display_name обязателен", "reason_code": "invalid_request"}
         now = now_iso()
+
+        with self._connect() as conn:
+            existing_active = conn.execute(
+                "SELECT * FROM client_parent_child_links WHERE mk_user_id=? AND status='active'",
+                (mk_user_id,),
+            ).fetchone()
+        if existing_active:
+            ex = dict(existing_active)
+            return {
+                "ok": False,
+                "error": "Этот ученик уже подключён к Telegram-аккаунту. Сначала выполните отвязку.",
+                "reason_code": "client_already_linked",
+                "active_link": {
+                    "parent_telegram_user_id": ex.get("parent_telegram_user_id"),
+                    "linked_at": ex.get("linked_at"),
+                },
+            }
+
+        expires_at = str(expires_at or "").strip() or None
+        if not expires_at:
+            # UTC, not now_iso()'s local clock: link_client_child() compares
+            # expires_at against a datetime.utcnow()-based `now` (same convention
+            # already used for payment_intent_options.expires_at elsewhere), so
+            # the default must be computed on the same clock it will be checked against.
+            expires_at = (datetime.utcnow() + timedelta(hours=CLIENT_LINK_CODE_TTL_HOURS)).strftime("%Y-%m-%dT%H:%M:%S")
+
         # Invalidate any existing active codes for this student
         with self._connect() as conn:
             conn.execute(
@@ -6172,70 +6260,123 @@ class Storage:
                     "code_id": code_id,
                     "mk_user_id": mk_user_id,
                     "child_display_name": child_display_name,
+                    "expires_at": expires_at,
                 }
             except Exception:
                 continue
-        return {"ok": False, "error": "Не удалось создать уникальный код"}
+        return {"ok": False, "error": "Не удалось создать уникальный код", "reason_code": "code_generation_failed"}
 
     def link_client_child(
         self, parent_telegram_user_id: str, code_plaintext: str, now: str
     ) -> dict[str, Any]:
         """Validate a client code and create a parent-child link.
 
-        One-time use: marks the code as 'used' after successful link.
-        Does NOT touch food parent_child_links or camp_children.
+        One-time use: marks the code as 'used' after successful link. Does NOT
+        touch food parent_child_links or camp_children.
+
+        v7.1.7 — atomicity fix: the previous implementation read the code's
+        status in one SELECT, then wrote the 'used' UPDATE in a later, separate
+        statement — two concurrent requests for the same code could both pass
+        the SELECT check before either UPDATE committed, creating two active
+        links from one code. The decisive step is now a single conditional
+        UPDATE (`WHERE status='active'`) whose rowcount is the source of truth;
+        the earlier SELECT is only used to pick a helpful error message. SQLite
+        serializes writers on the same file, so only one such UPDATE can ever
+        match a given row.
+
+        v7.1.7 — also enforces the MVP one-active-parent-per-student invariant
+        defensively at use time (not just at code-creation time): if some other
+        parent already holds the active link for this student, the code is
+        refused even though it is still formally 'active'.
         """
         parent_telegram_user_id = str(parent_telegram_user_id or "").strip()
         code_plaintext = str(code_plaintext or "").strip().upper()
         if not parent_telegram_user_id or not code_plaintext:
-            return {"ok": False, "error": "Код и ID родителя обязательны"}
+            return {"ok": False, "error": "Код и ID родителя обязательны", "reason_code": "invalid_code_format"}
         code_hash = self._hash_client_code(code_plaintext)
+
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM client_child_link_codes WHERE code_hash=?", (code_hash,)
             ).fetchone()
-        if not row:
-            return {"ok": False, "error": "Код не найден. Проверьте правильность ввода."}
-        cr = dict(row)
-        if cr["status"] == "used":
-            # Idempotent: if this same parent already used it
-            if cr.get("used_by_parent_telegram_user_id") == parent_telegram_user_id:
-                with self._connect() as conn:
+            if not row:
+                return {"ok": False, "error": "Код не найден. Проверьте правильность ввода.", "reason_code": "code_not_found"}
+            cr = dict(row)
+
+            if cr["status"] == "active" and cr.get("expires_at") and cr["expires_at"] < now:
+                conn.execute(
+                    "UPDATE client_child_link_codes SET status='expired', updated_at=? WHERE id=? AND status='active'",
+                    (now, cr["id"]),
+                )
+                cr["status"] = "expired"
+
+            if cr["status"] == "used":
+                # Idempotent: if this same parent already used it, don't error.
+                if cr.get("used_by_parent_telegram_user_id") == parent_telegram_user_id:
                     existing = conn.execute(
                         "SELECT * FROM client_parent_child_links WHERE parent_telegram_user_id=? AND mk_user_id=? AND status='active'",
                         (parent_telegram_user_id, cr["mk_user_id"]),
                     ).fetchone()
-                if existing:
-                    return {"ok": True, "already_linked": True,
-                            "mk_user_id": cr["mk_user_id"],
-                            "child_display_name": cr["child_display_name"]}
-            return {"ok": False, "error": "Этот код уже был использован."}
-        if cr["status"] == "invalidated":
-            return {"ok": False, "error": "Этот код недействителен. Обратитесь к администратору."}
-        if cr["status"] == "expired":
-            return {"ok": False, "error": "Срок действия кода истёк. Обратитесь к администратору."}
-        if cr["status"] != "active":
-            return {"ok": False, "error": f"Код недействителен (статус: {cr['status']})."}
-        if cr.get("expires_at") and cr["expires_at"] < now:
-            with self._connect() as conn:
-                conn.execute(
-                    "UPDATE client_child_link_codes SET status='expired', updated_at=? WHERE id=?",
-                    (now, cr["id"]),
-                )
-            return {"ok": False, "error": "Срок действия кода истёк. Обратитесь к администратору."}
-        mk_user_id = cr["mk_user_id"]
-        child_display_name = cr.get("child_display_name") or ""
-        # Check for existing active link for this pair
-        with self._connect() as conn:
-            existing = conn.execute(
-                "SELECT * FROM client_parent_child_links WHERE parent_telegram_user_id=? AND mk_user_id=? AND status='active'",
-                (parent_telegram_user_id, mk_user_id),
+                    if existing:
+                        return {"ok": True, "already_linked": True,
+                                "mk_user_id": cr["mk_user_id"],
+                                "child_display_name": cr["child_display_name"]}
+                return {"ok": False, "error": "Этот код уже был использован.", "reason_code": "code_already_used",
+                        "mk_user_id": cr["mk_user_id"], "code_id": cr["id"]}
+            if cr["status"] == "invalidated":
+                return {"ok": False, "error": "Этот код недействителен. Обратитесь к администратору.", "reason_code": "code_invalidated",
+                        "mk_user_id": cr["mk_user_id"], "code_id": cr["id"]}
+            if cr["status"] == "expired":
+                return {"ok": False, "error": "Срок действия кода истёк. Обратитесь к администратору.", "reason_code": "code_expired",
+                        "mk_user_id": cr["mk_user_id"], "code_id": cr["id"]}
+            if cr["status"] != "active":
+                return {"ok": False, "error": f"Код недействителен (статус: {cr['status']}).", "reason_code": "code_invalidated",
+                        "mk_user_id": cr["mk_user_id"], "code_id": cr["id"]}
+
+            mk_user_id = cr["mk_user_id"]
+            child_display_name = cr.get("child_display_name") or ""
+
+            # Defensive invariant check: one active Telegram parent per student.
+            existing_active = conn.execute(
+                "SELECT * FROM client_parent_child_links WHERE mk_user_id=? AND status='active'",
+                (mk_user_id,),
             ).fetchone()
-        if existing:
-            return {"ok": True, "already_linked": True,
-                    "mk_user_id": mk_user_id, "child_display_name": child_display_name}
-        # Create the link and mark code as used (atomic)
-        with self._connect() as conn:
+            if existing_active:
+                ex = dict(existing_active)
+                if ex["parent_telegram_user_id"] == parent_telegram_user_id:
+                    return {"ok": True, "already_linked": True,
+                            "mk_user_id": mk_user_id, "child_display_name": child_display_name}
+                return {
+                    "ok": False,
+                    "error": "Этот ученик уже подключён к другому Telegram-аккаунту. Обратитесь к администратору.",
+                    "reason_code": "telegram_already_linked",
+                    "mk_user_id": mk_user_id, "code_id": cr["id"],
+                }
+
+            # Atomic claim: only a request that flips status active→used wins.
+            claim = conn.execute(
+                """
+                UPDATE client_child_link_codes
+                SET status='used', used_at=?, used_by_parent_telegram_user_id=?, updated_at=?
+                WHERE id=? AND status='active'
+                """,
+                (now, parent_telegram_user_id, now, cr["id"]),
+            )
+            if claim.rowcount != 1:
+                # Lost the race to a concurrent request between our SELECT and
+                # this UPDATE — re-read to report the real current state.
+                fresh = conn.execute(
+                    "SELECT status FROM client_child_link_codes WHERE id=?", (cr["id"],)
+                ).fetchone()
+                st = fresh["status"] if fresh else "used"
+                reason = {"used": "code_already_used", "invalidated": "code_invalidated",
+                          "expired": "code_expired"}.get(st, "code_already_used")
+                msg = {"code_already_used": "Этот код уже был использован.",
+                       "code_invalidated": "Этот код недействителен. Обратитесь к администратору.",
+                       "code_expired": "Срок действия кода истёк. Обратитесь к администратору."}[reason]
+                return {"ok": False, "error": msg, "reason_code": reason,
+                        "mk_user_id": mk_user_id, "code_id": cr["id"]}
+
             conn.execute(
                 """
                 INSERT INTO client_parent_child_links
@@ -6246,15 +6387,7 @@ class Storage:
                 (parent_telegram_user_id, mk_user_id, child_display_name,
                  now, cr["id"], now, now),
             )
-            conn.execute(
-                """
-                UPDATE client_child_link_codes
-                SET status='used', used_at=?, used_by_parent_telegram_user_id=?, updated_at=?
-                WHERE id=?
-                """,
-                (now, parent_telegram_user_id, now, cr["id"]),
-            )
-        return {"ok": True, "mk_user_id": mk_user_id, "child_display_name": child_display_name}
+        return {"ok": True, "mk_user_id": mk_user_id, "child_display_name": child_display_name, "code_id": cr["id"]}
 
     def list_client_children_for_parent(
         self, parent_telegram_user_id: str
@@ -6335,7 +6468,7 @@ class Storage:
                 """,
                 (now, str(invalidated_by), now, code_id),
             )
-        return {"ok": True, "code_id": code_id}
+        return {"ok": True, "code_id": code_id, "mk_user_id": cr["mk_user_id"]}
 
     def get_client_link_status_for_student(self, mk_user_id: str) -> dict[str, Any]:
         """Admin view: active links and recent codes for a student.
@@ -6362,6 +6495,155 @@ class Storage:
             "links": [dict(r) for r in links],
             "codes": [dict(r) for r in codes],
         }
+
+    # ── v7.1.7 — client link audit trail ─────────────────────────────────────
+
+    def log_client_link_audit_event(
+        self,
+        event_type: str,
+        mk_user_id: Optional[str] = None,
+        code_id: Optional[int] = None,
+        parent_telegram_user_id: Optional[str] = None,
+        actor_telegram_user_id: Optional[str] = None,
+        actor_role: Optional[str] = None,
+        result: Optional[str] = None,
+        reason_code: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> None:
+        """Best-effort audit insert for the client link system.
+
+        Never raises: a failure here must not abort the caller's already-completed
+        (or already-decided) main operation. Never pass plaintext codes, code_hash,
+        Telegram initData, tokens, or raw API payloads via `note`.
+        """
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO client_link_audit_log
+                    (created_at, event_type, mk_user_id, code_id, parent_telegram_user_id,
+                     actor_telegram_user_id, actor_role, result, reason_code, note)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        # UTC, not now_iso()'s local clock — kept consistent with
+                        # every other timestamp in the Client Module (expires_at,
+                        # client_link_rate_limit_attempts.attempted_at, etc.),
+                        # even though this table is no longer read by the rate
+                        # limiter itself (see client_link_rate_limit_attempts).
+                        datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S"), str(event_type or ""),
+                        str(mk_user_id) if mk_user_id is not None else None,
+                        int(code_id) if code_id is not None else None,
+                        str(parent_telegram_user_id) if parent_telegram_user_id is not None else None,
+                        str(actor_telegram_user_id) if actor_telegram_user_id is not None else None,
+                        str(actor_role) if actor_role is not None else None,
+                        str(result) if result is not None else None,
+                        str(reason_code) if reason_code is not None else None,
+                        str(note) if note is not None else None,
+                    ),
+                )
+        except Exception as exc:
+            # Deliberately no secrets in this log line: exception text from a
+            # parameterized INSERT never contains the bound values.
+            log.warning("client_link_audit_write_failed event_type=%s error=%s", event_type, exc)
+
+    def list_client_link_audit_events(
+        self, mk_user_id: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Read the most recent audit events for a student (newest first).
+
+        No endpoint exposes this yet — prepared for a future admin history UI.
+        """
+        mk_user_id = str(mk_user_id or "").strip()
+        limit = max(1, min(int(limit or 50), 200))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM client_link_audit_log
+                WHERE mk_user_id=? ORDER BY created_at DESC, id DESC LIMIT ?
+                """,
+                (mk_user_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── v7.1.7 (security correction) — dedicated rate-limit state ────────────
+    # These two methods deliberately do NOT catch exceptions (unlike
+    # log_client_link_audit_event above): a failure here must propagate to
+    # web_app_server.client_link_child, which fails closed (HTTP 503) rather
+    # than silently letting an unlimited number of guesses through.
+
+    def record_client_link_rate_limit_attempt(
+        self, actor_telegram_user_id: str, result: str, reason_code: Optional[str] = None
+    ) -> None:
+        """Record one outcome ('failed' | 'success' | 'rate_limited') for the
+        CL- code rate limiter. Never stores the plaintext code or code_hash.
+        Raises on any storage error — callers must not swallow this.
+        """
+        now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO client_link_rate_limit_attempts
+                (actor_telegram_user_id, attempted_at, result, reason_code)
+                VALUES (?, ?, ?, ?)
+                """,
+                (str(actor_telegram_user_id), now, str(result),
+                 str(reason_code) if reason_code is not None else None),
+            )
+
+    def count_recent_client_link_rate_limit_failures(
+        self, actor_telegram_user_id: str, since_iso: str
+    ) -> tuple[int, Optional[str]]:
+        """Count failed code-use attempts by this Telegram user since `since_iso`,
+        reading only client_link_rate_limit_attempts (never client_link_audit_log).
+        Returns (count, oldest_matching_attempted_at). Raises on storage error.
+
+        A recorded 'success' after `since_iso` resets the count: only failures
+        strictly after the most recent success are counted, so a user who fails
+        a few times and then succeeds is not left penalized for the rest of
+        the window.
+        """
+        actor_telegram_user_id = str(actor_telegram_user_id or "").strip()
+        if not actor_telegram_user_id:
+            return 0, None
+        with self._connect() as conn:
+            last_success = conn.execute(
+                """
+                SELECT attempted_at FROM client_link_rate_limit_attempts
+                WHERE actor_telegram_user_id=? AND result='success' AND attempted_at >= ?
+                ORDER BY attempted_at DESC LIMIT 1
+                """,
+                (actor_telegram_user_id, since_iso),
+            ).fetchone()
+            effective_since = last_success["attempted_at"] if last_success else since_iso
+            rows = conn.execute(
+                """
+                SELECT attempted_at FROM client_link_rate_limit_attempts
+                WHERE actor_telegram_user_id=? AND result='failed' AND attempted_at > ?
+                ORDER BY attempted_at ASC
+                """,
+                (actor_telegram_user_id, effective_since),
+            ).fetchall()
+        if not rows:
+            return 0, None
+        return len(rows), rows[0]["attempted_at"]
+
+    def cleanup_old_client_link_rate_limit_attempts(self, older_than_iso: str) -> None:
+        """Retention: delete rate-limit rows older than the cutoff.
+
+        Best-effort by design (called opportunistically on a small fraction of
+        requests, never on the hot path's correctness) — a failure here must
+        NOT block the rate limiter itself, so exceptions are swallowed here,
+        unlike the two methods above.
+        """
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "DELETE FROM client_link_rate_limit_attempts WHERE attempted_at < ?",
+                    (older_than_iso,),
+                )
+        except Exception as exc:
+            log.warning("client_link_rate_limit_cleanup_failed error=%s", exc)
 
     def find_duplicate_payment_intents(
         self,

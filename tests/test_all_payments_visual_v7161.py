@@ -31,7 +31,7 @@ Tests:
  T24  Attention tab renderer untouched
  T25  Pilot Clients renderer untouched
  T26  WORKSPACE_VIEW_ROLES / PILOT_ADMIN_ROLES / PAYMENT_APPROVAL_ROLES unchanged
- T27  Version / cache-bust is v7.1.6.2
+ T27  Version / cache-bust is v7.1.7
  T28  Search placeholder shortened; search logic fields unchanged
  T29  bePaid technical ids (order_id/tracking_id/UID) gated behind canAdminPilot + collapsible
  T30  ERIP account number stays visible to everyone under "Номер ЕРИП"
@@ -389,8 +389,8 @@ class TestVersionUnchanged(unittest.TestCase):
     def test_27_version_is_v7161(self):
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.6.2", html)
-        self.assertIn('console.log("MiniApp version: v7.1.6.2")', js)
+        self.assertIn("v=7.1.7", html)
+        self.assertIn('console.log("MiniApp version: v7.1.7")', js)
 
 
 # ---------------------------------------------------------------------------

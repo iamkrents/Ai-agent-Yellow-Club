@@ -333,14 +333,14 @@ class TestAllPaymentsImpl(unittest.TestCase):
 class TestVersionV7152(unittest.TestCase):
 
     def test_21_cache_bust_and_version_are_v7153(self):
-        """index.html cache-bust and app.js version marker must be v7.1.6.2."""
+        """index.html cache-bust and app.js version marker must be v7.1.7."""
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.6.2", html, "index.html cache-bust must be v=7.1.6.2")
+        self.assertIn("v=7.1.7", html, "index.html cache-bust must be v=7.1.7")
         self.assertIn(
-            'console.log("MiniApp version: v7.1.6.2")',
+            'console.log("MiniApp version: v7.1.7")',
             js,
-            "app.js must contain version marker v7.1.6.2",
+            "app.js must contain version marker v7.1.7",
         )
 
 

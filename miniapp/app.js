@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.6.2");
+console.log("MiniApp version: v7.1.7");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -14732,6 +14732,11 @@ const WS_ICON_EYE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" 
 const WS_ICON_EYE_OFF = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.6 5.2A10.4 10.4 0 0 1 12 5c6.4 0 10 7 10 7a15.3 15.3 0 0 1-3.2 4.1M6.5 6.6C4 8.3 2 12 2 12s3.6 7 10 7a9.6 9.6 0 0 0 3.5-.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>`;
 const WS_ICON_CHEVRON_DOWN = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`;
 const WS_ICON_INBOX = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h4l2 3h4l2-3h4"/><path d="M5.5 5h13l2 7v6a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-6l2-7Z"/></svg>`;
+// v7.1.7 — Connection tab icons (same inline-SVG convention as above).
+const WS_ICON_LINK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 15 15 9"/><path d="M11 6.5 12.5 5A4 4 0 0 1 18 10.5L16.5 12"/><path d="M13 17.5 11.5 19A4 4 0 0 1 6 13.5L7.5 12"/></svg>`;
+const WS_ICON_COPY = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M5.5 16H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v.5"/></svg>`;
+// v7.1.7 — "Помощь по оплатам" header button icon (question mark, no emoji).
+const WS_ICON_HELP = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5"/><path d="M9.3 9.3a2.7 2.7 0 0 1 5.2 1c0 1.6-2.5 1.8-2.5 3.4"/><circle cx="12" cy="17" r="0.1" fill="currentColor" stroke="currentColor" stroke-width="1.6"/></svg>`;
 
 function _renderWorkspaceSkeleton(root) {
   const caps = roleCaps();
@@ -14741,6 +14746,7 @@ function _renderWorkspaceSkeleton(root) {
     { id: "attention", label: "Требуют внимания" },
     { id: "all-payments", label: "Все платежи" },
     ...(caps.canUsePaymentsWorkspace ? [{ id: "pilot-clients", label: "Клиенты пилота" }] : []),
+    ...(caps.canManageClientLinks ? [{ id: "connection", label: "Подключение" }] : []),
   ].filter(Boolean);
   root.innerHTML = `
     <div class="ws-header">
@@ -14749,12 +14755,16 @@ function _renderWorkspaceSkeleton(root) {
         <h2 class="ws-header__title">Оплаты</h2>
         <p class="ws-header__subtitle">Рабочее пространство оплат</p>
       </div>
-      <button class="ws-refresh-btn" id="wsRefreshBtn" onclick="loadPaymentsWorkspace()" aria-label="Обновить данные">${WS_ICON_REFRESH}</button>
+      <div class="ws-header__actions">
+        ${caps.canUsePaymentsWorkspace ? `<button class="ws-help-btn" id="wsHelpBtn" type="button" onclick="_wsOpenHelp()" aria-label="Помощь по оплатам">${WS_ICON_HELP}</button>` : ""}
+        <button class="ws-refresh-btn" id="wsRefreshBtn" onclick="loadPaymentsWorkspace()" aria-label="Обновить данные">${WS_ICON_REFRESH}</button>
+      </div>
     </div>
     <nav class="ws-subtabs" id="wsSubtabs">
       ${tabs.map(t => `<button class="ws-subtab${_wsState.tab === t.id ? " active" : ""}" data-ws-tab="${escapeHtml(t.id)}" onclick="_wsActivateTab('${escapeHtml(t.id)}')">${escapeHtml(t.label)}</button>`).join("")}
     </nav>
     <div id="wsTabContent"></div>
+    <div id="wsHelpScreen" class="hidden"></div>
   `;
   _wsRenderCurrentTab();
 }
@@ -14772,6 +14782,7 @@ function _wsRenderCurrentTab() {
   else if (_wsState.tab === "attention") { _wsRenderAttention(root); _loadWorkspaceAttention(); }
   else if (_wsState.tab === "all-payments") { _wsRenderAllPayments(root); _loadWorkspaceAllPayments(); }
   else if (_wsState.tab === "pilot-clients") { _wsRenderPilotClients(root); _loadPilotClients(); }
+  else if (_wsState.tab === "connection") { _wsRenderConnection(root); }
 }
 
 async function _loadWorkspaceStats() {
@@ -15835,6 +15846,860 @@ async function confirmPilotRemove() {
   }
 }
 
+// ── v7.1.7 — Payments Workspace "Подключение" tab ────────────────────────
+// Client Manager → Payments Workspace → «Подключение»: links a client/parent's
+// Telegram account to a MoyKlass student via the existing one-time CL- code
+// system (client_child_link_codes / client_parent_child_links, unchanged
+// since v7.0.93.1/v7.1.7 backend). This is the 5th Workspace tab — gated on
+// canManageClientLinks, entirely separate from Клиенты пилота (automation
+// modes), Food Module (YC- codes), and staff/teacher screens.
+//
+// Container-split pattern (same fix as the All Payments search field, v7.1.6.2):
+// _wsRenderConnection() writes the search toolbar (title/subtitle + input +
+// button) to the DOM exactly once; every subsequent update — search results,
+// selecting a client, loading link-status, creating/revoking a code, unlinking
+// — goes through _wsRenderConnectionBody(), which only touches #wsConnBody.
+// The search <input> is never recreated, so it never loses focus/keyboard.
+
+const _wsConnState = {
+  view: "search",        // "search" | "detail"
+  query: "",
+  results: null,          // null = no search yet; [] = searched, no matches
+  loading: false,
+  error: "",
+  selected: null,         // { mk_user_id, full_name }
+  status: null,           // last successful GET /api/client/admin/link-status payload
+  statusLoading: false,
+  statusError: "",
+  newCode: null,          // { code, expires_at } — in-memory only, shown once
+  busy: false,            // action button in flight (create/revoke/unlink)
+};
+
+// Raw GET helper (like _apiPostRaw): apiGet() throws away reason_code on
+// failure by design (`throw new Error(data.error)`), but the Connection tab
+// needs reason_code to pick the right user-facing message (see
+// _wsConnErrorMessage), so it reads the response body itself instead.
+async function _wsConnApiGet(path) {
+  const res = await fetch(apiUrl(path), { cache: "no-store" });
+  return res.json();
+}
+
+// v7.1.7 — backend reason_code → Russian message (spec section 12). Falls
+// back to the raw `error` string (already Russian, already safe — see
+// web_app_server.py's client-link methods) for any reason_code not listed
+// here, so a future backend addition never surfaces as a blank message.
+const WS_CONN_REASON_MESSAGES = {
+  client_already_linked: "Клиент уже подключён. Сначала выполните явную отвязку.",
+  code_not_found: "Код не найден или больше не действует.",
+  code_expired: "Срок действия кода истёк.",
+  code_already_used: "Этот код уже был использован.",
+  code_invalidated: "Код был отозван.",
+  telegram_already_linked: "Этот ученик уже подключён к другому Telegram-аккаунту.",
+  rate_limited: "Слишком много попыток. Повторите позже.",
+  rate_limit_unavailable: "Проверка кода временно недоступна. Повторите позже.",
+  invalid_code_format: "Неверный формат кода.",
+  access_denied: "Недостаточно прав для управления подключением.",
+};
+function _wsConnErrorMessage(data) {
+  const reasonMsg = WS_CONN_REASON_MESSAGES[data?.reason_code];
+  if (reasonMsg) return reasonMsg;
+  return safeUserError(new Error(data?.error || ""));
+}
+
+function _wsConnHeadHtml() {
+  return `
+    <div class="ws-queue-head">
+      <div class="ws-queue-head__copy">
+        <h2 class="ws-queue-head__title">Подключение клиентов</h2>
+        <p class="ws-queue-head__subtitle">Найдите клиента в МойКласс и создайте одноразовый код для входа в приложение.</p>
+      </div>
+    </div>
+    <p class="ws-conn-hint">Подключение клиента к приложению Yellow Club через одноразовый код. Не относится к «Клиентам пилота» и не заменяет коды питания (YC-).</p>
+  `;
+}
+
+function _wsRenderConnection(root) {
+  root.innerHTML = `
+    ${_wsConnHeadHtml()}
+    <div class="ws-search-row">
+      <label class="ws-search-bar">
+        ${WS_ICON_SEARCH}
+        <input id="wsConnSearchInput" type="text" placeholder="Имя, телефон или ID в МойКласс" value="${escapeAttr(_wsConnState.query)}"
+               autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Поиск клиента в МойКласс" />
+      </label>
+      <button class="primary ws-conn-search-btn" id="wsConnSearchBtn" type="button" onclick="_wsConnSearch()">Найти</button>
+    </div>
+    <div id="wsConnBody"></div>
+  `;
+  const input = $("wsConnSearchInput");
+  if (input) {
+    // Only captures the value into state — never re-renders on keystroke, so
+    // the field can never lose focus/keyboard while typing (see header note).
+    input.addEventListener("input", () => { _wsConnState.query = input.value; });
+    input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); _wsConnSearch(); } });
+  }
+  _wsRenderConnectionBody();
+}
+
+function _wsRenderConnectionBody() {
+  const body = $("wsConnBody");
+  if (!body) return;
+
+  if (_wsConnState.view === "detail" && _wsConnState.selected) {
+    body.innerHTML = `<div class="ws-conn-detail-wrap">${_wsConnDetailHtml()}</div>`;
+    _wsConnWireDetail();
+    return;
+  }
+
+  if (_wsConnState.loading) {
+    body.innerHTML = `<div class="ws-conn-results"><div class="kpi-loading">Ищу клиента…</div></div>`;
+    return;
+  }
+  if (_wsConnState.error) {
+    body.innerHTML = `<div class="notice notice-error">${escapeHtml(_wsConnState.error)}
+      <button class="secondary" style="font-size:12px;padding:4px 10px;margin-left:8px" onclick="_wsConnSearch()">Повторить</button></div>`;
+    return;
+  }
+  if (_wsConnState.results === null) {
+    body.innerHTML = `<div class="ws-empty-state">
+      <div class="ws-empty-state-icon ws-empty-state-icon--neutral">${WS_ICON_SEARCH}</div>
+      <div class="ws-empty-state-title">Найдите клиента, чтобы начать</div>
+      <div class="ws-empty-state-desc">Введите имя, телефон или ID клиента в МойКласс и нажмите «Найти».</div>
+    </div>`;
+    return;
+  }
+  if (!_wsConnState.results.length) {
+    body.innerHTML = `<div class="ws-empty-state">
+      <div class="ws-empty-state-icon ws-empty-state-icon--neutral">${WS_ICON_INBOX}</div>
+      <div class="ws-empty-state-title">Ничего не найдено</div>
+      <div class="ws-empty-state-desc">Проверьте написание имени или номер ID в МойКласс.</div>
+    </div>`;
+    return;
+  }
+  const cards = _wsConnState.results.map(_wsConnResultCard).join("");
+  body.innerHTML = `<div class="ws-conn-results ws-bottom-safe-pad">${cards}</div>`;
+}
+
+// v7.1.7 — badge derived from the same codes/links arrays search-students
+// already embeds per student (identical shape to get_client_link_status_for_student),
+// so the result card needs no extra request per row (avoids "десятки
+// неконтролируемых запросов" — the authoritative detail call happens only
+// once, after the manager picks a specific card).
+function _wsConnResultBadge(student) {
+  const activeLink = (student.links || []).find(l => l.status === "active");
+  if (activeLink) return { label: "Подключён", cls: "ws-badge--connected" };
+  const activeCode = (student.codes || []).find(c => c.status === "active");
+  if (activeCode) return { label: "Код создан", cls: "ws-badge--pending" };
+  return { label: "Не подключён", cls: "ws-badge--neutral" };
+}
+
+function _wsConnResultCard(student, idx) {
+  const badge = _wsConnResultBadge(student);
+  const name = escapeHtml(student.full_name || `Ученик #${student.mk_user_id}`);
+  return `
+    <article class="card ws-conn-card" data-conn-idx="${idx}" role="button" tabindex="0"
+             onclick="_wsConnSelect(${idx})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();_wsConnSelect(${idx});}">
+      <div class="ws-conn-card-row">
+        <div class="ws-conn-card-name">${name}</div>
+        <span class="ws-badge ${badge.cls}">${badge.label}</span>
+      </div>
+      <div class="ws-conn-card-id">ID в МойКласс: ${escapeHtml(String(student.mk_user_id))}</div>
+    </article>`;
+}
+
+async function _wsConnSearch() {
+  const q = (_wsConnState.query || "").trim();
+  if (!q) {
+    _wsConnState.results = null;
+    _wsConnState.error = "Введите имя, телефон или ID клиента.";
+    _wsRenderConnectionBody();
+    return;
+  }
+  _wsConnState.loading = true;
+  _wsConnState.error = "";
+  _wsRenderConnectionBody();
+  try {
+    const data = await _wsConnApiGet(`/api/client/admin/search-students?q=${encodeURIComponent(q)}`);
+    if (data.ok) {
+      _wsConnState.results = data.students || [];
+      _wsConnState.error = "";
+    } else {
+      _wsConnState.results = null;
+      _wsConnState.error = _wsConnErrorMessage(data);
+    }
+  } catch (e) {
+    _wsConnState.results = null;
+    _wsConnState.error = safeUserError(e);
+  } finally {
+    _wsConnState.loading = false;
+    _wsRenderConnectionBody();
+  }
+}
+
+function _wsConnSelect(idx) {
+  const student = (_wsConnState.results || [])[idx];
+  if (!student) return;
+  _wsConnState.selected = { mk_user_id: student.mk_user_id, full_name: student.full_name };
+  _wsConnState.view = "detail";
+  _wsConnState.status = null;
+  _wsConnState.statusError = "";
+  _wsConnState.newCode = null;
+  _wsRenderConnectionBody();
+  _wsConnLoadStatus();
+}
+
+function _wsConnBackToSearch() {
+  _wsConnState.view = "search";
+  _wsConnState.selected = null;
+  _wsConnState.status = null;
+  _wsConnState.statusError = "";
+  _wsConnState.newCode = null;
+  _wsRenderConnectionBody();
+}
+
+async function _wsConnLoadStatus() {
+  const mkUserId = _wsConnState.selected?.mk_user_id;
+  if (!mkUserId) return;
+  _wsConnState.statusLoading = true;
+  _wsConnState.statusError = "";
+  _wsRenderConnectionBody();
+  try {
+    const data = await _wsConnApiGet(`/api/client/admin/link-status?mk_user_id=${encodeURIComponent(mkUserId)}`);
+    if (data.ok) {
+      _wsConnState.status = data;
+      _wsConnState.statusError = "";
+    } else {
+      _wsConnState.status = null;
+      _wsConnState.statusError = _wsConnErrorMessage(data);
+    }
+  } catch (e) {
+    _wsConnState.status = null;
+    _wsConnState.statusError = safeUserError(e);
+  } finally {
+    _wsConnState.statusLoading = false;
+    _wsRenderConnectionBody();
+  }
+}
+
+function _wsConnDetailHtml() {
+  const sel = _wsConnState.selected;
+  const backBtn = `<button class="secondary ws-conn-back-btn" type="button" onclick="_wsConnBackToSearch()">← К поиску</button>`;
+
+  if (_wsConnState.newCode) return `${backBtn}${_wsConnNewCodeSuccessHtml()}`;
+
+  if (_wsConnState.statusLoading) {
+    return `${backBtn}<div class="card ws-conn-detail-card"><div class="kpi-loading">Загружаю статус подключения…</div></div>`;
+  }
+  if (_wsConnState.statusError) {
+    return `${backBtn}<div class="notice notice-error">${escapeHtml(_wsConnState.statusError)}
+      <button class="secondary" style="font-size:12px;padding:4px 10px;margin-left:8px" onclick="_wsConnLoadStatus()">Повторить</button></div>`;
+  }
+  const st = _wsConnState.status;
+  if (!st) return backBtn;
+
+  const name = escapeHtml(sel.full_name || `Ученик #${sel.mk_user_id}`);
+  const mkId = escapeHtml(String(sel.mk_user_id));
+  let badge, body, actions;
+
+  if (st.linked) {
+    badge = `<span class="ws-badge ws-badge--connected">Подключён</span>`;
+    body = `<div class="ws-conn-info-row"><b>Дата подключения:</b> ${wsFormatDateTime(st.linked_at)}</div>`;
+    actions = `<button class="danger ws-conn-action-btn" type="button" id="wsConnUnlinkBtn" onclick="_wsConnOpenUnlink()">Отвязать Telegram</button>`;
+  } else if (st.active_code_exists) {
+    badge = `<span class="ws-badge ws-badge--pending">Код создан</span>`;
+    body = `
+      <div class="ws-conn-info-row"><b>Код создан:</b> ${wsFormatDateTime(st.code_created_at)}</div>
+      <div class="ws-conn-info-row"><b>Срок действия:</b> ${wsFormatDateTime(st.code_expires_at)}</div>
+      <p class="ws-conn-note">Активный код уже создан. Его значение повторно не отображается. Отзовите код и создайте новый при необходимости.</p>`;
+    actions = `
+      <button class="secondary ws-conn-action-btn" type="button" id="wsConnRevokeBtn" onclick="_wsConnOpenRevoke()">Отозвать код</button>
+      <button class="primary ws-conn-action-btn" type="button" id="wsConnNewCodeBtn" onclick="_wsConnOpenNewCodeConfirm()">Создать новый код</button>`;
+  } else {
+    badge = `<span class="ws-badge ws-badge--neutral">Не подключён</span>`;
+    body = `<p class="ws-conn-note">У клиента ещё нет кода подключения.</p>`;
+    actions = `<button class="primary ws-conn-action-btn" type="button" id="wsConnCreateBtn" onclick="_wsConnCreateCode()">Создать код подключения</button>`;
+  }
+
+  return `${backBtn}
+    <article class="card ws-conn-detail-card">
+      <div class="ws-conn-detail-head">
+        <div>
+          <div class="ws-conn-detail-name">${name}</div>
+          <div class="ws-conn-detail-id">ID в МойКласс: ${mkId}</div>
+        </div>
+        ${badge}
+      </div>
+      ${body}
+      <div id="wsConnActionError" class="notice notice-error hidden" style="margin:10px 0 0"></div>
+      <div class="ws-conn-actions">${actions}</div>
+    </article>`;
+}
+
+function _wsConnNewCodeSuccessHtml() {
+  const nc = _wsConnState.newCode;
+  return `
+    <article class="card ws-conn-success-card">
+      <div class="ws-conn-success-icon">${WS_ICON_CHECK_CIRCLE}</div>
+      <h3 class="ws-conn-success-title">Код подключения создан</h3>
+      <div class="ws-conn-code-display" id="wsConnNewCodeValue">${escapeHtml(nc.code)}</div>
+      <p class="ws-conn-note">Код отображается только сейчас. Передайте его клиенту или родителю. Срок действия — 72 часа.</p>
+      <div class="ws-conn-success-actions">
+        <button class="secondary ws-conn-action-btn" type="button" id="wsConnCopyCodeBtn" onclick="_wsConnCopyCode()">${WS_ICON_COPY}Копировать код</button>
+        <button class="primary ws-conn-action-btn" type="button" onclick="_wsConnCloseNewCode()">Закрыть</button>
+      </div>
+    </article>`;
+}
+
+function _wsConnWireDetail() {
+  // No-op hook kept for symmetry with other _wsRender*/wire pairs in this
+  // file; all Connection detail actions are wired via inline onclick above
+  // (buttons are recreated on every render, so addEventListener here would
+  // just accumulate duplicate listeners across re-renders).
+}
+
+function _wsConnActionError(msg) {
+  const el = $("wsConnActionError");
+  if (!el) return;
+  if (!msg) { el.classList.add("hidden"); el.textContent = ""; return; }
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
+
+function _wsConnSetBusy(busy) {
+  _wsConnState.busy = busy;
+  document.querySelectorAll(".ws-conn-action-btn").forEach(b => { b.disabled = busy; });
+}
+
+async function _wsConnCreateCode() {
+  if (_wsConnState.busy) return;
+  const sel = _wsConnState.selected;
+  if (!sel) return;
+  _wsConnActionError("");
+  _wsConnSetBusy(true);
+  try {
+    const data = await _apiPostRaw("/api/client/admin/link-codes", {
+      mk_user_id: sel.mk_user_id,
+      child_display_name: sel.full_name || `Ученик #${sel.mk_user_id}`,
+    });
+    if (data.ok && data.code) {
+      // Plaintext code lives only in _wsConnState (in-memory JS state) — never
+      // written to localStorage/sessionStorage, console, the URL, or analytics.
+      // It disappears the moment the tab is closed/reloaded or _wsConnState.newCode
+      // is cleared, matching the backend model (the code can never be re-read).
+      _wsConnState.newCode = { code: data.code, expires_at: data.expires_at || null };
+      _wsRenderConnectionBody();
+    } else {
+      _wsConnActionError(_wsConnErrorMessage(data));
+    }
+  } catch (e) {
+    _wsConnActionError(safeUserError(e));
+  } finally {
+    _wsConnSetBusy(false);
+  }
+}
+
+function _wsConnCloseNewCode() {
+  _wsConnState.newCode = null;
+  _wsConnLoadStatus(); // refresh so the card now shows "Код создан"
+}
+
+async function _wsConnCopyCode() {
+  const nc = _wsConnState.newCode;
+  if (!nc) return;
+  try {
+    await navigator.clipboard.writeText(nc.code);
+    setNotice("Код скопирован", "ok");
+  } catch (e) {
+    // Telegram WebView fallback: select the on-screen text so the user can
+    // copy manually if the async Clipboard API is unavailable/blocked.
+    try {
+      const el = $("wsConnNewCodeValue");
+      if (el && window.getSelection) {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+      setNotice(`Не удалось скопировать автоматически. Код: ${nc.code}`, "error");
+    } catch (e2) {
+      setNotice(`Код: ${nc.code}`, "error");
+    }
+  }
+}
+
+// ── Revoke code modal (#wsConnRevokeModal in index.html) ─────────────────
+function _wsConnOpenRevoke() {
+  const st = _wsConnState.status;
+  const activeCode = (st?.codes || []).find(c => c.status === "active");
+  if (!activeCode) return;
+  $("wsConnRevokeError")?.classList.add("hidden");
+  piModalOpen($("wsConnRevokeModal"));
+}
+function _wsConnCloseRevoke() { piModalClose($("wsConnRevokeModal")); }
+async function _wsConnConfirmRevoke() {
+  const st = _wsConnState.status;
+  const activeCode = (st?.codes || []).find(c => c.status === "active");
+  if (!activeCode) { _wsConnCloseRevoke(); return; }
+  const errEl = $("wsConnRevokeError");
+  errEl?.classList.add("hidden");
+  const btn = $("wsConnRevokeConfirmBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "Отзываю…"; }
+  try {
+    const data = await _apiPostRaw("/api/client/admin/link-codes/invalidate", { code_id: activeCode.id });
+    if (data.ok) {
+      _wsConnCloseRevoke();
+      setNotice("Код отозван", "ok");
+      await _wsConnLoadStatus();
+    } else if (errEl) {
+      errEl.textContent = _wsConnErrorMessage(data); errEl.classList.remove("hidden");
+    }
+  } catch (e) {
+    if (errEl) { errEl.textContent = safeUserError(e); errEl.classList.remove("hidden"); }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Отозвать код"; }
+  }
+}
+
+// ── New-code confirmation modal (#wsConnNewCodeConfirmModal) ─────────────
+function _wsConnOpenNewCodeConfirm() {
+  $("wsConnNewCodeConfirmError")?.classList.add("hidden");
+  piModalOpen($("wsConnNewCodeConfirmModal"));
+}
+function _wsConnCloseNewCodeConfirm() { piModalClose($("wsConnNewCodeConfirmModal")); }
+async function _wsConnConfirmNewCode() {
+  const sel = _wsConnState.selected;
+  if (!sel) return;
+  const errEl = $("wsConnNewCodeConfirmError");
+  errEl?.classList.add("hidden");
+  const btn = $("wsConnNewCodeConfirmBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "Создаю…"; }
+  try {
+    const data = await _apiPostRaw("/api/client/admin/link-codes", {
+      mk_user_id: sel.mk_user_id,
+      child_display_name: sel.full_name || `Ученик #${sel.mk_user_id}`,
+    });
+    if (data.ok && data.code) {
+      _wsConnCloseNewCodeConfirm();
+      _wsConnState.newCode = { code: data.code, expires_at: data.expires_at || null };
+      _wsRenderConnectionBody();
+    } else if (errEl) {
+      errEl.textContent = _wsConnErrorMessage(data); errEl.classList.remove("hidden");
+    }
+  } catch (e) {
+    if (errEl) { errEl.textContent = safeUserError(e); errEl.classList.remove("hidden"); }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Создать новый код"; }
+  }
+}
+
+// ── Unlink Telegram modal (#wsConnUnlinkModal) ───────────────────────────
+function _wsConnOpenUnlink() {
+  $("wsConnUnlinkError")?.classList.add("hidden");
+  piModalOpen($("wsConnUnlinkModal"));
+}
+function _wsConnCloseUnlink() { piModalClose($("wsConnUnlinkModal")); }
+async function _wsConnConfirmUnlink() {
+  const sel = _wsConnState.selected;
+  const st = _wsConnState.status;
+  const activeLink = (st?.links || []).find(l => l.status === "active");
+  if (!sel || !activeLink) { _wsConnCloseUnlink(); return; }
+  const errEl = $("wsConnUnlinkError");
+  errEl?.classList.add("hidden");
+  const btn = $("wsConnUnlinkConfirmBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "Отвязываю…"; }
+  try {
+    const data = await _apiPostRaw("/api/client/admin/unlink", {
+      mk_user_id: sel.mk_user_id,
+      parent_telegram_user_id: activeLink.parent_telegram_user_id,
+    });
+    if (data.ok) {
+      _wsConnCloseUnlink();
+      setNotice("Telegram-аккаунт отвязан. Счета и история не изменились.", "ok");
+      await _wsConnLoadStatus();
+    } else if (errEl) {
+      errEl.textContent = _wsConnErrorMessage(data); errEl.classList.remove("hidden");
+    }
+  } catch (e) {
+    if (errEl) { errEl.textContent = safeUserError(e); errEl.classList.remove("hidden"); }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Отвязать"; }
+  }
+}
+
+// ── v7.1.7 — Payments Workspace "Помощь по оплатам" screen ───────────────
+// Opened via the header's question-mark button (_wsOpenHelp), NOT a 6th
+// Workspace tab. Opening/closing only toggles [hidden] on #wsSubtabs /
+// #wsTabContent / #wsHelpScreen — _wsState (active tab, search, filters) is
+// never touched, so whatever the user was doing before is exactly as they
+// left it when they come back, with zero extra API calls either way.
+// Reuses the existing .help-* component set from clientManagerHelpHtml()
+// (see app.js ~line 673) adapted with .card / --yellow / SVG icons instead
+// of emoji, per the approved Workspace visual language — no second design
+// system. Content is grounded in the app's own real labels: WS_OVERVIEW_STAT_META
+// (Показатели), WS_PI_STATUS_LABELS (Статусы), WS_PILOT_MODE_LABEL (Режимы) —
+// nothing here is invented independently of those.
+
+let _wsHelpOpen = false;
+
+function _wsOpenHelp() {
+  if (_wsHelpOpen) return;
+  _wsHelpOpen = true;
+  $("wsSubtabs")?.classList.add("hidden");
+  $("wsTabContent")?.classList.add("hidden");
+  const screen = $("wsHelpScreen");
+  if (!screen) return;
+  screen.classList.remove("hidden");
+  if (!screen.dataset.rendered) {
+    screen.innerHTML = _wsHelpScreenHtml();
+    screen.dataset.rendered = "1";
+    _wsWireHelpSearch();
+  }
+}
+
+function _wsCloseHelp() {
+  _wsHelpOpen = false;
+  $("wsHelpScreen")?.classList.add("hidden");
+  $("wsSubtabs")?.classList.remove("hidden");
+  $("wsTabContent")?.classList.remove("hidden");
+  // Deliberately no re-render / reload call here — the tab underneath this
+  // screen was never touched while help was open, so it needs none.
+}
+
+function _wsHelpScrollTo(id) {
+  const el = document.getElementById(id);
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function _wsHelpTocHtml() {
+  const items = [
+    ["ws-help-quickstart", "Быстрый старт"],
+    ["ws-help-chain", "Как работает автоматизация"],
+    ["ws-help-metrics", "Показатели Обзора"],
+    ["ws-help-statuses", "Статусы платежей"],
+    ["ws-help-modes", "Режимы автоматизации"],
+    ["ws-help-connection", "Подключение клиента"],
+    ["ws-help-faq", "Типовые проблемы"],
+    ["ws-help-escalation", "Когда обращаться к администратору"],
+  ];
+  return `<nav class="help-question-grid ws-help-toc" aria-label="Оглавление">
+    ${items.map(([id, label]) => `<button type="button" onclick="_wsHelpScrollTo('${id}')">${escapeHtml(label)}</button>`).join("")}
+  </nav>`;
+}
+
+function _wsHelpQuickStartHtml() {
+  const steps = [
+    "Откройте «Обзор».",
+    "Проверьте «Требуют внимания».",
+    "Подтвердите подготовленные счета в режиме «Проверка».",
+    "Убедитесь, что ожидающие оплаты счета отправлены клиентам.",
+    "Проверьте оплаченные счета и внесение в МойКласс.",
+    "При ошибке откройте карточку и прочитайте причину.",
+    "Если клиент не видит счёт — проверьте «Подключение».",
+  ];
+  return `
+    <section class="ws-help-section" id="ws-help-quickstart" data-help-search="быстрый старт что делать каждый день чек-лист">
+      <article class="card help-card help-hero">
+        <div class="help-hero-icon">${WS_ICON_CHECK_CIRCLE}</div>
+        <div>
+          <h3>Быстрый старт</h3>
+          <p>Что мне делать каждый день?</p>
+        </div>
+      </article>
+      <article class="card help-card">
+        <div class="help-route">
+          ${steps.map((s, i) => `
+            <div class="help-route-step">
+              <span class="help-route-num">${i + 1}</span>
+              <div class="help-route-body"><b>${escapeHtml(s)}</b></div>
+            </div>`).join("")}
+        </div>
+      </article>
+    </section>`;
+}
+
+function _wsHelpChainHtml() {
+  const steps = [
+    ["Клиент и абонемент в МойКласс", "Клиент-менеджер создаёт и проверяет абонемент клиента в МойКласс. Агент не придумывает отсутствующие данные — он использует только то, что реально есть в МойКласс."],
+    ["Счёт в МойКласс", "Менеджер создаёт счёт в МойКласс. Сумма будущей оплаты берётся из этого реального счёта."],
+    ["Платёжный счёт в Yellow Club Agent", "Агент обнаруживает новый счёт МойКласс и создаёт свой внутренний платёжный счёт для дальнейшей работы."],
+    ["Проверка данных", "Агент проверяет сумму, клиента, абонемент, способ оплаты, подключение Telegram и возможность отправки родителю."],
+    ["Создание оплаты в bePaid", "Дальнейшее действие зависит от режима пилота клиента: «Проверка» ждёт подтверждения менеджера, «Наблюдение» только анализирует, «Авто» выполняет разрешённый сценарий сама, «Отключён» новых действий не выполняет."],
+    ["Отправка клиенту", "После публикации клиент видит платёжный счёт в своём Telegram-кабинете. Для этого клиент должен быть подключён через CL-код (раздел «Подключение»). Код питания YC для этого не подходит."],
+    ["Ожидание оплаты", "Счёт находится в статусе ожидания. Менеджер контролирует срок оплаты и то, что счёт по-прежнему доступен клиенту."],
+    ["Получение результата bePaid", "bePaid автоматически сообщает приложению, что оплата прошла — это происходит через технический сигнал (webhook), без участия менеджера."],
+    ["Внесение оплаты в МойКласс", "Агент или менеджер вносит подтверждённую оплату в МойКласс — по уже существующему сценарию и в рамках своих прав."],
+    ["Завершение и контроль", "Менеджер проверяет: счёт оплачен, оплата внесена в МойКласс, клиент видит актуальное состояние, ошибок и зависших операций нет."],
+  ];
+  return `
+    <section class="ws-help-section" id="ws-help-chain" data-help-search="как работает автоматизация цепочка счёт webhook bepaid moyklass">
+      <article class="card help-card">
+        <h3>Как работает автоматизация</h3>
+        <p>Полная цепочка от клиента и счёта в МойКласс до оплаты и возврата результата обратно в МойКласс.</p>
+      </article>
+      <article class="card help-card">
+        <div class="help-route">
+          ${steps.map((s, i) => `
+            <div class="help-route-step">
+              <span class="help-route-num">${i + 1}</span>
+              <div class="help-route-body"><b>${escapeHtml(s[0])}</b><small>${escapeHtml(s[1])}</small></div>
+            </div>`).join("")}
+        </div>
+      </article>
+    </section>`;
+}
+
+// Grounded in WS_OVERVIEW_STAT_META (same fields/icons/order as the real
+// Overview stat cards) — never invents a 7th indicator or a different icon.
+const WS_HELP_METRICS = [
+  { icon: WS_ICON_CLOCK, tone: "yellow", label: "На проверке",
+    what: "Счета, которые ждут подтверждения клиент-менеджера перед следующим действием.",
+    todo: "Откройте «Требуют внимания», проверьте данные и нажмите разрешённое действие." },
+  { icon: WS_ICON_ALERT_TRIANGLE, tone: "red", label: "Требуют внимания",
+    what: "Счета с ошибкой, расхождением или ситуацией, которую агент не может безопасно решить автоматически.",
+    todo: "Откройте карточку, прочитайте причину и выполните указанное действие." },
+  { icon: WS_ICON_WALLET, tone: "yellow", label: "Ожидают оплаты",
+    what: "Счета, которые уже созданы или отправлены клиенту, но ещё не оплачены.",
+    todo: "Проверьте, видит ли клиент счёт, и не истёк ли срок оплаты." },
+  { icon: WS_ICON_CHECK_CIRCLE, tone: "green", label: "Оплачено",
+    what: "Счета, по которым приложение получило подтверждение успешной оплаты.",
+    todo: "Убедитесь, что результат внесён в МойКласс." },
+  { icon: WS_ICON_FILE_CHECK, tone: "green", label: "Внесено в МойКласс",
+    what: "Оплаты, которые уже отражены в МойКласс.",
+    todo: "Обычно действие не требуется. При расхождении откройте карточку." },
+  { icon: WS_ICON_USERS, tone: "blue", label: "Клиентов в пилоте",
+    what: "Клиенты, для которых включён один из режимов автоматизации.",
+    todo: "Проверьте режим во вкладке «Клиенты пилота»." },
+];
+
+function _wsHelpMetricsHtml() {
+  return `
+    <section class="ws-help-section" id="ws-help-metrics" data-help-search="показатели обзора статистика">
+      <article class="card help-card">
+        <h3>Показатели Обзора</h3>
+        <p>Что означает каждое число на вкладке «Обзор».</p>
+      </article>
+      <div class="help-status-grid">
+        ${WS_HELP_METRICS.map(m => `
+          <article class="help-status ${m.tone} ws-help-leaf" data-help-search="${escapeAttr(m.label.toLowerCase())}">
+            <b>${m.icon}${escapeHtml(m.label)}</b>
+            <span><b>Что это:</b> ${escapeHtml(m.what)}</span>
+            <span><b>Что делать:</b> ${escapeHtml(m.todo)}</span>
+          </article>`).join("")}
+      </div>
+    </section>`;
+}
+
+// Grounded in WS_PI_STATUS_LABELS's real friendly labels — raw codes
+// (requires_check, pending_review, withdrawn, posted_to_moyklass, ...) are
+// never shown to the user, only the same labels already used on the cards.
+const WS_HELP_STATUSES = [
+  { label: "Черновик", what: "Счёт создан, но ещё не готов к отправке.", action: "Обычно действие не требуется — счёт ещё готовится.", admin: "Если черновик «завис» надолго без причины." },
+  { label: "Готов к выставлению", what: "Данные проверены, можно создавать или публиковать оплату.", action: "Проверьте счёт и выполните разрешённое действие.", admin: "Если действие недоступно без видимой причины." },
+  { label: "На проверке", what: "Ожидается решение клиент-менеджера.", action: "Откройте карточку и подтвердите или отклоните разрешённое действие.", admin: "Если решение долго не запрашивается автоматически." },
+  { label: "Ожидает оплаты", what: "Счёт доступен клиенту, оплата ещё не поступила.", action: "Проверьте, что клиент видит счёт, и срок оплаты не истёк.", admin: "Если клиент не может открыть счёт." },
+  { label: "Оплачено", what: "bePaid подтвердил успешную оплату.", action: "Убедитесь, что оплата будет внесена в МойКласс.", admin: "Если статус «Оплачено» держится необычно долго без внесения." },
+  { label: "Внесено в МойКласс", what: "Оплата отражена в МойКласс.", action: "Действие обычно не требуется.", admin: "Если сумма в МойКласс отличается от суммы оплаты." },
+  { label: "Требует проверки", what: "Есть расхождение или неоднозначное состояние.", action: "Откройте карточку, прочитайте причину, выполните разрешённое действие.", admin: "Если причина непонятна или повторяется после действия." },
+  { label: "Ошибка", what: "Действие не завершилось.", action: "Откройте «Подробнее», прочитайте текст ошибки, попробуйте ещё раз только после устранения причины.", admin: "Если ошибка повторяется после повторной попытки." },
+  { label: "Отозван", what: "Счёт вручную закрыт для дальнейшей оплаты.", action: "Действие не требуется, если отзыв был намеренным.", admin: "Если отзыв не был запланирован." },
+  { label: "Отменён", what: "Платёжный счёт отменён и не должен использоваться.", action: "Действие не требуется — используйте новый счёт, если он нужен.", admin: "Если отменённый счёт всё ещё виден клиенту." },
+];
+
+function _wsHelpStatusesHtml() {
+  return `
+    <section class="ws-help-section" id="ws-help-statuses" data-help-search="статусы платежей">
+      <article class="card help-card">
+        <h3>Статусы платежей</h3>
+        <p>Что означает каждый статус счёта, которое видит клиент-менеджер.</p>
+      </article>
+      <div class="help-accordion">
+        ${WS_HELP_STATUSES.map((s, i) => `
+          <details class="ws-help-leaf" data-help-search="${escapeAttr(s.label.toLowerCase())}">
+            <summary>${escapeHtml(s.label)}</summary>
+            <p><b>Что произошло:</b> ${escapeHtml(s.what)}<br>
+               <b>Действие:</b> ${escapeHtml(s.action)}<br>
+               <b>Когда к администратору:</b> ${escapeHtml(s.admin)}</p>
+          </details>`).join("")}
+      </div>
+    </section>`;
+}
+
+// Grounded in WS_PILOT_MODE_LABEL — the exact same 4 mode labels used on the
+// "Клиенты пилота" tab.
+const WS_HELP_MODES = [
+  { tone: "yellow", label: "Проверка", desc: "Агент готовит действие, но клиент-менеджер подтверждает его вручную. Рекомендуется для начала работы и новых клиентов." },
+  { tone: "blue", label: "Наблюдение", desc: "Агент анализирует ситуацию, но не выполняет автоматические действия. Используется для безопасной проверки логики." },
+  { tone: "green", label: "Авто", desc: "Агент выполняет разрешённые действия автоматически. Использовать только после успешной проверки клиента и сценария." },
+  { tone: "white", label: "Отключён", desc: "Новые автоматические действия не выполняются. Существующие счета и история не удаляются." },
+];
+
+function _wsHelpModesHtml() {
+  return `
+    <section class="ws-help-section" id="ws-help-modes" data-help-search="режимы автоматизации пилот проверка наблюдение авто отключён">
+      <article class="card help-card">
+        <h3>Режимы автоматизации</h3>
+        <p>Режим меняется во вкладке «Клиенты пилота». Новый клиент по умолчанию не должен молча попадать в «Авто» — при сомнении выбирайте «Проверка» (fail-closed).</p>
+      </article>
+      <div class="help-status-grid">
+        ${WS_HELP_MODES.map(m => `<div class="help-status ${m.tone}"><b>${escapeHtml(m.label)}</b><span>${escapeHtml(m.desc)}</span></div>`).join("")}
+      </div>
+    </section>`;
+}
+
+function _wsHelpConnectionHtml() {
+  const steps = [
+    "Откройте вкладку «Подключение».",
+    "Найдите клиента в МойКласс.",
+    "Проверьте статус.",
+    "Создайте одноразовый код CL-XXXXXXXX.",
+    "Передайте код клиенту или родителю.",
+    "Клиент вводит код в Yellow Club Agent.",
+    "После успешной привязки клиент видит свои счета.",
+    "Код нельзя использовать повторно.",
+    "Код действует 72 часа.",
+    "Если код потерян — отзовите его и создайте новый.",
+    "Если клиент уже подключён — сначала выполните явную отвязку.",
+    "Отвязка не удаляет счета, оплаты, историю и данные МойКласс.",
+  ];
+  return `
+    <section class="ws-help-section" id="ws-help-connection" data-help-search="подключение клиента cl код telegram">
+      <article class="card help-card">
+        <h3>Подключение клиента</h3>
+        <div class="help-route">
+          ${steps.map((s, i) => `
+            <div class="help-route-step">
+              <span class="help-route-num">${i + 1}</span>
+              <div class="help-route-body"><b>${escapeHtml(s)}</b></div>
+            </div>`).join("")}
+        </div>
+        <p class="help-note">Коды YC-XXXX относятся только к питанию и не дают доступа к оплатам.</p>
+      </article>
+    </section>`;
+}
+
+const WS_HELP_FAQ = [
+  { q: "Клиент не видит счёт", a: "Проверьте: счёт опубликован; не отозван; видимость для родителя включена; клиент подключён через CL-код; выбран правильный клиент МойКласс." },
+  { q: "Нет привязки родителя", a: "Откройте «Подключение», найдите клиента и создайте код." },
+  { q: "Найдено несколько родителей", a: "Не выбирайте связь автоматически. Проверьте нужную связь вручную или обратитесь к администратору." },
+  { q: "Сумма не совпадает", a: "Сверьте сумму реального счёта в МойКласс и платёжного счёта. Не исправляйте сумму вслепую." },
+  { q: "bePaid не создал оплату", a: "Откройте «Подробнее», прочитайте понятную причину, проверьте сумму и данные клиента. Повторяйте действие только после устранения причины." },
+  { q: "Оплата прошла, но не внесена в МойКласс", a: "Проверьте статус webhook/оплаты и доступное действие внесения. Не создавайте второй платёжный счёт." },
+  { q: "Счёт отозван", a: "Убедитесь, что отзыв был намеренным. Если нужен новый счёт — проверьте МойКласс и создайте новый сценарий; не возвращайте старый счёт вручную без анализа." },
+  { q: "Код подключения не работает", a: "Проверьте: срок действия 72 часа; код не использован; код не отозван; используется CL-код, а не YC-код; нет ограничения после большого числа неверных попыток." },
+  { q: "Слишком много попыток", a: "Подождите указанное время. Не создавайте новый код только для обхода ограничения на количество попыток." },
+  { q: "Ошибка без понятного действия", a: "Передайте администратору: имя клиента, ID клиента в МойКласс, номер платёжного счёта, время ошибки, пользовательский текст ошибки. Не передавайте секреты, токены и Telegram initData." },
+];
+
+function _wsHelpFaqHtml() {
+  return `
+    <section class="ws-help-section" id="ws-help-faq" data-help-search="типовые проблемы faq вопросы">
+      <article class="card help-card">
+        <h3>Типовые проблемы</h3>
+      </article>
+      <div class="help-accordion">
+        ${WS_HELP_FAQ.map(f => `
+          <details class="ws-help-leaf" data-help-search="${escapeAttr(f.q.toLowerCase())}">
+            <summary>${escapeHtml(f.q)}</summary>
+            <p>${escapeHtml(f.a)}</p>
+          </details>`).join("")}
+      </div>
+    </section>`;
+}
+
+function _wsHelpEscalationHtml() {
+  const items = [
+    "Ошибка повторяется после устранения причины.",
+    "Сумма в bePaid и МойКласс различается.",
+    "Оплата подтверждена, но статус не обновляется.",
+    "Клиент подключён не к тому Telegram.",
+    "Невозможно безопасно определить родителя.",
+    "Система показывает техническую ошибку.",
+    "Требуется изменить глобальные настройки автоматизации.",
+    "Требуется восстановить данные или историю.",
+  ];
+  return `
+    <section class="ws-help-section" id="ws-help-escalation" data-help-search="администратор эскалация обратиться">
+      <article class="card help-card">
+        <h3>Когда обращаться к администратору</h3>
+        <ol>${items.map(i => `<li>${escapeHtml(i)}</li>`).join("")}</ol>
+        <p class="help-note">Передайте администратору: имя клиента, ID клиента в МойКласс, номер платёжного счёта, время ошибки, пользовательский текст ошибки — без секретов, токенов и Telegram initData.</p>
+      </article>
+    </section>`;
+}
+
+function _wsHelpScreenHtml() {
+  return `
+    <button class="secondary ws-help-back-btn" type="button" onclick="_wsCloseHelp()">← Назад к оплатам</button>
+    <div class="ws-queue-head">
+      <div class="ws-queue-head__copy">
+        <h2 class="ws-queue-head__title">Помощь по оплатам</h2>
+        <p class="ws-queue-head__subtitle">Как контролировать автоматизацию счетов и действий клиентов</p>
+      </div>
+    </div>
+    <div class="ws-search-row">
+      <label class="ws-search-bar">
+        ${WS_ICON_SEARCH}
+        <input id="wsHelpSearchInput" type="text" placeholder="Найти в инструкции" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Найти в инструкции" />
+      </label>
+      <button class="secondary ws-help-reset-btn" type="button" id="wsHelpResetBtn" onclick="_wsHelpResetSearch()">Сбросить</button>
+    </div>
+    ${_wsHelpTocHtml()}
+    <div id="wsHelpEmpty" class="ws-empty-state hidden">
+      <div class="ws-empty-state-icon ws-empty-state-icon--neutral">${WS_ICON_SEARCH}</div>
+      <div class="ws-empty-state-title">Ничего не найдено</div>
+      <div class="ws-empty-state-desc">Попробуйте другое слово или сбросьте поиск.</div>
+    </div>
+    <div id="wsHelpSections" class="ws-bottom-safe-pad">
+      ${_wsHelpQuickStartHtml()}
+      ${_wsHelpChainHtml()}
+      ${_wsHelpMetricsHtml()}
+      ${_wsHelpStatusesHtml()}
+      ${_wsHelpModesHtml()}
+      ${_wsHelpConnectionHtml()}
+      ${_wsHelpFaqHtml()}
+      ${_wsHelpEscalationHtml()}
+    </div>
+  `;
+}
+
+function _wsWireHelpSearch() {
+  // Only captures the value and filters already-rendered nodes via classList —
+  // never re-renders #wsHelpSections, so the input can never lose focus/keyboard
+  // while typing (same principle as the All Payments / Connection search fields).
+  const input = $("wsHelpSearchInput");
+  if (input) input.addEventListener("input", () => _wsHelpApplySearch(input.value));
+}
+
+function _wsHelpApplySearch(query) {
+  const q = (query || "").trim().toLowerCase();
+  const leaves = document.querySelectorAll("#wsHelpSections .ws-help-leaf[data-help-search]");
+  leaves.forEach(el => {
+    const match = !q || (el.dataset.helpSearch || "").toLowerCase().includes(q);
+    el.classList.toggle("ws-help-hidden", !match);
+    if (match && q && el.tagName === "DETAILS") el.open = true;
+  });
+
+  let anyVisible = false;
+  document.querySelectorAll("#wsHelpSections .ws-help-section").forEach(sec => {
+    if (!q) { sec.classList.remove("ws-help-hidden"); anyVisible = true; return; }
+    const selfMatch = (sec.dataset.helpSearch || "").toLowerCase().includes(q);
+    const hasLeaves = !!sec.querySelector(".ws-help-leaf[data-help-search]");
+    const hasVisibleLeaf = !!sec.querySelector(".ws-help-leaf[data-help-search]:not(.ws-help-hidden)");
+    const visible = hasLeaves ? (selfMatch || hasVisibleLeaf) : selfMatch;
+    sec.classList.toggle("ws-help-hidden", !visible);
+    if (visible) anyVisible = true;
+  });
+
+  $("wsHelpEmpty")?.classList.toggle("hidden", !q || anyVisible);
+}
+
+function _wsHelpResetSearch() {
+  const input = $("wsHelpSearchInput");
+  if (input) input.value = "";
+  _wsHelpApplySearch("");
+}
+
 // ── v7.1.6 — iOS keyboard / bottom-nav handling ──────────────────────────
 // Builds on the v7.1.5.3 focusin/focusout state machine (kept, since it's the
 // fastest possible response — synchronous on the very event that starts the
@@ -16071,4 +16936,20 @@ document.addEventListener("DOMContentLoaded", () => {
   ["wsFilterStatus", "wsFilterPeriod", "wsFilterMethod", "wsFilterVisibility"].forEach(id => {
     $(id)?.addEventListener("change", _wsUpdateFiltersPreviewCount);
   });
+
+  // v7.1.7 — Connection tab modals (revoke code / confirm new code / unlink)
+  $("wsConnRevokeConfirmBtn")?.addEventListener("click", _wsConnConfirmRevoke);
+  $("wsConnRevokeModalBack")?.addEventListener("click", _wsConnCloseRevoke);
+  $("wsConnRevokeModalClose")?.addEventListener("click", _wsConnCloseRevoke);
+  $("wsConnRevokeModal")?.addEventListener("click", e => { if (e.target === $("wsConnRevokeModal")) _wsConnCloseRevoke(); });
+
+  $("wsConnNewCodeConfirmBtn")?.addEventListener("click", _wsConnConfirmNewCode);
+  $("wsConnNewCodeConfirmModalBack")?.addEventListener("click", _wsConnCloseNewCodeConfirm);
+  $("wsConnNewCodeConfirmModalClose")?.addEventListener("click", _wsConnCloseNewCodeConfirm);
+  $("wsConnNewCodeConfirmModal")?.addEventListener("click", e => { if (e.target === $("wsConnNewCodeConfirmModal")) _wsConnCloseNewCodeConfirm(); });
+
+  $("wsConnUnlinkConfirmBtn")?.addEventListener("click", _wsConnConfirmUnlink);
+  $("wsConnUnlinkModalBack")?.addEventListener("click", _wsConnCloseUnlink);
+  $("wsConnUnlinkModalClose")?.addEventListener("click", _wsConnCloseUnlink);
+  $("wsConnUnlinkModal")?.addEventListener("click", e => { if (e.target === $("wsConnUnlinkModal")) _wsConnCloseUnlink(); });
 });

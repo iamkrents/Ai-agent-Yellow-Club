@@ -205,10 +205,17 @@ class Test04LinkChild(unittest.TestCase):
         self.assertFalse(result.get("ok"))
 
     def test_16_duplicate_link_returns_already_linked(self):
-        # First link succeeds; second code for same student returns already_linked (ok=True)
+        # First link succeeds. v7.1.7: creating a second code for the same
+        # student while an active link exists is now blocked outright (MVP
+        # one-active-parent-per-student rule, section 5) — it no longer matters
+        # that it's the same parent; the caller must unlink first. This
+        # replaces the old "regen code, re-link idempotently" assertion.
         self.storage.link_client_child("tg_parent_16", self.code, NOW)
-        code2 = self.storage.create_client_link_code("3001", "Петров Пётр", "admin")["code"]
-        result = self.storage.link_client_child("tg_parent_16", code2, NOW)
+        blocked = self.storage.create_client_link_code("3001", "Петров Пётр", "admin")
+        self.assertFalse(blocked.get("ok"))
+        self.assertEqual(blocked.get("reason_code"), "client_already_linked")
+        # The original code, already used, still can't be reused either.
+        result = self.storage.link_client_child("tg_parent_16", self.code, NOW)
         self.assertTrue(result.get("ok"), f"Expected ok=True for already_linked, got: {result}")
         self.assertTrue(result.get("already_linked"), f"Expected already_linked=True, got: {result}")
 

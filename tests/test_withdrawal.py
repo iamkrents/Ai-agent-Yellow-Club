@@ -1872,11 +1872,11 @@ class TestRemoteCancelV714(unittest.TestCase):
     # ── Version and cache-bust ────────────────────────────────────────────────
 
     def test_127_cache_bust_v714(self):
-        """index.html has v=7.1.6.2 and app.js has MiniApp version: v7.1.6.2."""
+        """index.html has v=7.1.7 and app.js has MiniApp version: v7.1.7."""
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v=7.1.6.2", html, "index.html cache-bust must be v=7.1.6.2")
-        self.assertIn("v7.1.6.2", js, "app.js version marker must contain v7.1.6.2")
+        self.assertIn("v=7.1.7", html, "index.html cache-bust must be v=7.1.7")
+        self.assertIn("v7.1.7", js, "app.js version marker must contain v7.1.7")
 
 
 # ---------------------------------------------------------------------------
@@ -2284,11 +2284,11 @@ class TestRemoteCancelRetryV7141(unittest.TestCase):
         )
 
     def test_157_cache_bust_v7142(self):
-        """index.html has v=7.1.6.2 and app.js has MiniApp version: v7.1.6.2."""
+        """index.html has v=7.1.7 and app.js has MiniApp version: v7.1.7."""
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v=7.1.6.2", html, "index.html cache-bust must be v=7.1.6.2")
-        self.assertIn("v7.1.6.2", js, "app.js version marker must contain v7.1.6.2")
+        self.assertIn("v=7.1.7", html, "index.html cache-bust must be v=7.1.7")
+        self.assertIn("v7.1.7", js, "app.js version marker must contain v7.1.7")
 
 
 # ---------------------------------------------------------------------------
@@ -2662,11 +2662,11 @@ class TestEripClientWiringV7142(unittest.TestCase):
     # ── Group 8: Version ──────────────────────────────────────────────────────
 
     def test_182_cache_bust_v7142(self):
-        """index.html has v=7.1.6.2 and app.js has MiniApp version: v7.1.6.2."""
+        """index.html has v=7.1.7 and app.js has MiniApp version: v7.1.7."""
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v=7.1.6.2", html, "index.html cache-bust must be v=7.1.6.2")
-        self.assertIn("v7.1.6.2", js, "app.js version marker must contain v7.1.6.2")
+        self.assertIn("v=7.1.7", html, "index.html cache-bust must be v=7.1.7")
+        self.assertIn("v7.1.7", js, "app.js version marker must contain v7.1.7")
 
 
 if __name__ == "__main__":
