@@ -31,7 +31,7 @@ Tests:
  T24  Attention tab renderer untouched
  T25  Pilot Clients renderer untouched
  T26  WORKSPACE_VIEW_ROLES / PILOT_ADMIN_ROLES / PAYMENT_APPROVAL_ROLES unchanged
- T27  Version / cache-bust is v7.1.6.1
+ T27  Version / cache-bust is v7.1.6.2
  T28  Search placeholder shortened; search logic fields unchanged
  T29  bePaid technical ids (order_id/tracking_id/UID) gated behind canAdminPilot + collapsible
  T30  ERIP account number stays visible to everyone under "Номер ЕРИП"
@@ -149,7 +149,10 @@ class TestSearchAndCount(unittest.TestCase):
             self.assertIn(field, filtered)
 
     def test_04_results_count_text(self):
-        fn = _js_fn("_wsRenderAllPayments")
+        # v7.1.6.2: the count now lives in _wsRenderAllPaymentsResults(), the
+        # results-only updater used on every keystroke/filter change so the
+        # search <input> itself is never rebuilt (see TestSearchFocus below).
+        fn = _js_fn("_wsRenderAllPaymentsResults")
         self.assertIn("Найдено: ${filtered.length}", fn)
 
 
@@ -308,7 +311,9 @@ class TestStates(unittest.TestCase):
         self.assertIn("WS_ICON_INBOX", fn)
 
     def test_17_empty_state_no_results_with_reset(self):
-        fn = _js_fn("_wsRenderAllPayments")
+        # v7.1.6.2: moved into _wsRenderAllPaymentsResults() (results-only
+        # updater) — see TestSearchFocus for why.
+        fn = _js_fn("_wsRenderAllPaymentsResults")
         self.assertIn("Ничего не найдено", fn)
         self.assertIn("Измените поиск или сбросьте фильтры", fn)
         self.assertIn("_wsResetAllPaymentsSearchAndFilters()", fn)
@@ -334,7 +339,10 @@ class TestStates(unittest.TestCase):
 class TestSafeArea(unittest.TestCase):
 
     def test_20_bottom_safe_padding_preserved(self):
-        fn = _js_fn("_wsRenderAllPayments")
+        # v7.1.6.2: the card list (and its safe-pad class) is written by
+        # _wsRenderAllPaymentsResults() now, not the toolbar-rendering
+        # _wsRenderAllPayments().
+        fn = _js_fn("_wsRenderAllPaymentsResults")
         self.assertIn("ws-bottom-safe-pad", fn)
 
 
@@ -381,8 +389,8 @@ class TestVersionUnchanged(unittest.TestCase):
     def test_27_version_is_v7161(self):
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.6.1", html)
-        self.assertIn('console.log("MiniApp version: v7.1.6.1")', js)
+        self.assertIn("v=7.1.6.2", html)
+        self.assertIn('console.log("MiniApp version: v7.1.6.2")', js)
 
 
 # ---------------------------------------------------------------------------

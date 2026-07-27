@@ -24,7 +24,7 @@ Tests:
  T15  Overview's own renderer/layout code is untouched by this phase
  T16  All Payments / Pilot Clients renderers untouched
  T17  WORKSPACE_VIEW_ROLES / PILOT_ADMIN_ROLES / PAYMENT_APPROVAL_ROLES unchanged
- T19  Version / cache-bust is v7.1.6.1
+ T19  Version / cache-bust is v7.1.6.2
  (T18/T20/T21 — local dev-preview wiring — removed once dev preview was deleted)
 
 Run:
@@ -280,7 +280,10 @@ class TestScopeBoundaries(unittest.TestCase):
         # exception to this test's "other tabs unaffected" boundary — Pilot
         # Clients (this test's actual concern for the Attention phase) is
         # still unchanged below.
-        all_payments = _js_fn("_wsRenderAllPayments")
+        # v7.1.6.2: card rendering now happens in _wsRenderAllPaymentsResults()
+        # (the results-only updater used on every keystroke), called from
+        # _wsRenderAllPayments() rather than inlined into it.
+        all_payments = _js_fn("_wsRenderAllPaymentsResults")
         self.assertIn("_wsRenderPaymentCard", all_payments)
         pilot = _js_fn("_wsRenderPilotClients")
         self.assertIn("Пока ни один клиент не добавлен в пилот", pilot)
@@ -305,8 +308,8 @@ class TestVersionUnchanged(unittest.TestCase):
     def test_19_version_is_v7161(self):
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.6.1", html)
-        self.assertIn('console.log("MiniApp version: v7.1.6.1")', js)
+        self.assertIn("v=7.1.6.2", html)
+        self.assertIn('console.log("MiniApp version: v7.1.6.2")', js)
 
 
 if __name__ == "__main__":

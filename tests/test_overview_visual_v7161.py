@@ -23,7 +23,7 @@ Tests:
  T16  Attention tab renderer untouched (SVG empty-state, unchanged since step 2)
  T17  Pilot Clients renderer untouched (empty-state message unchanged)
  T18  All Payments renderer untouched (own dedicated card renderer since step 3)
- T19  Version / cache-bust is v7.1.6.1
+ T19  Version / cache-bust is v7.1.6.2
  T20  Food module still not referenced by workspace code
  T21  Test-role panel mechanics unchanged
 
@@ -281,7 +281,8 @@ class TestOtherTabsUntouched(unittest.TestCase):
         # shared renderPaymentIntentList() (that function still backs the
         # unrelated legacy admin #piList screen, untouched). This file's own
         # concern (Overview structure) is covered by the other tests here.
-        fn = _js_fn("_wsRenderAllPayments")
+        # v7.1.6.2: card rendering moved into _wsRenderAllPaymentsResults().
+        fn = _js_fn("_wsRenderAllPaymentsResults")
         self.assertIn("_wsRenderPaymentCard", fn)
 
 
@@ -294,8 +295,8 @@ class TestVersionUnchanged(unittest.TestCase):
     def test_19_version_is_v7161(self):
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.6.1", html)
-        self.assertIn('console.log("MiniApp version: v7.1.6.1")', js)
+        self.assertIn("v=7.1.6.2", html)
+        self.assertIn('console.log("MiniApp version: v7.1.6.2")', js)
 
 
 # ---------------------------------------------------------------------------

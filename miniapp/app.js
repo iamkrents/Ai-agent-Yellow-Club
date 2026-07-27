@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.6.1");
+console.log("MiniApp version: v7.1.6.2");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -15314,10 +15314,16 @@ function _wsRenderPaymentCard(pi) {
   </div>`;
 }
 
+// v7.1.6.2 — debounced ~150ms so fast typing doesn't re-filter/re-render on
+// every single keystroke. This is a performance nicety layered on top of the
+// real fix in _wsRenderAllPaymentsResults() below (which never touches the
+// <input> node) — NOT a substitute for it. The input's value/focus/selection
+// are native browser state; nothing here ever writes to them.
+let _wsAllPaymentsSearchDebounce = null;
 function _wsAllPaymentsSearch(value) {
   _wsAllPaymentsUI.search = value || "";
-  const root = $("wsTabContent");
-  if (root) _wsRenderAllPayments(root);
+  if (_wsAllPaymentsSearchDebounce) clearTimeout(_wsAllPaymentsSearchDebounce);
+  _wsAllPaymentsSearchDebounce = setTimeout(_wsRenderAllPaymentsResults, 150);
 }
 
 function _wsSearchSkeleton() {
@@ -15336,6 +15342,17 @@ function _wsAllPaymentsSkeletonCard() {
   </div>`;
 }
 
+function _wsAllPaymentsFilterBtnHtml(filterCount) {
+  return `${WS_ICON_FILTER}Фильтры${filterCount ? `<span class="ws-filter-btn__badge">${filterCount}</span>` : ""}`;
+}
+
+// v7.1.6.2 — the search input + filter button (the "toolbar") are written to
+// the DOM exactly once here. Every subsequent update — typing in the search
+// field, applying/resetting filters — goes through _wsRenderAllPaymentsResults()
+// below, which only touches #wsAllPaymentsResults. Previously _wsAllPaymentsSearch()
+// called this whole function on every keystroke, which replaced the <input>
+// node itself via root.innerHTML — destroying its focus/selection and, on
+// iOS Safari/WebView, closing the on-screen keyboard after a single character.
 function _wsRenderAllPayments(root) {
   if (_wsState.allPayments === null) {
     root.innerHTML = _wsSearchSkeleton()
@@ -15351,38 +15368,48 @@ function _wsRenderAllPayments(root) {
     return;
   }
 
-  const filterCount = _wsAllPaymentsActiveFilterCount();
-  const filtered = _wsFilteredAllPayments();
   const searchVal = escapeAttr(_wsAllPaymentsUI.search);
-
-  const controls = `
+  root.innerHTML = `
     <div class="ws-search-row">
       <label class="ws-search-bar">
         ${WS_ICON_SEARCH}
-        <input type="text" placeholder="Имя, ID или номер счёта…" value="${searchVal}"
+        <input id="wsAllPaymentsSearchInput" type="text" placeholder="Имя, ID или номер счёта…" value="${searchVal}"
                oninput="_wsAllPaymentsSearch(this.value)" aria-label="Поиск по платёжным счетам" />
       </label>
-      <button class="secondary ws-filter-btn" onclick="openWsFiltersModal()" aria-label="Открыть фильтры">
-        ${WS_ICON_FILTER}Фильтры${filterCount ? `<span class="ws-filter-btn__badge">${filterCount}</span>` : ""}
-      </button>
+      <button class="secondary ws-filter-btn" id="wsAllPaymentsFilterBtn" onclick="openWsFiltersModal()" aria-label="Открыть фильтры">${_wsAllPaymentsFilterBtnHtml(_wsAllPaymentsActiveFilterCount())}</button>
     </div>
-    <div class="ws-results-count">Найдено: ${filtered.length}</div>
+    <div id="wsAllPaymentsResults"></div>
   `;
+  _wsRenderAllPaymentsResults();
+}
 
-  root.innerHTML = controls;
+// Rebuilds only the results count + card list (or the "not found" empty
+// state) and refreshes the filter button's badge count — never re-creates
+// the search <input>, so its focus/selection/open keyboard survive every
+// keystroke and every filter change.
+function _wsRenderAllPaymentsResults() {
+  const resultsRoot = $("wsAllPaymentsResults");
+  if (!resultsRoot) return;
+
+  const filterCount = _wsAllPaymentsActiveFilterCount();
+  const filterBtn = $("wsAllPaymentsFilterBtn");
+  if (filterBtn) filterBtn.innerHTML = _wsAllPaymentsFilterBtnHtml(filterCount);
+
+  const filtered = _wsFilteredAllPayments();
+  const searchVal = _wsAllPaymentsUI.search;
+
   if (!filtered.length) {
-    root.innerHTML += `<div class="ws-empty-state">
-      <div class="ws-empty-state-icon ws-empty-state-icon--neutral">${WS_ICON_SEARCH}</div>
-      <div class="ws-empty-state-title">Ничего не найдено</div>
-      <div class="ws-empty-state-desc">Измените поиск или сбросьте фильтры.</div>
-      ${filterCount || searchVal ? `<button class="secondary" style="font-size:12px;padding:6px 14px" onclick="_wsResetAllPaymentsSearchAndFilters()">Сбросить фильтры</button>` : ""}
-    </div>`;
+    resultsRoot.innerHTML = `<div class="ws-results-count">Найдено: 0</div>
+      <div class="ws-empty-state">
+        <div class="ws-empty-state-icon ws-empty-state-icon--neutral">${WS_ICON_SEARCH}</div>
+        <div class="ws-empty-state-title">Ничего не найдено</div>
+        <div class="ws-empty-state-desc">Измените поиск или сбросьте фильтры.</div>
+        ${filterCount || searchVal ? `<button class="secondary" style="font-size:12px;padding:6px 14px" onclick="_wsResetAllPaymentsSearchAndFilters()">Сбросить фильтры</button>` : ""}
+      </div>`;
     return;
   }
-  const el = document.createElement("div");
-  el.className = "ws-pi-list ws-bottom-safe-pad";
-  root.appendChild(el);
-  el.innerHTML = filtered.map(_wsRenderPaymentCard).join("");
+  resultsRoot.innerHTML = `<div class="ws-results-count">Найдено: ${filtered.length}</div>
+    <div class="ws-pi-list ws-bottom-safe-pad">${filtered.map(_wsRenderPaymentCard).join("")}</div>`;
 }
 
 // Used only by the "Ничего не найдено" empty state's reset action — clears
@@ -15390,6 +15417,11 @@ function _wsRenderAllPayments(root) {
 // resetWsFilters() (bottom-sheet-only) which leaves an active search term.
 function _wsResetAllPaymentsSearchAndFilters() {
   _wsAllPaymentsUI.search = "";
+  // Clear the live DOM value directly (no full re-render — see
+  // _wsRenderAllPaymentsResults) so the existing <input> node, and any
+  // focus it might have, is preserved exactly like the filter <select>s below.
+  const searchInput = $("wsAllPaymentsSearchInput");
+  if (searchInput) searchInput.value = "";
   resetWsFilters();
 }
 
@@ -15469,8 +15501,10 @@ function applyWsFilters() {
   _wsAllPaymentsUI.method = $("wsFilterMethod")?.value || "all";
   _wsAllPaymentsUI.visibility = $("wsFilterVisibility")?.value || "all";
   closeWsFiltersModal();
-  const root = $("wsTabContent");
-  if (root) _wsRenderAllPayments(root);
+  // Results-only update (see _wsRenderAllPaymentsResults) — the search
+  // input's toolbar is untouched, so an in-progress search term/focus
+  // survives applying filters.
+  _wsRenderAllPaymentsResults();
 }
 
 function resetWsFilters() {
@@ -15480,8 +15514,7 @@ function resetWsFilters() {
   _wsAllPaymentsUI.visibility = "all";
   ["wsFilterStatus", "wsFilterPeriod", "wsFilterMethod", "wsFilterVisibility"].forEach(id => { const el = $(id); if (el) el.value = "all"; });
   _wsUpdateFiltersPreviewCount();
-  const root = $("wsTabContent");
-  if (root) _wsRenderAllPayments(root);
+  _wsRenderAllPaymentsResults();
 }
 
 const WS_PILOT_MODE_HINTS = {

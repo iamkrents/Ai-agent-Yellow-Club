@@ -354,8 +354,9 @@ class TestScopeBoundaries(unittest.TestCase):
 
     def test_27_all_payments_untouched(self):
         fn = _js_fn("_wsRenderAllPayments")
-        self.assertIn("_wsRenderPaymentCard", fn)
         self.assertIn("WS_ICON_SEARCH", fn)
+        # v7.1.6.2: card rendering moved into _wsRenderAllPaymentsResults().
+        self.assertIn("_wsRenderPaymentCard", _js_fn("_wsRenderAllPaymentsResults"))
 
     def test_28_role_capability_tables_unchanged(self):
         roles = _roles("WORKSPACE_VIEW_ROLES")

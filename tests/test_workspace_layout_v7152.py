@@ -274,6 +274,10 @@ class TestAllPaymentsImpl(unittest.TestCase):
         (which also backs the unrelated legacy admin #piList screen) to a
         dedicated _wsRenderPaymentCard() compact-card renderer. Endpoint and
         data are unchanged — only the render delegate.
+
+        v7.1.6.2: _wsRenderAllPayments() now only renders the toolbar once and
+        delegates to _wsRenderAllPaymentsResults() for the actual card list —
+        the search <input> must never be rebuilt on keystrokes (iOS focus fix).
         """
         js = _js()
         fn_start = js.find("function _wsRenderAllPayments(")
@@ -281,13 +285,22 @@ class TestAllPaymentsImpl(unittest.TestCase):
         fn_end = js.find("\nfunction ", fn_start + 1)
         fn_body = js[fn_start : fn_end if fn_end != -1 else fn_start + 600]
         self.assertIn(
-            "_wsRenderPaymentCard", fn_body,
-            "_wsRenderAllPayments must call _wsRenderPaymentCard",
+            "_wsRenderAllPaymentsResults", fn_body,
+            "_wsRenderAllPayments must delegate to _wsRenderAllPaymentsResults",
         )
         self.assertNotIn(
             "используйте раздел",
             fn_body,
             "_wsRenderAllPayments must not redirect to Reports tab anymore",
+        )
+
+        results_start = js.find("function _wsRenderAllPaymentsResults(")
+        self.assertNotEqual(results_start, -1)
+        results_end = js.find("\nfunction ", results_start + 1)
+        results_body = js[results_start : results_end if results_end != -1 else results_start + 600]
+        self.assertIn(
+            "_wsRenderPaymentCard", results_body,
+            "_wsRenderAllPaymentsResults must call _wsRenderPaymentCard",
         )
 
     def test_19_ws_state_has_all_payments_field(self):
@@ -320,14 +333,14 @@ class TestAllPaymentsImpl(unittest.TestCase):
 class TestVersionV7152(unittest.TestCase):
 
     def test_21_cache_bust_and_version_are_v7153(self):
-        """index.html cache-bust and app.js version marker must be v7.1.6.1."""
+        """index.html cache-bust and app.js version marker must be v7.1.6.2."""
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.6.1", html, "index.html cache-bust must be v=7.1.6.1")
+        self.assertIn("v=7.1.6.2", html, "index.html cache-bust must be v=7.1.6.2")
         self.assertIn(
-            'console.log("MiniApp version: v7.1.6.1")',
+            'console.log("MiniApp version: v7.1.6.2")',
             js,
-            "app.js must contain version marker v7.1.6.1",
+            "app.js must contain version marker v7.1.6.2",
         )
 
 
