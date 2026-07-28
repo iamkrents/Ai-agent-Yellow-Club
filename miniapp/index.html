@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.1.7" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.1.8" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -1151,8 +1151,27 @@
       </div>
     </div>
 
+    <!-- Attention tab: training-state resume confirmation (v7.1.8) -->
+    <div id="wsTrainingResumeModal" class="pi-modal hidden">
+      <div class="pi-modal-sheet pi-modal-sheet-sm">
+        <div class="pi-modal-head">
+          <h3>Возобновить автоматизацию?</h3>
+          <button class="pi-modal-close" id="wsTrainingResumeModalClose" type="button">✕</button>
+        </div>
+        <div class="pi-modal-body">
+          <p style="margin:0 0 10px">Статус обучения в МойКласс будет проверен ещё раз. После подтверждения счёт продолжит обработку согласно режиму клиента: «Наблюдение», «Проверка», «Авто» или «Отключён». Оплата не будет отправлена прямо сейчас из этого окна.</p>
+          <p style="margin:0 0 10px">В режиме «Авто» следующий цикл может создать и отправить оплату автоматически.</p>
+          <div id="wsTrainingResumeError" class="pi-form-error hidden"></div>
+        </div>
+        <div class="pi-modal-footer">
+          <button class="secondary" id="wsTrainingResumeModalBack" type="button">Отмена</button>
+          <button class="primary" id="wsTrainingResumeConfirmBtn" type="button">Подтвердить возобновление</button>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.1.7"></script>
+  <script src="/static/app.js?v=7.1.8"></script>
 </body>
 </html>

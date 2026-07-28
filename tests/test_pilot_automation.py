@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.1.7"
+CURRENT_VERSION = "7.1.8"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -58,6 +58,19 @@ def _make_settings() -> MagicMock:
     return s
 
 
+def _active_training_state(*_args, **_kwargs) -> dict:
+    """Default training-state stub for pre-existing (pre-v7.1.8) pilot tests:
+    student assumed active/training-state-gate a no-op, unless a test
+    explicitly overrides ctx._get_training_state for a pause/finish scenario.
+    """
+    return {
+        "state": "active", "reason_code": None, "mk_user_id": "",
+        "mk_user_subscription_id": "", "subscription_status_id": None,
+        "matched_class_ids": [], "matched_join_ids": [], "matched_join_status_ids": [],
+        "checked_at": _now(),
+    }
+
+
 def _make_context(storage: Storage, settings: MagicMock) -> Any:
     from web_app_server import MiniAppContext
     ctx = MiniAppContext.__new__(MiniAppContext)
@@ -70,6 +83,11 @@ def _make_context(storage: Storage, settings: MagicMock) -> Any:
     ctx._mk_comment_cache = {}
     ctx._mk_student_name_cache = {}
     ctx._client_tasks_sync_cache = {"ts": 0.0, "result": {}}
+    # v7.1.8 — training-state gate stub: these are pre-existing pilot/automation
+    # tests written before the pause/vacation/finished gate existed; default to
+    # "active" so their assertions about intent/bePaid/publish creation remain
+    # valid. See tests/test_payment_training_gate.py for gate-specific tests.
+    ctx._get_training_state = MagicMock(side_effect=_active_training_state)
     return ctx
 
 
@@ -563,14 +581,14 @@ class TestPilotManagementEndpoints(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestVersionV715(unittest.TestCase):
-    """Test 34: version marker is v7.1.7."""
+    """Test 34: version marker is v7.1.8."""
 
     def test_34_version_v715(self):
-        """app.js has MiniApp version: v7.1.7; index.html has v=7.1.7."""
+        """app.js has MiniApp version: v7.1.8; index.html has v=7.1.8."""
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("v7.1.7", js, "app.js version marker must contain v7.1.7")
-        self.assertIn("v=7.1.7", html, "index.html cache-bust must be v=7.1.7")
+        self.assertIn("v7.1.8", js, "app.js version marker must contain v7.1.8")
+        self.assertIn("v=7.1.8", html, "index.html cache-bust must be v=7.1.8")
 
 
 if __name__ == "__main__":

@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.7");
+console.log("MiniApp version: v7.1.8");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12267,6 +12267,22 @@ const PI_PURPOSE_LABELS = {
 
 const PI_METHOD_LABELS = { erip: "ЕРИП", acquiring: "Эквайринг", manual: "Ручной" };
 
+// v7.1.8 — single source of truth for the "actual payment method" shown in
+// card headers. pi.payment_method is only the REQUESTED/creation-time
+// channel (e.g. hardcoded "erip" for every automation-created intent,
+// regardless of what the client actually paid with) — it is never proof of
+// how a client actually paid. Only pi.paid_channel (set by the real bePaid
+// webhook shop_type at the moment of a confirmed transaction) is a fact.
+// Never infer "paid" from the presence of an ERIP number or a checkout —
+// those only mean an option was PREPARED, not that money moved.
+function _getActualPaymentMethodLabel(pi) {
+  const isPaid = pi.status === "paid" || pi.status === "posted_to_moyklass";
+  if (!isPaid) return "ещё не выбран";
+  if (pi.paid_channel === "acquiring") return "банковская карта";
+  if (pi.paid_channel === "erip") return "ЕРИП";
+  return "не определён";
+}
+
 const PI_STATUS_LABELS = {
   draft:                  { label: "Черновик",              cls: "chip-pi-draft" },
   ready:                  { label: "Готов",                  cls: "chip-pi-ready" },
@@ -12569,7 +12585,7 @@ function renderPaymentIntentList(el, intents, filters = {}) {
 function renderPaymentIntentCard(pi) {
   const st = PI_STATUS_LABELS[pi.status] || { label: pi.status || "unknown", cls: "chip-pi-draft" };
   const purposeLabel = PI_PURPOSE_LABELS[pi.purpose] || pi.purpose || "—";
-  const methodLabel = PI_METHOD_LABELS[pi.payment_method] || pi.payment_method || "—";
+  const methodLabel = _getActualPaymentMethodLabel(pi);
   const purposeCls = PI_PURPOSE_CLS[pi.purpose] || "";
   const amountVal = paymentIntentAmountByn(pi);   // uses amount_byn first, then amount_minor/100
   const amount = fmtByn(amountVal);
@@ -12612,7 +12628,7 @@ function renderPaymentIntentCard(pi) {
     : "";
 
   const acqReadyBadge = acqOption?.has_checkout
-    ? `<div class="pi-acq-info"><span>Эквайринг: <strong>Checkout создан</strong></span></div>`
+    ? `<div class="pi-acq-info"><span>Платёжная страница: <strong>Checkout создан</strong></span></div>`
     : "";
 
   const canVerifyAcquiring = !["paid", "posted_to_moyklass", "cancelled"].includes(pi.status)
@@ -12653,9 +12669,9 @@ function renderPaymentIntentCard(pi) {
     ? `<div class="pi-duplicate-badge">Дубликат — оплата заблокирована</div>`
     : "";
 
-  const _paidChannelLabel = pi.paid_channel === "acquiring" ? "Оплачено банковской картой (эквайринг)"
-    : pi.paid_channel === "erip" ? "Оплачено через ЕРИП"
-    : "Оплачено в bePaid";
+  const _paidChannelLabel = pi.paid_channel === "acquiring" ? "Фактическая оплата: банковская карта"
+    : pi.paid_channel === "erip" ? "Фактическая оплата: ЕРИП"
+    : "Фактический способ оплаты не сохранён";
   const bePaidPaidBlock = (pi.status === "paid" || pi.status === "posted_to_moyklass")
     ? `<div class="pi-bepaid-paid">
         <strong>${escapeHtml(_paidChannelLabel)}</strong>
@@ -14997,6 +15013,114 @@ const WS_ATTENTION_FALLBACK_REASON = {
   ambiguous_parent_link: "Найдено несколько связанных родительских аккаунтов — нужно выбрать нужный вручную.",
 };
 
+// v7.1.8 — training-state (pause/vacation/finished) badges & actions. Only
+// covers reason_code values produced by training_state_domain.py on the
+// backend — never invents new business meaning on the frontend, never shows
+// raw reason codes. Reused by the Attention card below.
+const WS_TRAINING_REASON_CODES = new Set([
+  "client_training_paused", "training_subscription_frozen", "client_training_finished",
+  "training_join_completed", "training_subscription_not_found", "training_subscription_class_unknown",
+  "training_join_not_found", "training_join_status_requires_review", "training_join_status_unknown",
+  "training_join_status_ambiguous", "training_state_unavailable", "client_resume_confirmation_required",
+]);
+const WS_TRAINING_BADGE = {
+  client_training_paused:               { label: "Обучение приостановлено", tone: "pending" },
+  training_subscription_frozen:         { label: "Абонемент заморожен",     tone: "pending" },
+  client_training_finished:             { label: "Обучение завершено",      tone: "danger" },
+  training_join_completed:              { label: "Обучение завершено",      tone: "danger" },
+  client_resume_confirmation_required:  { label: "Можно возобновить",       tone: "connected" },
+};
+function _wsTrainingBadgeInfo(reasonCode) {
+  if (!reasonCode) return null;
+  return WS_TRAINING_BADGE[reasonCode]
+    || (WS_TRAINING_REASON_CODES.has(reasonCode) ? { label: "Требуется проверка статуса", tone: "pending" } : null);
+}
+function _wsTrainingBadgeHtml(reasonCode) {
+  const info = _wsTrainingBadgeInfo(reasonCode);
+  if (!info) return "";
+  return `<span class="ws-badge ws-badge--${info.tone}">${escapeHtml(info.label)}</span>`;
+}
+
+// "Проверить статус в МойКласс" — forced-fresh backend re-check. Only
+// refreshes the Attention list (_loadWorkspaceAttention), never the whole
+// Workspace shell — active tab/scroll/other tabs' data are untouched.
+async function _wsTrainingCheck(itemId, btn) {
+  if (btn) { btn.disabled = true; btn.dataset.origText = btn.dataset.origText || btn.textContent; btn.textContent = "Проверяю…"; }
+  try {
+    const d = await _apiPostRaw(`/api/payments/automation/items/${encodeURIComponent(itemId)}/training-check`, {});
+    if (d.ok) {
+      setNotice(d.message || "Статус обновлён.", d.resume_confirmation_required ? "success" : "");
+      await _loadWorkspaceAttention();
+    } else {
+      setNotice(d.error || "Не удалось проверить статус.", "error");
+    }
+  } catch (e) {
+    setNotice(safeUserError(e), "error");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = btn.dataset.origText || "Проверить статус в МойКласс"; }
+  }
+}
+
+let _wsTrainingResumeItemId = null;
+function _wsTrainingOpenResume(itemId) {
+  _wsTrainingResumeItemId = itemId;
+  $("wsTrainingResumeError")?.classList.add("hidden");
+  piModalOpen($("wsTrainingResumeModal"));
+}
+function _wsTrainingCloseResume() { piModalClose($("wsTrainingResumeModal")); }
+async function _wsTrainingConfirmResume() {
+  const itemId = _wsTrainingResumeItemId;
+  if (!itemId) return;
+  const errEl = $("wsTrainingResumeError");
+  errEl?.classList.add("hidden");
+  const btn = $("wsTrainingResumeConfirmBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "Подтверждаю…"; }
+  try {
+    const d = await _apiPostRaw(`/api/payments/automation/items/${encodeURIComponent(itemId)}/training-resume`, {});
+    if (d.ok) {
+      _wsTrainingCloseResume();
+      setNotice(d.message || "Возобновление подтверждено.", "success");
+      await _loadWorkspaceAttention();
+    } else if (errEl) {
+      errEl.textContent = d.error || "Статус изменился — возобновление отклонено.";
+      errEl.classList.remove("hidden");
+    }
+  } catch (e) {
+    if (errEl) { errEl.textContent = safeUserError(e); errEl.classList.remove("hidden"); }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Подтвердить возобновление"; }
+  }
+}
+
+// Published-unpaid-invoice-during-pause warning: "оставить" just dismisses;
+// "отозвать" reuses the EXISTING withdrawal flow/modal/permissions — no new
+// withdrawal endpoint. Hidden (not disabled) for roles without withdraw rights,
+// per the existing WITHDRAW_INVOICE_ROLES gate (owner/admin/operations).
+function _wsTrainingPublishedWarningHtml(item) {
+  if (item.current_stage !== "published") return "";
+  if (!_wsTrainingBadgeInfo(item.reason_code)) return "";
+  const pid = item.intent_public_id || "";
+  if (!pid) return "";
+  const name = escapeAttr(item.pi_student_name || item.student_name || "");
+  const amount = item.amount_byn != null ? item.amount_byn : 0;
+  const mkInvoiceId = escapeAttr(item.mk_invoice_id || "");
+  const withdrawBtn = canWithdrawInvoice()
+    ? `<button class="secondary ws-attention-approve" type="button" onclick="openWithdrawModal('${escapeAttr(pid)}','${name}',${amount},'${mkInvoiceId}')">Отозвать счёт</button>`
+    : "";
+  const withdrawNote = canWithdrawInvoice()
+    ? ""
+    : `<p class="ws-training-warning__note">Для отзыва обратитесь к администратору или операционному менеджеру.</p>`;
+  return `
+    <div class="ws-training-warning">
+      <p>У ученика на паузе уже есть опубликованный неоплаченный счёт.</p>
+      ${withdrawNote}
+      <div class="ws-attention-actions">
+        <button class="secondary" type="button" onclick="this.closest('.ws-training-warning').remove()">Оставить счёт</button>
+        ${withdrawBtn}
+      </div>
+    </div>`;
+}
+
 function _wsRenderAttentionItem(item) {
   const stage = item.current_stage || "";
   const pid = escapeHtml(item.intent_public_id || "");
@@ -15010,6 +15134,30 @@ function _wsRenderAttentionItem(item) {
   const amount = fmtByn(item.amount_byn);
   const reasonHtml = _wsAttentionReasonHtml(item, stage);
   const dateHtml = item.updated_at ? `<span class="ws-attn-date">${wsFormatDate(item.updated_at)}</span>` : "";
+
+  // v7.1.8 — training-state badge/actions (additive; existing stage badge and
+  // approve button above are untouched for every non-training item).
+  const trainingBadge = _wsTrainingBadgeHtml(item.reason_code);
+  const canManageTraining = roleCaps().canApprovePilotIntents; // same 4 roles as payment approval
+  let trainingActionsHtml = "";
+  if (canManageTraining && WS_TRAINING_REASON_CODES.has(item.reason_code)) {
+    if (item.reason_code === "client_resume_confirmation_required") {
+      // item.readable_reason (rendered above via reasonHtml) already carries
+      // the backend's safe explanatory text for this reason_code.
+      trainingActionsHtml = `
+        <div class="ws-attention-actions">
+          <button class="ws-attention-approve" type="button" onclick="_wsTrainingOpenResume('${item.id}')">Подтвердить возобновление</button>
+          <button class="secondary" type="button" data-ws-training-check onclick="_wsTrainingCheck('${item.id}', this)">Проверить ещё раз</button>
+        </div>`;
+    } else {
+      trainingActionsHtml = `
+        <div class="ws-attention-actions">
+          <button class="secondary" type="button" data-ws-training-check onclick="_wsTrainingCheck('${item.id}', this)">Проверить статус в МойКласс</button>
+        </div>`;
+    }
+  }
+  const publishedWarningHtml = _wsTrainingPublishedWarningHtml(item);
+
   return `
     <div class="ws-attention-item">
       <div class="ws-attn-row">
@@ -15020,9 +15168,12 @@ function _wsRenderAttentionItem(item) {
       ${reasonHtml}
       <div class="ws-attn-row ws-attn-row--bottom">
         <span class="ws-stage-badge ws-stage-badge-${escapeHtml(stage)}">${escapeHtml(stageLabel)}</span>
+        ${trainingBadge}
         ${dateHtml}
       </div>
       ${approveBtn}
+      ${trainingActionsHtml}
+      ${publishedWarningHtml}
     </div>`;
 }
 
@@ -15135,7 +15286,7 @@ function _wsRenderPaymentCard(pi) {
   const name = pi.student_name ? escapeHtml(pi.student_name) : `Клиент МойКласс #${escapeHtml(String(pi.mk_user_id))}`;
   const pid = escapeHtml(pi.public_id || "");
   const mkId = pi.mk_user_id != null ? escapeHtml(String(pi.mk_user_id)) : "—";
-  const methodLabel = PI_METHOD_LABELS[pi.payment_method] || pi.payment_method || "—";
+  const methodLabel = _getActualPaymentMethodLabel(pi);
   const period = pi.period_month ? escapeHtml(pi.period_month) : "—";
   const dateLabel = wsFormatDate(pi.created_at);
 
@@ -15167,7 +15318,7 @@ function _wsRenderPaymentCard(pi) {
     ? `<button class="primary ws-pi-action-btn" onclick="openAcquiringCheckout('${pid}')">Открыть страницу оплаты картой</button>`
     : "";
   const acqReadyBadge = acqOption?.has_checkout
-    ? `<div class="ws-pi-info-block">Эквайринг: <strong>Checkout создан</strong></div>`
+    ? `<div class="ws-pi-info-block">Платёжная страница: <strong>Checkout создан</strong></div>`
     : "";
 
   const canVerifyAcquiring = !["paid", "posted_to_moyklass", "cancelled"].includes(pi.status)
@@ -15219,9 +15370,9 @@ function _wsRenderPaymentCard(pi) {
     ? `<div class="ws-pi-info-block ws-pi-info-block--warn">Дубликат — оплата заблокирована</div>`
     : "";
 
-  const paidChannelLabel = pi.paid_channel === "acquiring" ? "Оплачено банковской картой (эквайринг)"
-    : pi.paid_channel === "erip" ? "Оплачено через ЕРИП"
-    : "Оплачено в bePaid";
+  const paidChannelLabel = pi.paid_channel === "acquiring" ? "Фактическая оплата: банковская карта"
+    : pi.paid_channel === "erip" ? "Фактическая оплата: ЕРИП"
+    : "Фактический способ оплаты не сохранён";
   const bePaidPaidBlock = (pi.status === "paid" || pi.status === "posted_to_moyklass")
     ? `<div class="ws-pi-info-block">
         <strong>${escapeHtml(paidChannelLabel)}</strong>
@@ -16379,6 +16530,7 @@ function _wsHelpTocHtml() {
     ["ws-help-statuses", "Статусы платежей"],
     ["ws-help-modes", "Режимы автоматизации"],
     ["ws-help-connection", "Подключение клиента"],
+    ["ws-help-training-pause", "Пауза обучения и каникулы"],
     ["ws-help-faq", "Типовые проблемы"],
     ["ws-help-escalation", "Когда обращаться к администратору"],
   ];
@@ -16589,7 +16741,71 @@ const WS_HELP_FAQ = [
   { q: "Код подключения не работает", a: "Проверьте: срок действия 72 часа; код не использован; код не отозван; используется CL-код, а не YC-код; нет ограничения после большого числа неверных попыток." },
   { q: "Слишком много попыток", a: "Подождите указанное время. Не создавайте новый код только для обхода ограничения на количество попыток." },
   { q: "Ошибка без понятного действия", a: "Передайте администратору: имя клиента, ID клиента в МойКласс, номер платёжного счёта, время ошибки, пользовательский текст ошибки. Не передавайте секреты, токены и Telegram initData." },
+  // v7.1.8 — training-state (pause/vacation/finished) FAQ items
+  { q: "Статус в МойКласс не изменён", a: "Автоматизация останется заблокированной, пока запись ученика в МойКласс не переведена в «Учится». Нажмите «Проверить статус в МойКласс» после изменения." },
+  { q: "Выбран статус другой записи ученика", a: "У ученика может быть несколько записей (групп). Пауза относится к конкретной записи/группе — убедитесь, что статус изменён именно в той записи, к которой относится нужный счёт." },
+  { q: "Абонемент заморожен", a: "Замороженный абонемент блокирует новые оплаты независимо от статуса записи. Разморозьте нужный абонемент в МойКласс, затем проверьте статус ещё раз." },
+  { q: "Запись не найдена", a: "Не удалось связать счёт с конкретной записью ученика в МойКласс. Проверьте данные абонемента и группы в МойКласс, затем повторите проверку." },
+  { q: "Несколько записей имеют разные статусы", a: "Если у ученика одновременно есть активная и приостановленная запись, система требует ручной проверки — не выбирайте состояние наугад, уточните в МойКласс, к какой записи относится счёт." },
+  { q: "МойКласс временно недоступен", a: "Проверка статуса обучения не выполнена — автоматическое действие остановлено до восстановления связи с МойКласс. Повторите проверку позже." },
 ];
+
+function _wsHelpTrainingPauseHtml() {
+  return `
+    <section class="ws-help-section" id="ws-help-training-pause" data-help-search="пауза обучения каникулы заморожен завершил возобновить">
+      <article class="card help-card">
+        <h3>Пауза обучения и каникулы</h3>
+      </article>
+      <details class="ws-help-leaf" data-help-search="когда ставить паузу статус пауза каникулы">
+        <summary>Когда ставить паузу</summary>
+        <p>Менеджер меняет статус конкретной записи ученика в МойКласс на «Пауза/Каникулы».</p>
+      </details>
+      <details class="ws-help-leaf" data-help-search="что блокируется">
+        <summary>Что блокируется</summary>
+        <ul>
+          <li>новый payment intent;</li>
+          <li>создание bePaid;</li>
+          <li>публикация нового счёта;</li>
+          <li>ручное подтверждение нового платежа.</li>
+        </ul>
+      </details>
+      <details class="ws-help-leaf" data-help-search="что не блокируется webhook оплата история">
+        <summary>Что не блокируется</summary>
+        <ul>
+          <li>уже прошедшая оплата;</li>
+          <li>webhook;</li>
+          <li>внесение оплаты в МойКласс;</li>
+          <li>история;</li>
+          <li>Telegram-привязка;</li>
+          <li>оплаты другого ребёнка или другого независимого курса.</li>
+        </ul>
+      </details>
+      <details class="ws-help-leaf" data-help-search="как возобновить подтвердить возобновление">
+        <summary>Как возобновить</summary>
+        <div class="help-route">
+          ${[
+            "Вернуть нужную запись ученика в статус «Учится» в МойКласс.",
+            "В Yellow Club Agent открыть «Требуют внимания».",
+            "Нажать «Проверить статус в МойКласс».",
+            "Нажать «Подтвердить возобновление».",
+            "Следующий scheduler cycle продолжит сценарий согласно pilot mode.",
+          ].map((s, i) => `
+            <div class="help-route-step">
+              <span class="help-route-num">${i + 1}</span>
+              <span>${escapeHtml(s)}</span>
+            </div>`).join("")}
+        </div>
+      </details>
+      <details class="ws-help-leaf" data-help-search="опубликованный счёт отозвать оставить">
+        <summary>Уже опубликованный счёт</summary>
+        <p>Не отзывается автоматически. Менеджер решает — оставить или отозвать.</p>
+      </details>
+      <details class="ws-help-leaf" data-help-search="несколько курсов группа классид">
+        <summary>Несколько курсов</summary>
+        <p>Пауза применяется к конкретной записи/группе через связь: счёт → абонемент → classId → запись. Пауза другого курса не блокирует активный курс.</p>
+      </details>
+    </section>`;
+}
 
 function _wsHelpFaqHtml() {
   return `
@@ -16657,6 +16873,7 @@ function _wsHelpScreenHtml() {
       ${_wsHelpStatusesHtml()}
       ${_wsHelpModesHtml()}
       ${_wsHelpConnectionHtml()}
+      ${_wsHelpTrainingPauseHtml()}
       ${_wsHelpFaqHtml()}
       ${_wsHelpEscalationHtml()}
     </div>
@@ -16952,4 +17169,10 @@ document.addEventListener("DOMContentLoaded", () => {
   $("wsConnUnlinkModalBack")?.addEventListener("click", _wsConnCloseUnlink);
   $("wsConnUnlinkModalClose")?.addEventListener("click", _wsConnCloseUnlink);
   $("wsConnUnlinkModal")?.addEventListener("click", e => { if (e.target === $("wsConnUnlinkModal")) _wsConnCloseUnlink(); });
+
+  // v7.1.8 — training-state resume confirmation bottom sheet
+  $("wsTrainingResumeConfirmBtn")?.addEventListener("click", _wsTrainingConfirmResume);
+  $("wsTrainingResumeModalBack")?.addEventListener("click", _wsTrainingCloseResume);
+  $("wsTrainingResumeModalClose")?.addEventListener("click", _wsTrainingCloseResume);
+  $("wsTrainingResumeModal")?.addEventListener("click", e => { if (e.target === $("wsTrainingResumeModal")) _wsTrainingCloseResume(); });
 });

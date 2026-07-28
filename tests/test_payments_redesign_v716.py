@@ -5,7 +5,7 @@ UX fix). Business logic, capabilities, and API endpoints are unchanged — this
 release is a UI layer on top of them.
 
 Tests:
- T01  Cache-bust and version marker are v7.1.7
+ T01  Cache-bust and version marker are v7.1.8
  T02  Four workspace tabs are defined (ids + labels)
  T03  Client manager can see the Pilot Clients tab (WORKSPACE_VIEW_ROLES)
  T04  Owner/admin can see the Pilot Clients tab (WORKSPACE_VIEW_ROLES)
@@ -159,9 +159,9 @@ class TestVersion(unittest.TestCase):
     def test_01_cache_bust_and_version_are_v716(self):
         html = _html()
         js = _js()
-        self.assertIn("styles.css?v=7.1.7", html)
-        self.assertIn("app.js?v=7.1.7", html)
-        self.assertIn('console.log("MiniApp version: v7.1.7")', js)
+        self.assertIn("styles.css?v=7.1.8", html)
+        self.assertIn("app.js?v=7.1.8", html)
+        self.assertIn('console.log("MiniApp version: v7.1.8")', js)
 
 
 # ---------------------------------------------------------------------------

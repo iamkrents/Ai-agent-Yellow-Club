@@ -34,7 +34,7 @@ Tests:
  T31  bottom-tabbar hidden when keyboard-open (CSS)
  T32  visualViewport resize used in keyboard handler
  T33  Pilot fail-closed (not_in_pilot / disabled) preserved
- T34  Cache-bust and version marker are v7.1.7
+ T34  Cache-bust and version marker are v7.1.8
 
 Run:
     python -m unittest tests.test_pilot_mgmt_v7153 -v
@@ -457,14 +457,14 @@ class TestPilotSafety(unittest.TestCase):
 class TestVersionV7153(unittest.TestCase):
 
     def test_34_cache_bust_and_version_are_v7153(self):
-        """index.html cache-bust and app.js console version must be v7.1.7."""
+        """index.html cache-bust and app.js console version must be v7.1.8."""
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.7", html, "index.html cache-bust must be v=7.1.7")
+        self.assertIn("v=7.1.8", html, "index.html cache-bust must be v=7.1.8")
         self.assertIn(
-            'console.log("MiniApp version: v7.1.7")',
+            'console.log("MiniApp version: v7.1.8")',
             js,
-            "app.js must log v7.1.7",
+            "app.js must log v7.1.8",
         )
 
 

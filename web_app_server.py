@@ -85,6 +85,14 @@ from payment_domain import (
     # v7.1.1 — MoyKlass subscription terms sync
     select_moyklass_subscription_for_terms,
 )
+from training_state_domain import (
+    resolve_training_state,
+    unavailable_training_state_result,
+    training_reason_message,
+    STATE_ACTIVE,
+    TRAINING_BLOCKED_REASON_CODES,
+    REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED,
+)
 
 log = logging.getLogger("yellow_club_miniapp")
 WEB_DIR = BASE_DIR / "miniapp"
@@ -14472,6 +14480,42 @@ class MiniAppContext:
         if (intent.get("client_visibility") or "hidden") == "published":
             return {"ok": False, "error": "Счёт уже открыт родителю."}
         now = now_iso()
+
+        # v7.1.8 — forced-fresh training-state re-check. Manual approval must
+        # never bypass a pause/finish/unknown training state — the manager
+        # must resolve the student's status in MoyKlass first.
+        _appr_training = self._get_training_state(
+            intent.get("mk_user_id"), intent.get("mk_user_subscription_id"), force_refresh=True,
+        )
+        _appr_item = self.storage.find_automation_item_by_intent_public_id(public_id)
+        self._training_state_audit(
+            "training_state_checked",
+            mk_user_id=intent.get("mk_user_id"), mk_invoice_id=intent.get("mk_invoice_id"),
+            automation_item_id=(_appr_item or {}).get("id"), intent_public_id=public_id,
+            details=self._training_details(_appr_training), initiator=str(auth.get("user_id") or ""),
+        )
+        if _appr_training.get("state") != STATE_ACTIVE:
+            _appr_reason = _appr_training.get("reason_code")
+            if _appr_item:
+                self.storage.update_automation_item_stage(
+                    _appr_item["id"], "requires_check",
+                    reason_code=_appr_reason,
+                    readable_reason=training_reason_message(_appr_reason),
+                    now=now,
+                )
+            self._training_state_audit(
+                "bepaid_creation_blocked_by_training_state",
+                mk_user_id=intent.get("mk_user_id"), mk_invoice_id=intent.get("mk_invoice_id"),
+                automation_item_id=(_appr_item or {}).get("id"), intent_public_id=public_id,
+                details=self._training_details(_appr_training),
+                initiator=str(auth.get("user_id") or ""),
+            )
+            return {
+                "ok": False,
+                "error": training_reason_message(_appr_reason),
+                "reason_code": _appr_reason,
+            }
+
         _auto_auth: dict[str, Any] = {"role": "owner", "user_id": 0, "_internal": True}
         try:
             opts_result = self.payment_intent_prepare_options(_auto_auth, public_id)
@@ -14613,6 +14657,13 @@ class MiniAppContext:
     def automation_item_action(
         self, auth: dict[str, Any], item_id: str, action: str, body: dict[str, Any]
     ) -> dict[str, Any]:
+        # v7.1.8 — training-state check/resume use a wider role set (same as
+        # payment approval: owner/admin/operations/client_manager) than the
+        # rest of this dispatcher (owner/admin only) — handled before the
+        # generic admin-only gate below.
+        if action in ("training-check", "training-resume"):
+            return self._automation_item_training_action(auth, item_id, action)
+
         role = self._automation_effective_role(auth)
         if role not in AUTOMATION_ADMIN_ROLES:
             return self._automation_deny(f"item_action/{action}", auth.get("user_id"), role, "admin")
@@ -14831,6 +14882,369 @@ class MiniAppContext:
             "repair": repair,
         }
 
+    # ── v7.1.8 — Training-state gate (pause/vacation/finished) ──────────────
+    # Blocks new payment automation (intent/bePaid/publish/approve) while a
+    # student's MoyKlass training state for the SPECIFIC subscription/class
+    # is not "active". Never blocks already-started or already-paid work
+    # (webhook, posting to MoyKlass, withdrawal). See training_state_domain.py
+    # for the pure normalization rules.
+
+    def _get_training_state(
+        self,
+        mk_user_id: Any,
+        mk_user_subscription_id: Any,
+        *,
+        cache: Optional[dict[str, dict[str, list]]] = None,
+        force_refresh: bool = False,
+    ) -> dict[str, Any]:
+        """Resolve normalized training state via MoyKlass userSubscriptions+joins.
+
+        cache: optional per-scheduler-cycle dict keyed by mk_user_id, shared
+               across invoices of the same client within ONE scan cycle.
+        force_refresh: bypass the cache — used immediately before an
+               irreversible action (bePaid creation, approve, publish), where
+               a snapshot from earlier in the same cycle is not trusted.
+
+        Never trusts client/frontend-supplied statusId. Never logs full
+        MoyKlass API responses — only ok/error booleans and normalized output.
+        """
+        now = now_iso()
+        uid = str(mk_user_id or "").strip()
+        if not uid:
+            return unavailable_training_state_result(mk_user_id, mk_user_subscription_id, now)
+
+        cached = None if force_refresh else ((cache or {}).get(uid))
+        if cached is not None:
+            subscriptions = cached.get("subscriptions") or []
+            joins = cached.get("joins") or []
+        else:
+            try:
+                sub_result = self.moyklass.get_user_subscriptions(uid, limit=100)
+                join_result = self.moyklass.get_user_joins(uid, limit=100)
+            except Exception:
+                log.exception("training_state: MoyKlass request error for mk_user_id=%s", uid)
+                return unavailable_training_state_result(uid, mk_user_subscription_id, now)
+
+            if not getattr(sub_result, "ok", False) or not getattr(join_result, "ok", False):
+                log.warning(
+                    "training_state: MoyKlass fetch not ok mk_user_id=%s subs_ok=%s joins_ok=%s",
+                    uid, getattr(sub_result, "ok", None), getattr(join_result, "ok", None),
+                )
+                return unavailable_training_state_result(uid, mk_user_subscription_id, now)
+
+            try:
+                subscriptions = extract_items(sub_result.data)
+                joins = extract_items(join_result.data)
+            except Exception:
+                log.exception("training_state: malformed MoyKlass response for mk_user_id=%s", uid)
+                return unavailable_training_state_result(uid, mk_user_subscription_id, now)
+
+            if cache is not None:
+                cache[uid] = {"subscriptions": subscriptions, "joins": joins}
+
+        try:
+            return resolve_training_state(uid, mk_user_subscription_id, subscriptions, joins, now)
+        except Exception:
+            log.exception("training_state: resolver error for mk_user_id=%s", uid)
+            return unavailable_training_state_result(uid, mk_user_subscription_id, now)
+
+    def _training_state_audit(
+        self,
+        event_type: str,
+        *,
+        mk_user_id: Any = "",
+        mk_invoice_id: Any = None,
+        automation_item_id: Optional[int] = None,
+        intent_public_id: Optional[str] = None,
+        details: Optional[dict] = None,
+        initiator: str = "scheduled",
+    ) -> None:
+        """Best-effort audit event via the existing automation_audit_log mechanism.
+
+        Never stores full MoyKlass payloads, phone/email/initData/tokens —
+        only normalized state, reason_code, and technical IDs.
+        """
+        try:
+            import json as _json
+            self.storage.create_automation_audit_event({
+                "created_at": now_iso(),
+                "event_type": event_type,
+                "automation_item_id": automation_item_id,
+                "intent_public_id": intent_public_id,
+                "mk_invoice_id": mk_invoice_id,
+                "mk_user_id": mk_user_id,
+                "initiator": initiator,
+                "details_json": _json.dumps(details or {}, ensure_ascii=False)[:2000],
+            })
+        except Exception:
+            log.warning("training_state: audit write failed event_type=%s", event_type)
+
+    def _training_details(self, training: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "state": training.get("state"),
+            "reason_code": training.get("reason_code"),
+            "mk_user_subscription_id": training.get("mk_user_subscription_id"),
+            "subscription_status_id": training.get("subscription_status_id"),
+            "matched_class_ids": training.get("matched_class_ids"),
+            "matched_join_status_ids": training.get("matched_join_status_ids"),
+        }
+
+    def _apply_training_gate(
+        self,
+        item: dict[str, Any],
+        item_id: int,
+        mk_user_id: str,
+        inv_id: str,
+        training: dict[str, Any],
+        now: str,
+        *,
+        is_new: bool,
+    ) -> Optional[dict[str, Any]]:
+        """Apply the training-state gate at discovery/pre-create time.
+
+        Returns an outcome dict (caller should `return` it immediately) if
+        automation must stop here, or None if the caller may proceed
+        (state == active AND no pending resume confirmation needed).
+
+        Idempotent across scheduler cycles: only writes a new audit event
+        when the reason_code actually changes versus the item's stored value.
+        """
+        prev_reason = item.get("reason_code")
+        state = training.get("state")
+        reason_code = training.get("reason_code")
+
+        if state == STATE_ACTIVE:
+            if prev_reason in TRAINING_BLOCKED_REASON_CODES:
+                # Was blocked for a training reason; MoyKlass now shows active.
+                # Do NOT silently resume automation — require manual confirmation.
+                if prev_reason != REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED:
+                    self.storage.update_automation_item_stage(
+                        item_id, "requires_check",
+                        reason_code=REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED,
+                        readable_reason=training_reason_message(REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED),
+                        now=now,
+                    )
+                    self._training_state_audit(
+                        "client_resume_confirmation_required",
+                        mk_user_id=mk_user_id, mk_invoice_id=inv_id,
+                        automation_item_id=item_id, details=self._training_details(training),
+                    )
+                return {"requires_check": True, "discovered": is_new}
+            return None  # proceed with normal flow
+
+        # paused / finished / unknown — block, and only audit on change.
+        self.storage.update_automation_item_stage(
+            item_id, "requires_check",
+            reason_code=reason_code,
+            readable_reason=training_reason_message(reason_code),
+            now=now,
+        )
+        if reason_code != prev_reason:
+            event_type = (
+                "automation_blocked_by_training_state"
+                if prev_reason not in TRAINING_BLOCKED_REASON_CODES
+                else "training_state_changed"
+            )
+            self._training_state_audit(
+                event_type, mk_user_id=mk_user_id, mk_invoice_id=inv_id,
+                automation_item_id=item_id, details=self._training_details(training),
+            )
+        return {"requires_check": True, "discovered": is_new}
+
+    def _resolve_training_context_for_item(
+        self, item: dict[str, Any]
+    ) -> tuple[str, Optional[str]]:
+        """Find (mk_user_id, mk_user_subscription_id) for an automation item —
+        never trusts a frontend-supplied value. Prefers the linked payment
+        intent's own column; falls back to the stored invoice snapshot for
+        items blocked before an intent was ever created."""
+        mk_user_id = str(item.get("mk_user_id") or "").strip()
+        mk_user_subscription_id: Optional[str] = None
+        intent_public_id = item.get("intent_public_id")
+        if intent_public_id:
+            pi = self.storage.get_payment_intent(intent_public_id)
+            if pi and pi.get("mk_user_subscription_id"):
+                mk_user_subscription_id = str(pi.get("mk_user_subscription_id"))
+        if not mk_user_subscription_id:
+            try:
+                import json as _json
+                snap = _json.loads(item.get("invoice_snapshot_json") or "{}")
+                raw_sub_id = snap.get("userSubscriptionId")
+                if raw_sub_id not in (None, ""):
+                    mk_user_subscription_id = str(raw_sub_id)
+            except Exception:
+                mk_user_subscription_id = None
+        return mk_user_id, mk_user_subscription_id
+
+    def _automation_item_training_action(
+        self, auth: dict[str, Any], item_id: str, action: str
+    ) -> dict[str, Any]:
+        """v7.1.8 — GET/manual re-check and resume-confirmation for a
+        training-blocked automation item. Same role set as payment approval.
+        Backend resolves mk_user_id/mk_user_subscription_id itself — never
+        accepts them (or any training state field) from the request body.
+        """
+        try:
+            role = self._role_for_user(int(auth.get("user_id") or 0))
+        except (TypeError, ValueError):
+            role = None
+        if role not in PAYMENT_APPROVAL_ROLES:
+            return {"ok": False, "error": "Нет прав для проверки статуса обучения."}
+
+        try:
+            iid = int(item_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid item id"}
+
+        item = self.storage.get_automation_item_by_id(iid)
+        if not item:
+            return {"ok": False, "error": "Элемент не найден."}
+
+        mk_user_id, mk_user_subscription_id = self._resolve_training_context_for_item(item)
+        if not mk_user_id:
+            return {"ok": False, "error": "Не удалось определить клиента для этого элемента."}
+
+        now = now_iso()
+        actor = str(auth.get("user_id") or "")
+
+        if action == "training-check":
+            return self._training_state_check_item(
+                item, iid, mk_user_id, mk_user_subscription_id, now, actor,
+            )
+
+        # training-resume: only eligible from a training-blocked reason_code —
+        # prevents confirming resume on an item that was never training-blocked.
+        if item.get("reason_code") not in TRAINING_BLOCKED_REASON_CODES:
+            return {
+                "ok": False,
+                "error": "Этот счёт не ожидает подтверждения возобновления автоматизации.",
+                "conflict": True,
+            }
+        return self._training_state_resume_item(
+            item, iid, mk_user_id, mk_user_subscription_id, now, actor,
+        )
+
+    def _training_state_check_item(
+        self,
+        item: dict[str, Any],
+        iid: int,
+        mk_user_id: str,
+        mk_user_subscription_id: Optional[str],
+        now: str,
+        actor: str,
+    ) -> dict[str, Any]:
+        training = self._get_training_state(
+            mk_user_id, mk_user_subscription_id, force_refresh=True,
+        )
+        prev_reason = item.get("reason_code")
+        state = training.get("state")
+        reason_code = training.get("reason_code")
+
+        self._training_state_audit(
+            "training_state_checked", mk_user_id=mk_user_id,
+            mk_invoice_id=item.get("mk_invoice_id"), automation_item_id=iid,
+            intent_public_id=item.get("intent_public_id"),
+            details=self._training_details(training), initiator=actor,
+        )
+
+        if state == STATE_ACTIVE:
+            new_reason = REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED
+            if prev_reason != new_reason:
+                self.storage.update_automation_item_stage(
+                    iid, "requires_check", reason_code=new_reason,
+                    readable_reason=training_reason_message(new_reason), now=now,
+                )
+                self._training_state_audit(
+                    "client_resume_confirmation_required", mk_user_id=mk_user_id,
+                    mk_invoice_id=item.get("mk_invoice_id"), automation_item_id=iid,
+                    intent_public_id=item.get("intent_public_id"),
+                    details=self._training_details(training), initiator=actor,
+                )
+            return {
+                "ok": True, "item_id": str(iid), "state": state, "reason_code": new_reason,
+                "message": training_reason_message(new_reason),
+                "resume_confirmation_required": True,
+            }
+
+        if reason_code != prev_reason:
+            self.storage.update_automation_item_stage(
+                iid, "requires_check", reason_code=reason_code,
+                readable_reason=training_reason_message(reason_code), now=now,
+            )
+            event_type = (
+                "automation_blocked_by_training_state"
+                if prev_reason not in TRAINING_BLOCKED_REASON_CODES
+                else "training_state_changed"
+            )
+            self._training_state_audit(
+                event_type, mk_user_id=mk_user_id, mk_invoice_id=item.get("mk_invoice_id"),
+                automation_item_id=iid, intent_public_id=item.get("intent_public_id"),
+                details=self._training_details(training), initiator=actor,
+            )
+        return {
+            "ok": True, "item_id": str(iid), "state": state, "reason_code": reason_code,
+            "message": training_reason_message(reason_code),
+            "resume_confirmation_required": False,
+        }
+
+    def _training_state_resume_item(
+        self,
+        item: dict[str, Any],
+        iid: int,
+        mk_user_id: str,
+        mk_user_subscription_id: Optional[str],
+        now: str,
+        actor: str,
+    ) -> dict[str, Any]:
+        # Forced-fresh re-check — the stored reason_code (even if it already
+        # says client_resume_confirmation_required) is never trusted as the
+        # final decision; MoyKlass is asked again right now.
+        training = self._get_training_state(
+            mk_user_id, mk_user_subscription_id, force_refresh=True,
+        )
+        self._training_state_audit(
+            "training_state_checked", mk_user_id=mk_user_id,
+            mk_invoice_id=item.get("mk_invoice_id"), automation_item_id=iid,
+            intent_public_id=item.get("intent_public_id"),
+            details=self._training_details(training), initiator=actor,
+        )
+        state = training.get("state")
+        reason_code = training.get("reason_code")
+
+        if state != STATE_ACTIVE:
+            if reason_code != item.get("reason_code"):
+                self.storage.update_automation_item_stage(
+                    iid, "requires_check", reason_code=reason_code,
+                    readable_reason=training_reason_message(reason_code), now=now,
+                )
+                self._training_state_audit(
+                    "training_state_changed", mk_user_id=mk_user_id,
+                    mk_invoice_id=item.get("mk_invoice_id"), automation_item_id=iid,
+                    intent_public_id=item.get("intent_public_id"),
+                    details=self._training_details(training), initiator=actor,
+                )
+            return {
+                "ok": False, "item_id": str(iid), "state": state, "reason_code": reason_code,
+                "message": training_reason_message(reason_code),
+            }
+
+        # active — hand back to the scheduler. Never create intent/bePaid/publish
+        # from inside this HTTP request; pilot mode is left untouched, so the
+        # next scheduler cycle decides exactly as it would for any other item.
+        self.storage.update_automation_item_stage(
+            iid, "discovered", clear_reason=True, now=now,
+        )
+        self._training_state_audit(
+            "training_automation_resume_confirmed", mk_user_id=mk_user_id,
+            mk_invoice_id=item.get("mk_invoice_id"), automation_item_id=iid,
+            intent_public_id=item.get("intent_public_id"),
+            details=self._training_details(training), initiator=actor,
+        )
+        return {
+            "ok": True, "item_id": str(iid), "state": "active", "stage": "discovered",
+            "message": "Возобновление подтверждено. Счёт будет обработан согласно режиму автоматизации.",
+        }
+
     # ── v7.0.94.0 — Invoice Automation pipeline ──────────────────────────────
 
     def process_new_moyklass_invoices(
@@ -14924,6 +15338,12 @@ class MiniAppContext:
             )
 
             _n_counted = 0
+            # v7.1.8 — per-scan-cycle training-state cache, keyed by mk_user_id.
+            # Avoids one MoyKlass request per invoice for repeat clients within
+            # this cycle. In-memory only; never persisted; never used as the
+            # final check before an irreversible action (see force_refresh use
+            # immediately before bePaid/approve/publish).
+            training_cache: dict[str, dict[str, list]] = {}
             for inv in mk_invoices:
                 try:
                     result = self._process_single_automation_item_from_invoice(
@@ -14932,6 +15352,7 @@ class MiniAppContext:
                         publish_enabled=publish_enabled,
                         post_enabled=post_enabled,
                         notify_enabled=notify_enabled,
+                        training_cache=training_cache,
                     )
                     outcome = _automation_update_counts(counts, result)
                     if outcome != "unaccounted":
@@ -14991,6 +15412,7 @@ class MiniAppContext:
         publish_enabled: bool,
         post_enabled: bool = False,
         notify_enabled: bool = False,
+        training_cache: Optional[dict[str, dict[str, list]]] = None,
     ) -> dict[str, Any]:
         """Process a single MK invoice in the automation pipeline. Returns count-update dict."""
         inv_id = str(inv.get("id") or "")
@@ -15125,6 +15547,51 @@ class MiniAppContext:
 
         existing_intent = existing_intents[0] if existing_intents else None
         if existing_intent:
+            # v7.1.8 — informational only: flag (but never touch) an already-published,
+            # unpaid invoice while the student is paused/finished/unknown. Never
+            # withdraws or hides it automatically — manager decides via existing
+            # withdrawal flow. Uses per-cycle cache (non-blocking, best-effort).
+            # Idempotent: the training reason_code is persisted on the item (stage
+            # left untouched) purely so repeated cycles can detect "unchanged"
+            # and skip re-logging — audit fires only on first detection or on an
+            # actual state/reason change, not every cycle.
+            if (
+                existing_intent.get("client_visibility") == "published"
+                and existing_intent.get("status") not in ("paid", "posted_to_moyklass", "cancelled")
+            ):
+                try:
+                    _epub_training = self._get_training_state(
+                        mk_user_id, existing_intent.get("mk_user_subscription_id"),
+                        cache=training_cache,
+                    )
+                    _epub_reason = _epub_training.get("reason_code")
+                    _epub_prev_reason = item.get("reason_code")
+                    if _epub_training.get("state") != STATE_ACTIVE:
+                        if _epub_reason != _epub_prev_reason:
+                            self.storage.update_automation_item_stage(
+                                item_id, stage,
+                                reason_code=_epub_reason,
+                                readable_reason=training_reason_message(_epub_reason),
+                                now=now,
+                            )
+                            self._training_state_audit(
+                                "existing_published_invoice_during_pause",
+                                mk_user_id=mk_user_id, mk_invoice_id=inv_id,
+                                automation_item_id=item_id,
+                                intent_public_id=existing_intent.get("public_id"),
+                                details=self._training_details(_epub_training),
+                            )
+                    elif _epub_prev_reason:
+                        # Training state recovered to active — clear the marker so a
+                        # future re-pause is treated as newly detected again.
+                        self.storage.update_automation_item_stage(
+                            item_id, stage, clear_reason=True, now=now,
+                        )
+                except Exception:
+                    log.exception(
+                        "existing_published_invoice_during_pause: training_state check error mk_user_id=%s",
+                        mk_user_id,
+                    )
             # Auto-repair: stale reason_code left over after a successful resolve-duplicate
             if (
                 item.get("reason_code") == "duplicate_invoice_intents"
@@ -15237,9 +15704,38 @@ class MiniAppContext:
                 "mk_invoice_id": inv_id,
                 "note": "observe_mode_no_action",
             })
+            # v7.1.8 — observe mode still detects training state (visibility only,
+            # never blocks — observe mode already creates nothing regardless).
+            try:
+                _observe_sub_id = str(inv.get("userSubscriptionId") or "").strip() or None
+                _observe_training = self._get_training_state(
+                    mk_user_id, _observe_sub_id, cache=training_cache,
+                )
+                if _observe_training.get("state") != STATE_ACTIVE:
+                    self._training_state_audit(
+                        "training_state_checked", mk_user_id=mk_user_id, mk_invoice_id=inv_id,
+                        automation_item_id=item_id, details=self._training_details(_observe_training),
+                        initiator="scheduled",
+                    )
+            except Exception:
+                log.exception("automation_pilot_observe: training_state check error mk_user_id=%s", mk_user_id)
             return {"skip": True}
         # mode == "review" or "auto" — proceed
         _pilot_review_mode = (_pilot_mode == "review")
+
+        # v7.1.8 — Training-state gate (fail-closed): block NEW intent creation
+        # while the student's training state (for the specific subscription's
+        # class) is not active. Uses per-cycle cache — a forced-fresh re-check
+        # happens again immediately before bePaid creation below.
+        _mk_user_subscription_id = str(inv.get("userSubscriptionId") or "").strip() or None
+        _training = self._get_training_state(
+            mk_user_id, _mk_user_subscription_id, cache=training_cache,
+        )
+        _training_outcome = self._apply_training_gate(
+            item, item_id, mk_user_id, inv_id, _training, now, is_new=is_new,
+        )
+        if _training_outcome is not None:
+            return _training_outcome
 
         # Check parent link
         parents = self.storage.get_parents_for_child(mk_user_id)
@@ -15287,6 +15783,23 @@ class MiniAppContext:
                 now=now,
             )
             return {"requires_check": True, "discovered": is_new}
+
+        # v7.1.8 — forced-fresh (non-cached) training-state re-check immediately
+        # before creating the intent + bePaid (auto mode) / intent (review mode).
+        # A per-cycle cached snapshot is not trusted this close to an
+        # irreversible action — see section 12 of the v7.1.8 architecture spec.
+        _fresh_training = self._get_training_state(
+            mk_user_id, _mk_user_subscription_id, cache=training_cache, force_refresh=True,
+        )
+        self._training_state_audit(
+            "training_state_checked", mk_user_id=mk_user_id, mk_invoice_id=inv_id,
+            automation_item_id=item_id, details=self._training_details(_fresh_training),
+        )
+        _fresh_outcome = self._apply_training_gate(
+            item, item_id, mk_user_id, inv_id, _fresh_training, now, is_new=is_new,
+        )
+        if _fresh_outcome is not None:
+            return _fresh_outcome
 
         # Create payment intent
         try:
@@ -16271,6 +16784,39 @@ class MiniAppContext:
                 "payment_event=parent_auto_publish_skipped intent=%s mk_invoice_id=%s "
                 "reason_code=missing_parent result=skipped",
                 intent_id, mk_inv_id,
+            )
+            return {"existing": True}
+
+        # v7.1.8 — forced-fresh training-state re-check immediately before
+        # publishing to the parent. A per-cycle cached snapshot is not trusted
+        # this close to an irreversible, client-visible action.
+        _pub_sub_id = existing_intent.get("mk_user_subscription_id")
+        _pub_training = self._get_training_state(mk_user_id, _pub_sub_id, force_refresh=True)
+        self._training_state_audit(
+            "training_state_checked", mk_user_id=mk_user_id, mk_invoice_id=mk_inv_id,
+            automation_item_id=item_id, intent_public_id=intent_id,
+            details=self._training_details(_pub_training),
+        )
+        if _pub_training.get("state") != STATE_ACTIVE:
+            _pub_reason = _pub_training.get("reason_code")
+            item_row = self.storage.get_automation_item_by_id(item_id) or {}
+            self.storage.update_automation_item_stage(
+                item_id, "requires_check",
+                reason_code=_pub_reason,
+                readable_reason=training_reason_message(_pub_reason),
+                now=now,
+            )
+            if _pub_reason != item_row.get("reason_code"):
+                self._training_state_audit(
+                    "publication_blocked_by_training_state",
+                    mk_user_id=mk_user_id, mk_invoice_id=mk_inv_id,
+                    automation_item_id=item_id, intent_public_id=intent_id,
+                    details=self._training_details(_pub_training),
+                )
+            log.info(
+                "payment_event=parent_auto_publish_blocked_training_state intent=%s "
+                "mk_invoice_id=%s reason_code=%s result=blocked",
+                intent_id, mk_inv_id, _pub_reason,
             )
             return {"existing": True}
 

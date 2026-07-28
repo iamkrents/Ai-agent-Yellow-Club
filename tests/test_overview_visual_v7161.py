@@ -23,7 +23,7 @@ Tests:
  T16  Attention tab renderer untouched (SVG empty-state, unchanged since step 2)
  T17  Pilot Clients renderer untouched (empty-state message unchanged)
  T18  All Payments renderer untouched (own dedicated card renderer since step 3)
- T19  Version / cache-bust is v7.1.7
+ T19  Version / cache-bust is v7.1.8
  T20  Food module still not referenced by workspace code
  T21  Test-role panel mechanics unchanged
 
@@ -295,8 +295,8 @@ class TestVersionUnchanged(unittest.TestCase):
     def test_19_version_is_v7161(self):
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.7", html)
-        self.assertIn('console.log("MiniApp version: v7.1.7")', js)
+        self.assertIn("v=7.1.8", html)
+        self.assertIn('console.log("MiniApp version: v7.1.8")', js)
 
 
 # ---------------------------------------------------------------------------

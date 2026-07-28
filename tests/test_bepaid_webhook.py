@@ -566,8 +566,11 @@ class TestUIStatusLabels(unittest.TestCase):
         src = self._app()
         self.assertIn("pi-bepaid-paid", src,
                       "renderPaymentIntentCard must include pi-bepaid-paid block")
-        self.assertIn("Оплачено в bePaid", src,
-                      "pi-bepaid-paid block must say 'Оплачено в bePaid'")
+        # v7.1.8: unknown/legacy paid_channel no longer claims a vague
+        # "Оплачено в bePaid" — it explicitly says the actual method wasn't
+        # recorded, rather than implying bePaid itself is a payment method.
+        self.assertIn("Фактический способ оплаты не сохранён", src,
+                      "pi-bepaid-paid block must not guess an actual method when paid_channel is unknown")
 
     def test_paid_block_shows_paid_at(self):
         src = self._app()
@@ -618,7 +621,7 @@ class TestCSS(unittest.TestCase):
 
 # ── Cache-bust ────────────────────────────────────────────────────────────────
 
-CURRENT_MINIAPP_VERSION = "7.1.7"
+CURRENT_MINIAPP_VERSION = "7.1.8"
 
 
 class TestCacheBust(unittest.TestCase):

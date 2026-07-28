@@ -9147,7 +9147,7 @@ class Storage:
         limit = max(1, min(int(limit), 200))
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT a.*, p.status AS intent_status,
+                """SELECT a.*, p.status AS intent_status, p.client_visibility AS intent_visibility,
                           p.amount_byn, p.student_name AS pi_student_name
                    FROM invoice_automation_items a
                    LEFT JOIN payment_intents p ON p.public_id = a.intent_public_id
@@ -9155,6 +9155,11 @@ class Storage:
                        'pending_review', 'requires_check', 'error',
                        'missing_parent_link', 'ambiguous_parent_link'
                    )
+                   -- v7.1.8: also surface an already-published invoice whose
+                   -- training state turned paused/finished/unknown AFTER
+                   -- publish (reason_code is only ever set while stage stays
+                   -- 'published' by the training-state informational check).
+                   OR (a.current_stage = 'published' AND a.reason_code IS NOT NULL)
                    ORDER BY a.updated_at DESC
                    LIMIT ?""",
                 (limit,),

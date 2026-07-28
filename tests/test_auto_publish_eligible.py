@@ -107,6 +107,15 @@ def _make_ctx(storage: Storage, invoices: list[dict]):
     settings.moyklass_erip_payment_type_id = 0
     settings.moyklass_acquiring_payment_type_id = 0
     ctx.settings = settings
+    # v7.1.8 — training-state gate stub: these pre-existing tests assume the
+    # student is active; the gate itself is covered separately in
+    # tests/test_payment_training_gate.py.
+    ctx._get_training_state = MagicMock(return_value={
+        "state": "active", "reason_code": None, "mk_user_id": "",
+        "mk_user_subscription_id": "", "subscription_status_id": None,
+        "matched_class_ids": [], "matched_join_ids": [], "matched_join_status_ids": [],
+        "checked_at": _now(),
+    })
     return ctx
 
 

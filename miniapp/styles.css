@@ -9078,6 +9078,7 @@ body.keyboard-open .tabs.bottom-tabbar {
 .ws-badge--neutral   { background: var(--line, #e3e6ee); color: var(--muted); }
 .ws-badge--pending    { background: #fff3e0; color: #e65100; }
 .ws-badge--connected  { background: #e8f5e9; color: #2e7d32; }
+.ws-badge--danger     { background: #fceeee; color: #b14343; }
 
 .ws-conn-back-btn { min-height: 44px; margin-bottom: 12px; font-size: 13px; }
 
@@ -9298,3 +9299,24 @@ body.keyboard-open .tabs.bottom-tabbar {
 }
 #wsFiltersModal .pi-modal-footer { border-top-color: #e8ecf4; }
 #wsFiltersModal .pi-modal-footer button { min-height: 44px; }
+
+/* ── v7.1.8 — training-state (pause/vacation/finished) Attention card ────── */
+.ws-training-note { margin: 8px 0 0; font-size: 13px; color: var(--ink); line-height: 1.4; }
+.ws-training-warning {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff7df;
+  border: 1px solid #f0deA0;
+}
+.ws-training-warning p { margin: 0 0 8px; font-size: 13px; color: #6b5200; line-height: 1.4; }
+.ws-training-warning__note { color: var(--muted) !important; font-size: 12px !important; }
+.ws-training-warning .ws-attention-actions { margin-top: 0; }
+.ws-training-warning .ws-attention-approve,
+.ws-training-warning .secondary { min-height: 44px; }
+[data-ws-training-check] { min-height: 44px; }
+
+@media (max-width: 390px) {
+  .ws-attention-actions { flex-direction: column; }
+  .ws-attention-actions button { width: 100%; }
+}

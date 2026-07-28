@@ -31,7 +31,7 @@ Tests:
  T24  Attention tab renderer untouched
  T25  Pilot Clients renderer untouched
  T26  WORKSPACE_VIEW_ROLES / PILOT_ADMIN_ROLES / PAYMENT_APPROVAL_ROLES unchanged
- T27  Version / cache-bust is v7.1.7
+ T27  Version / cache-bust is v7.1.8
  T28  Search placeholder shortened; search logic fields unchanged
  T29  bePaid technical ids (order_id/tracking_id/UID) gated behind canAdminPilot + collapsible
  T30  ERIP account number stays visible to everyone under "Номер ЕРИП"
@@ -184,7 +184,12 @@ class TestCardStructure(unittest.TestCase):
     def test_08_period_method_date_in_meta(self):
         fn = _js_fn("_wsRenderPaymentCard")
         self.assertIn("period_month", fn)
-        self.assertIn("PI_METHOD_LABELS", fn)
+        # v7.1.8: the "Способ:" line now shows the ACTUAL payment method
+        # (via the shared _getActualPaymentMethodLabel helper, based on
+        # paid_channel) rather than the requested/creation-time payment_method
+        # — PI_METHOD_LABELS[pi.payment_method] was the source of a real bug
+        # (showing "ЕРИП" on unpaid and card-paid invoices alike).
+        self.assertIn("_getActualPaymentMethodLabel", fn)
         self.assertIn("wsFormatDate(pi.created_at)", fn)
         self.assertIn("Период:", fn)
         self.assertIn("Способ:", fn)
@@ -389,8 +394,8 @@ class TestVersionUnchanged(unittest.TestCase):
     def test_27_version_is_v7161(self):
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.7", html)
-        self.assertIn('console.log("MiniApp version: v7.1.7")', js)
+        self.assertIn("v=7.1.8", html)
+        self.assertIn('console.log("MiniApp version: v7.1.8")', js)
 
 
 # ---------------------------------------------------------------------------
