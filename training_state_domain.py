@@ -153,6 +153,49 @@ def unavailable_training_state_result(
     )
 
 
+# ---------------------------------------------------------------------------
+# v7.1.9 — training-sync candidate selection (Payment Automation Guardian)
+# ---------------------------------------------------------------------------
+
+# Payment Intent statuses for which a training-state change can no longer
+# affect anything: money has already moved (paid) or the operation is fully
+# terminal (posted_to_moyklass/cancelled). Re-checking training state for
+# these would be wasted MoyKlass calls with zero effect — webhook/posting
+# must never be gated by training state regardless.
+TRAINING_SYNC_TERMINAL_INTENT_STATUSES = frozenset({"paid", "posted_to_moyklass", "cancelled"})
+
+# current_stage values that are always excluded from training-sync, regardless
+# of any linked Payment Intent.
+TRAINING_SYNC_TERMINAL_STAGES = frozenset({"ignored"})
+
+
+def is_training_sync_candidate(
+    *,
+    current_stage: Any,
+    intent_status: Optional[Any] = None,
+    intent_visibility: Optional[Any] = None,
+) -> bool:
+    """True if an automation item should still be re-checked for training
+    state changes by the periodic Guardian sync (or any other caller).
+
+    Never relies on current_stage alone — also considers the linked Payment
+    Intent's status/visibility, per the v7.1.9 architecture audit finding
+    that stage-only gating created gaps (payment_options_created with
+    publish disabled, published-but-unpaid with MK posting disabled were
+    silently skipped in the pre-Guardian pipeline).
+    """
+    stage = str(current_stage or "")
+    if stage in TRAINING_SYNC_TERMINAL_STAGES:
+        return False
+    status = str(intent_status or "")
+    if status in TRAINING_SYNC_TERMINAL_INTENT_STATUSES:
+        return False
+    visibility = str(intent_visibility or "")
+    if visibility == "withdrawn":
+        return False
+    return True
+
+
 def resolve_training_state(
     mk_user_id: Any,
     mk_user_subscription_id: Any,

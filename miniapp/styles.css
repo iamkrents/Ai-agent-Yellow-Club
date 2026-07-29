@@ -9320,3 +9320,72 @@ body.keyboard-open .tabs.bottom-tabbar {
   .ws-attention-actions { flex-direction: column; }
   .ws-attention-actions button { width: 100%; }
 }
+
+/* ── v7.1.9 — Payments Workspace "Диагностика" tab ────────────────────────── */
+.ws-diag-summary {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  background: var(--card, #fff);
+}
+.ws-diag-summary__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.ws-diag-status {
+  display: inline-block;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.ws-diag-status--neutral  { background: #eef1f6; color: #55607a; }
+.ws-diag-status--healthy  { background: #eaf6ef; color: #267b4e; }
+.ws-diag-status--warning  { background: #fff7df; color: #9b6b05; }
+.ws-diag-status--critical { background: #fceeee; color: #b14343; }
+.ws-diag-summary__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+}
+@media (min-width: 560px) {
+  .ws-diag-summary__grid { grid-template-columns: repeat(3, 1fr); }
+}
+.ws-diag-summary__item { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ws-diag-summary__label { font-size: 11px; color: var(--muted); }
+.ws-diag-summary__value { font-size: 14px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ws-diag-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.ws-diag-count { font-size: 12px; color: var(--muted); }
+.ws-diag-count--critical { color: #b14343; font-weight: 600; }
+.ws-diag-count--warning { color: #9b6b05; font-weight: 600; }
+
+.ws-diag-incident .ws-attn-row { align-items: flex-start; }
+.ws-diag-severity-badge {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ws-diag-severity--critical { background: #fceeee; color: #b14343; }
+.ws-diag-severity--warning  { background: #fff7df; color: #9b6b05; }
+.ws-diag-severity--info     { background: #eaf0fd; color: #3457a6; }
+
+@media (max-width: 390px) {
+  .ws-diag-summary__top { flex-direction: column; align-items: stretch; }
+  .ws-diag-summary__top button { width: 100%; min-height: 44px; }
+}
+[data-ws-diag-recheck] { min-height: 44px; }

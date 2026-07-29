@@ -187,6 +187,17 @@ def normalize_food_location(value: str) -> str:
     return ""
 
 
+def _add_seconds_iso(now: str, seconds: int) -> str:
+    """Add `seconds` to an ISO timestamp string, returned as an ISO string.
+
+    Used for Guardian health-run lease expiry (v7.1.9) — deliberately derives
+    the deadline from the CALLER-SUPPLIED `now` (like every other timestamp
+    in this module) rather than a fresh datetime.now() call, so lease math
+    stays deterministic and testable with a fake clock.
+    """
+    return (datetime.fromisoformat(now) + timedelta(seconds=seconds)).isoformat()
+
+
 class Storage:
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -617,6 +628,7 @@ class Storage:
             self._init_withdrawal_tables(conn)
             self._init_pricing_tables(conn)
             self._init_pilot_tables(conn)
+            self._init_payment_automation_guardian_tables(conn)
 
     def _init_payment_intent_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -1596,6 +1608,455 @@ class Storage:
             "CREATE INDEX IF NOT EXISTS idx_ppal_mk_user "
             "ON payment_pilot_audit_log(mk_user_id, created_at)"
         )
+
+    # ── v7.1.9 — Payment Automation Guardian tables ──────────────────────────
+
+    def _init_payment_automation_guardian_tables(self, conn: sqlite3.Connection) -> None:
+        """Health runs / incidents / repair attempts for the Payment Automation
+        Guardian (v7.1.9). All additive — no changes to any existing table."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payment_automation_health_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_type TEXT NOT NULL DEFAULT 'quick_cycle',
+                correlation_id TEXT NOT NULL UNIQUE,
+                lock_token TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'running',
+                started_at TEXT NOT NULL,
+                heartbeat_at TEXT NOT NULL,
+                lease_expires_at TEXT NOT NULL,
+                finished_at TEXT,
+                duration_ms INTEGER,
+                checked_items INTEGER NOT NULL DEFAULT 0,
+                checked_clients INTEGER NOT NULL DEFAULT 0,
+                issues_found INTEGER NOT NULL DEFAULT 0,
+                issues_resolved INTEGER NOT NULL DEFAULT 0,
+                safe_repairs_performed INTEGER NOT NULL DEFAULT 0,
+                error_code TEXT,
+                error_summary TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pahr_type_started "
+            "ON payment_automation_health_runs(run_type, started_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pahr_status_lease "
+            "ON payment_automation_health_runs(status, lease_expires_at)"
+        )
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payment_automation_incidents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dedup_key TEXT NOT NULL UNIQUE,
+                component TEXT NOT NULL,
+                scope_type TEXT NOT NULL,
+                scope_id TEXT NOT NULL DEFAULT '',
+                reason_code TEXT NOT NULL,
+                severity TEXT NOT NULL DEFAULT 'warning',
+                status TEXT NOT NULL DEFAULT 'open',
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                resolved_at TEXT,
+                occurrence_count INTEGER NOT NULL DEFAULT 1,
+                repair_status TEXT NOT NULL DEFAULT 'none',
+                repair_attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_retry_at TEXT,
+                last_error_summary TEXT,
+                payload_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pai_status_severity "
+            "ON payment_automation_incidents(status, severity)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pai_scope "
+            "ON payment_automation_incidents(scope_type, scope_id)"
+        )
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payment_automation_repair_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_id INTEGER,
+                correlation_id TEXT,
+                attempted_at TEXT NOT NULL,
+                action_code TEXT NOT NULL,
+                result TEXT NOT NULL,
+                error_summary TEXT,
+                detail_json TEXT
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_para_incident "
+            "ON payment_automation_repair_attempts(incident_id, attempted_at)"
+        )
+
+    # ── v7.1.9 — Payment Automation Guardian: health run lease ──────────────
+    # Atomic lease pattern: BEGIN IMMEDIATE acquires the write lock before any
+    # read, so two concurrent callers (two threads, or — defensively — two
+    # processes sharing this DB file) cannot both observe "no active lease"
+    # and both insert a running row. This is stricter than the existing
+    # invoice_automation_runs check-then-act pattern (SELECT then separate
+    # INSERT) — deliberately, per the v7.1.9 audit finding that pattern is
+    # racy across processes.
+
+    _HEALTH_RUN_DEFAULT_LEASE_SECONDS = 120
+
+    def start_health_run(
+        self,
+        run_type: str,
+        correlation_id: str,
+        lock_token: str,
+        now: str,
+        lease_seconds: int = _HEALTH_RUN_DEFAULT_LEASE_SECONDS,
+    ) -> dict:
+        """Atomically start a new health run, expiring any stale lease first.
+        Returns {"ok": True, ...} on success or {"ok": False, "error":
+        "already_running", "correlation_id": <active run's id>} if another
+        run currently holds an unexpired lease."""
+        lease_expires_at = _add_seconds_iso(now, lease_seconds)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """UPDATE payment_automation_health_runs
+                   SET status='failed', finished_at=?, error_code='lease_expired',
+                       error_summary='stale_lease_expired'
+                   WHERE status='running' AND lease_expires_at < ?""",
+                (now, now),
+            )
+            active = conn.execute(
+                """SELECT * FROM payment_automation_health_runs
+                   WHERE status='running' AND lease_expires_at >= ?
+                   ORDER BY id DESC LIMIT 1""",
+                (now,),
+            ).fetchone()
+            if active:
+                return {
+                    "ok": False, "error": "already_running",
+                    "correlation_id": active["correlation_id"],
+                }
+            conn.execute(
+                """INSERT INTO payment_automation_health_runs
+                   (run_type, correlation_id, lock_token, status,
+                    started_at, heartbeat_at, lease_expires_at, created_at)
+                   VALUES (?,?,?,'running',?,?,?,?)""",
+                (run_type, correlation_id, lock_token, now, now, lease_expires_at, now),
+            )
+        return {"ok": True, "correlation_id": correlation_id, "lock_token": lock_token}
+
+    def heartbeat_health_run(
+        self,
+        correlation_id: str,
+        lock_token: str,
+        now: str,
+        lease_seconds: int = _HEALTH_RUN_DEFAULT_LEASE_SECONDS,
+    ) -> bool:
+        """Renew heartbeat_at/lease_expires_at for a running health run.
+        Returns False if the row no longer matches (already finished /
+        lock_token mismatch) — caller should stop the cycle if so."""
+        lease_expires_at = _add_seconds_iso(now, lease_seconds)
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_automation_health_runs
+                   SET heartbeat_at=?, lease_expires_at=?
+                   WHERE correlation_id=? AND lock_token=? AND status='running'""",
+                (now, lease_expires_at, correlation_id, lock_token),
+            )
+            changed = conn.execute("SELECT changes()").fetchone()[0]
+        return bool(changed)
+
+    def finish_health_run(
+        self,
+        correlation_id: str,
+        lock_token: str,
+        *,
+        status: str,
+        finished_at: str,
+        duration_ms: int = 0,
+        checked_items: int = 0,
+        checked_clients: int = 0,
+        issues_found: int = 0,
+        issues_resolved: int = 0,
+        safe_repairs_performed: int = 0,
+        error_code: Optional[str] = None,
+        error_summary: Optional[str] = None,
+    ) -> bool:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_automation_health_runs
+                   SET status=?, finished_at=?, duration_ms=?, checked_items=?,
+                       checked_clients=?, issues_found=?, issues_resolved=?,
+                       safe_repairs_performed=?, error_code=?, error_summary=?
+                   WHERE correlation_id=? AND lock_token=?""",
+                (
+                    status, finished_at, int(duration_ms), int(checked_items),
+                    int(checked_clients), int(issues_found), int(issues_resolved),
+                    int(safe_repairs_performed), error_code, error_summary,
+                    correlation_id, lock_token,
+                ),
+            )
+            changed = conn.execute("SELECT changes()").fetchone()[0]
+        return bool(changed)
+
+    def get_last_health_run(self, run_type: str = "quick_cycle") -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM payment_automation_health_runs
+                   WHERE run_type=? ORDER BY id DESC LIMIT 1""",
+                (run_type,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_last_successful_health_run(self, run_type: str = "quick_cycle") -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM payment_automation_health_runs
+                   WHERE run_type=? AND status IN ('ok','degraded')
+                   ORDER BY id DESC LIMIT 1""",
+                (run_type,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_health_runs(self, run_type: str = "quick_cycle", limit: int = 20) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM payment_automation_health_runs
+                   WHERE run_type=? ORDER BY id DESC LIMIT ?""",
+                (run_type, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── v7.1.9 — Payment Automation Guardian: incidents ──────────────────────
+
+    def upsert_incident(
+        self,
+        dedup_key: str,
+        *,
+        component: str,
+        scope_type: str,
+        scope_id: str,
+        reason_code: str,
+        severity: str,
+        now: str,
+        payload: Optional[dict] = None,
+    ) -> dict:
+        """Idempotent incident upsert.
+
+        - Unknown dedup_key -> new row, status='open', occurrence_count=1.
+        - Existing 'open'/'recovering' -> bump last_seen_at/occurrence_count,
+          escalate severity only (never silently downgrade — downgrade only
+          happens via resolve_incident, an explicit recovery).
+        - Existing 'resolved' -> reopen (status='open', resolved_at cleared,
+          occurrence_count keeps incrementing across the incident's full
+          history; first_seen_at is preserved from the original occurrence).
+
+        Returns {"created": bool, "reopened": bool, "escalated": bool,
+                 "unchanged": bool, "id": int, "occurrence_count": int,
+                 "severity": str} — callers use this to decide whether a new
+        audit event is warranted (never audit an "unchanged" repeat).
+        """
+        import json as _json
+        _SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
+        payload_json = _json.dumps(payload or {}, ensure_ascii=False)[:4000]
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM payment_automation_incidents WHERE dedup_key=?",
+                (dedup_key,),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    """INSERT INTO payment_automation_incidents
+                       (dedup_key, component, scope_type, scope_id, reason_code,
+                        severity, status, first_seen_at, last_seen_at,
+                        occurrence_count, repair_status, repair_attempt_count,
+                        payload_json, created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,'open',?,?,1,'none',0,?,?,?)""",
+                    (dedup_key, component, scope_type, scope_id, reason_code,
+                     severity, now, now, payload_json, now, now),
+                )
+                new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                return {
+                    "created": True, "reopened": False, "escalated": False,
+                    "unchanged": False, "id": new_id, "occurrence_count": 1,
+                    "severity": severity,
+                }
+
+            existing = dict(row)
+            was_resolved = existing["status"] == "resolved"
+            existing_rank = _SEVERITY_RANK.get(existing["severity"], 1)
+            new_rank = _SEVERITY_RANK.get(severity, 1)
+            effective_severity = severity if new_rank > existing_rank else existing["severity"]
+            escalated = effective_severity != existing["severity"]
+            new_occurrence = int(existing["occurrence_count"]) + 1
+            new_status = "open" if was_resolved else existing["status"]
+
+            unchanged = (
+                not was_resolved
+                and not escalated
+                and existing["reason_code"] == reason_code
+            )
+
+            conn.execute(
+                """UPDATE payment_automation_incidents
+                   SET last_seen_at=?, occurrence_count=?, severity=?,
+                       status=?, resolved_at=NULL, reason_code=?,
+                       payload_json=?, updated_at=?
+                   WHERE dedup_key=?""",
+                (now, new_occurrence, effective_severity, new_status,
+                 reason_code, payload_json, now, dedup_key),
+            )
+            return {
+                "created": False, "reopened": was_resolved, "escalated": escalated,
+                "unchanged": unchanged, "id": existing["id"],
+                "occurrence_count": new_occurrence, "severity": effective_severity,
+            }
+
+    def resolve_incident(self, dedup_key: str, now: str) -> bool:
+        """Mark an incident resolved. Returns False if it was already resolved
+        or didn't exist (no-op) — callers use this to avoid a duplicate
+        'incident_resolved' audit event."""
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE payment_automation_incidents
+                   SET status='resolved', resolved_at=?, updated_at=?
+                   WHERE dedup_key=? AND status != 'resolved'""",
+                (now, now, dedup_key),
+            )
+            changed = conn.execute("SELECT changes()").fetchone()[0]
+        return bool(changed)
+
+    def get_incident(self, dedup_key: str) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM payment_automation_incidents WHERE dedup_key=?",
+                (dedup_key,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_incident_by_id(self, incident_id: int) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM payment_automation_incidents WHERE id=?",
+                (incident_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_open_incidents(
+        self,
+        *,
+        scope_types: Optional[list[str]] = None,
+        scope_ids: Optional[list[str]] = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        """List non-resolved incidents, optionally restricted to given
+        scope_type/scope_id pairs (used for client_manager scoping — the
+        caller passes only the mk_user_ids that client_manager may see)."""
+        query = "SELECT * FROM payment_automation_incidents WHERE status != 'resolved'"
+        params: list = []
+        if scope_types:
+            placeholders = ",".join("?" for _ in scope_types)
+            query += f" AND scope_type IN ({placeholders})"
+            params.extend(scope_types)
+        if scope_ids is not None:
+            if not scope_ids:
+                # Explicit empty allow-list (e.g. client_manager with no
+                # accessible clients) -- return nothing, never fall through
+                # to "all scopes".
+                return []
+            placeholders = ",".join("?" for _ in scope_ids)
+            query += f" AND (scope_type='system' OR scope_id IN ({placeholders}))"
+            params.extend(scope_ids)
+        query += " ORDER BY severity DESC, last_seen_at DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_incidents_resolved_since(self, since: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM payment_automation_incidents WHERE resolved_at >= ?",
+                (since,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    # ── v7.1.9 — Payment Automation Guardian: repair attempts ────────────────
+
+    def create_repair_attempt(
+        self,
+        *,
+        incident_id: Optional[int],
+        correlation_id: Optional[str],
+        action_code: str,
+        result: str,
+        now: str,
+        error_summary: Optional[str] = None,
+        detail: Optional[dict] = None,
+    ) -> None:
+        import json as _json
+        detail_json = _json.dumps(detail or {}, ensure_ascii=False)[:2000]
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO payment_automation_repair_attempts
+                   (incident_id, correlation_id, attempted_at, action_code,
+                    result, error_summary, detail_json)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (incident_id, correlation_id, now, action_code, result,
+                 error_summary, detail_json),
+            )
+            if incident_id is not None and result == "success":
+                conn.execute(
+                    """UPDATE payment_automation_incidents
+                       SET repair_attempt_count = repair_attempt_count + 1,
+                           repair_status='auto_repaired', updated_at=?
+                       WHERE id=?""",
+                    (now, incident_id),
+                )
+            elif incident_id is not None:
+                conn.execute(
+                    """UPDATE payment_automation_incidents
+                       SET repair_attempt_count = repair_attempt_count + 1,
+                           updated_at=?
+                       WHERE id=?""",
+                    (now, incident_id),
+                )
+
+    def list_repair_attempts(self, incident_id: int, limit: int = 50) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM payment_automation_repair_attempts
+                   WHERE incident_id=? ORDER BY id DESC LIMIT ?""",
+                (incident_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── v7.1.9 — training-sync candidates ────────────────────────────────────
+
+    def get_training_sync_candidates(self, limit: int = 1000) -> list[dict]:
+        """Broad, cheap SQL pre-filter for Guardian's periodic training-state
+        sync. Mirrors training_state_domain.is_training_sync_candidate()'s
+        exclusions (terminal intent status / withdrawn / ignored stage) —
+        callers should still apply that pure function per-row as the
+        authoritative check (this query only avoids fetching obviously
+        irrelevant rows)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT a.*, p.status AS intent_status,
+                          p.client_visibility AS intent_visibility,
+                          p.mk_user_subscription_id AS intent_mk_user_subscription_id
+                   FROM invoice_automation_items a
+                   LEFT JOIN payment_intents p ON p.public_id = a.intent_public_id
+                   WHERE a.current_stage != 'ignored'
+                     AND (p.status IS NULL OR p.status NOT IN ('paid','posted_to_moyklass','cancelled'))
+                     AND (p.client_visibility IS NULL OR p.client_visibility != 'withdrawn')
+                   ORDER BY a.updated_at ASC
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     # ── v7.0.94.0 — Invoice Automation methods ───────────────────────────────
 

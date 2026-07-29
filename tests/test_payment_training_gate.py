@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.1.8"
+CURRENT_VERSION = "7.1.9"
 
 # ---------------------------------------------------------------------------
 # Helpers

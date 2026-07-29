@@ -217,8 +217,8 @@ class TestPreviewRemoved(unittest.TestCase):
         self.assertIn('id="ws-help-training-pause"', APP_JS)
 
     def test_cache_bust_is_current_release(self):
-        self.assertIn("app.js?v=7.1.8", INDEX_HTML)
-        self.assertIn('console.log("MiniApp version: v7.1.8")', APP_JS)
+        self.assertIn("app.js?v=7.1.9", INDEX_HTML)
+        self.assertIn('console.log("MiniApp version: v7.1.9")', APP_JS)
 
 
 class TestExistingScreensUnchanged(unittest.TestCase):

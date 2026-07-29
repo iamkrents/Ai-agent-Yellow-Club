@@ -89,10 +89,12 @@ from training_state_domain import (
     resolve_training_state,
     unavailable_training_state_result,
     training_reason_message,
+    is_training_sync_candidate,
     STATE_ACTIVE,
     TRAINING_BLOCKED_REASON_CODES,
     REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED,
 )
+import payment_automation_reasons as par
 
 log = logging.getLogger("yellow_club_miniapp")
 WEB_DIR = BASE_DIR / "miniapp"
@@ -151,6 +153,8 @@ PILOT_ADMIN_ROLES = {"owner", "admin"}                 # v7.1.5 — global pilot
 PILOT_MANAGE_ROLES = {"owner", "admin", "operations", "client_manager"}  # v7.1.5.3 — pilot client CRUD
 PAYMENT_APPROVAL_ROLES = {"owner", "admin", "operations", "client_manager"}  # v7.1.5 — review approve
 WORKSPACE_VIEW_ROLES = {"owner", "admin", "operations", "client_manager"}    # v7.1.5 — workspace read
+PAYMENT_DIAGNOSTICS_VIEW_ROLES = WORKSPACE_VIEW_ROLES     # v7.1.9 — client_manager sees read-only, scoped
+PAYMENT_DIAGNOSTICS_MANAGE_ROLES = {"owner", "admin", "operations"}  # v7.1.9 — manual run/recheck
 
 ADMIN_TABS_BY_ROLE = {
     "owner": ["overview", "lesson-control", "teachers", "work-schedule", "prep-results", "tasks", "users", "notion", "notifications", "kpi", "interns", "client-links", "payment-terms", "payment-automation"],
@@ -1398,6 +1402,14 @@ class InvoiceAutomationScheduler:
                 settings = self._ctx.storage.get_automation_settings()
                 interval = max(5, int(settings.get("scan_interval_minutes", 10))) * 60
                 discovery_on = bool(settings.get("discovery_enabled", 1))
+                # v7.1.9 — best-effort Guardian heartbeat staleness check, so a
+                # dead Guardian thread can be noticed by this (separate, live)
+                # component too. Pure DB read + conditional incident upsert;
+                # no MoyKlass calls, never gated by the discovery kill switch.
+                try:
+                    self._ctx._check_guardian_heartbeat(now_iso())
+                except Exception:
+                    log.exception("InvoiceAutomationScheduler: guardian heartbeat check error")
                 # Global kill switch: if env var is false, skip automatic runs
                 if not getattr(self._ctx.settings, "payment_invoice_automation_enabled", False):
                     _time.sleep(interval)
@@ -1747,6 +1759,271 @@ class InvoiceAutomationScheduler:
         )
 
 
+_INTEGRITY_CODE_TO_REASON = {
+    "duplicate_active_intent": "duplicate_intent_detected",
+    "duplicate_tx_uid": "duplicate_intent_detected",
+    "posted_no_mk_payment_id": "paid_not_posted_to_mk",
+    "posting_status_posted_no_id": "paid_not_posted_to_mk",
+    "stale_posting_claim": "paid_not_posted_to_mk",
+}
+
+
+class PaymentAutomationGuardian:
+    """v7.1.9 — Payment Automation Guardian: a dedicated background thread
+    that re-checks training state for every relevant automation item at a
+    FIXED 600-second interval, independent of InvoiceAutomationScheduler's
+    configurable scan_interval_minutes.
+
+    Rationale (see the v7.1.9 architecture audit): the business requirement
+    "training status must be re-checked at least every 10 minutes" must hold
+    regardless of how discovery is configured — and the pre-Guardian pipeline
+    had gaps where payment_options_created (publish disabled) and published-
+    but-unpaid (posting disabled) items were never re-evaluated automatically.
+
+    Guardian NEVER creates a Payment Intent, bePaid checkout, publication, or
+    withdrawal. It only re-reads MoyKlass training state for existing
+    automation items and applies the shared, already-audited
+    MiniAppContext._apply_training_state_result(context="periodic_sync")
+    helper — the exact same decision logic used by discovery/publish/approve/
+    manual-check, force_stage=None so an already-published item's stage is
+    never regressed.
+    """
+
+    QUICK_CYCLE_INTERVAL_SECONDS = 600
+    STARTUP_DELAY_SECONDS = 90
+    LEASE_SECONDS = 120
+    HEARTBEAT_INTERVAL_SECONDS = 30
+    CANDIDATE_BATCH_LIMIT = 1000
+    OVERLAP_DEDUP_KEY = "guardian:quick_cycle:overlap"
+
+    def __init__(self, ctx: "MiniAppContext") -> None:
+        self._ctx = ctx
+        self._thread = threading.Thread(
+            target=self._loop, name="payment-automation-guardian", daemon=True
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _loop(self) -> None:
+        time.sleep(self.STARTUP_DELAY_SECONDS)
+        while True:
+            cycle_start_monotonic = time.monotonic()
+            try:
+                self._run_quick_cycle()
+            except Exception:
+                log.exception("PaymentAutomationGuardian: unhandled cycle error")
+            elapsed = time.monotonic() - cycle_start_monotonic
+            if elapsed > self.QUICK_CYCLE_INTERVAL_SECONDS:
+                log.warning(
+                    "PaymentAutomationGuardian: cycle took %.1fs (> %ss target) — "
+                    "starting next cycle immediately, no overlap",
+                    elapsed, self.QUICK_CYCLE_INTERVAL_SECONDS,
+                )
+                continue  # no sleep — never accumulates a catch-up burst either
+            time.sleep(self.QUICK_CYCLE_INTERVAL_SECONDS - elapsed)
+
+    def _run_quick_cycle(self) -> None:
+        import uuid
+        ctx = self._ctx
+        now = now_iso()
+        correlation_id = f"guard_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+        lock_token = uuid.uuid4().hex
+
+        lease = ctx.storage.start_health_run(
+            "quick_cycle", correlation_id, lock_token, now, lease_seconds=self.LEASE_SECONDS,
+        )
+        if not lease.get("ok"):
+            # Long-running previous cycle still holds the lease — skip this
+            # tick entirely rather than overlap. Dedup'd, so this is a single
+            # visible incident, not one per skipped tick.
+            ctx.storage.upsert_incident(
+                self.OVERLAP_DEDUP_KEY, component=par.COMPONENT_SCHEDULER,
+                scope_type=par.SCOPE_SYSTEM, scope_id="", reason_code="scheduler_cycle_overlapping",
+                severity=par.SEVERITY_INFO, now=now,
+                payload={"active_correlation_id": lease.get("correlation_id", "")},
+            )
+            log.info(
+                "PaymentAutomationGuardian: cycle skipped (already running: %s)",
+                lease.get("correlation_id"),
+            )
+            return
+        ctx.storage.resolve_incident(self.OVERLAP_DEDUP_KEY, now)
+
+        cycle_start = time.monotonic()
+        last_heartbeat = cycle_start
+        checked_items = 0
+        checked_clients = 0
+        issues_found = 0
+        issues_resolved = 0
+        safe_repairs = 0
+        status = "ok"
+        error_summary: Optional[str] = None
+
+        try:
+            checked_items, checked_clients, issues_found, issues_resolved, safe_repairs = (
+                self._sync_training_states(correlation_id, lock_token, cycle_start, last_heartbeat)
+            )
+            _int_found, _int_resolved = self._run_local_integrity_checks(now)
+            issues_found += _int_found
+            issues_resolved += _int_resolved
+        except Exception as exc:
+            status = "failed"
+            error_summary = f"{type(exc).__name__}: {exc}"[:500]
+            log.exception("PaymentAutomationGuardian: cycle fatal error")
+            self._maybe_audit_cycle_status("guardian_cycle_failed", error_summary)
+        else:
+            if issues_found > 0 and status == "ok":
+                # Not itself an error — degraded just signals "found things
+                # worth a human's attention this cycle" for the diagnostics
+                # summary; distinct from status=failed (the cycle itself broke).
+                status = "degraded" if issues_found > issues_resolved else "ok"
+
+        duration_ms = int((time.monotonic() - cycle_start) * 1000)
+        ctx.storage.finish_health_run(
+            correlation_id, lock_token, status=status, finished_at=now_iso(),
+            duration_ms=duration_ms, checked_items=checked_items, checked_clients=checked_clients,
+            issues_found=issues_found, issues_resolved=issues_resolved,
+            safe_repairs_performed=safe_repairs, error_summary=error_summary,
+        )
+
+    def _sync_training_states(
+        self, correlation_id: str, lock_token: str, cycle_start: float, last_heartbeat: float,
+    ) -> tuple[int, int, int, int, int]:
+        """Re-check training state for every training-sync candidate,
+        grouped by client so each client is fetched from MoyKlass at most
+        once this cycle (per-cycle cache) — independent children/courses
+        never block each other; one client's MoyKlass error never stops the
+        rest (isolated try/except per item)."""
+        ctx = self._ctx
+        checked_items = 0
+        checked_clients = 0
+        issues_found = 0
+        issues_resolved = 0
+        safe_repairs = 0
+
+        rows = ctx.storage.get_training_sync_candidates(limit=self.CANDIDATE_BATCH_LIMIT)
+        by_client: dict[str, list[dict]] = {}
+        for row in rows:
+            if not is_training_sync_candidate(
+                current_stage=row.get("current_stage"),
+                intent_status=row.get("intent_status"),
+                intent_visibility=row.get("intent_visibility"),
+            ):
+                continue
+            mk_uid = str(row.get("mk_user_id") or "").strip()
+            if not mk_uid:
+                continue
+            by_client.setdefault(mk_uid, []).append(row)
+
+        training_cache: dict[str, dict] = {}
+        for mk_uid, items in by_client.items():
+            checked_clients += 1
+            if time.monotonic() - last_heartbeat > self.HEARTBEAT_INTERVAL_SECONDS:
+                ctx.storage.heartbeat_health_run(
+                    correlation_id, lock_token, now_iso(), lease_seconds=self.LEASE_SECONDS,
+                )
+                last_heartbeat = time.monotonic()
+
+            for item in items:
+                checked_items += 1
+                try:
+                    _, sub_id = ctx._resolve_training_context_for_item(item)
+                    now = now_iso()
+                    training = ctx._get_training_state(mk_uid, sub_id, cache=training_cache)
+                    result = ctx._apply_training_state_result(
+                        item, item["id"], mk_uid, item.get("mk_invoice_id"), training, now,
+                        context="periodic_sync", force_stage=None,
+                        intent_public_id=item.get("intent_public_id"),
+                    )
+                    if result["outcome"] == "blocked":
+                        issues_found += 1
+                        if result["changed"]:
+                            ctx._training_state_audit(
+                                "training_state_changed_by_guardian",
+                                mk_user_id=mk_uid, mk_invoice_id=item.get("mk_invoice_id"),
+                                automation_item_id=item["id"],
+                                intent_public_id=item.get("intent_public_id"),
+                                details=ctx._training_details(training), initiator="guardian",
+                            )
+                    elif result["outcome"] == "resume_required":
+                        issues_resolved += 1
+                        safe_repairs += 1
+                        ctx._training_state_audit(
+                            "client_resume_confirmation_required",
+                            mk_user_id=mk_uid, mk_invoice_id=item.get("mk_invoice_id"),
+                            automation_item_id=item["id"],
+                            intent_public_id=item.get("intent_public_id"),
+                            details=ctx._training_details(training), initiator="guardian",
+                        )
+                    elif result["outcome"] == "active" and result.get("changed"):
+                        issues_resolved += 1
+                except Exception:
+                    log.exception(
+                        "PaymentAutomationGuardian: training-sync error for item_id=%s mk_user_id=%s",
+                        item.get("id"), mk_uid,
+                    )
+                    continue  # one item's failure never stops the rest
+
+        return checked_items, checked_clients, issues_found, issues_resolved, safe_repairs
+
+    def _run_local_integrity_checks(self, now: str) -> tuple[int, int]:
+        """Lightweight local-only invariant checks (no MoyKlass calls, no
+        synthetic bePaid requests, no PRAGMA integrity_check) — reuses the
+        existing Storage.audit_payment_integrity() read-only scan (already
+        covers duplicate active intents, duplicate tx_uid, paid-without-
+        posting, stale MK-posting claims, and more) instead of duplicating
+        that logic. Detected issues become dedup'd incidents; issues no
+        longer detected this cycle are auto-resolved."""
+        ctx = self._ctx
+        found = 0
+        resolved = 0
+        try:
+            result = ctx.storage.audit_payment_integrity()
+        except Exception:
+            log.exception("PaymentAutomationGuardian: local integrity check error")
+            return 0, 0
+
+        current_keys: set[str] = set()
+        for severity, issues in (("critical", result.get("critical", [])),
+                                  ("warning", result.get("warning", []))):
+            for issue in issues:
+                code = str(issue.get("code") or "")
+                public_id = str(issue.get("public_id") or "")
+                dedup_key = f"integrity:{code}:{public_id}"
+                current_keys.add(dedup_key)
+                reason_code = _INTEGRITY_CODE_TO_REASON.get(code, "inconsistent_local_state")
+                r = ctx.storage.upsert_incident(
+                    dedup_key, component=par.COMPONENT_MK_POSTING if "posting" in code or "posted" in code
+                    else par.COMPONENT_AUTOMATION,
+                    scope_type=par.SCOPE_PAYMENT_INTENT, scope_id=public_id,
+                    reason_code=reason_code, severity=severity, now=now,
+                    payload={"integrity_code": code, "mk_invoice_id": str(issue.get("mk_invoice_id") or "")},
+                )
+                if r["created"] or r["escalated"]:
+                    found += 1
+
+        for inc in ctx.storage.list_open_incidents():
+            key = inc.get("dedup_key", "")
+            if key.startswith("integrity:") and key not in current_keys:
+                if ctx.storage.resolve_incident(key, now):
+                    resolved += 1
+
+        return found, resolved
+
+    def _maybe_audit_cycle_status(self, event_type: str, error_summary: Optional[str]) -> None:
+        try:
+            self._ctx.storage.create_automation_audit_event({
+                "created_at": now_iso(), "event_type": event_type,
+                "initiator": "guardian",
+                "details_json": __import__("json").dumps(
+                    {"error_summary": error_summary or ""}, ensure_ascii=False,
+                )[:2000],
+            })
+        except Exception:
+            log.warning("PaymentAutomationGuardian: audit write failed event_type=%s", event_type)
+
+
 class MiniAppContext:
     def __init__(self) -> None:
         self.settings = load_settings()
@@ -1967,6 +2244,8 @@ class MiniAppContext:
             "canAdminPilot": role in PILOT_ADMIN_ROLES,
             "canManagePilotClients": role in PILOT_MANAGE_ROLES,
             "canManageClientLinks": role in CLIENT_LINK_ADMIN_ROLES,  # v7.1.7
+            "canViewPaymentDiagnostics": role in PAYMENT_DIAGNOSTICS_VIEW_ROLES,  # v7.1.9
+            "canManagePaymentDiagnostics": role in PAYMENT_DIAGNOSTICS_MANAGE_ROLES,  # v7.1.9
         }
 
     def me(self, auth: dict[str, Any]) -> dict[str, Any]:
@@ -14367,6 +14646,259 @@ class MiniAppContext:
         items = self.storage.get_payments_attention_queue(limit=limit)
         return {"ok": True, "items": items, "count": len(items)}
 
+    # ── v7.1.9 — Payment Automation Guardian diagnostics ─────────────────────
+
+    _GUARDIAN_HEARTBEAT_STALE_KEY = "scheduler_heartbeat_missing"
+    _GUARDIAN_HEARTBEAT_GRACE_SECONDS = 120  # on top of 2 x quick-cycle interval
+
+    def _require_diagnostics_view_access(self, auth: dict[str, Any]) -> Optional[dict[str, Any]]:
+        if auth.get("_internal") is True:
+            return None
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in PAYMENT_DIAGNOSTICS_VIEW_ROLES:
+            return {"ok": False, "error": "Нет доступа к диагностике платёжной автоматизации."}
+        return None
+
+    def _require_diagnostics_manage_access(self, auth: dict[str, Any]) -> Optional[dict[str, Any]]:
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in PAYMENT_DIAGNOSTICS_MANAGE_ROLES:
+            return {"ok": False, "error": "Действие доступно только owner/admin/operations."}
+        return None
+
+    def _check_guardian_heartbeat(self, now: str) -> bool:
+        """Best-effort staleness check — safe to call from any live component
+        (Diagnostics API, InvoiceAutomationScheduler's own cycle, process
+        startup) so a dead Guardian thread can be detected by something
+        OTHER than the dead thread itself. Pure DB read + conditional
+        incident upsert/resolve — no MoyKlass calls. Returns True if stale.
+        """
+        try:
+            last_ok = self.storage.get_last_successful_health_run("quick_cycle")
+        except Exception:
+            return False
+        threshold = (
+            2 * PaymentAutomationGuardian.QUICK_CYCLE_INTERVAL_SECONDS
+            + self._GUARDIAN_HEARTBEAT_GRACE_SECONDS
+        )
+        if last_ok is None:
+            # Never run yet — not "stale", just "no data" (handled separately
+            # in the diagnostics summary); nothing to flag here.
+            return False
+        try:
+            from datetime import datetime
+            last_dt = datetime.fromisoformat(str(last_ok.get("heartbeat_at") or last_ok.get("started_at")))
+            now_dt = datetime.fromisoformat(now)
+            stale = (now_dt - last_dt).total_seconds() > threshold
+        except Exception:
+            return False
+        if stale:
+            self.storage.upsert_incident(
+                self._GUARDIAN_HEARTBEAT_STALE_KEY, component=par.COMPONENT_SCHEDULER,
+                scope_type=par.SCOPE_SYSTEM, scope_id="", reason_code="scheduler_heartbeat_missing",
+                severity=par.SEVERITY_CRITICAL, now=now,
+                payload={"last_successful_run_at": str(last_ok.get("started_at") or "")},
+            )
+        else:
+            self.storage.resolve_incident(self._GUARDIAN_HEARTBEAT_STALE_KEY, now)
+        return stale
+
+    def _diagnostics_incident_view(self, inc: dict[str, Any]) -> dict[str, Any]:
+        """Sanitized incident shape for API responses — never includes raw
+        payload_json, provider codes, or exceptions; only the already-
+        curated reason-registry text."""
+        info = par.get_reason_info(inc.get("reason_code"))
+        return {
+            "id": inc.get("id"),
+            "component": inc.get("component"),
+            "scope_type": inc.get("scope_type"),
+            "reason_code": inc.get("reason_code"),
+            "severity": inc.get("severity"),
+            "status": inc.get("status"),
+            "title": par.reason_user_title(inc.get("reason_code")),
+            "message": par.reason_user_message(inc.get("reason_code")),
+            "recovery_condition": info.recovery_condition if info else "",
+            "first_seen_at": inc.get("first_seen_at"),
+            "last_seen_at": inc.get("last_seen_at"),
+            "occurrence_count": inc.get("occurrence_count"),
+            "repair_status": inc.get("repair_status"),
+            "repair_attempt_count": inc.get("repair_attempt_count"),
+            "automation_item_id": (
+                inc.get("scope_id") if inc.get("scope_type") == "automation_item" else None
+            ),
+            "intent_public_id": (
+                inc.get("scope_id") if inc.get("scope_type") == "payment_intent" else None
+            ),
+        }
+
+    def payments_diagnostics(self, auth: dict[str, Any]) -> dict[str, Any]:
+        """GET /api/payments/diagnostics — read-only Guardian/health summary.
+
+        client_manager gets the same incident visibility as the rest of
+        Payments Workspace (there is no "clients assigned to a specific
+        client_manager" concept anywhere in this codebase — WORKSPACE_VIEW_ROLES
+        already gives client_manager full read access to Attention/Overview/
+        All-Payments) — but never the manage/repair actions
+        (canManagePaymentDiagnostics gates those client-side and server-side).
+        Never trusts anything from the request for scope resolution.
+        """
+        denied = self._require_diagnostics_view_access(auth)
+        if denied:
+            return denied
+        now = now_iso()
+        self._check_guardian_heartbeat(now)
+
+        last_run = self.storage.get_last_health_run("quick_cycle")
+        last_ok = self.storage.get_last_successful_health_run("quick_cycle")
+        open_incidents = self.storage.list_open_incidents(limit=200)
+
+        critical = [i for i in open_incidents if i.get("severity") == "critical"]
+        warning = [i for i in open_incidents if i.get("severity") == "warning"]
+        info_level = [i for i in open_incidents if i.get("severity") == "info"]
+        def _is_retryable(inc: dict[str, Any]) -> bool:
+            info = par.get_reason_info(inc.get("reason_code"))
+            return bool(info.retryable) if info is not None else False
+        retryable = [i for i in open_incidents if _is_retryable(i)]
+        stale = [i for i in open_incidents if i.get("reason_code") == "stale_automation_item"]
+
+        from datetime import datetime, timedelta
+        today_start = datetime.now().strftime("%Y-%m-%dT00:00:00")
+        resolved_today = self.storage.count_incidents_resolved_since(today_start)
+        safe_repairs_today = int((last_run or {}).get("safe_repairs_performed") or 0)
+
+        if last_run is None:
+            guardian_status = "no_data"
+        elif last_run.get("status") == "failed" or critical:
+            guardian_status = "critical"
+        elif last_run.get("status") == "degraded" or warning:
+            guardian_status = "warning"
+        else:
+            guardian_status = "healthy"
+
+        next_expected_at = None
+        if last_run and last_run.get("started_at"):
+            try:
+                next_expected_at = (
+                    datetime.fromisoformat(str(last_run["started_at"]))
+                    + timedelta(seconds=PaymentAutomationGuardian.QUICK_CYCLE_INTERVAL_SECONDS)
+                ).isoformat()
+            except Exception:
+                next_expected_at = None
+
+        return {
+            "ok": True,
+            "guardian": {
+                "status": guardian_status,
+                "last_run_at": (last_run or {}).get("started_at"),
+                "last_run_status": (last_run or {}).get("status"),
+                "last_run_duration_ms": (last_run or {}).get("duration_ms"),
+                "last_successful_run_at": (last_ok or {}).get("started_at"),
+                "next_expected_run_at": next_expected_at,
+                "checked_items": (last_run or {}).get("checked_items"),
+                "checked_clients": (last_run or {}).get("checked_clients"),
+                "quick_cycle_interval_seconds": PaymentAutomationGuardian.QUICK_CYCLE_INTERVAL_SECONDS,
+            },
+            "counts": {
+                "open_critical": len(critical),
+                "open_warning": len(warning),
+                "open_info": len(info_level),
+                "resolved_today": resolved_today,
+                "safe_repairs_today": safe_repairs_today,
+                "retryable_count": len(retryable),
+                "stale_count": len(stale),
+            },
+            "incidents": [self._diagnostics_incident_view(i) for i in open_incidents],
+            "can_manage": bool(self._require_diagnostics_manage_access(auth) is None),
+        }
+
+    def payments_diagnostics_run(self, auth: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/payments/diagnostics/run — request an unscheduled
+        Guardian cycle. Never creates financial side effects (same
+        _run_quick_cycle() the background thread calls itself)."""
+        denied = self._require_diagnostics_manage_access(auth)
+        if denied:
+            return denied
+        now = now_iso()
+        self.storage.create_automation_audit_event({
+            "created_at": now, "event_type": "diagnostics_manual_run_requested",
+            "initiator": str(auth.get("user_id") or ""),
+        })
+        guardian = PaymentAutomationGuardian(self)
+        try:
+            guardian._run_quick_cycle()
+        except Exception as exc:
+            log.exception("payments_diagnostics_run: cycle error")
+            return {"ok": False, "error": f"Ошибка запуска диагностики: {exc}"}
+        overlap = self.storage.get_incident(PaymentAutomationGuardian.OVERLAP_DEDUP_KEY)
+        if overlap and overlap.get("status") == "open":
+            return {"ok": False, "error": "already_running", "conflict": True}
+        last_run = self.storage.get_last_health_run("quick_cycle")
+        return {"ok": True, "run": last_run}
+
+    def payments_diagnostics_incident_recheck(
+        self, auth: dict[str, Any], incident_id: str,
+    ) -> dict[str, Any]:
+        """POST /api/payments/diagnostics/incidents/{id}/recheck — safe,
+        read-only-effect recheck. For a training-state incident, delegates to
+        the exact same forced-fresh helper the manual training-check button
+        uses. Never accepts reason_code/mk_user_id/severity/subscription id
+        from the request — always resolved server-side from the incident row."""
+        denied = self._require_diagnostics_manage_access(auth)
+        if denied:
+            return denied
+        try:
+            iid = int(incident_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid incident id"}
+        inc = self.storage.get_incident_by_id(iid)
+        if not inc:
+            return {"ok": False, "error": "Инцидент не найден."}
+
+        now = now_iso()
+        actor = str(auth.get("user_id") or "")
+        self.storage.create_automation_audit_event({
+            "created_at": now, "event_type": "incident_manual_recheck",
+            "initiator": actor, "details_json": __import__("json").dumps(
+                {"incident_id": iid, "component": inc.get("component")}, ensure_ascii=False,
+            ),
+        })
+
+        if inc.get("scope_type") == "automation_item" and inc.get("component") == par.COMPONENT_TRAINING_STATE:
+            try:
+                item_id = int(inc.get("scope_id") or 0)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "Некорректный элемент автоматизации."}
+            item = self.storage.get_automation_item_by_id(item_id)
+            if not item:
+                return {"ok": False, "error": "Элемент автоматизации не найден."}
+            mk_user_id, mk_user_subscription_id = self._resolve_training_context_for_item(item)
+            if not mk_user_id:
+                return {"ok": False, "error": "Не удалось определить клиента для этого элемента."}
+            result = self._training_state_check_item(
+                item, item_id, mk_user_id, mk_user_subscription_id, now, actor,
+            )
+            self.storage.create_repair_attempt(
+                incident_id=iid, correlation_id=None, action_code="training_state_recheck",
+                result="success" if result.get("ok") else "failed", now=now,
+            )
+            return result
+
+        # System/other incidents — safe read-only recheck: re-evaluate
+        # heartbeat staleness now; local integrity issues resolve themselves
+        # via the next Guardian cycle's audit_payment_integrity() re-scan.
+        if inc.get("reason_code") == "scheduler_heartbeat_missing":
+            stale = self._check_guardian_heartbeat(now)
+            self.storage.create_repair_attempt(
+                incident_id=iid, correlation_id=None, action_code="heartbeat_recheck",
+                result="success", now=now, detail={"stale": stale},
+            )
+            return {"ok": True, "stale": stale}
+
+        self.storage.create_repair_attempt(
+            incident_id=iid, correlation_id=None, action_code="generic_recheck",
+            result="skipped", now=now,
+        )
+        return {"ok": True, "message": "Эта проверка обновляется автоматически со следующим циклом Guardian."}
+
     # ── v7.1.5 — Pilot client management ─────────────────────────────────────
 
     def pilot_list_clients(self, auth: dict[str, Any]) -> dict[str, Any]:
@@ -14497,12 +15029,17 @@ class MiniAppContext:
         if _appr_training.get("state") != STATE_ACTIVE:
             _appr_reason = _appr_training.get("reason_code")
             if _appr_item:
-                self.storage.update_automation_item_stage(
-                    _appr_item["id"], "requires_check",
-                    reason_code=_appr_reason,
-                    readable_reason=training_reason_message(_appr_reason),
-                    now=now,
+                # Delegate the decision to the shared helper (force_stage=
+                # "requires_check" — approve is a blocking context, same as
+                # discovery/publish). state != ACTIVE here is guaranteed by
+                # the surrounding `if`, so the outcome is always "blocked".
+                _appr_result = self._apply_training_state_result(
+                    _appr_item, _appr_item["id"], intent.get("mk_user_id"),
+                    intent.get("mk_invoice_id"), _appr_training, now,
+                    context="approve_check", force_stage="requires_check",
+                    intent_public_id=public_id,
                 )
+                _appr_reason = _appr_result.get("reason_code", _appr_reason)
             self._training_state_audit(
                 "bepaid_creation_blocked_by_training_state",
                 mk_user_id=intent.get("mk_user_id"), mk_invoice_id=intent.get("mk_invoice_id"),
@@ -14989,6 +15526,123 @@ class MiniAppContext:
             "matched_join_status_ids": training.get("matched_join_status_ids"),
         }
 
+    def _apply_training_state_result(
+        self,
+        item: dict[str, Any],
+        item_id: int,
+        mk_user_id: str,
+        mk_invoice_id: Optional[str],
+        training: dict[str, Any],
+        now: str,
+        *,
+        context: str,
+        force_stage: Optional[str] = None,
+        intent_public_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """v7.1.9 — single shared decision point for applying a resolved
+        training-state result to an automation item: reason_code/stage update
+        + incident upsert/resolve. Used by discovery, the Guardian periodic
+        sync, the manual training-check/resume endpoints, and the forced-fresh
+        checks before approve/publish — so there is exactly one place that
+        decides "what does this training-state result mean for this item",
+        even though each caller may still own its own audit event_type
+        vocabulary (already covered by existing tests) via the returned
+        `outcome`/`changed` flags.
+
+        context: "discovery" | "forced_check" | "publish_check" |
+                 "approve_check" | "periodic_sync" | "resume_check" — used
+                 only for incident payload/logging, never changes the
+                 decision logic itself (no incompatible per-context branches).
+
+        force_stage: None preserves the item's current current_stage (used
+                 for informational-only contexts like periodic_sync on an
+                 already-published/already-created item); a string forces
+                 current_stage to that value (used by blocking contexts,
+                 historically always "requires_check").
+
+        Returns:
+          {"outcome": "resume_required", "changed": bool}
+          {"outcome": "unchanged_resume_pending"}
+          {"outcome": "active", "changed": bool}
+          {"outcome": "blocked", "changed": bool, "reason_code": str}
+        """
+        prev_reason = item.get("reason_code")
+        state = training.get("state")
+        reason_code = training.get("reason_code")
+        current_stage = item.get("current_stage", "discovered")
+        stage_to_set = force_stage if force_stage is not None else current_stage
+        dedup_key = f"training_state:automation_item:{item_id}"
+
+        if state == STATE_ACTIVE:
+            if prev_reason in TRAINING_BLOCKED_REASON_CODES:
+                # Was blocked for a training reason; MoyKlass now shows active.
+                # Do NOT silently resume automation — require manual confirmation,
+                # regardless of context (discovery/periodic_sync/forced_check all
+                # behave identically here — see v7.1.9 architecture spec section 2.3).
+                if prev_reason != REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED:
+                    self.storage.update_automation_item_stage(
+                        item_id, stage_to_set,
+                        reason_code=REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED,
+                        readable_reason=training_reason_message(REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED),
+                        now=now,
+                    )
+                    self.storage.resolve_incident(dedup_key, now)
+                    self.storage.upsert_incident(
+                        dedup_key, component=par.COMPONENT_TRAINING_STATE,
+                        scope_type=par.SCOPE_AUTOMATION_ITEM, scope_id=str(item_id),
+                        reason_code=REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED,
+                        severity=par.SEVERITY_INFO, now=now,
+                        payload={
+                            "mk_user_id": str(mk_user_id or ""),
+                            "mk_invoice_id": str(mk_invoice_id or ""),
+                            "intent_public_id": str(intent_public_id or ""),
+                            "context": context,
+                        },
+                    )
+                    return {"outcome": "resume_required", "changed": True}
+                return {"outcome": "unchanged_resume_pending", "changed": False}
+            # Already active, no prior training block — defensively resolve a
+            # stale incident if one somehow remained open (should be a no-op
+            # in the common case).
+            resolved = self.storage.resolve_incident(dedup_key, now)
+            return {"outcome": "active", "changed": resolved}
+
+        # paused / finished / unknown / ambiguous — block.
+        #
+        # Only write current_stage/reason_code when the reason actually
+        # changed. This matters because this helper is also called for
+        # items already at payment_options_created/published (Guardian's
+        # periodic_sync, and the manual training-check button, both of
+        # which may run on ANY stage — unlike discovery, which only ever
+        # sees pre-creation items). Unconditionally forcing stage_to_set on
+        # every unchanged repeat would silently regress an already-published
+        # item's stage back to "requires_check" on a no-op re-check — this
+        # was a real bug caught by test_paused_reason_remains_after_check_
+        # confirms_still_paused. Once written on the actual transition, the
+        # stage is already correct for every subsequent unchanged cycle.
+        changed = reason_code != prev_reason
+        if changed:
+            self.storage.update_automation_item_stage(
+                item_id, stage_to_set,
+                reason_code=reason_code,
+                readable_reason=training_reason_message(reason_code),
+                now=now,
+            )
+        _rinfo = par.get_reason_info(reason_code)
+        severity = _rinfo.severity if _rinfo is not None else par.SEVERITY_WARNING
+        self.storage.upsert_incident(
+            dedup_key, component=par.COMPONENT_TRAINING_STATE,
+            scope_type=par.SCOPE_AUTOMATION_ITEM, scope_id=str(item_id),
+            reason_code=str(reason_code or ""), severity=severity, now=now,
+            payload={
+                "mk_user_id": str(mk_user_id or ""),
+                "mk_invoice_id": str(mk_invoice_id or ""),
+                "intent_public_id": str(intent_public_id or ""),
+                "context": context,
+            },
+        )
+        return {"outcome": "blocked", "changed": changed, "reason_code": reason_code}
+
     def _apply_training_gate(
         self,
         item: dict[str, Any],
@@ -15008,38 +15662,33 @@ class MiniAppContext:
 
         Idempotent across scheduler cycles: only writes a new audit event
         when the reason_code actually changes versus the item's stored value.
+
+        v7.1.9 — delegates the actual state-transition decision (reason_code/
+        stage update + incident bookkeeping) to the shared
+        _apply_training_state_result() helper; this method only translates
+        the outcome into discovery's own audit event vocabulary and pipeline
+        return-value contract, both unchanged from v7.1.8.
         """
         prev_reason = item.get("reason_code")
-        state = training.get("state")
-        reason_code = training.get("reason_code")
+        result = self._apply_training_state_result(
+            item, item_id, mk_user_id, inv_id, training, now,
+            context="discovery", force_stage="requires_check",
+        )
 
-        if state == STATE_ACTIVE:
-            if prev_reason in TRAINING_BLOCKED_REASON_CODES:
-                # Was blocked for a training reason; MoyKlass now shows active.
-                # Do NOT silently resume automation — require manual confirmation.
-                if prev_reason != REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED:
-                    self.storage.update_automation_item_stage(
-                        item_id, "requires_check",
-                        reason_code=REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED,
-                        readable_reason=training_reason_message(REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED),
-                        now=now,
-                    )
-                    self._training_state_audit(
-                        "client_resume_confirmation_required",
-                        mk_user_id=mk_user_id, mk_invoice_id=inv_id,
-                        automation_item_id=item_id, details=self._training_details(training),
-                    )
-                return {"requires_check": True, "discovered": is_new}
+        if result["outcome"] == "resume_required":
+            self._training_state_audit(
+                "client_resume_confirmation_required",
+                mk_user_id=mk_user_id, mk_invoice_id=inv_id,
+                automation_item_id=item_id, details=self._training_details(training),
+            )
+            return {"requires_check": True, "discovered": is_new}
+        if result["outcome"] == "unchanged_resume_pending":
+            return {"requires_check": True, "discovered": is_new}
+        if result["outcome"] == "active":
             return None  # proceed with normal flow
 
-        # paused / finished / unknown — block, and only audit on change.
-        self.storage.update_automation_item_stage(
-            item_id, "requires_check",
-            reason_code=reason_code,
-            readable_reason=training_reason_message(reason_code),
-            now=now,
-        )
-        if reason_code != prev_reason:
+        # blocked
+        if result["changed"]:
             event_type = (
                 "automation_blocked_by_training_state"
                 if prev_reason not in TRAINING_BLOCKED_REASON_CODES
@@ -15133,6 +15782,15 @@ class MiniAppContext:
         now: str,
         actor: str,
     ) -> dict[str, Any]:
+        """Manual "Проверить статус в МойКласс" button — an immediate
+        forced-fresh check, never required for automatic detection (the
+        Guardian periodic sync + discovery already do this every cycle).
+
+        v7.1.9 — delegates the state-transition decision to the shared
+        _apply_training_state_result() helper (same vocabulary as discovery:
+        "automation_blocked_by_training_state"/"training_state_changed"/
+        "client_resume_confirmation_required").
+        """
         training = self._get_training_state(
             mk_user_id, mk_user_subscription_id, force_refresh=True,
         )
@@ -15147,13 +15805,14 @@ class MiniAppContext:
             details=self._training_details(training), initiator=actor,
         )
 
-        if state == STATE_ACTIVE:
-            new_reason = REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED
-            if prev_reason != new_reason:
-                self.storage.update_automation_item_stage(
-                    iid, "requires_check", reason_code=new_reason,
-                    readable_reason=training_reason_message(new_reason), now=now,
-                )
+        result = self._apply_training_state_result(
+            item, iid, mk_user_id, item.get("mk_invoice_id"), training, now,
+            context="forced_check", force_stage="requires_check",
+            intent_public_id=item.get("intent_public_id"),
+        )
+
+        if result["outcome"] in ("resume_required", "unchanged_resume_pending"):
+            if result["outcome"] == "resume_required":
                 self._training_state_audit(
                     "client_resume_confirmation_required", mk_user_id=mk_user_id,
                     mk_invoice_id=item.get("mk_invoice_id"), automation_item_id=iid,
@@ -15161,16 +15820,13 @@ class MiniAppContext:
                     details=self._training_details(training), initiator=actor,
                 )
             return {
-                "ok": True, "item_id": str(iid), "state": state, "reason_code": new_reason,
-                "message": training_reason_message(new_reason),
+                "ok": True, "item_id": str(iid), "state": state,
+                "reason_code": REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED,
+                "message": training_reason_message(REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED),
                 "resume_confirmation_required": True,
             }
 
-        if reason_code != prev_reason:
-            self.storage.update_automation_item_stage(
-                iid, "requires_check", reason_code=reason_code,
-                readable_reason=training_reason_message(reason_code), now=now,
-            )
+        if result["outcome"] == "blocked" and result["changed"]:
             event_type = (
                 "automation_blocked_by_training_state"
                 if prev_reason not in TRAINING_BLOCKED_REASON_CODES
@@ -15228,11 +15884,26 @@ class MiniAppContext:
                 "message": training_reason_message(reason_code),
             }
 
-        # active — hand back to the scheduler. Never create intent/bePaid/publish
-        # from inside this HTTP request; pilot mode is left untouched, so the
-        # next scheduler cycle decides exactly as it would for any other item.
+        # active — confirm resume. Never create intent/bePaid/publish from
+        # inside this HTTP request.
+        #
+        # v7.1.9 — an item that already has an intent_public_id (blocked at
+        # payment_options_created/published/pending_review, e.g. by the
+        # Guardian's periodic sync — see is_training_sync_candidate) has
+        # nothing to "resume" in the create/bePaid/publish sense: the intent
+        # already exists. Resetting current_stage to "discovered" there would
+        # wrongly regress an already-published, client-visible invoice back
+        # to a brand-new-item state. Only items blocked BEFORE any intent was
+        # ever created (the original v7.1.8 scenario, intent_public_id empty)
+        # go back to "discovered" so the next scheduler cycle creates one;
+        # otherwise only the informational marker is cleared and pilot mode/
+        # current_stage/current intent are left untouched.
+        if item.get("intent_public_id"):
+            resume_stage = item.get("current_stage") or "discovered"
+        else:
+            resume_stage = "discovered"
         self.storage.update_automation_item_stage(
-            iid, "discovered", clear_reason=True, now=now,
+            iid, resume_stage, clear_reason=True, now=now,
         )
         self._training_state_audit(
             "training_automation_resume_confirmed", mk_user_id=mk_user_id,
@@ -15241,7 +15912,7 @@ class MiniAppContext:
             details=self._training_details(training), initiator=actor,
         )
         return {
-            "ok": True, "item_id": str(iid), "state": "active", "stage": "discovered",
+            "ok": True, "item_id": str(iid), "state": "active", "stage": resume_stage,
             "message": "Возобновление подтверждено. Счёт будет обработан согласно режиму автоматизации.",
         }
 
@@ -15547,14 +16218,14 @@ class MiniAppContext:
 
         existing_intent = existing_intents[0] if existing_intents else None
         if existing_intent:
-            # v7.1.8 — informational only: flag (but never touch) an already-published,
-            # unpaid invoice while the student is paused/finished/unknown. Never
-            # withdraws or hides it automatically — manager decides via existing
-            # withdrawal flow. Uses per-cycle cache (non-blocking, best-effort).
-            # Idempotent: the training reason_code is persisted on the item (stage
-            # left untouched) purely so repeated cycles can detect "unchanged"
-            # and skip re-logging — audit fires only on first detection or on an
-            # actual state/reason change, not every cycle.
+            # v7.1.8/v7.1.9 — informational only: flag (but never touch) an
+            # already-published, unpaid invoice while the student is
+            # paused/finished/unknown. Never withdraws or hides it
+            # automatically — manager decides via existing withdrawal flow.
+            # Uses per-cycle cache (non-blocking, best-effort). Delegates to
+            # the shared _apply_training_state_result() helper (force_stage=
+            # None preserves current_stage) so this path can never diverge
+            # from discovery/Guardian/manual-check semantics.
             if (
                 existing_intent.get("client_visibility") == "published"
                 and existing_intent.get("status") not in ("paid", "posted_to_moyklass", "cancelled")
@@ -15564,28 +16235,26 @@ class MiniAppContext:
                         mk_user_id, existing_intent.get("mk_user_subscription_id"),
                         cache=training_cache,
                     )
-                    _epub_reason = _epub_training.get("reason_code")
-                    _epub_prev_reason = item.get("reason_code")
-                    if _epub_training.get("state") != STATE_ACTIVE:
-                        if _epub_reason != _epub_prev_reason:
-                            self.storage.update_automation_item_stage(
-                                item_id, stage,
-                                reason_code=_epub_reason,
-                                readable_reason=training_reason_message(_epub_reason),
-                                now=now,
-                            )
-                            self._training_state_audit(
-                                "existing_published_invoice_during_pause",
-                                mk_user_id=mk_user_id, mk_invoice_id=inv_id,
-                                automation_item_id=item_id,
-                                intent_public_id=existing_intent.get("public_id"),
-                                details=self._training_details(_epub_training),
-                            )
-                    elif _epub_prev_reason:
-                        # Training state recovered to active — clear the marker so a
-                        # future re-pause is treated as newly detected again.
-                        self.storage.update_automation_item_stage(
-                            item_id, stage, clear_reason=True, now=now,
+                    _epub_result = self._apply_training_state_result(
+                        item, item_id, mk_user_id, inv_id, _epub_training, now,
+                        context="periodic_sync", force_stage=None,
+                        intent_public_id=existing_intent.get("public_id"),
+                    )
+                    if _epub_result["outcome"] == "blocked" and _epub_result["changed"]:
+                        self._training_state_audit(
+                            "existing_published_invoice_during_pause",
+                            mk_user_id=mk_user_id, mk_invoice_id=inv_id,
+                            automation_item_id=item_id,
+                            intent_public_id=existing_intent.get("public_id"),
+                            details=self._training_details(_epub_training),
+                        )
+                    elif _epub_result["outcome"] == "resume_required":
+                        self._training_state_audit(
+                            "client_resume_confirmation_required",
+                            mk_user_id=mk_user_id, mk_invoice_id=inv_id,
+                            automation_item_id=item_id,
+                            intent_public_id=existing_intent.get("public_id"),
+                            details=self._training_details(_epub_training),
                         )
                 except Exception:
                     log.exception(
@@ -16787,9 +17456,12 @@ class MiniAppContext:
             )
             return {"existing": True}
 
-        # v7.1.8 — forced-fresh training-state re-check immediately before
-        # publishing to the parent. A per-cycle cached snapshot is not trusted
-        # this close to an irreversible, client-visible action.
+        # v7.1.8/v7.1.9 — forced-fresh training-state re-check immediately
+        # before publishing to the parent. A per-cycle cached snapshot is not
+        # trusted this close to an irreversible, client-visible action.
+        # Delegates the state-transition decision to the shared
+        # _apply_training_state_result() helper (force_stage="requires_check"
+        # — publishing is a blocking context, same as discovery).
         _pub_sub_id = existing_intent.get("mk_user_subscription_id")
         _pub_training = self._get_training_state(mk_user_id, _pub_sub_id, force_refresh=True)
         self._training_state_audit(
@@ -16797,18 +17469,22 @@ class MiniAppContext:
             automation_item_id=item_id, intent_public_id=intent_id,
             details=self._training_details(_pub_training),
         )
-        if _pub_training.get("state") != STATE_ACTIVE:
+        _pub_item_row = self.storage.get_automation_item_by_id(item_id) or {}
+        _pub_result = self._apply_training_state_result(
+            _pub_item_row, item_id, mk_user_id, mk_inv_id, _pub_training, now,
+            context="publish_check", force_stage="requires_check",
+            intent_public_id=intent_id,
+        )
+        if _pub_result["outcome"] != "active":
             _pub_reason = _pub_training.get("reason_code")
-            item_row = self.storage.get_automation_item_by_id(item_id) or {}
-            self.storage.update_automation_item_stage(
-                item_id, "requires_check",
-                reason_code=_pub_reason,
-                readable_reason=training_reason_message(_pub_reason),
-                now=now,
-            )
-            if _pub_reason != item_row.get("reason_code"):
+            if _pub_result["changed"]:
+                _pub_event = (
+                    "client_resume_confirmation_required"
+                    if _pub_result["outcome"] == "resume_required"
+                    else "publication_blocked_by_training_state"
+                )
                 self._training_state_audit(
-                    "publication_blocked_by_training_state",
+                    _pub_event,
                     mk_user_id=mk_user_id, mk_invoice_id=mk_inv_id,
                     automation_item_id=item_id, intent_public_id=intent_id,
                     details=self._training_details(_pub_training),
@@ -17292,6 +17968,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.payments_workspace_stats(auth))
                 if path == "/api/payments/workspace/attention":
                     return self._send_json(CTX.payments_workspace_attention(auth, params))
+                if path == "/api/payments/diagnostics":
+                    return self._send_json(CTX.payments_diagnostics(auth))
                 if path == "/api/pilot/clients":
                     return self._send_json(CTX.pilot_list_clients(auth))
                 if path.startswith("/api/food/kitchen/menus/"):
@@ -17394,6 +18072,16 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 _auto_parts = _auto_rest.split("/")
                 if len(_auto_parts) == 2:
                     return self._send_json(CTX.automation_item_action(auth, _auto_parts[0], _auto_parts[1], body))
+            # ── v7.1.9 — Payment Automation Guardian diagnostics ─────────────
+            if path == "/api/payments/diagnostics/run":
+                return self._send_json(CTX.payments_diagnostics_run(auth))
+            if path.startswith("/api/payments/diagnostics/incidents/"):
+                _diag_rest = path[len("/api/payments/diagnostics/incidents/"):]
+                _diag_parts = _diag_rest.split("/")
+                if len(_diag_parts) == 2 and _diag_parts[1] == "recheck":
+                    return self._send_json(
+                        CTX.payments_diagnostics_incident_recheck(auth, _diag_parts[0])
+                    )
             # ── v7.1.0 — Payment discounts (client-scoped) ──────────────────
             # ── v7.1.1 — Payment terms sync ─────────────────────────────────
             if path.startswith("/api/payments/clients/"):
@@ -17672,6 +18360,14 @@ def run_server() -> None:
     InvoiceAutomationScheduler(CTX).start()
     log.info("InvoiceAutomationScheduler started (kill switch: PAYMENT_INVOICE_AUTOMATION_ENABLED=%s)",
              getattr(CTX.settings, "payment_invoice_automation_enabled", False))
+    # v7.1.9 — Payment Automation Guardian: always starts, fixed 600s interval,
+    # independent of InvoiceAutomationScheduler's configurable scan_interval_minutes.
+    PaymentAutomationGuardian(CTX).start()
+    log.info(
+        "PaymentAutomationGuardian started (quick_cycle_interval=%ss, startup_delay=%ss)",
+        PaymentAutomationGuardian.QUICK_CYCLE_INTERVAL_SECONDS,
+        PaymentAutomationGuardian.STARTUP_DELAY_SECONDS,
+    )
     httpd = ThreadingHTTPServer((host, port), MiniAppHandler)
     log.info("Yellow Club Mini App server started: http://%s:%s", host, port)
     log.info("For Telegram Mini App set WEB_APP_URL to an HTTPS URL pointing to this server.")

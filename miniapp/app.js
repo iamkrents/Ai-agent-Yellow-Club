@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.8");
+console.log("MiniApp version: v7.1.9");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -14707,7 +14707,7 @@ window.automationItemAction = async function(itemId, action, evOrBtn) {
 
 // ── v7.1.5 — Payments workspace ───────────────────────────────────────────
 
-const _wsState = { tab: "overview", stats: null, attention: null, pilotClients: null, allPayments: null, statsLoading: false };
+const _wsState = { tab: "overview", stats: null, attention: null, pilotClients: null, allPayments: null, statsLoading: false, diagnostics: null };
 
 function loadPaymentsWorkspace() {
   const root = $("paymentsWorkspaceRoot");
@@ -14763,6 +14763,7 @@ function _renderWorkspaceSkeleton(root) {
     { id: "all-payments", label: "Все платежи" },
     ...(caps.canUsePaymentsWorkspace ? [{ id: "pilot-clients", label: "Клиенты пилота" }] : []),
     ...(caps.canManageClientLinks ? [{ id: "connection", label: "Подключение" }] : []),
+    ...(caps.canViewPaymentDiagnostics ? [{ id: "diagnostics", label: "Диагностика" }] : []),
   ].filter(Boolean);
   root.innerHTML = `
     <div class="ws-header">
@@ -14799,6 +14800,7 @@ function _wsRenderCurrentTab() {
   else if (_wsState.tab === "all-payments") { _wsRenderAllPayments(root); _loadWorkspaceAllPayments(); }
   else if (_wsState.tab === "pilot-clients") { _wsRenderPilotClients(root); _loadPilotClients(); }
   else if (_wsState.tab === "connection") { _wsRenderConnection(root); }
+  else if (_wsState.tab === "diagnostics") { _wsRenderDiagnostics(root); _loadWorkspaceDiagnostics(); }
 }
 
 async function _loadWorkspaceStats() {
@@ -16475,6 +16477,151 @@ async function _wsConnConfirmUnlink() {
     if (errEl) { errEl.textContent = safeUserError(e); errEl.classList.remove("hidden"); }
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = "Отвязать"; }
+  }
+}
+
+// ── v7.1.9 — Payments Workspace "Диагностика" tab ─────────────────────────
+// Read-only for client_manager (canViewPaymentDiagnostics); manage actions
+// ("Запустить диагностику", "Проверить ещё раз") gated separately by
+// canManagePaymentDiagnostics — both server- and client-side. Never shows
+// raw provider codes, exceptions, or payload_json (backend never sends them).
+
+const WS_DIAG_STATUS_META = {
+  no_data:  { label: "Диагностика ещё не запускалась", cls: "ws-diag-status--neutral" },
+  healthy:  { label: "Автоматизация работает",          cls: "ws-diag-status--healthy" },
+  warning:  { label: "Есть предупреждения",             cls: "ws-diag-status--warning" },
+  critical: { label: "Критическая ошибка",               cls: "ws-diag-status--critical" },
+};
+
+const WS_DIAG_SEVERITY_LABEL = { critical: "Критично", warning: "Предупреждение", info: "Информация" };
+
+async function _loadWorkspaceDiagnostics() {
+  const root = $("wsTabContent");
+  try {
+    const d = await apiGet("/api/payments/diagnostics");
+    if (!d.ok) { if (root) root.innerHTML = _wsErrorState(d.error || "Ошибка загрузки.", "_loadWorkspaceDiagnostics()"); return; }
+    _wsState.diagnostics = d;
+    if (_wsState.tab === "diagnostics") _wsRenderDiagnostics(root);
+  } catch (e) {
+    if (root) root.innerHTML = _wsErrorState("Не удалось загрузить диагностику.", "_loadWorkspaceDiagnostics()");
+  }
+}
+
+function _wsDiagSkeleton() {
+  return `<div class="ws-diag-summary ws-skeleton" style="height:120px"></div>
+    <div class="ws-attention-skeleton-card"></div>
+    <div class="ws-attention-skeleton-card"></div>`;
+}
+
+function _wsDiagFmtDate(iso) {
+  return iso ? wsFormatDateTime(iso) : "—";
+}
+
+function _wsRenderDiagnostics(root) {
+  const d = _wsState.diagnostics;
+  if (!d) { root.innerHTML = _wsDiagSkeleton(); return; }
+  const g = d.guardian || {};
+  const c = d.counts || {};
+  const meta = WS_DIAG_STATUS_META[g.status] || WS_DIAG_STATUS_META.no_data;
+  const canManage = !!d.can_manage;
+
+  const summaryHtml = `
+    <div class="ws-diag-summary">
+      <div class="ws-diag-summary__top">
+        <span class="ws-diag-status ${meta.cls}">${escapeHtml(meta.label)}</span>
+        ${canManage ? `<button class="secondary" id="wsDiagRunBtn" type="button" onclick="_wsDiagnosticsRunNow(this)">Запустить диагностику</button>` : ""}
+      </div>
+      <div class="ws-diag-summary__grid">
+        <div class="ws-diag-summary__item"><span class="ws-diag-summary__label">Последняя проверка</span><span class="ws-diag-summary__value">${_wsDiagFmtDate(g.last_run_at)}</span></div>
+        <div class="ws-diag-summary__item"><span class="ws-diag-summary__label">Следующая проверка</span><span class="ws-diag-summary__value">${g.next_expected_run_at ? _wsDiagFmtDate(g.next_expected_run_at) : "—"}</span></div>
+        <div class="ws-diag-summary__item"><span class="ws-diag-summary__label">Длительность</span><span class="ws-diag-summary__value">${g.last_run_duration_ms != null ? _wsFmtNum(Math.round(g.last_run_duration_ms / 1000)) + " с" : "—"}</span></div>
+        <div class="ws-diag-summary__item"><span class="ws-diag-summary__label">Проверено клиентов</span><span class="ws-diag-summary__value">${_wsFmtNum(g.checked_clients || 0)}</span></div>
+        <div class="ws-diag-summary__item"><span class="ws-diag-summary__label">Проверено операций</span><span class="ws-diag-summary__value">${_wsFmtNum(g.checked_items || 0)}</span></div>
+        <div class="ws-diag-summary__item"><span class="ws-diag-summary__label">Исправлено автоматически сегодня</span><span class="ws-diag-summary__value">${_wsFmtNum(c.safe_repairs_today || 0)}</span></div>
+      </div>
+      <div class="ws-diag-counts">
+        <span class="ws-diag-count ws-diag-count--critical">Критических: ${_wsFmtNum(c.open_critical || 0)}</span>
+        <span class="ws-diag-count ws-diag-count--warning">Предупреждений: ${_wsFmtNum(c.open_warning || 0)}</span>
+        <span class="ws-diag-count">Решено сегодня: ${_wsFmtNum(c.resolved_today || 0)}</span>
+        <span class="ws-diag-count">Ожидают повтора: ${_wsFmtNum(c.retryable_count || 0)}</span>
+      </div>
+    </div>`;
+
+  const incidents = d.incidents || [];
+  let listHtml;
+  if (!incidents.length && g.status === "no_data") {
+    listHtml = `<div class="ws-empty-state">
+      <div class="ws-empty-state-icon">${WS_ICON_CHECK_BIG}</div>
+      <div class="ws-empty-state-title">Состояние ещё не проверялось</div>
+      <div class="ws-empty-state-desc">Запустите диагностику, чтобы проверить автоматизацию и получить актуальное состояние.</div>
+    </div>`;
+  } else if (!incidents.length) {
+    listHtml = `<div class="ws-empty-state">
+      <div class="ws-empty-state-icon ws-empty-state-icon--positive">${WS_ICON_CHECK_BIG}</div>
+      <div class="ws-empty-state-title">Открытых проблем нет</div>
+      <div class="ws-empty-state-desc">Guardian не нашёл ничего, что требует внимания.</div>
+    </div>`;
+  } else {
+    listHtml = `<div class="ws-pi-list ws-bottom-safe-pad">${incidents.map(i => _wsDiagIncidentCard(i, canManage)).join("")}</div>`;
+  }
+
+  root.innerHTML = summaryHtml + listHtml;
+}
+
+function _wsDiagIncidentCard(inc, canManage) {
+  const sevCls = `ws-diag-severity--${escapeHtml(inc.severity || "info")}`;
+  const sevLabel = WS_DIAG_SEVERITY_LABEL[inc.severity] || inc.severity || "";
+  const pid = inc.intent_public_id ? escapeHtml(String(inc.intent_public_id)) : "";
+  const openIntentBtn = pid
+    ? `<button class="secondary" type="button" onclick="_wsDiagnosticsOpenIntent('${pid}')">Открыть платёж</button>`
+    : "";
+  const recheckBtn = canManage
+    ? `<button class="secondary" type="button" data-ws-diag-recheck onclick="_wsDiagnosticsRecheck(${Number(inc.id)}, this)">Проверить ещё раз</button>`
+    : "";
+  return `
+    <div class="ws-attention-item ws-diag-incident">
+      <div class="ws-attn-row">
+        <span class="ws-attn-name">${escapeHtml(inc.title || "")}</span>
+        <span class="ws-diag-severity-badge ${sevCls}">${escapeHtml(sevLabel)}</span>
+      </div>
+      <div class="ws-reason">${escapeHtml(inc.message || "")}</div>
+      <div class="ws-attn-sub">Впервые: ${_wsDiagFmtDate(inc.first_seen_at)} · Последний раз: ${_wsDiagFmtDate(inc.last_seen_at)} · Повторов: ${_wsFmtNum(inc.occurrence_count || 0)}</div>
+      ${(openIntentBtn || recheckBtn) ? `<div class="ws-attention-actions">${recheckBtn}${openIntentBtn}</div>` : ""}
+    </div>`;
+}
+
+function _wsDiagnosticsOpenIntent(publicId) {
+  if (!publicId) return;
+  _wsAllPaymentsUI.search = publicId;
+  _wsActivateTab("all-payments");
+}
+
+async function _wsDiagnosticsRunNow(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "Выполняется…"; }
+  try {
+    const d = await _apiPostRaw("/api/payments/diagnostics/run", {});
+    if (!d.ok && d.conflict) {
+      setNotice("Диагностика уже выполняется, подождите завершения текущего цикла.", "error");
+    } else if (!d.ok) {
+      setNotice(d.error || "Не удалось запустить диагностику.", "error");
+    }
+    await _loadWorkspaceDiagnostics();
+  } catch (e) {
+    setNotice(safeUserError(e), "error");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Запустить диагностику"; }
+  }
+}
+
+async function _wsDiagnosticsRecheck(incidentId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "Проверяем…"; }
+  try {
+    await _apiPostRaw(`/api/payments/diagnostics/incidents/${encodeURIComponent(incidentId)}/recheck`, {});
+    await _loadWorkspaceDiagnostics();
+  } catch (e) {
+    setNotice(safeUserError(e), "error");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Проверить ещё раз"; }
   }
 }
 
