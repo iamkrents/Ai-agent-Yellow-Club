@@ -1946,16 +1946,13 @@ class PaymentAutomationGuardian:
                                 intent_public_id=item.get("intent_public_id"),
                                 details=ctx._training_details(training), initiator="guardian",
                             )
-                    elif result["outcome"] == "resume_required":
+                    elif result["outcome"] == "resumed":
+                        # v7.1.10 — automatic resume; the shared helper
+                        # already wrote the audit event
+                        # (training_resumed_automatically) and resolved the
+                        # incident — nothing else to do here.
                         issues_resolved += 1
                         safe_repairs += 1
-                        ctx._training_state_audit(
-                            "client_resume_confirmation_required",
-                            mk_user_id=mk_uid, mk_invoice_id=item.get("mk_invoice_id"),
-                            automation_item_id=item["id"],
-                            intent_public_id=item.get("intent_public_id"),
-                            details=ctx._training_details(training), initiator="guardian",
-                        )
                     elif result["outcome"] == "active" and result.get("changed"):
                         issues_resolved += 1
                 except Exception:
@@ -14730,6 +14727,60 @@ class MiniAppContext:
             ),
         }
 
+    # v7.1.10 — informational-only "what happens next" note for a recovered
+    # training incident, by pilot mode. Never itself triggers any action —
+    # purely describes what the ordinary scheduler pipeline will do.
+    _PILOT_MODE_RESUME_NOTE = {
+        "auto": "Следующий цикл автоматизации может создать и отправить оплату автоматически.",
+        "review": "Черновик будет ждать проверки клиент-менеджера, как обычно.",
+        "observe": "Автоматизация продолжит только наблюдение, без создания платежей.",
+        "disabled": "Автоматизация для этого клиента отключена — новые платежи не создаются.",
+        "not_in_pilot": "Клиент не подключён к пилоту — новые платежи не создаются.",
+    }
+
+    def _diagnostics_recovered_incident_view(self, inc: dict[str, Any]) -> dict[str, Any]:
+        """Sanitized 'recently recovered' incident shape — same safety rules
+        as _diagnostics_incident_view. Training-state recoveries (automatic
+        resume) get the specific v7.1.10 recovery narrative and a pilot-
+        mode-aware "what happens next" note; other components keep their
+        existing curated title/message, just framed as resolved."""
+        component = inc.get("component")
+        scope_type = inc.get("scope_type")
+        scope_id = inc.get("scope_id")
+        pilot_mode: Optional[str] = None
+        if component == par.COMPONENT_TRAINING_STATE and scope_type == "automation_item":
+            title = "Обучение возобновлено"
+            message = "Agent автоматически снял блокировку после подтверждения статуса «Учится» в МойКласс."
+            try:
+                item = self.storage.get_automation_item_by_id(int(scope_id))
+                if item:
+                    pilot = self.storage.get_pilot_client(str(item.get("mk_user_id") or ""))
+                    pilot_mode = (pilot or {}).get("mode", "not_in_pilot")
+            except (TypeError, ValueError):
+                pilot_mode = None
+        else:
+            title = par.reason_user_title(inc.get("reason_code"))
+            message = par.reason_user_message(inc.get("reason_code"))
+        return {
+            "id": inc.get("id"),
+            "component": component,
+            "scope_type": scope_type,
+            "reason_code": inc.get("reason_code"),
+            "severity": inc.get("severity"),
+            "title": title,
+            "message": message,
+            "resolved_at": inc.get("resolved_at"),
+            "occurrence_count": inc.get("occurrence_count"),
+            "pilot_mode": pilot_mode,
+            "pilot_mode_note": self._PILOT_MODE_RESUME_NOTE.get(pilot_mode, "") if pilot_mode else "",
+            "automation_item_id": (
+                inc.get("scope_id") if inc.get("scope_type") == "automation_item" else None
+            ),
+            "intent_public_id": (
+                inc.get("scope_id") if inc.get("scope_type") == "payment_intent" else None
+            ),
+        }
+
     def payments_diagnostics(self, auth: dict[str, Any]) -> dict[str, Any]:
         """GET /api/payments/diagnostics — read-only Guardian/health summary.
 
@@ -14807,6 +14858,10 @@ class MiniAppContext:
                 "stale_count": len(stale),
             },
             "incidents": [self._diagnostics_incident_view(i) for i in open_incidents],
+            "recovered_incidents": [
+                self._diagnostics_recovered_incident_view(i)
+                for i in self.storage.list_recently_resolved_incidents(today_start, limit=20)
+            ],
             "can_manage": bool(self._require_diagnostics_manage_access(auth) is None),
         }
 
@@ -15561,10 +15616,19 @@ class MiniAppContext:
                  historically always "requires_check").
 
         Returns:
-          {"outcome": "resume_required", "changed": bool}
-          {"outcome": "unchanged_resume_pending"}
+          {"outcome": "resumed", "changed": True, "previous_stage": str,
+           "resulting_stage": str}
           {"outcome": "active", "changed": bool}
           {"outcome": "blocked", "changed": bool, "reason_code": str}
+
+        v7.1.10 — "resume_required"/"unchanged_resume_pending" (manual
+        confirmation) were removed: a fresh, unambiguous active state after
+        any training block now resumes automatically (see
+        _resolve_training_resume_stage). Never creates a Payment
+        Intent/bePaid/publish/withdrawal/MoyKlass write itself — only
+        restores this item's own stage/reason_code and closes the incident;
+        the ordinary scheduler pipeline (discovery/publish/approve, each
+        with its own forced-fresh check) continues per pilot mode.
         """
         prev_reason = item.get("reason_code")
         state = training.get("state")
@@ -15572,35 +15636,42 @@ class MiniAppContext:
         current_stage = item.get("current_stage", "discovered")
         stage_to_set = force_stage if force_stage is not None else current_stage
         dedup_key = f"training_state:automation_item:{item_id}"
+        intent_public_id = intent_public_id or item.get("intent_public_id")
 
         if state == STATE_ACTIVE:
             if prev_reason in TRAINING_BLOCKED_REASON_CODES:
-                # Was blocked for a training reason; MoyKlass now shows active.
-                # Do NOT silently resume automation — require manual confirmation,
-                # regardless of context (discovery/periodic_sync/forced_check all
-                # behave identically here — see v7.1.9 architecture spec section 2.3).
-                if prev_reason != REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED:
-                    self.storage.update_automation_item_stage(
-                        item_id, stage_to_set,
-                        reason_code=REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED,
-                        readable_reason=training_reason_message(REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED),
-                        now=now,
-                    )
-                    self.storage.resolve_incident(dedup_key, now)
-                    self.storage.upsert_incident(
-                        dedup_key, component=par.COMPONENT_TRAINING_STATE,
-                        scope_type=par.SCOPE_AUTOMATION_ITEM, scope_id=str(item_id),
-                        reason_code=REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED,
-                        severity=par.SEVERITY_INFO, now=now,
-                        payload={
-                            "mk_user_id": str(mk_user_id or ""),
-                            "mk_invoice_id": str(mk_invoice_id or ""),
-                            "intent_public_id": str(intent_public_id or ""),
-                            "context": context,
-                        },
-                    )
-                    return {"outcome": "resume_required", "changed": True}
-                return {"outcome": "unchanged_resume_pending", "changed": False}
+                # Was blocked for a training reason (including a historical
+                # client_resume_confirmation_required item from before
+                # v7.1.10); MoyKlass now shows a fresh, unambiguous active
+                # state for the matched subscription/class — resume now.
+                resume_stage = self._resolve_training_resume_stage(item, intent_public_id)
+                self.storage.update_automation_item_stage(
+                    item_id, resume_stage, clear_reason=True, now=now,
+                )
+                self.storage.resolve_incident(dedup_key, now)
+                _pilot = self.storage.get_pilot_client(mk_user_id)
+                _pilot_mode = (_pilot or {}).get("mode", "not_in_pilot")
+                _intent_row = self.storage.get_payment_intent(intent_public_id) if intent_public_id else None
+                _resume_details = dict(self._training_details(training))
+                _resume_details.update({
+                    "previous_stage": current_stage,
+                    "resulting_stage": resume_stage,
+                    "previous_reason_code": prev_reason,
+                    "pilot_mode": _pilot_mode,
+                    "class_id": (_intent_row or {}).get("class_id"),
+                    "source": self._TRAINING_RESUME_SOURCE_BY_CONTEXT.get(context, context),
+                })
+                self._training_state_audit(
+                    "training_resumed_automatically",
+                    mk_user_id=mk_user_id, mk_invoice_id=mk_invoice_id,
+                    automation_item_id=item_id, intent_public_id=intent_public_id,
+                    details=_resume_details,
+                    initiator="guardian" if context == "periodic_sync" else "system",
+                )
+                return {
+                    "outcome": "resumed", "changed": True,
+                    "previous_stage": current_stage, "resulting_stage": resume_stage,
+                }
             # Already active, no prior training block — defensively resolve a
             # stale incident if one somehow remained open (should be a no-op
             # in the common case).
@@ -15609,6 +15680,30 @@ class MiniAppContext:
 
         # paused / finished / unknown / ambiguous — block.
         #
+        # v7.1.10 — never silently overwrite a currently-stored, non-training
+        # reason_code (missing_parent_link, duplicate_invoice_intents,
+        # student_name_missing, etc.) — the schema stores a single
+        # reason_code per item, so a training block landing on top of an
+        # already-diagnosed independent problem must not hide it. Still
+        # track the training signal as an incident (Diagnostics/Guardian
+        # visibility) without touching the item's own reason_code/stage.
+        if prev_reason and prev_reason not in TRAINING_BLOCKED_REASON_CODES:
+            _rinfo_other = par.get_reason_info(reason_code)
+            severity_other = _rinfo_other.severity if _rinfo_other is not None else par.SEVERITY_WARNING
+            self.storage.upsert_incident(
+                dedup_key, component=par.COMPONENT_TRAINING_STATE,
+                scope_type=par.SCOPE_AUTOMATION_ITEM, scope_id=str(item_id),
+                reason_code=str(reason_code or ""), severity=severity_other, now=now,
+                payload={
+                    "mk_user_id": str(mk_user_id or ""),
+                    "mk_invoice_id": str(mk_invoice_id or ""),
+                    "intent_public_id": str(intent_public_id or ""),
+                    "context": context,
+                    "preserved_reason_code": prev_reason,
+                },
+            )
+            return {"outcome": "blocked", "changed": False, "reason_code": prev_reason}
+
         # Only write current_stage/reason_code when the reason actually
         # changed. This matters because this helper is also called for
         # items already at payment_options_created/published (Guardian's
@@ -15643,6 +15738,53 @@ class MiniAppContext:
         )
         return {"outcome": "blocked", "changed": changed, "reason_code": reason_code}
 
+    # current_stage values that already correctly reflect a live Payment
+    # Intent's real state and were never clobbered by a force_stage=
+    # "requires_check" caller (periodic_sync always uses force_stage=None) —
+    # trusted as-is by _resolve_training_resume_stage.
+    _POST_INTENT_STAGES = frozenset({"payment_options_created", "pending_review", "published"})
+
+    # v7.1.10 — audit "source" label for training_resumed_automatically,
+    # per the spec's two named sources; any other context falls back to
+    # its own name (still informative, never blank).
+    _TRAINING_RESUME_SOURCE_BY_CONTEXT = {
+        "periodic_sync": "guardian_periodic_sync",
+        "forced_check": "manual_forced_check",
+        "resume_check": "manual_forced_check",
+    }
+
+    def _resolve_training_resume_stage(
+        self, item: dict[str, Any], intent_public_id: Optional[str],
+    ) -> str:
+        """v7.1.10 — determine the safe automation-item stage to restore to
+        after an automatic training-block release.
+
+        Never assumes "discovered" is always correct (that would risk a
+        duplicate Payment Intent/bePaid/publish on the next scheduler cycle
+        if one already exists) and never blindly trusts item["current_stage"]
+        either — a blocking caller using force_stage="requires_check"
+        (discovery / the manual check button / publish_check / approve_check)
+        may have already overwritten it while blocked, hiding that a Payment
+        Intent (and possibly bePaid options or a published invoice) exists.
+        Reconstructs the real stage from the linked Payment Intent's own
+        status/client_visibility/bepaid_uid when current_stage isn't already
+        one of the trusted post-intent values.
+        """
+        current_stage = item.get("current_stage") or "discovered"
+        pid = intent_public_id or item.get("intent_public_id")
+        if not pid:
+            return "discovered"  # 5.1 — no intent ever created
+        if current_stage in self._POST_INTENT_STAGES:
+            return current_stage
+        intent = self.storage.get_payment_intent(pid)
+        if not intent:
+            return "discovered"  # stale/broken link — treat as pre-intent
+        if intent.get("client_visibility") == "published":
+            return "published"  # 5.4
+        if str(intent.get("bepaid_uid") or "").strip():
+            return "payment_options_created"  # 5.3
+        return "pending_review"  # 5.2 — intent exists, bePaid not created yet
+
     def _apply_training_gate(
         self,
         item: dict[str, Any],
@@ -15658,7 +15800,7 @@ class MiniAppContext:
 
         Returns an outcome dict (caller should `return` it immediately) if
         automation must stop here, or None if the caller may proceed
-        (state == active AND no pending resume confirmation needed).
+        (state == active, whether already active or just auto-resumed).
 
         Idempotent across scheduler cycles: only writes a new audit event
         when the reason_code actually changes versus the item's stored value.
@@ -15668,6 +15810,10 @@ class MiniAppContext:
         _apply_training_state_result() helper; this method only translates
         the outcome into discovery's own audit event vocabulary and pipeline
         return-value contract, both unchanged from v7.1.8.
+
+        v7.1.10 — "resumed" is a new terminal outcome (automatic resume,
+        audited inside the shared helper itself) that also proceeds with
+        normal flow, same as "active".
         """
         prev_reason = item.get("reason_code")
         result = self._apply_training_state_result(
@@ -15675,16 +15821,7 @@ class MiniAppContext:
             context="discovery", force_stage="requires_check",
         )
 
-        if result["outcome"] == "resume_required":
-            self._training_state_audit(
-                "client_resume_confirmation_required",
-                mk_user_id=mk_user_id, mk_invoice_id=inv_id,
-                automation_item_id=item_id, details=self._training_details(training),
-            )
-            return {"requires_check": True, "discovered": is_new}
-        if result["outcome"] == "unchanged_resume_pending":
-            return {"requires_check": True, "discovered": is_new}
-        if result["outcome"] == "active":
+        if result["outcome"] in ("active", "resumed"):
             return None  # proceed with normal flow
 
         # blocked
@@ -15761,14 +15898,11 @@ class MiniAppContext:
                 item, iid, mk_user_id, mk_user_subscription_id, now, actor,
             )
 
-        # training-resume: only eligible from a training-blocked reason_code —
-        # prevents confirming resume on an item that was never training-blocked.
-        if item.get("reason_code") not in TRAINING_BLOCKED_REASON_CODES:
-            return {
-                "ok": False,
-                "error": "Этот счёт не ожидает подтверждения возобновления автоматизации.",
-                "conflict": True,
-            }
+        # training-resume: v7.1.10 — backward-compatible endpoint, no longer
+        # gated on a stored training-blocked reason_code. _training_state_
+        # resume_item() always does its own forced-fresh check and is
+        # idempotent (returns "already_resumed" success for a non-blocked
+        # item, fail-closed for a genuinely still-blocked one).
         return self._training_state_resume_item(
             item, iid, mk_user_id, mk_user_subscription_id, now, actor,
         )
@@ -15788,8 +15922,11 @@ class MiniAppContext:
 
         v7.1.9 — delegates the state-transition decision to the shared
         _apply_training_state_result() helper (same vocabulary as discovery:
-        "automation_blocked_by_training_state"/"training_state_changed"/
-        "client_resume_confirmation_required").
+        "automation_blocked_by_training_state"/"training_state_changed").
+
+        v7.1.10 — if the fresh check finds a training-blocked item now
+        active, it resumes automatically right here (same shared helper
+        Guardian uses) — no separate confirmation step, no bottom sheet.
         """
         training = self._get_training_state(
             mk_user_id, mk_user_subscription_id, force_refresh=True,
@@ -15811,19 +15948,13 @@ class MiniAppContext:
             intent_public_id=item.get("intent_public_id"),
         )
 
-        if result["outcome"] in ("resume_required", "unchanged_resume_pending"):
-            if result["outcome"] == "resume_required":
-                self._training_state_audit(
-                    "client_resume_confirmation_required", mk_user_id=mk_user_id,
-                    mk_invoice_id=item.get("mk_invoice_id"), automation_item_id=iid,
-                    intent_public_id=item.get("intent_public_id"),
-                    details=self._training_details(training), initiator=actor,
-                )
+        if result["outcome"] == "resumed":
             return {
-                "ok": True, "item_id": str(iid), "state": state,
-                "reason_code": REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED,
-                "message": training_reason_message(REASON_CLIENT_RESUME_CONFIRMATION_REQUIRED),
-                "resume_confirmation_required": True,
+                "ok": True, "item_id": str(iid), "state": "active",
+                "stage": result.get("resulting_stage"),
+                "resumed": True,
+                "message": "Обучение возобновлено. Блокировка снята автоматически.",
+                "resume_confirmation_required": False,
             }
 
         if result["outcome"] == "blocked" and result["changed"]:
@@ -15852,6 +15983,24 @@ class MiniAppContext:
         now: str,
         actor: str,
     ) -> dict[str, Any]:
+        """v7.1.10 — backward-compatible endpoint for the retired manual
+        "Подтвердить возобновление" action. Automatic resume (Guardian's
+        periodic sync, or any forced-fresh check) is now the primary
+        mechanism, so this endpoint no longer performs a distinct
+        confirmation step — it always forces a fresh MoyKlass re-check and
+        delegates to the same shared _apply_training_state_result() helper
+        Guardian uses, which makes every call idempotent and safe:
+          - active, item was training-blocked -> resumes now and returns
+            success (same outcome Guardian would reach on its next cycle).
+          - active, item already resumed (by Guardian or a prior call here)
+            -> idempotent "already_resumed" success, no duplicate audit or
+            incident work (the shared helper's "active, no prior block"
+            path is itself a no-op).
+          - not active (paused/frozen/unknown/ambiguous) -> fail-closed,
+            same error contract as before.
+        Never creates a Payment Intent/bePaid/publish/withdrawal/MoyKlass
+        write from inside this HTTP request.
+        """
         # Forced-fresh re-check — the stored reason_code (even if it already
         # says client_resume_confirmation_required) is never trusted as the
         # final decision; MoyKlass is asked again right now.
@@ -15867,53 +16016,34 @@ class MiniAppContext:
         state = training.get("state")
         reason_code = training.get("reason_code")
 
-        if state != STATE_ACTIVE:
-            if reason_code != item.get("reason_code"):
-                self.storage.update_automation_item_stage(
-                    iid, "requires_check", reason_code=reason_code,
-                    readable_reason=training_reason_message(reason_code), now=now,
-                )
-                self._training_state_audit(
-                    "training_state_changed", mk_user_id=mk_user_id,
-                    mk_invoice_id=item.get("mk_invoice_id"), automation_item_id=iid,
-                    intent_public_id=item.get("intent_public_id"),
-                    details=self._training_details(training), initiator=actor,
-                )
+        result = self._apply_training_state_result(
+            item, iid, mk_user_id, item.get("mk_invoice_id"), training, now,
+            context="resume_check", force_stage="requires_check",
+            intent_public_id=item.get("intent_public_id"),
+        )
+
+        if result["outcome"] not in ("active", "resumed"):
+            # still blocked — fail-closed, same contract as before
             return {
                 "ok": False, "item_id": str(iid), "state": state, "reason_code": reason_code,
                 "message": training_reason_message(reason_code),
             }
 
-        # active — confirm resume. Never create intent/bePaid/publish from
-        # inside this HTTP request.
-        #
-        # v7.1.9 — an item that already has an intent_public_id (blocked at
-        # payment_options_created/published/pending_review, e.g. by the
-        # Guardian's periodic sync — see is_training_sync_candidate) has
-        # nothing to "resume" in the create/bePaid/publish sense: the intent
-        # already exists. Resetting current_stage to "discovered" there would
-        # wrongly regress an already-published, client-visible invoice back
-        # to a brand-new-item state. Only items blocked BEFORE any intent was
-        # ever created (the original v7.1.8 scenario, intent_public_id empty)
-        # go back to "discovered" so the next scheduler cycle creates one;
-        # otherwise only the informational marker is cleared and pilot mode/
-        # current_stage/current intent are left untouched.
-        if item.get("intent_public_id"):
-            resume_stage = item.get("current_stage") or "discovered"
-        else:
-            resume_stage = "discovered"
-        self.storage.update_automation_item_stage(
-            iid, resume_stage, clear_reason=True, now=now,
-        )
-        self._training_state_audit(
-            "training_automation_resume_confirmed", mk_user_id=mk_user_id,
-            mk_invoice_id=item.get("mk_invoice_id"), automation_item_id=iid,
-            intent_public_id=item.get("intent_public_id"),
-            details=self._training_details(training), initiator=actor,
-        )
+        if result["outcome"] == "resumed":
+            return {
+                "ok": True, "item_id": str(iid), "state": "active",
+                "stage": result.get("resulting_stage"),
+                "already_resumed": False,
+                "message": "Возобновление подтверждено. Счёт будет обработан согласно режиму автоматизации.",
+            }
+
+        # outcome == "active": nothing was blocked (already resumed earlier,
+        # or never blocked) — idempotent success, no side effects.
         return {
-            "ok": True, "item_id": str(iid), "state": "active", "stage": resume_stage,
-            "message": "Возобновление подтверждено. Счёт будет обработан согласно режиму автоматизации.",
+            "ok": True, "item_id": str(iid), "state": "active",
+            "stage": item.get("current_stage"),
+            "already_resumed": True,
+            "message": "Автоматизация уже активна, подтверждение не требуется.",
         }
 
     # ── v7.0.94.0 — Invoice Automation pipeline ──────────────────────────────
@@ -16248,14 +16378,9 @@ class MiniAppContext:
                             intent_public_id=existing_intent.get("public_id"),
                             details=self._training_details(_epub_training),
                         )
-                    elif _epub_result["outcome"] == "resume_required":
-                        self._training_state_audit(
-                            "client_resume_confirmation_required",
-                            mk_user_id=mk_user_id, mk_invoice_id=inv_id,
-                            automation_item_id=item_id,
-                            intent_public_id=existing_intent.get("public_id"),
-                            details=self._training_details(_epub_training),
-                        )
+                    # outcome == "resumed": the shared helper already wrote
+                    # training_resumed_automatically and resolved the
+                    # incident — nothing else to do here.
                 except Exception:
                     log.exception(
                         "existing_published_invoice_during_pause: training_state check error mk_user_id=%s",
@@ -17475,16 +17600,15 @@ class MiniAppContext:
             context="publish_check", force_stage="requires_check",
             intent_public_id=intent_id,
         )
-        if _pub_result["outcome"] != "active":
+        if _pub_result["outcome"] not in ("active", "resumed"):
+            # v7.1.10 — "resumed" (fresh check found it active and the
+            # shared helper already auto-resumed + audited it) proceeds to
+            # publish just like "active"; only a genuine still-blocked
+            # result stops here.
             _pub_reason = _pub_training.get("reason_code")
             if _pub_result["changed"]:
-                _pub_event = (
-                    "client_resume_confirmation_required"
-                    if _pub_result["outcome"] == "resume_required"
-                    else "publication_blocked_by_training_state"
-                )
                 self._training_state_audit(
-                    _pub_event,
+                    "publication_blocked_by_training_state",
                     mk_user_id=mk_user_id, mk_invoice_id=mk_inv_id,
                     automation_item_id=item_id, intent_public_id=intent_id,
                     details=self._training_details(_pub_training),

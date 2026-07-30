@@ -1975,6 +1975,19 @@ class Storage:
             rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
+    def list_recently_resolved_incidents(self, since: str, limit: int = 20) -> list[dict]:
+        """v7.1.10 — resolved incidents since `since` (ISO), most recent
+        first. Used by Diagnostics to show recently-recovered items (e.g.
+        automatic training resume) instead of only an aggregate count."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM payment_automation_incidents
+                   WHERE status='resolved' AND resolved_at >= ?
+                   ORDER BY resolved_at DESC LIMIT ?""",
+                (since, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def count_incidents_resolved_since(self, since: str) -> int:
         with self._connect() as conn:
             row = conn.execute(
@@ -9616,11 +9629,21 @@ class Storage:
                        'pending_review', 'requires_check', 'error',
                        'missing_parent_link', 'ambiguous_parent_link'
                    )
-                   -- v7.1.8: also surface an already-published invoice whose
-                   -- training state turned paused/finished/unknown AFTER
-                   -- publish (reason_code is only ever set while stage stays
-                   -- 'published' by the training-state informational check).
-                   OR (a.current_stage = 'published' AND a.reason_code IS NOT NULL)
+                   -- v7.1.8/v7.1.10 fix: also surface an already-published or
+                   -- already-payment-options-created item whose training
+                   -- state turned paused/finished/unknown/ambiguous AFTER
+                   -- that point (Guardian's periodic_sync preserves
+                   -- current_stage while blocking, per force_stage=None —
+                   -- see _apply_training_state_result — so the block never
+                   -- shows up as 'requires_check'). Attention is decided by
+                   -- reason_code, not by current_stage alone: a cleared
+                   -- reason_code (e.g. right after an automatic training
+                   -- resume) means the item is NOT here even though its
+                   -- stage is one of these two.
+                   OR (
+                       a.current_stage IN ('payment_options_created', 'published')
+                       AND a.reason_code IS NOT NULL
+                   )
                    ORDER BY a.updated_at DESC
                    LIMIT ?""",
                 (limit,),

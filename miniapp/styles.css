@@ -9384,6 +9384,15 @@ body.keyboard-open .tabs.bottom-tabbar {
 .ws-diag-severity--warning  { background: #fff7df; color: #9b6b05; }
 .ws-diag-severity--info     { background: #eaf0fd; color: #3457a6; }
 
+/* v7.1.10 — recently-recovered incidents (e.g. automatic training resume) */
+.ws-diag-recovered__title {
+  margin: 14px 4px 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted, #6b7280);
+}
+.ws-diag-incident--recovered { opacity: 0.9; }
+
 @media (max-width: 390px) {
   .ws-diag-summary__top { flex-direction: column; align-items: stretch; }
   .ws-diag-summary__top button { width: 100%; min-height: 44px; }

@@ -107,6 +107,9 @@ class TestQuickCycleCore(unittest.TestCase):
         self.assertEqual(stored["reason_code"], "client_training_paused")
 
     def test_06_resume_detected_automatically(self):
+        # v7.1.10 — Guardian clears the training block automatically (no
+        # more "client_resume_confirmation_required" holding state waiting
+        # for a manual button).
         item = _seed_item(self.storage, "INV-G2")
         self.storage.update_automation_item_stage(
             item["id"], "discovered", reason_code="client_training_paused", now=_now(),
@@ -114,7 +117,8 @@ class TestQuickCycleCore(unittest.TestCase):
         self.ctx.moyklass.get_user_joins.return_value = _FakeResult({"items": [_join(status_id="2")]})
         self.guardian._run_quick_cycle()
         stored = self.storage.get_automation_item_by_id(item["id"])
-        self.assertEqual(stored["reason_code"], "client_resume_confirmation_required")
+        self.assertIsNone(stored["reason_code"])
+        self.assertEqual(stored["current_stage"], "discovered")
 
     def test_07_no_manual_button_required_no_mini_app_open(self):
         # The whole point: Guardian runs independent of any HTTP request /
@@ -352,18 +356,25 @@ class TestNoFinancialSideEffects(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, src, f"Guardian source references forbidden action: {forbidden}")
 
-    def test_24_never_confirms_resume_automatically(self):
+    def test_24_resumes_automatically_without_financial_side_effect(self):
+        # v7.1.10 — Guardian DOES clear the training block automatically
+        # (superseding the old "requires a separate manual confirmation"
+        # invariant), but resuming is a state-machine change only: still
+        # zero Payment Intents/bePaid/publish/withdrawal created by it
+        # (test_22/test_23 already cover the "never" side generally; this
+        # confirms it holds specifically across an actual resume transition).
         item = _seed_item(self.storage, "INV-G24")
         self.storage.update_automation_item_stage(
             item["id"], "discovered", reason_code="client_training_paused", now=_now(),
         )
         self.ctx.moyklass.get_user_joins.return_value = _FakeResult({"items": [_join(status_id="2")]})
+        before = self.storage.payment_intents_stats()
         self.guardian._run_quick_cycle()
+        after = self.storage.payment_intents_stats()
+        self.assertEqual(before, after)
         stored = self.storage.get_automation_item_by_id(item["id"])
-        self.assertEqual(stored["reason_code"], "client_resume_confirmation_required")
-        # Never silently cleared to active/no-reason — must require the
-        # separate explicit training-resume confirmation action.
-        self.assertIsNotNone(stored["reason_code"])
+        self.assertIsNone(stored["reason_code"])
+        self.assertEqual(stored["current_stage"], "discovered")
 
 
 if __name__ == "__main__":

@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.9");
+console.log("MiniApp version: v7.1.10");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -14869,6 +14869,12 @@ const WS_ATTENTION_STAGE_LABELS = {
   error: "Ошибка",
   missing_parent_link: "Нет привязки родителя",
   ambiguous_parent_link: "Несколько родителей",
+  // v7.1.10 fix — these two can (rarely) reach the Attention card when a
+  // training/other reason_code is attached to an item that's already past
+  // intent creation (see get_payments_attention_queue) — never show the
+  // raw internal stage code to the user.
+  payment_options_created: "Реквизиты созданы",
+  published: "Опубликован",
 };
 
 // v7.1.6.1 step 3 — single user-facing status mapping for payment intents,
@@ -15051,7 +15057,10 @@ async function _wsTrainingCheck(itemId, btn) {
   try {
     const d = await _apiPostRaw(`/api/payments/automation/items/${encodeURIComponent(itemId)}/training-check`, {});
     if (d.ok) {
-      setNotice(d.message || "Статус обновлён.", d.resume_confirmation_required ? "success" : "");
+      // v7.1.10 — a "resumed" response means the fresh check found the
+      // student active again and the block was cleared automatically right
+      // here, in this one click — no second confirmation step.
+      setNotice(d.message || "Статус обновлён.", d.resumed ? "success" : "");
       await _loadWorkspaceAttention();
     } else {
       setNotice(d.error || "Не удалось проверить статус.", "error");
@@ -15060,37 +15069,6 @@ async function _wsTrainingCheck(itemId, btn) {
     setNotice(safeUserError(e), "error");
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = btn.dataset.origText || "Проверить статус в МойКласс"; }
-  }
-}
-
-let _wsTrainingResumeItemId = null;
-function _wsTrainingOpenResume(itemId) {
-  _wsTrainingResumeItemId = itemId;
-  $("wsTrainingResumeError")?.classList.add("hidden");
-  piModalOpen($("wsTrainingResumeModal"));
-}
-function _wsTrainingCloseResume() { piModalClose($("wsTrainingResumeModal")); }
-async function _wsTrainingConfirmResume() {
-  const itemId = _wsTrainingResumeItemId;
-  if (!itemId) return;
-  const errEl = $("wsTrainingResumeError");
-  errEl?.classList.add("hidden");
-  const btn = $("wsTrainingResumeConfirmBtn");
-  if (btn) { btn.disabled = true; btn.textContent = "Подтверждаю…"; }
-  try {
-    const d = await _apiPostRaw(`/api/payments/automation/items/${encodeURIComponent(itemId)}/training-resume`, {});
-    if (d.ok) {
-      _wsTrainingCloseResume();
-      setNotice(d.message || "Возобновление подтверждено.", "success");
-      await _loadWorkspaceAttention();
-    } else if (errEl) {
-      errEl.textContent = d.error || "Статус изменился — возобновление отклонено.";
-      errEl.classList.remove("hidden");
-    }
-  } catch (e) {
-    if (errEl) { errEl.textContent = safeUserError(e); errEl.classList.remove("hidden"); }
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "Подтвердить возобновление"; }
   }
 }
 
@@ -15139,24 +15117,22 @@ function _wsRenderAttentionItem(item) {
 
   // v7.1.8 — training-state badge/actions (additive; existing stage badge and
   // approve button above are untouched for every non-training item).
+  //
+  // v7.1.10 — automatic resume removed the separate "Подтвердить
+  // возобновление" confirmation step: Guardian (and any forced-fresh check,
+  // including this same button) now resumes automatically once MoyKlass
+  // shows an active state, so every training reason — including a
+  // still-lingering historical client_resume_confirmation_required row —
+  // gets the SAME single "Проверить статус в МойКласс" action, which
+  // performs the automatic resume itself if the fresh check confirms active.
   const trainingBadge = _wsTrainingBadgeHtml(item.reason_code);
   const canManageTraining = roleCaps().canApprovePilotIntents; // same 4 roles as payment approval
   let trainingActionsHtml = "";
   if (canManageTraining && WS_TRAINING_REASON_CODES.has(item.reason_code)) {
-    if (item.reason_code === "client_resume_confirmation_required") {
-      // item.readable_reason (rendered above via reasonHtml) already carries
-      // the backend's safe explanatory text for this reason_code.
-      trainingActionsHtml = `
-        <div class="ws-attention-actions">
-          <button class="ws-attention-approve" type="button" onclick="_wsTrainingOpenResume('${item.id}')">Подтвердить возобновление</button>
-          <button class="secondary" type="button" data-ws-training-check onclick="_wsTrainingCheck('${item.id}', this)">Проверить ещё раз</button>
-        </div>`;
-    } else {
-      trainingActionsHtml = `
-        <div class="ws-attention-actions">
-          <button class="secondary" type="button" data-ws-training-check onclick="_wsTrainingCheck('${item.id}', this)">Проверить статус в МойКласс</button>
-        </div>`;
-    }
+    trainingActionsHtml = `
+      <div class="ws-attention-actions">
+        <button class="secondary" type="button" data-ws-training-check onclick="_wsTrainingCheck('${item.id}', this)">Проверить статус в МойКласс</button>
+      </div>`;
   }
   const publishedWarningHtml = _wsTrainingPublishedWarningHtml(item);
 
@@ -16562,10 +16538,31 @@ function _wsRenderDiagnostics(root) {
       <div class="ws-empty-state-desc">Guardian не нашёл ничего, что требует внимания.</div>
     </div>`;
   } else {
-    listHtml = `<div class="ws-pi-list ws-bottom-safe-pad">${incidents.map(i => _wsDiagIncidentCard(i, canManage)).join("")}</div>`;
+    listHtml = `<div class="ws-pi-list">${incidents.map(i => _wsDiagIncidentCard(i, canManage)).join("")}</div>`;
   }
 
-  root.innerHTML = summaryHtml + listHtml;
+  const recovered = d.recovered_incidents || [];
+  const recoveredHtml = recovered.length
+    ? `<div class="ws-diag-recovered">
+        <h4 class="ws-diag-recovered__title">Недавно восстановлено</h4>
+        <div class="ws-pi-list ws-bottom-safe-pad">${recovered.map(_wsDiagRecoveredCard).join("")}</div>
+      </div>`
+    : `<div class="ws-bottom-safe-pad"></div>`;
+
+  root.innerHTML = summaryHtml + listHtml + recoveredHtml;
+}
+
+function _wsDiagRecoveredCard(inc) {
+  return `
+    <div class="ws-attention-item ws-diag-incident ws-diag-incident--recovered">
+      <div class="ws-attn-row">
+        <span class="ws-attn-name">${escapeHtml(inc.title || "")}</span>
+        <span class="ws-diag-severity-badge ws-diag-severity--info">Восстановлено</span>
+      </div>
+      <div class="ws-reason">${escapeHtml(inc.message || "")}</div>
+      <div class="ws-attn-sub">Дата восстановления: ${_wsDiagFmtDate(inc.resolved_at)}</div>
+      ${inc.pilot_mode_note ? `<div class="ws-attn-sub">${escapeHtml(inc.pilot_mode_note)}</div>` : ""}
+    </div>`;
 }
 
 function _wsDiagIncidentCard(inc, canManage) {
@@ -16927,15 +16924,16 @@ function _wsHelpTrainingPauseHtml() {
           <li>оплаты другого ребёнка или другого независимого курса.</li>
         </ul>
       </details>
-      <details class="ws-help-leaf" data-help-search="как возобновить подтвердить возобновление">
+      <details class="ws-help-leaf" data-help-search="как возобновить автоматически учится">
         <summary>Как возобновить</summary>
         <div class="help-route">
           ${[
-            "Вернуть нужную запись ученика в статус «Учится» в МойКласс.",
-            "В Yellow Club Agent открыть «Требуют внимания».",
-            "Нажать «Проверить статус в МойКласс».",
-            "Нажать «Подтвердить возобновление».",
-            "Следующий scheduler cycle продолжит сценарий согласно pilot mode.",
+            "Менеджер меняет статус записи ученика в МойКласс на «Учится».",
+            "Agent проверяет статусы каждые 10 минут.",
+            "При паузе новые платежи блокируются автоматически.",
+            "При возвращении статуса «Учится» блокировка снимается автоматически.",
+            "Никаких дополнительных действий в Agent не требуется.",
+            "Кнопка «Проверить статус в МойКласс» нужна только для немедленного обновления без ожидания следующего цикла.",
           ].map((s, i) => `
             <div class="help-route-step">
               <span class="help-route-num">${i + 1}</span>
@@ -17316,10 +17314,4 @@ document.addEventListener("DOMContentLoaded", () => {
   $("wsConnUnlinkModalBack")?.addEventListener("click", _wsConnCloseUnlink);
   $("wsConnUnlinkModalClose")?.addEventListener("click", _wsConnCloseUnlink);
   $("wsConnUnlinkModal")?.addEventListener("click", e => { if (e.target === $("wsConnUnlinkModal")) _wsConnCloseUnlink(); });
-
-  // v7.1.8 — training-state resume confirmation bottom sheet
-  $("wsTrainingResumeConfirmBtn")?.addEventListener("click", _wsTrainingConfirmResume);
-  $("wsTrainingResumeModalBack")?.addEventListener("click", _wsTrainingCloseResume);
-  $("wsTrainingResumeModalClose")?.addEventListener("click", _wsTrainingCloseResume);
-  $("wsTrainingResumeModal")?.addEventListener("click", e => { if (e.target === $("wsTrainingResumeModal")) _wsTrainingCloseResume(); });
 });

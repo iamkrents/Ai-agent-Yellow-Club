@@ -1,9 +1,14 @@
 """Static-analysis tests for v7.1.8 — training-state UI in the Attention tab.
 
-Covers: training badges, check/resume buttons, resume bottom sheet, the
-Auto-mode warning text, the published-invoice warning (reusing the existing
-withdrawal flow/permissions, no new endpoint), the new Help Center section,
-mobile touch targets, and the temporary localhost-only preview harness.
+Covers: training badges, the check button, the published-invoice warning
+(reusing the existing withdrawal flow/permissions, no new endpoint), the
+Help Center section, mobile touch targets, and the temporary localhost-only
+preview harness.
+
+v7.1.10 — the separate manual "Подтвердить возобновление" bottom sheet was
+removed entirely (automatic resume via the single "Проверить статус в
+МойКласс" action, or Guardian on its own); TestResumeFlow now asserts that
+removal instead of the old confirmation UI's presence.
 
 Static text/AST-style checks only (reads app.js/index.html/styles.css as
 text) — consistent with this repo's existing frontend test convention.
@@ -66,46 +71,66 @@ class TestCheckButton(unittest.TestCase):
         self.assertNotIn("loadPaymentsWorkspace()", body)
 
     def test_07_scroll_not_intentionally_reset(self):
-        for fn_name in ("_wsTrainingCheck", "_wsTrainingConfirmResume", "_wsTrainingOpenResume"):
-            m = re.search(rf"function {fn_name}\([^)]*\) \{{(.*?)\n\}}", APP_JS, re.S)
-            self.assertIsNotNone(m, fn_name)
-            self.assertNotIn("scrollTo", m.group(1))
-            self.assertNotIn("scrollIntoView", m.group(1))
+        m = re.search(r"async function _wsTrainingCheck\(itemId, btn\) \{(.*?)\n\}", APP_JS, re.S)
+        self.assertIsNotNone(m)
+        self.assertNotIn("scrollTo", m.group(1))
+        self.assertNotIn("scrollIntoView", m.group(1))
 
 
 class TestResumeFlow(unittest.TestCase):
-    def test_08_resume_button_only_for_resume_confirmation_required(self):
-        m = re.search(r'if \(item\.reason_code === "client_resume_confirmation_required"\) \{(.*?)\} else \{', APP_JS, re.S)
+    """v7.1.10 — automatic resume replaced the manual "Подтвердить
+    возобновление" bottom-sheet flow entirely. These replace the old
+    TestResumeFlow assertions (which checked the confirmation UI existed)
+    with assertions that it has been fully removed and that the single
+    remaining "Проверить статус в МойКласс" action is the only, unified
+    path for every training reason code."""
+
+    def test_08_single_unified_action_for_every_training_reason(self):
+        # No more special-cased branch for client_resume_confirmation_required —
+        # every training reason renders the same single check button.
+        m = re.search(
+            r"if \(canManageTraining && WS_TRAINING_REASON_CODES\.has\(item\.reason_code\)\) \{(.*?)\n  \}",
+            APP_JS, re.S,
+        )
         self.assertIsNotNone(m)
-        self.assertIn("_wsTrainingOpenResume", m.group(1))
+        body = m.group(1)
+        self.assertIn("_wsTrainingCheck", body)
+        self.assertNotIn("client_resume_confirmation_required", body)
+        self.assertNotIn("Подтвердить возобновление", body)
 
-    def test_09_resume_bottom_sheet_present(self):
-        self.assertIn('id="wsTrainingResumeModal"', INDEX_HTML)
-        self.assertIn("Возобновить автоматизацию?", INDEX_HTML)
+    def test_09_resume_bottom_sheet_removed(self):
+        self.assertNotIn('id="wsTrainingResumeModal"', INDEX_HTML)
+        self.assertNotIn("Возобновить автоматизацию?", INDEX_HTML)
 
-    def test_10_auto_mode_warning_text(self):
-        self.assertIn(
+    def test_10_auto_mode_confirmation_warning_removed(self):
+        # That warning belonged to the removed bottom sheet, describing what
+        # a manual confirmation click would trigger — no longer applicable.
+        self.assertNotIn(
             'В режиме «Авто» следующий цикл может создать и отправить оплату автоматически.',
             INDEX_HTML,
         )
 
-    def test_11_resume_api_call_path(self):
-        self.assertIn("/training-resume", APP_JS)
+    def test_11_resume_endpoint_no_longer_called_from_frontend(self):
+        # Backend keeps /training-resume for backward compatibility (old
+        # cached clients), but the frontend never calls it anymore — the
+        # single "Проверить статус в МойКласс" (/training-check) button now
+        # performs automatic resume itself.
+        self.assertNotIn("/training-resume", APP_JS)
 
-    def test_12_resume_success_notice(self):
-        m = re.search(r"async function _wsTrainingConfirmResume\(\) \{(.*?)\n\}", APP_JS, re.S)
-        self.assertIn('setNotice(d.message', m.group(1))
-        self.assertIn('"success"', m.group(1))
+    def test_12_confirm_resume_function_removed(self):
+        self.assertNotIn("_wsTrainingConfirmResume", APP_JS)
+        self.assertNotIn("_wsTrainingOpenResume", APP_JS)
+        self.assertNotIn("_wsTrainingCloseResume", APP_JS)
 
-    def test_13_resume_failure_notice(self):
-        m = re.search(r"async function _wsTrainingConfirmResume\(\) \{(.*?)\n\}", APP_JS, re.S)
-        self.assertIn("wsTrainingResumeError", m.group(1))
+    def test_13_check_success_notice_uses_resumed_flag(self):
+        m = re.search(r"async function _wsTrainingCheck\(itemId, btn\) \{(.*?)\n\}", APP_JS, re.S)
+        self.assertIsNotNone(m)
+        self.assertIn("d.resumed", m.group(1))
 
     def test_14_no_browser_confirm(self):
-        for fn_name in ("_wsTrainingCheck", "_wsTrainingConfirmResume", "_wsTrainingOpenResume", "_wsTrainingCloseResume"):
-            m = re.search(rf"(?:async )?function {fn_name}\([^)]*\) \{{(.*?)\n\}}", APP_JS, re.S)
-            self.assertIsNotNone(m, fn_name)
-            self.assertNotRegex(m.group(1), r"[^_]confirm\(")
+        m = re.search(r"async function _wsTrainingCheck\(itemId, btn\) \{(.*?)\n\}", APP_JS, re.S)
+        self.assertIsNotNone(m)
+        self.assertNotRegex(m.group(1), r"[^_]confirm\(")
 
 
 class TestPublishedInvoiceWarning(unittest.TestCase):
@@ -217,8 +242,8 @@ class TestPreviewRemoved(unittest.TestCase):
         self.assertIn('id="ws-help-training-pause"', APP_JS)
 
     def test_cache_bust_is_current_release(self):
-        self.assertIn("app.js?v=7.1.9", INDEX_HTML)
-        self.assertIn('console.log("MiniApp version: v7.1.9")', APP_JS)
+        self.assertIn("app.js?v=7.1.10", INDEX_HTML)
+        self.assertIn('console.log("MiniApp version: v7.1.10")', APP_JS)
 
 
 class TestExistingScreensUnchanged(unittest.TestCase):
@@ -310,14 +335,13 @@ class TestLeaveInvoiceButtonSemantics(unittest.TestCase):
         self.assertNotIn("_loadWorkspaceAttention", onclick)
         self.assertNotIn("fetch(", onclick)
 
-    def test_leave_invoice_7_resume_only_via_training_resume_button(self):
-        # The ONLY way reason_code=client_resume_confirmation_required leads to
-        # an actual resume is the separate "Подтвердить возобновление" button,
-        # which is gated on a completely different reason_code branch than the
-        # published-invoice warning ("Оставить счёт" belongs to the published-
-        # warning branch only, never the resume-confirmation branch).
-        self.assertIn("_wsTrainingOpenResume", APP_JS)
+    def test_leave_invoice_7_resume_is_backend_automatic_not_a_ui_action(self):
+        # v7.1.10 — resume is no longer a UI action at all (automatic,
+        # backend-driven by Guardian/forced-fresh checks); "Оставить счёт"
+        # belongs only to the published-invoice-warning branch and must
+        # never reference any training-check/resume function.
         published_block = self._fn_body("_wsTrainingPublishedWarningHtml")
+        self.assertNotIn("_wsTrainingCheck", published_block)
         self.assertNotIn("_wsTrainingOpenResume", published_block)
         self.assertNotIn("_wsTrainingConfirmResume", published_block)
 

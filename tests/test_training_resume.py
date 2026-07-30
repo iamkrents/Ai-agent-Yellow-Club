@@ -4,12 +4,19 @@ Covers:
   - automation_item_action("training-check"/"training-resume") permissions
   - item ownership resolved server-side only (mk_user_id/mk_user_subscription_id
     never trusted from the request body)
-  - two-step resume flow: check -> client_resume_confirmation_required -> resume
   - resume performs its OWN forced-fresh re-check (does not trust the stored
     reason_code as the final decision)
   - resume never creates intent/bePaid/publishes directly
   - existing_published_invoice_during_pause audit dedup (v7.1.8 fix)
   - pilot mode / withdrawal permissions / webhook / posting untouched
+
+v7.1.10 — automatic training resume: the old two-step flow (check ->
+client_resume_confirmation_required -> separate manual resume) was replaced
+by automatic resume on the first fresh active check (training-check
+included). training-resume is now a backward-compatible, idempotent
+endpoint (see tests/test_automatic_training_resume.py for the full new
+state-machine/Guardian/pilot-mode/API coverage; this file keeps the
+permission/ownership/audit-dedup/unaffected-areas regressions).
 
 Run offline (mocked MoyKlass, no real API/DB writes beyond a temp SQLite file):
     python -m unittest tests.test_training_resume -v
@@ -29,7 +36,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.1.9"
+CURRENT_VERSION = "7.1.10"
 
 
 def _make_storage() -> Storage:
@@ -215,15 +222,20 @@ class TestCheckStates(unittest.TestCase):
         self.assertEqual(r["state"], "unknown")
         self.assertEqual(r["reason_code"], "training_state_unavailable")
 
-    def test_10_check_active_sets_resume_confirmation_required(self):
+    def test_10_check_active_resumes_automatically(self):
+        # v7.1.10 — a training-blocked item found active by the (manual,
+        # forced-fresh) check resumes automatically right here, in this one
+        # call — no more separate "client_resume_confirmation_required"
+        # holding state waiting for a second explicit action.
         item = _seed_item(self.storage, inv_id="INV10", sub_id="SUB10")
         _configure_moyklass(self.ctx.moyklass, "SUB10", sub_status="2", join_status="2")
         r = self._check(item)
         self.assertEqual(r["state"], "active")
-        self.assertTrue(r["resume_confirmation_required"])
-        self.assertEqual(r["reason_code"], "client_resume_confirmation_required")
+        self.assertTrue(r["resumed"])
+        self.assertFalse(r["resume_confirmation_required"])
         stored = self.storage.get_automation_item_by_id(item["id"])
-        self.assertEqual(stored["reason_code"], "client_resume_confirmation_required")
+        self.assertIsNone(stored["reason_code"])
+        self.assertEqual(stored["current_stage"], "discovered")
 
     def test_check_repeated_same_state_no_duplicate_audit(self):
         # Seed with NO prior reason_code so the first check is a genuine
@@ -313,16 +325,20 @@ class TestResumeFlow(unittest.TestCase):
             self._resume(item)
         mock_pub.assert_not_called()
 
-    def test_18_repeated_resume_idempotent_conflict(self):
+    def test_18_repeated_resume_idempotent_success(self):
+        # v7.1.10 — backward-compatible endpoint: a second call after the
+        # item is already resumed is idempotent success ("already_resumed"),
+        # never a conflict error — matches spec section 9.
         item = _seed_item(self.storage, inv_id="INV18", sub_id="SUB18",
                           reason_code="client_resume_confirmation_required")
         _configure_moyklass(self.ctx.moyklass, "SUB18", sub_status="2", join_status="2")
         r1 = self._resume(item)
         self.assertTrue(r1.get("ok"))
+        self.assertFalse(r1.get("already_resumed"))
         item2 = self.storage.get_automation_item_by_id(item["id"])
         r2 = self._resume(item2)
-        self.assertFalse(r2.get("ok"))
-        self.assertTrue(r2.get("conflict"))
+        self.assertTrue(r2.get("ok"))
+        self.assertTrue(r2.get("already_resumed"))
 
     def test_19_scheduler_later_continues_according_to_pilot_mode(self):
         self.storage.upsert_pilot_client("8801", mode="auto", now=_now())
@@ -503,17 +519,18 @@ class TestTrainingPauseRegressionAfterPaymentMethodFix(unittest.TestCase):
         from web_app_server import WITHDRAW_INVOICE_ROLES
         self.assertEqual(WITHDRAW_INVOICE_ROLES, {"owner", "admin", "operations"})
 
-    def test_training_resume_remains_a_separate_explicit_action(self):
+    def test_training_resume_now_automatic_via_check(self):
+        # v7.1.10 — training-check alone (the only action left in the UI)
+        # now resumes automatically when MoyKlass shows active — no more
+        # separate "Подтвердить возобновление" confirmation step.
         item = _seed_item(self.storage, inv_id="INV-L5", sub_id="SUB-L5",
                           reason_code="client_training_paused")
-        # training-check alone (without resume) never clears the block, even
-        # if MoyKlass now shows active — it only flips to resume-confirmation.
         _configure_moyklass(self.ctx.moyklass, "SUB-L5", sub_status="2", join_status="2")
         with patch.object(self.ctx, "_role_for_user", return_value="owner"):
             self.ctx.automation_item_action(_OWNER_AUTH, str(item["id"]), "training-check", {})
         stored = self.storage.get_automation_item_by_id(item["id"])
-        self.assertEqual(stored["reason_code"], "client_resume_confirmation_required")
-        self.assertNotEqual(stored["current_stage"], "discovered")
+        self.assertIsNone(stored["reason_code"])
+        self.assertEqual(stored["current_stage"], "discovered")
 
     def test_existing_audit_dedup_remains(self):
         item = _seed_item(self.storage, inv_id="INV-L6", sub_id="SUB-L6",

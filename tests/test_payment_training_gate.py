@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.1.9"
+CURRENT_VERSION = "7.1.10"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -515,7 +515,7 @@ class TestDiscoveryGate(unittest.TestCase):
         self.assertIn("mk_user_id", src)
 
 
-class TestResumeConfirmation(unittest.TestCase):
+class TestAutomaticResumeViaDiscoveryGate(unittest.TestCase):
     def setUp(self):
         self.storage = _make_storage()
         self.settings = _make_settings()
@@ -525,19 +525,28 @@ class TestResumeConfirmation(unittest.TestCase):
         self.storage.upsert_pilot_client("9930", mode="auto", now=_now())
         _seed_parent_link(self.storage, "9930", "tg30")
 
-    def test_resume_requires_manual_confirmation_not_silent(self):
+    def test_resume_now_auto_proceeds_via_discovery_gate(self):
+        # v7.1.10 — a fresh, unambiguous active state after a training block
+        # now resumes automatically inside the SAME shared helper discovery's
+        # gate calls (_apply_training_state_result), and discovery proceeds
+        # with its normal pipeline in this same pass — a forced-fresh check
+        # still runs again immediately before the actual intent creation
+        # (see TestForcedFreshBeforeCreate), so this is never trusting a
+        # stale per-cycle-cached snapshot.
         _configure_moyklass(self.ctx.moyklass, "SUB930", join_status="99046")
         inv = _make_invoice(inv_id="INV930", mk_user_id="9930", sub_id="SUB930")
         r1 = _run_single(self.ctx, inv)
         self.assertTrue(r1.get("requires_check"))
+        item = self.storage.upsert_automation_item("INV930", "9930", "T", "{}", _now())
+        self.assertEqual(item.get("reason_code"), "client_training_paused")
 
         # MoyKlass now shows active again.
         _configure_moyklass(self.ctx.moyklass, "SUB930", sub_status="2", join_status="2")
         r2 = _run_single(self.ctx, inv)
-        self.assertTrue(r2.get("requires_check"), "must not silently auto-resume")
-        item = self.storage.upsert_automation_item("INV930", "9930", "T", "{}", _now())
-        self.assertEqual(item.get("reason_code"), "client_resume_confirmation_required")
-        self.assertEqual(len(self.storage.find_all_active_intents_by_invoice("INV930")), 0)
+        self.assertFalse(r2.get("requires_check"))
+        item2 = self.storage.get_automation_item_by_id(item["id"])
+        self.assertIsNone(item2.get("reason_code"))
+        self.assertEqual(len(self.storage.find_all_active_intents_by_invoice("INV930")), 1)
 
 
 if __name__ == "__main__":
