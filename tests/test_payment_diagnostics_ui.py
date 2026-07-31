@@ -252,9 +252,9 @@ class TestCssMobile(unittest.TestCase):
 
 class TestVersionMarker(unittest.TestCase):
     def test_25_cache_bust_is_v7110(self):
-        self.assertIn("app.js?v=7.1.10", INDEX_HTML)
-        self.assertIn("styles.css?v=7.1.10", INDEX_HTML)
-        self.assertIn('console.log("MiniApp version: v7.1.10")', APP_JS)
+        self.assertIn("app.js?v=7.1.11", INDEX_HTML)
+        self.assertIn("styles.css?v=7.1.11", INDEX_HTML)
+        self.assertIn('console.log("MiniApp version: v7.1.11")', APP_JS)
 
 
 class TestPreviewRemoved(unittest.TestCase):
@@ -283,7 +283,7 @@ class TestPreviewRemoved(unittest.TestCase):
 
     def test_28_script_tail_is_plain_production_form(self):
         tail = INDEX_HTML[INDEX_HTML.rfind("<script"):]
-        self.assertIn('src="/static/app.js?v=7.1.10"', tail)
+        self.assertIn('src="/static/app.js?v=7.1.11"', tail)
         self.assertNotIn("(function ()", tail)
 
     def test_29_production_boot_and_diagnostics_endpoint_still_wired(self):

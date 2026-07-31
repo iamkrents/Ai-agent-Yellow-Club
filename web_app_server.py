@@ -140,7 +140,9 @@ FOOD_MENU_DELETE_ROLES = {"kitchen", "restaurant", "owner", "admin", "operations
 FOOD_ADMIN_EDIT_ROLES = {"owner", "admin", "operations"}
 BEPAID_RECONCILE_ROLES = {"owner", "admin", "director", "operations", "client_manager"}
 PAYMENT_INTENT_ROLES = {"owner", "admin", "director", "operations", "client_manager"}
-PAYMENT_MK_POST_ROLES = {"owner", "admin"}  # only senior roles may post to MoyKlass
+PAYMENT_MK_POST_ROLES = {"owner", "admin"}  # only senior roles may post to MoyKlass (also gates payment_integrity_audit — do not widen)
+PAYMENT_MK_MANUAL_POST_ROLES = PAYMENT_MK_POST_ROLES | {"client_manager"}  # v7.1.11 — manual "Внести в МойКласс" action only; client_manager still acts only on payments they already see via WORKSPACE_VIEW_ROLES
+PAYMENT_ONBOARDING_STAFF_ROLES = {"owner", "admin", "client_manager"}  # v7.1.11 — staff-only Payments onboarding (client_admin_link_and_enroll); deliberately excludes operations
 CLIENT_LINK_ADMIN_ROLES = {"owner", "admin", "operations", "client_manager"}  # v7.1.7 — client_manager can manage CL- link codes
 CLIENT_LINK_CODE_TTL_HOURS = _STORAGE_CLIENT_LINK_CODE_TTL_HOURS  # v7.1.7 — single source of truth is storage.py
 CLIENT_LINK_MAX_FAILED_ATTEMPTS = 5      # v7.1.7 — brute-force guard on POST /api/client/children/link
@@ -11987,6 +11989,12 @@ class MiniAppContext:
                 note="already_linked" if result.get("already_linked") else None,
             )
             result["mk_user_id"] = mk_user_id  # restore: legitimate post-success field, unchanged existing contract
+            # v7.1.11 correction: this endpoint is role=parent only (see top of
+            # this method) — it is the SAME generic self-service link a parent
+            # uses for ordinary CL-code linking, not a staff Payments flow.
+            # Payment automation pilot enrollment must NEVER trigger from here;
+            # it only happens from the staff-gated
+            # client_admin_link_and_enroll() below (owner/admin/client_manager).
         else:
             reason_code = result.get("reason_code") or "code_not_found"
             # Step 3: record the failed attempt — fatal on write failure (see above).
@@ -12003,6 +12011,81 @@ class MiniAppContext:
             )
 
         self._maybe_cleanup_client_link_rate_limit(now_dt)
+        return result
+
+    def client_admin_link_and_enroll(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/client/admin/link-and-enroll — v7.1.11 staff-only Payments onboarding.
+
+        This is the ONLY place that ensures a payment automation pilot record.
+        It is gated to PAYMENT_ONBOARDING_STAFF_ROLES (owner/admin/client_manager
+        — deliberately NOT operations, per spec) and never derives that gate
+        from anything client-supplied (no trusting a "source=payments" body
+        flag) — the role check below, resolved server-side from auth, is the
+        only thing that decides whether pilot enrollment happens.
+
+        Reuses storage.link_client_child — the exact same code-validation and
+        parent-link logic the self-service parent flow uses — rather than a
+        second parallel client-link mechanism. Staff supplies which parent
+        Telegram account to link (parent_telegram_user_id), same as they would
+        relay over a support channel.
+
+        Fail-safe, not fail-open: if the link itself succeeds but pilot
+        enrollment fails, the link is NOT rolled back (it is already real and
+        committed) but the response is a transparent partial result
+        (automation_status="failed") — never a false "connected" success.
+        Calling again (including on an already_linked code) retries pilot
+        enrollment and stays idempotent once it succeeds.
+        """
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in PAYMENT_ONBOARDING_STAFF_ROLES:
+            return {"ok": False, "error": "Доступно только owner, admin и client_manager."}
+
+        actor_tid = str(auth.get("user_id") or "")
+        parent_tid = str(body.get("parent_telegram_user_id") or "").strip()
+        code = str(body.get("code") or "").strip().upper()
+        if not parent_tid:
+            return {"ok": False, "error": "parent_telegram_user_id обязателен"}
+        if not code or not code.startswith("CL-") or len(code) != 11:
+            return {"ok": False, "error": "Неверный формат кода. Ожидается CL-XXXXXXXX.", "reason_code": "invalid_code_format"}
+
+        now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        result = self.storage.link_client_child(parent_tid, code, now)
+        mk_user_id = result.pop("mk_user_id", None)
+        code_id = result.pop("code_id", None)
+
+        if not result.get("ok"):
+            # Never leak the plaintext code or which mk_user_id a wrong/used
+            # code belongs to — same discipline as the parent-facing endpoint.
+            return result
+
+        result["mk_user_id"] = mk_user_id
+        self._safe_client_link_audit(
+            event_type="code_used", mk_user_id=mk_user_id, code_id=code_id,
+            parent_telegram_user_id=parent_tid, actor_telegram_user_id=actor_tid,
+            actor_role=role, result="success",
+            note="staff_onboarding" + ("_already_linked" if result.get("already_linked") else ""),
+        )
+
+        automation: dict[str, Any] = {
+            "link_status": "already_linked" if result.get("already_linked") else "linked",
+            "automation_status": "failed",
+            "pilot_created": False,
+            "mode": None,
+            "enabled": None,
+        }
+        try:
+            pilot_outcome = self.storage.ensure_payment_pilot_from_client_link(mk_user_id, actor_tid, now)
+            automation["automation_status"] = "connected"
+            automation["pilot_created"] = bool(pilot_outcome.get("created"))
+            automation["mode"] = pilot_outcome.get("mode")
+            automation["enabled"] = pilot_outcome.get("enabled")
+        except Exception as exc:
+            # Fail-safe: the link above is already committed and real and is
+            # NOT undone. Log contains only mk_user_id — no CL code, no
+            # parent_tid, no secrets.
+            log.warning("payments_onboarding_pilot_ensure_failed mk_user_id=%s error=%s", mk_user_id, exc)
+
+        result["payment_automation"] = automation
         return result
 
     def admin_client_generate_code(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
@@ -12352,7 +12435,21 @@ class MiniAppContext:
             return None
         role = self._role_for_user(int(auth["user_id"]))
         if role not in PAYMENT_MK_POST_ROLES:
-            return {"ok": False, "error": "Внесение оплаты в МойКласс доступно только owner и admin."}
+            return {"ok": False, "error": "Доступно только owner и admin."}
+        return None
+
+    def _require_moyklass_manual_action_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
+        """v7.1.11 — gate for the manual 'Внести в МойКласс' action trio only
+        (readiness / post / reconcile). Deliberately separate from
+        _require_moyklass_post_access, which also gates moyklass_payment_types
+        (an unrelated owner/admin-only diagnostics endpoint) — widening that
+        shared function to PAYMENT_MK_MANUAL_POST_ROLES would have accidentally
+        given client_manager access to payment_types too."""
+        if auth.get("_is_automation"):
+            return None
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in PAYMENT_MK_MANUAL_POST_ROLES:
+            return {"ok": False, "error": "Внесение оплаты в МойКласс доступно только owner, admin и client_manager."}
         return None
 
     def payment_intent_moyklass_readiness(self, auth: dict[str, Any], public_id: str) -> dict[str, Any]:
@@ -12363,7 +12460,7 @@ class MiniAppContext:
         """
         from decimal import Decimal, ROUND_HALF_UP
 
-        denied = self._require_moyklass_post_access(auth)
+        denied = self._require_moyklass_manual_action_access(auth)
         if denied:
             return denied
 
@@ -12610,7 +12707,7 @@ class MiniAppContext:
         from decimal import Decimal, ROUND_HALF_UP
         import json as _json
 
-        denied = self._require_moyklass_post_access(auth)
+        denied = self._require_moyklass_manual_action_access(auth)
         if denied:
             return denied
 
@@ -12670,6 +12767,20 @@ class MiniAppContext:
                 reason=f"wrong_status:{intent.get('status')}",
             )
             return {"ok": False, "error": f"Оплата bePaid ещё не подтверждена (статус: {intent.get('status')})"}
+
+        # 4b. Guard: withdrawn from client — v7.1.11 fix. client_visibility is
+        # independent of status (withdraw_payment_intent_from_client never
+        # touches status), so a withdrawn-but-still-"paid" intent previously
+        # passed the check above unblocked. The frontend already hides the
+        # button for withdrawn intents; this closes the matching backend gap
+        # so a direct API call can't bypass it.
+        if str(intent.get("client_visibility") or "") == "withdrawn":
+            self.storage.log_moyklass_post_audit(
+                "moyklass_post_blocked",
+                intent_public_id=public_id,
+                reason="withdrawn_from_client",
+            )
+            return {"ok": False, "error": "Счёт отозван у клиента. Внесение в МойКласс недоступно."}
 
         cfg = self.settings
         mk_user_id = int(intent.get("mk_user_id") or 0)
@@ -13054,7 +13165,7 @@ class MiniAppContext:
         """
         from decimal import Decimal, ROUND_HALF_UP
 
-        denied = self._require_moyklass_post_access(auth)
+        denied = self._require_moyklass_manual_action_access(auth)
         if denied:
             return denied
 
@@ -18344,6 +18455,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 elif _cl_res.get("reason_code") == "rate_limit_unavailable":
                     _cl_status = 503
                 return self._send_json(_cl_res, status=_cl_status)
+            if path == "/api/client/admin/link-and-enroll":
+                return self._send_json(CTX.client_admin_link_and_enroll(auth, body))
             if path == "/api/client/admin/link-codes":
                 return self._send_json(CTX.admin_client_generate_code(auth, body))
             if path == "/api/client/admin/link-codes/invalidate":

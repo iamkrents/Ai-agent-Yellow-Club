@@ -9575,6 +9575,49 @@ class Storage:
                 ),
             )
 
+    def ensure_payment_pilot_from_client_link(
+        self, mk_user_id: str, actor_tg_id: Optional[str], now: Optional[str] = None
+    ) -> dict:
+        """v7.1.11 — called ONLY from the staff-gated Payments onboarding flow
+        (web_app_server.client_admin_link_and_enroll; owner/admin/client_manager),
+        never from the generic parent-facing client_link_child. After a
+        successful CL-code client link, make sure the student has a payment
+        automation pilot record, without ever touching one that already exists.
+
+        - No existing pilot: create one with mode='review', enabled=1,
+          note='source=payments_client_code', and record a
+          payment_pilot_created_from_client_code audit event.
+        - Existing pilot (any mode): left completely untouched — mode,
+          enabled, note and history are all preserved as-is. No audit event
+          is written for this idempotent no-op.
+        """
+        now = now or now_iso()
+        existing = self.get_pilot_client(mk_user_id)
+        if existing:
+            return {
+                "created": False,
+                "mode": existing.get("mode"),
+                "enabled": bool(existing.get("enabled")),
+            }
+        pilot = self.upsert_pilot_client(
+            mk_user_id,
+            mode="review",
+            note="source=payments_client_code",
+            added_by_tg_id=actor_tg_id,
+            now=now,
+        )
+        self.create_pilot_audit_event({
+            "created_at": now,
+            "event_type": "payment_pilot_created_from_client_code",
+            "mk_user_id": str(mk_user_id),
+            "pilot_client_id": pilot.get("id"),
+            "old_mode": None,
+            "new_mode": "review",
+            "actor_tg_id": actor_tg_id,
+            "note": "source=payments_client_code",
+        })
+        return {"created": True, "mode": "review", "enabled": True}
+
     def find_automation_item_by_intent_public_id(self, public_id: str) -> Optional[dict]:
         with self._connect() as conn:
             row = conn.execute(

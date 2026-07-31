@@ -81,7 +81,7 @@ const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
 
-console.log("MiniApp version: v7.1.10");
+console.log("MiniApp version: v7.1.11");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -7909,6 +7909,11 @@ async function loadMyChildren() {
 }
 
 async function linkClientChild() {
+  // v7.1.11: /api/client/children/link is the generic parent self-service
+  // flow (role=parent only) — it never touches payment automation. Staff
+  // Payments onboarding (owner/admin/client_manager) is a separate endpoint,
+  // /api/client/admin/link-and-enroll — see client_admin_link_and_enroll()
+  // in web_app_server.py.
   const input = $("parentClientLinkCodeInput");
   const btn = $("parentClientLinkBtn");
   const errEl = $("parentClientLinkError");
@@ -12691,7 +12696,7 @@ function renderPaymentIntentCard(pi) {
        </div>`
     : "";
 
-  const canMkPost = pi.status === "paid" && canPostToMoyklass() && !isWithdrawn;
+  const canMkPost = canShowMkPostButton(pi);
   const mkPostBtn = canMkPost
     ? `<button class="primary" style="font-size:12px;padding:4px 10px" onclick="openMkPostModal('${escapeHtml(pi.public_id)}','${cancelSafeName}',${amountVal})">Внести в МойКласс</button>`
     : "";
@@ -13226,9 +13231,36 @@ function renderMkPaymentTypes(data) {
 
 // ── MoyKlass Manual Payment Posting (v7.0.92) ────────────────────────────
 
+// v7.1.11 — mirrors backend PAYMENT_MK_MANUAL_POST_ROLES (web_app_server.py); kept as one
+// array so the dev preview can reuse the exact same rule instead of duplicating it.
+const MK_POST_ROLES = ["owner", "admin", "client_manager"];
 function canPostToMoyklass() {
   const r = state.me?.role || "";
-  return ["owner", "admin"].includes(r);
+  return MK_POST_ROLES.includes(r);  // backend re-checks independently regardless of this
+}
+
+// v7.1.11 — single source of truth for the "Внести в МойКласс" button
+// specifically (canPostToMoyklass() above is a plain role check reused by
+// OTHER unrelated buttons too, e.g. "Подтвердить оплату через bePaid" —
+// left untouched). Every condition here mirrors a real backend guard in
+// payment_intent_post_to_moyklass; the backend re-checks all of them
+// independently regardless of what this returns.
+function canShowMkPostButton(pi) {
+  if (!pi) return false;
+  const role = state.me?.role || "";
+  const roleAllowed = MK_POST_ROLES.includes(role);
+  const paymentConfirmed = pi.status === "paid";
+  const amountByn = Number(pi.paid_amount_byn ?? 0);
+  const amountKnownPositive = amountByn > 0;
+  const clientVis = pi.client_visibility || "hidden";
+  const notWithdrawn = clientVis !== "withdrawn";
+  const notCancelled = pi.status !== "cancelled";
+  const notIgnored = pi.status !== "ignored";
+  const notAlreadyPosted = pi.status !== "posted_to_moyklass" && !pi.mk_payment_id && !pi.mk_posted_at;
+  const notInProgress = pi.mk_posting_status !== "claiming";
+  const hasTrustedIdentifiers = !!pi.mk_invoice_id && !!pi.mk_user_id;
+  return roleAllowed && paymentConfirmed && amountKnownPositive && notWithdrawn
+    && notCancelled && notIgnored && notAlreadyPosted && notInProgress && hasTrustedIdentifiers;
 }
 
 function canWithdrawInvoice() {
@@ -15370,7 +15402,7 @@ function _wsRenderPaymentCard(pi) {
        </div>`
     : "";
 
-  const canMkPost = pi.status === "paid" && canPostToMoyklass() && !isWithdrawn;
+  const canMkPost = canShowMkPostButton(pi);
   const mkPostBtn = canMkPost
     ? `<button class="primary ws-pi-action-btn" onclick="openMkPostModal('${pid}','${safeName}',${amountVal})">Внести в МойКласс</button>`
     : "";

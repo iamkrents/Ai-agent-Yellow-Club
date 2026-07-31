@@ -1255,13 +1255,24 @@ class TestHotfix98_2(unittest.TestCase):
                       "canVerifyAcquiring must include !isWithdrawn check")
 
     def test_80_app_js_mk_post_btn_gated_by_is_withdrawn(self):
-        """canMkPost condition includes && !isWithdrawn."""
+        """v7.1.11: canMkPost now delegates to canShowMkPostButton(pi), which
+        folds the withdrawn exclusion (among other conditions) into one
+        reusable, backend-mirrored function instead of an inline
+        `&& !isWithdrawn` on the canMkPost line itself. Assert both halves:
+        canMkPost calls the shared function, and that function excludes
+        withdrawn intents."""
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
         idx = js.index("const canMkPost = ")
         line_end = js.index("\n", idx)
         line = js[idx:line_end]
-        self.assertIn("!isWithdrawn", line,
-                      f"canMkPost must include !isWithdrawn check, got: {line!r}")
+        self.assertIn("canShowMkPostButton(pi)", line,
+                      f"canMkPost must delegate to canShowMkPostButton(pi), got: {line!r}")
+
+        fn_idx = js.index("function canShowMkPostButton(pi)")
+        fn_end = js.index("\n}", fn_idx)
+        fn_body = js[fn_idx:fn_end]
+        self.assertIn('clientVis !== "withdrawn"', fn_body,
+                      "canShowMkPostButton must exclude withdrawn intents")
 
     def test_81_app_js_publish_to_parent_btn_gated_by_is_withdrawn(self):
         """canPublishToParent condition includes && !isWithdrawn."""
@@ -1872,11 +1883,11 @@ class TestRemoteCancelV714(unittest.TestCase):
     # ── Version and cache-bust ────────────────────────────────────────────────
 
     def test_127_cache_bust_v714(self):
-        """index.html has v=7.1.10 and app.js has MiniApp version: v7.1.8."""
+        """index.html has v=7.1.11 and app.js has MiniApp version: v7.1.8."""
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v=7.1.10", html, "index.html cache-bust must be v=7.1.10")
-        self.assertIn("v7.1.10", js, "app.js version marker must contain v7.1.10")
+        self.assertIn("v=7.1.11", html, "index.html cache-bust must be v=7.1.11")
+        self.assertIn("v7.1.11", js, "app.js version marker must contain v7.1.11")
 
 
 # ---------------------------------------------------------------------------
@@ -2284,11 +2295,11 @@ class TestRemoteCancelRetryV7141(unittest.TestCase):
         )
 
     def test_157_cache_bust_v7142(self):
-        """index.html has v=7.1.10 and app.js has MiniApp version: v7.1.8."""
+        """index.html has v=7.1.11 and app.js has MiniApp version: v7.1.8."""
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v=7.1.10", html, "index.html cache-bust must be v=7.1.10")
-        self.assertIn("v7.1.10", js, "app.js version marker must contain v7.1.10")
+        self.assertIn("v=7.1.11", html, "index.html cache-bust must be v=7.1.11")
+        self.assertIn("v7.1.11", js, "app.js version marker must contain v7.1.11")
 
 
 # ---------------------------------------------------------------------------
@@ -2662,11 +2673,11 @@ class TestEripClientWiringV7142(unittest.TestCase):
     # ── Group 8: Version ──────────────────────────────────────────────────────
 
     def test_182_cache_bust_v7142(self):
-        """index.html has v=7.1.10 and app.js has MiniApp version: v7.1.8."""
+        """index.html has v=7.1.11 and app.js has MiniApp version: v7.1.8."""
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v=7.1.10", html, "index.html cache-bust must be v=7.1.10")
-        self.assertIn("v7.1.10", js, "app.js version marker must contain v7.1.10")
+        self.assertIn("v=7.1.11", html, "index.html cache-bust must be v=7.1.11")
+        self.assertIn("v7.1.11", js, "app.js version marker must contain v7.1.11")
 
 
 if __name__ == "__main__":

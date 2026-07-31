@@ -26,6 +26,7 @@ from moyklass_client import MoyKlassResult
 from web_app_server import (
     _compute_moyklass_post_fingerprint,
     PAYMENT_MK_POST_ROLES,
+    PAYMENT_MK_MANUAL_POST_ROLES,
     PAYMENT_INTENT_ROLES,
     MiniAppContext,
 )
@@ -865,8 +866,12 @@ class TestRoleGuards(unittest.TestCase):
         self.ctx = _make_ctx(self.storage)
 
     def test_payment_mk_post_roles_owner_admin_only(self):
-        """PAYMENT_MK_POST_ROLES must be exactly owner and admin."""
+        """PAYMENT_MK_POST_ROLES (gates payment_integrity_audit) must stay exactly owner and admin — unchanged by v7.1.11."""
         self.assertEqual(PAYMENT_MK_POST_ROLES, {"owner", "admin"})
+
+    def test_payment_mk_manual_post_roles_v7111(self):
+        """v7.1.11: PAYMENT_MK_MANUAL_POST_ROLES (manual 'Внести в МойКласс' only) adds client_manager."""
+        self.assertEqual(PAYMENT_MK_MANUAL_POST_ROLES, {"owner", "admin", "client_manager"})
 
     def test_teacher_cannot_access_readiness(self):
         intent = _seed_paid_intent(self.storage)
@@ -874,13 +879,205 @@ class TestRoleGuards(unittest.TestCase):
         result = self.ctx.payment_intent_moyklass_readiness(auth, intent["public_id"])
         self.assertIn("error", result)
 
-    def test_client_manager_cannot_post(self):
+    def test_client_manager_readiness_allowed_v7111(self):
+        """v7.1.11: client_manager can load MoyKlass posting readiness like owner/admin."""
+        intent = _seed_paid_intent(self.storage)
+        self.ctx.moyklass.get_invoice_by_id.return_value = MoyKlassResult(True, data=_fake_invoice(), status=200)
+        auth = _role_auth(6, "client_manager", self.ctx)
+        result = self.ctx.payment_intent_moyklass_readiness(auth, intent["public_id"])
+        self.assertNotIn("error", result)
+
+    def test_client_manager_can_post_v7111(self):
+        """v7.1.11 behavior change: client_manager is now allowed to post to MoyKlass (was denied pre-v7.1.11)."""
         intent = _seed_paid_intent(self.storage)
         pid = intent["public_id"]
         fp = _compute_moyklass_post_fingerprint(intent, _fake_invoice())
+        self.ctx.moyklass.get_invoice_by_id.return_value = MoyKlassResult(True, data=_fake_invoice(), status=200)
+        self.ctx.moyklass.create_payment.return_value = MoyKlassResult(True, data={"id": 12345678, "userId": 9001}, status=200)
         auth = _role_auth(6, "client_manager", self.ctx)
         result = self.ctx.payment_intent_post_to_moyklass(auth, pid, {"confirm": True, "snapshot_fingerprint": fp})
+        self.assertTrue(result.get("ok"))
+        self.ctx.moyklass.create_payment.assert_called_once()
+
+    def test_operations_cannot_post_v7111(self):
+        intent = _seed_paid_intent(self.storage)
+        pid = intent["public_id"]
+        fp = _compute_moyklass_post_fingerprint(intent, _fake_invoice())
+        auth = _role_auth(7, "operations", self.ctx)
+        result = self.ctx.payment_intent_post_to_moyklass(auth, pid, {"confirm": True, "snapshot_fingerprint": fp})
         self.assertFalse(result.get("ok"))
+        self.ctx.moyklass.create_payment.assert_not_called()
+
+    def test_parent_cannot_post_v7111(self):
+        intent = _seed_paid_intent(self.storage)
+        pid = intent["public_id"]
+        fp = _compute_moyklass_post_fingerprint(intent, _fake_invoice())
+        auth = _role_auth(8, "parent", self.ctx)
+        result = self.ctx.payment_intent_post_to_moyklass(auth, pid, {"confirm": True, "snapshot_fingerprint": fp})
+        self.assertFalse(result.get("ok"))
+        self.ctx.moyklass.create_payment.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 9b. v7.1.11 — client_manager manual posting (reuses owner/admin flow)
+# ---------------------------------------------------------------------------
+
+class TestClientManagerPostingV7111(unittest.TestCase):
+
+    def setUp(self):
+        self.storage = _memory_storage()
+        self.ctx = _make_ctx(self.storage)
+        self.auth = _role_auth(6, "client_manager", self.ctx)
+
+    def _ready_state(self) -> tuple[str, str, dict]:
+        intent = _seed_paid_intent(self.storage)
+        pid = intent["public_id"]
+        invoice = _fake_invoice()
+        fp = _compute_moyklass_post_fingerprint(intent, invoice)
+        return pid, fp, invoice
+
+    def test_client_manager_unpaid_denied(self):
+        """Role gate passes, but business-state check still blocks an unpaid intent."""
+        intent = self.storage.create_payment_intent(dict(
+            mk_user_id=9001, student_name="Тест", amount_minor=22900, amount_byn=229.0,
+            currency="BYN", purpose="current_month", payment_method="erip",
+            status="draft", source="moyklass_invoice", mk_invoice_id="19000001",
+            mk_user_subscription_id="17000001",
+        ))
+        pid = intent["public_id"]
+        result = self.ctx.payment_intent_post_to_moyklass(self.auth, pid, {"confirm": True, "snapshot_fingerprint": "x"})
+        self.assertFalse(result.get("ok"))
+        self.ctx.moyklass.create_payment.assert_not_called()
+
+    def test_client_manager_double_request_posts_once(self):
+        """Double-click protection (atomic DB claim) applies to client_manager exactly like owner/admin."""
+        pid, fp, invoice = self._ready_state()
+        self.ctx.moyklass.get_invoice_by_id.return_value = MoyKlassResult(True, data=invoice, status=200)
+        self.ctx.moyklass.create_payment.return_value = MoyKlassResult(True, data={"id": 555, "userId": 9001}, status=200)
+
+        first = self.ctx.payment_intent_post_to_moyklass(self.auth, pid, {"confirm": True, "snapshot_fingerprint": fp})
+        second = self.ctx.payment_intent_post_to_moyklass(self.auth, pid, {"confirm": True, "snapshot_fingerprint": fp})
+
+        self.assertTrue(first.get("ok"))
+        self.assertTrue(second.get("ok"))
+        self.assertTrue(second.get("idempotent"))
+        self.ctx.moyklass.create_payment.assert_called_once()
+
+    def test_client_manager_frontend_amount_and_invoice_ignored(self):
+        """Body-supplied amount/invoice/subscription fields are never read — only confirm+fingerprint are."""
+        pid, fp, invoice = self._ready_state()
+        self.ctx.moyklass.get_invoice_by_id.return_value = MoyKlassResult(True, data=invoice, status=200)
+        self.ctx.moyklass.create_payment.return_value = MoyKlassResult(True, data={"id": 777, "userId": 9001}, status=200)
+
+        self.ctx.payment_intent_post_to_moyklass(self.auth, pid, {
+            "confirm": True, "snapshot_fingerprint": fp,
+            "amount_minor": 1, "mk_invoice_id": "999999", "mk_user_subscription_id": "1",
+            "posted_to_moyklass": True, "role": "owner", "mk_payment_id": 999,
+        })
+
+        _, kwargs = self.ctx.moyklass.create_payment.call_args
+        self.assertEqual(kwargs["user_id"], 9001)
+        self.assertEqual(kwargs["summa"], 229.0)
+
+    def test_client_manager_already_posted_idempotent_no_duplicate(self):
+        pid, fp, invoice = self._ready_state()
+        self.ctx.moyklass.get_invoice_by_id.return_value = MoyKlassResult(True, data=invoice, status=200)
+        self.ctx.moyklass.create_payment.return_value = MoyKlassResult(True, data={"id": 888, "userId": 9001}, status=200)
+        self.ctx.payment_intent_post_to_moyklass(self.auth, pid, {"confirm": True, "snapshot_fingerprint": fp})
+        self.ctx.moyklass.create_payment.reset_mock()
+
+        result = self.ctx.payment_intent_post_to_moyklass(self.auth, pid, {"confirm": True, "snapshot_fingerprint": fp})
+        self.assertTrue(result.get("ok"))
+        self.assertTrue(result.get("idempotent"))
+        self.ctx.moyklass.create_payment.assert_not_called()
+
+    def test_client_manager_success_records_actor(self):
+        """mk_posting_by (the existing posting-audit actor field) records the real auth user_id, not any request field."""
+        pid, fp, invoice = self._ready_state()
+        self.ctx.moyklass.get_invoice_by_id.return_value = MoyKlassResult(True, data=invoice, status=200)
+        self.ctx.moyklass.create_payment.return_value = MoyKlassResult(True, data={"id": 999, "userId": 9001}, status=200)
+        self.ctx.payment_intent_post_to_moyklass(self.auth, pid, {"confirm": True, "snapshot_fingerprint": fp})
+        intent = self.storage.get_payment_intent(pid)
+        self.assertEqual(intent.get("mk_posting_by"), "6")
+
+    def test_owner_admin_post_unchanged_v7111(self):
+        """Regression: owner/admin manual posting behavior is byte-identical to before v7.1.11."""
+        intent = _seed_paid_intent(self.storage)
+        pid = intent["public_id"]
+        invoice = _fake_invoice()
+        fp = _compute_moyklass_post_fingerprint(intent, invoice)
+        self.ctx.moyklass.get_invoice_by_id.return_value = MoyKlassResult(True, data=invoice, status=200)
+        self.ctx.moyklass.create_payment.return_value = MoyKlassResult(True, data={"id": 111, "userId": 9001}, status=200)
+        auth = _owner_auth()
+        result = self.ctx.payment_intent_post_to_moyklass(auth, pid, {"confirm": True, "snapshot_fingerprint": fp})
+        self.assertTrue(result.get("ok"))
+        self.ctx.moyklass.create_payment.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 9c. v7.1.11 — full button-visibility condition set, enforced server-side too
+# ---------------------------------------------------------------------------
+
+class TestMkPostBusinessStateGuardsV7111(unittest.TestCase):
+    """Backend re-checks every condition the frontend canShowMkPostButton()
+    also checks — a direct API call cannot bypass any of them."""
+
+    def setUp(self):
+        self.storage = _memory_storage()
+        self.ctx = _make_ctx(self.storage)
+        self.auth = _role_auth(6, "client_manager", self.ctx)
+
+    def test_cancelled_denied(self):
+        intent = self.storage.create_payment_intent(dict(
+            mk_user_id=9001, student_name="Тест", amount_minor=22900, amount_byn=229.0,
+            currency="BYN", purpose="current_month", payment_method="erip",
+            status="cancelled", source="moyklass_invoice", mk_invoice_id="19000001",
+            mk_user_subscription_id="17000001",
+        ))
+        result = self.ctx.payment_intent_post_to_moyklass(self.auth, intent["public_id"], {"confirm": True, "snapshot_fingerprint": "x"})
+        self.assertFalse(result.get("ok"))
+        self.ctx.moyklass.create_payment.assert_not_called()
+
+    def test_missing_zero_amount_denied(self):
+        """status=paid but paid_amount_minor was never set (0) -> blocked, not posted."""
+        intent = self.storage.create_payment_intent(dict(
+            mk_user_id=9001, student_name="Тест", amount_minor=22900, amount_byn=229.0,
+            currency="BYN", purpose="current_month", payment_method="erip",
+            status="paid", source="moyklass_invoice", mk_invoice_id="19000001",
+            mk_user_subscription_id="17000001",
+        ))
+        self.assertFalse(intent.get("paid_amount_minor"))  # sanity: precondition for this test
+        result = self.ctx.payment_intent_post_to_moyklass(self.auth, intent["public_id"], {"confirm": True, "snapshot_fingerprint": "x"})
+        self.assertFalse(result.get("ok"))
+        self.ctx.moyklass.create_payment.assert_not_called()
+
+    def test_withdrawn_denied_v7111_backend_fix(self):
+        """v7.1.11 fix: withdraw never touches status, so a withdrawn-but-still-"paid"
+        intent previously slipped past the backend (only the frontend hid the button).
+        This closes that gap: the backend now denies it directly too."""
+        intent = _seed_paid_intent(self.storage)
+        pid = intent["public_id"]
+        withdraw_result = self.storage.withdraw_payment_intent_from_client(pid, "1", "2026-07-31T10:00:00")
+        self.assertTrue(withdraw_result.get("ok"), withdraw_result)
+        refreshed = self.storage.get_payment_intent(pid)
+        self.assertEqual(refreshed["status"], "paid")  # confirms status is untouched by withdraw
+        self.assertEqual(refreshed["client_visibility"], "withdrawn")
+
+        fp = _compute_moyklass_post_fingerprint(intent, _fake_invoice())
+        result = self.ctx.payment_intent_post_to_moyklass(self.auth, pid, {"confirm": True, "snapshot_fingerprint": fp})
+        self.assertFalse(result.get("ok"))
+        self.ctx.moyklass.create_payment.assert_not_called()
+
+    def test_posting_in_progress_second_request_does_not_post_twice(self):
+        """claim already held ('claiming') -> a second concurrent request is denied, not posted."""
+        intent = _seed_paid_intent(self.storage)
+        pid = intent["public_id"]
+        claimed = self.storage.payment_intent_claim_moyklass_post(pid, "some_other_request")
+        self.assertTrue(claimed)
+        fp = _compute_moyklass_post_fingerprint(intent, _fake_invoice())
+        result = self.ctx.payment_intent_post_to_moyklass(self.auth, pid, {"confirm": True, "snapshot_fingerprint": fp})
+        self.assertFalse(result.get("ok"))
+        self.assertEqual(result.get("block_reason"), "claim_conflict")
         self.ctx.moyklass.create_payment.assert_not_called()
 
 
