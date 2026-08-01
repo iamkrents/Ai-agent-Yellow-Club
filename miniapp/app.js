@@ -84,7 +84,7 @@ const launchTab = urlParams.get("tab") || "";
 // one specific campaign recipient (from the bot's post-activation button).
 const launchAvailabilityRecipientId = urlParams.get("oc_availability_recipient") || "";
 
-console.log("MiniApp version: v7.1.12");
+console.log("MiniApp version: v7.1.12.1");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -16908,6 +16908,10 @@ async function _wsOcLoadCampaignDetail() {
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     const data = await apiGet(`/api/client/onboarding/campaigns/${id}${suffix}`);
     _ocState.campaignDetail = data;
+    // v7.1.12.1 — a candidate that just became a recipient (via this import
+    // or any other path) must drop out of the mass-selection Set too, so
+    // "Выбрано: N" and the eligible set never include someone already added.
+    (data.recipients || []).forEach(r => _ocState.importSelected.delete(String(r.mk_user_id)));
   } catch (e) {
     _ocState.campaignDetail = null;
     _ocState.detailError = safeUserError(e);
@@ -17281,9 +17285,24 @@ function _wsOcToggleImport() {
   _ocState.importOpen = !_ocState.importOpen;
   _wsRenderCurrentTab();
 }
+// v7.1.12.1 hotfix — above this count, "Добавить выбранных" asks for
+// confirmation first instead of firing the import request immediately.
+// Matches the reused pi-modal confirm pattern, not a browser confirm().
+const ONBOARDING_IMPORT_CONFIRM_THRESHOLD = 100;
+
+// v7.1.12.1 hotfix — mk_user_ids of candidates already in this campaign as
+// recipients, so mass-select can skip them and the frontend never re-submits
+// an id the backend would just report as already_present. Recomputed on
+// every render off the live campaignDetail — never cached separately.
+function _wsOcExistingRecipientIds() {
+  return new Set((_ocState.campaignDetail?.recipients || []).map(r => String(r.mk_user_id)));
+}
+
 function _wsOcImportSectionHtml() {
   const results = _ocState.importResults;
+  const existingIds = _wsOcExistingRecipientIds();
   let resultsHtml = "";
+  let massSelectHtml = "";
   if (_ocState.importBusy) {
     resultsHtml = `<div class="kpi-loading">Ищу…</div>`;
   } else if (results === null) {
@@ -17291,14 +17310,25 @@ function _wsOcImportSectionHtml() {
   } else if (!results.length) {
     resultsHtml = `<div class="ws-conn-note">Ничего не найдено.</div>`;
   } else {
-    resultsHtml = results.map(c => `
-      <label class="ws-oc-recipient-card" style="display:flex">
-        <input type="checkbox" class="ws-oc-recipient-check" data-import-mk="${escapeAttr(c.mk_user_id)}" ${_ocState.importSelected.has(c.mk_user_id) ? "checked" : ""} />
+    massSelectHtml = `
+      <div class="ws-oc-mass-select-bar" id="wsOcMassSelectBar">
+        <button class="secondary" type="button" id="wsOcSelectAllBtn">Выбрать всех загруженных — ${results.length}</button>
+        <button class="secondary" type="button" id="wsOcDeselectAllBtn">Снять выбор</button>
+        <span class="ws-oc-mass-select-count">Выбрано: ${_ocState.importSelected.size}</span>
+      </div>`;
+    resultsHtml = results.map(c => {
+      const mk = String(c.mk_user_id);
+      const alreadyAdded = existingIds.has(mk);
+      const checked = !alreadyAdded && _ocState.importSelected.has(mk);
+      return `
+      <label class="ws-oc-recipient-card${alreadyAdded ? " ws-oc-recipient-card--disabled" : ""}" style="display:flex">
+        <input type="checkbox" class="ws-oc-recipient-check" data-import-mk="${escapeAttr(mk)}" ${checked ? "checked" : ""} ${alreadyAdded ? "disabled" : ""} />
         <div class="ws-oc-recipient-body">
           <div class="ws-oc-recipient-name">${escapeHtml(c.child_display_name)}</div>
-          <div class="ws-oc-recipient-meta">ID МойКласс: ${escapeHtml(c.mk_user_id)}${c.branch_name ? ` · ${escapeHtml(c.branch_name)}` : ""}${c.telegram_connected ? " · уже подключён" : ""}${c.pilot_mode ? ` · пилот: ${escapeHtml(c.pilot_mode)}` : ""}</div>
+          <div class="ws-oc-recipient-meta">ID МойКласс: ${escapeHtml(mk)}${c.branch_name ? ` · ${escapeHtml(c.branch_name)}` : ""}${alreadyAdded ? " · уже в кампании" : ""}${c.telegram_connected ? " · уже подключён" : ""}${c.pilot_mode ? ` · пилот: ${escapeHtml(c.pilot_mode)}` : ""}</div>
         </div>
-      </label>`).join("");
+      </label>`;
+    }).join("");
   }
   const diagLine = _ocState.importDiagnostics ? `
     <div class="ws-conn-note">
@@ -17306,6 +17336,8 @@ function _wsOcImportSectionHtml() {
       ${_ocState.importDiagnostics.stopped_reason && _ocState.importDiagnostics.stopped_reason !== "short_page" && _ocState.importDiagnostics.stopped_reason !== "empty_page" ? ` · причина остановки: ${escapeHtml(_ocState.importDiagnostics.stopped_reason)}` : ""}
       ${!_ocState.importBulkOk ? ` · <b>частичная загрузка, повторите позже</b>` : ""}
     </div>` : "";
+  const selectedCount = _ocState.importSelected.size;
+  const addLabel = selectedCount > 0 ? `Добавить выбранных — ${selectedCount}` : "Добавить выбранных";
   return `
     <article class="card">
       <div class="ws-search-row">
@@ -17319,9 +17351,10 @@ function _wsOcImportSectionHtml() {
         <button class="secondary" type="button" id="wsOcImportLoadAllBtn">Загрузить всех учеников из МойКласс</button>
       </div>
       ${diagLine}
+      ${massSelectHtml}
       <div id="wsOcImportResults">${resultsHtml}</div>
       <div class="ws-oc-campaign-actions" style="margin-top:10px">
-        <button class="primary" type="button" id="wsOcImportAddBtn">Добавить выбранных</button>
+        <button class="primary" type="button" id="wsOcImportAddBtn" ${selectedCount === 0 ? "disabled" : ""}>${addLabel}</button>
       </div>
     </article>`;
 }
@@ -17333,13 +17366,49 @@ function _wsOcWireImportSection() {
   }
   $("wsOcImportSearchBtn")?.addEventListener("click", _wsOcSearchCandidates);
   $("wsOcImportLoadAllBtn")?.addEventListener("click", _wsOcLoadAllCandidates);
-  $("wsOcImportAddBtn")?.addEventListener("click", _wsOcImportSelected);
+  $("wsOcSelectAllBtn")?.addEventListener("click", _wsOcImportSelectAllLoaded);
+  $("wsOcDeselectAllBtn")?.addEventListener("click", _wsOcImportDeselectAll);
+  $("wsOcImportAddBtn")?.addEventListener("click", _wsOcImportAddClicked);
   document.querySelectorAll("[data-import-mk]").forEach(cb => {
     cb.addEventListener("change", () => {
       const mk = cb.dataset.importMk;
       if (cb.checked) _ocState.importSelected.add(mk); else _ocState.importSelected.delete(mk);
+      // Only the count badge + Add-button label need to change — re-render
+      // just this section's action row rather than the whole tab, so a fast
+      // run of checkbox clicks across a long list stays snappy.
+      _wsOcRefreshImportActionRow();
     });
   });
+}
+// v7.1.12.1 hotfix — updates only the mass-select count + Add button after a
+// single manual checkbox toggle, instead of re-rendering (and losing focus/
+// scroll position on) the entire hundreds-of-rows candidate list.
+function _wsOcRefreshImportActionRow() {
+  const countEl = document.querySelector("#wsOcMassSelectBar .ws-oc-mass-select-count");
+  if (countEl) countEl.textContent = `Выбрано: ${_ocState.importSelected.size}`;
+  const addBtn = $("wsOcImportAddBtn");
+  if (addBtn) {
+    const n = _ocState.importSelected.size;
+    addBtn.textContent = n > 0 ? `Добавить выбранных — ${n}` : "Добавить выбранных";
+    addBtn.disabled = n === 0;
+  }
+}
+// Selects every currently-loaded candidate that isn't already a recipient of
+// this campaign — never just the rows currently scrolled into view, since
+// _ocState.importResults holds the full loaded set regardless of scroll
+// position. Source of truth is the importSelected Set keyed by mk_user_id,
+// never the DOM checkboxes themselves.
+function _wsOcImportSelectAllLoaded() {
+  const existingIds = _wsOcExistingRecipientIds();
+  (_ocState.importResults || []).forEach(c => {
+    const mk = String(c.mk_user_id);
+    if (!existingIds.has(mk)) _ocState.importSelected.add(mk);
+  });
+  _wsRenderCurrentTab();
+}
+function _wsOcImportDeselectAll() {
+  _ocState.importSelected = new Set();
+  _wsRenderCurrentTab();
 }
 async function _wsOcSearchCandidates() {
   const q = (_ocState.importQuery || "").trim();
@@ -17382,10 +17451,58 @@ async function _wsOcLoadAllCandidates() {
     _wsRenderCurrentTab();
   }
 }
-async function _wsOcImportSelected() {
+// v7.1.12.1 hotfix — entry point wired to the Add button. Below the
+// confirmation threshold it sends immediately (unchanged single-client
+// behavior); at/above it, hands off to the confirm modal instead of firing
+// the request right away. Never a browser confirm() — reuses the existing
+// piModalOpen/piModalClose pi-modal pattern already used across the app.
+function _wsOcImportAddClicked() {
   const results = _ocState.importResults || [];
   const chosen = results.filter(c => _ocState.importSelected.has(c.mk_user_id));
   if (!chosen.length) { setNotice("Выберите хотя бы одного получателя", "error"); return; }
+  if (chosen.length > ONBOARDING_IMPORT_CONFIRM_THRESHOLD) {
+    _wsOcImportConfirmOpen(chosen);
+    return;
+  }
+  _wsOcImportDoSend(chosen);
+}
+
+let _ocImportPendingChosen = null;
+
+function _wsOcImportConfirmOpen(chosen) {
+  _ocImportPendingChosen = chosen;
+  const campaignName = _ocState.campaignDetail?.campaign?.name || "";
+  const textEl = $("wsOcImportConfirmText");
+  if (textEl) textEl.textContent = `Добавить ${chosen.length} клиентов в кампанию "${campaignName}"?`;
+  const btn = $("wsOcImportConfirmBtn");
+  if (btn) btn.textContent = `Добавить ${chosen.length} клиентов`;
+  piModalOpen($("wsOcImportConfirmModal"));
+}
+function _wsOcImportConfirmCancel() {
+  _ocImportPendingChosen = null;
+  piModalClose($("wsOcImportConfirmModal"));
+}
+function _wsOcImportConfirmProceed() {
+  const chosen = _ocImportPendingChosen;
+  _ocImportPendingChosen = null;
+  piModalClose($("wsOcImportConfirmModal"));
+  if (chosen && chosen.length) _wsOcImportDoSend(chosen);
+}
+
+// v7.1.12.1 hotfix — exactly one HTTP request for the whole selection,
+// regardless of whether it's 1 or 1753 candidates: chosen.map(...) below
+// builds one payload array, _apiPostRaw fires once. Never one fetch per
+// candidate. v7.1.12.1 hotfix #2 — child_display_name/branch_name below are
+// sent as a display hint only; the backend NEVER trusts them as source of
+// truth (see web_app_server.onboarding_campaign_import_recipients /
+// _onboarding_resolve_verified_candidates) — it always re-derives real data
+// from its own server-side cache, a trusted local client record, or one live
+// MoyKlass bulk check, and silently drops (as "failed"/candidate_not_verified)
+// any id it can't verify through one of those. It is never imported using
+// whatever this request happened to send for it.
+async function _wsOcImportDoSend(chosen) {
+  const addBtn = $("wsOcImportAddBtn");
+  if (addBtn) { addBtn.disabled = true; }
   try {
     const data = await _apiPostRaw(`/api/client/onboarding/campaigns/${_ocState.selectedCampaignId}/recipients/import`, {
       recipients: chosen.map(c => ({
@@ -17393,7 +17510,7 @@ async function _wsOcImportSelected() {
       })),
     });
     if (data.ok) {
-      setNotice(`Добавлено: ${data.added}, уже было: ${data.already_present}`, "ok");
+      setNotice(`Добавлено: ${data.added} · уже были в кампании: ${data.already_present} · ошибок: ${data.failed || 0}`, "ok");
       _ocState.importSelected = new Set();
       _ocState.importResults = null;
       _ocState.importQuery = "";
@@ -17401,9 +17518,11 @@ async function _wsOcImportSelected() {
       await _wsOcLoadCampaignDetail();
     } else {
       setNotice(data.error || "Ошибка", "error");
+      if (addBtn) addBtn.disabled = false;
     }
   } catch (e) {
     setNotice(safeUserError(e), "error");
+    if (addBtn) addBtn.disabled = false;
   }
 }
 
@@ -18383,4 +18502,10 @@ document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll("#ocAvailabilityBranchRow .ws-oc-ttl-btn").forEach(b => {
     b.addEventListener("click", () => { _ocAvailState.branch = b.dataset.branch; _ocAvailRenderBranchButtons(); });
   });
+
+  // v7.1.12.1 hotfix — large-import (>100 selected) confirm modal
+  $("wsOcImportConfirmBtn")?.addEventListener("click", _wsOcImportConfirmProceed);
+  $("wsOcImportConfirmBack")?.addEventListener("click", _wsOcImportConfirmCancel);
+  $("wsOcImportConfirmModalClose")?.addEventListener("click", _wsOcImportConfirmCancel);
+  $("wsOcImportConfirmModal")?.addEventListener("click", e => { if (e.target === $("wsOcImportConfirmModal")) _wsOcImportConfirmCancel(); });
 });

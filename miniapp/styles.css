@@ -9188,6 +9188,30 @@ body.keyboard-open .tabs.bottom-tabbar {
   .ws-oc-list-head { flex-direction: column; align-items: stretch; }
 }
 
+/* v7.1.12.1 hotfix — mass candidate selection bar ("Выбрать всех загруженных
+   — N" / "Снять выбор" / "Выбрано: N"), shown right under the bulk-load
+   diagnostics line. Deliberately NOT position:sticky — Telegram WebView
+   frequently runs the page inside a transformed/overflow-clipped ancestor,
+   which silently breaks sticky positioning; staying in normal flow is the
+   safe choice for a hotfix that can't be visually verified in-app here. */
+.ws-oc-mass-select-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 8px 0; padding: 8px 10px;
+  background: var(--bg, #f6f7fb); border-radius: 10px;
+}
+.ws-oc-mass-select-bar button { min-height: 34px; padding: 0 12px; font-size: 12px; flex: 0 0 auto; }
+.ws-oc-mass-select-count { font-size: 12px; color: var(--muted); font-weight: 700; margin-left: auto; white-space: nowrap; }
+
+/* Already-in-campaign candidates: visibly disabled, never re-selectable. */
+.ws-oc-recipient-card--disabled { opacity: .55; }
+.ws-oc-recipient-card--disabled .ws-oc-recipient-check { cursor: not-allowed; }
+
+@media (max-width: 420px) {
+  .ws-oc-mass-select-bar { flex-direction: column; align-items: stretch; }
+  .ws-oc-mass-select-bar button { width: 100%; }
+  .ws-oc-mass-select-count { margin-left: 0; text-align: center; }
+}
+
 /* v7.1.12.1 — parent-facing schedule-availability form (#ocAvailabilityModal)
    and its interval-row list; also reused read-only in the staff recipient card. */
 .oc-interval-row { display: grid; grid-template-columns: auto 1fr auto 1fr auto auto; gap: 6px; align-items: center; margin-bottom: 8px; }

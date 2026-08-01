@@ -98,7 +98,27 @@ class OnboardingV2TestBase(unittest.TestCase):
         self.assertTrue(s["ok"], s)
         return s["campaign"]
 
+    def _warm_verified_cache(self, recipients):
+        """v7.1.12.1 hotfix #2 — import now only ever uses server-verified
+        data (cache / trusted local record / live MoyKlass check), never the
+        request body. Simulates "already verified via search/bulk-fetch this
+        session" for tests that build recipient dicts directly."""
+        import time as _time
+        cache = self.ctx._onboarding_candidates_cache_dict()
+        now = _time.time()
+        for rec in recipients:
+            mk = str(rec.get("mk_user_id") or "").strip()
+            if not mk:
+                continue
+            cache[mk] = (now, {
+                "mk_user_id": mk,
+                "child_display_name": rec.get("child_display_name") or f"Child {mk}",
+                "branch_name": rec.get("branch_name") or "",
+                "course_name": rec.get("course_name") or "",
+            })
+
     def _import(self, campaign_id, recipients):
+        self._warm_verified_cache(recipients)
         r = self.ctx.onboarding_campaign_import_recipients(self.owner, str(campaign_id), {"recipients": recipients})
         self.assertTrue(r.get("ok"), r)
         return r

@@ -48,6 +48,7 @@ from storage import (
     Storage,
     CLIENT_LINK_CODE_TTL_HOURS as _STORAGE_CLIENT_LINK_CODE_TTL_HOURS,
     ONBOARDING_INVITE_TOKEN_PREFIX,
+    ONBOARDING_IMPORT_MAX_BATCH_SIZE,
 )
 from llm import OllamaClient
 from agent_core import AgentCore, AnswerContext
@@ -2042,6 +2043,14 @@ class MiniAppContext:
         self._mk_comment_cache: dict[str, tuple[float, str]] = {}
         self._mk_student_name_cache: dict[str, tuple[float, str]] = {}
         self._client_tasks_sync_cache: dict[str, Any] = {"ts": 0.0, "result": {}}
+        # v7.1.12.1 hotfix — server-side truth cache for onboarding candidates,
+        # keyed by mk_user_id -> (fetched_at_ts, candidate_dict). Populated by
+        # both onboarding_campaign_search_candidates and
+        # onboarding_campaign_bulk_candidates. onboarding_campaign_import_
+        # recipients cross-checks every submitted mk_user_id against this
+        # cache instead of trusting frontend-supplied name/branch/course
+        # fields — those are always re-read from here.
+        self._onboarding_candidates_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     def validate_init_data(self, init_data: str, dev_user_id: str = "", unsafe_user_id: str = "", yc_user_id: str = "", yc_ts: str = "", yc_sig: str = "") -> dict[str, Any]:
         if self.settings.web_app_dev_mode and dev_user_id:
@@ -12434,7 +12443,57 @@ class MiniAppContext:
 
         candidates = [self._onboarding_mk_user_to_candidate(u) for u in mk_results]
         candidates = [c for c in candidates if c is not None]
+        self._onboarding_cache_candidates(candidates)
         return {"ok": True, "candidates": candidates, "query": q}
+
+    # v7.1.12.1 hotfix — how long a candidate stays trusted as "server-verified"
+    # after either search or the bulk loader last returned it. Generous enough
+    # to cover a full staff review-then-select-all-then-confirm workflow for
+    # 1700+ candidates without forcing a reload, short enough that it's never
+    # mistaken for a live guarantee.
+    _ONBOARDING_CANDIDATES_CACHE_TTL_SECONDS = 3600
+
+    def _onboarding_candidates_cache_dict(self) -> dict[str, tuple[float, dict[str, Any]]]:
+        """Lazily creates the cache dict if missing.
+
+        Tests across this project construct MiniAppContext via
+        object.__new__(MiniAppContext), bypassing __init__ (an established
+        pattern predating this hotfix — see test_onboarding_campaigns_v7112,
+        test_onboarding_campaign_v71121, test_onboarding_mass_scale_v7112).
+        Reading self._onboarding_candidates_cache directly would raise
+        AttributeError on any such instance; this keeps every existing
+        fixture working unchanged instead of requiring every test file to
+        be touched just to add one more cache attribute.
+        """
+        cache = getattr(self, "_onboarding_candidates_cache", None)
+        if cache is None:
+            cache = {}
+            self._onboarding_candidates_cache = cache
+        return cache
+
+    def _onboarding_cache_candidates(self, candidates: list[dict[str, Any]]) -> None:
+        """Record candidates returned by search/bulk-fetch as server-verified.
+
+        onboarding_campaign_import_recipients cross-checks every submitted
+        mk_user_id against this cache and always re-reads name/branch/course
+        from here — frontend-supplied copies of those fields are never
+        trusted, only the mk_user_id selection itself is.
+        """
+        cache = self._onboarding_candidates_cache_dict()
+        now = time.time()
+        for c in candidates:
+            mk_user_id = str(c.get("mk_user_id") or "").strip()
+            if mk_user_id:
+                cache[mk_user_id] = (now, c)
+
+    def _onboarding_verified_candidate(self, mk_user_id: str) -> Optional[dict[str, Any]]:
+        entry = self._onboarding_candidates_cache_dict().get(mk_user_id)
+        if not entry:
+            return None
+        fetched_at, candidate = entry
+        if (time.time() - fetched_at) > self._ONBOARDING_CANDIDATES_CACHE_TTL_SECONDS:
+            return None
+        return candidate
 
     def _onboarding_mk_user_to_candidate(self, u: dict[str, Any]) -> Optional[dict[str, Any]]:
         """Shared MoyKlass-raw-user -> campaign-candidate mapping, used by
@@ -12492,6 +12551,7 @@ class MiniAppContext:
         diagnostics = (result.data or {}).get("diagnostics", {}) if isinstance(result.data, dict) else {}
         raw_items = (result.data or {}).get("items", []) if isinstance(result.data, dict) else []
         candidates = [c for c in (self._onboarding_mk_user_to_candidate(u) for u in raw_items) if c is not None]
+        self._onboarding_cache_candidates(candidates)
         return {
             "ok": bool(result.ok),
             "candidates": candidates,
@@ -12499,13 +12559,97 @@ class MiniAppContext:
             "error": result.error if not result.ok else None,
         }
 
+    def _onboarding_resolve_verified_candidates(
+        self, mk_user_ids: list[str]
+    ) -> tuple[dict[str, dict[str, Any]], Optional[str]]:
+        """Resolve mk_user_ids to server-verified candidate data ONLY.
+
+        v7.1.12.1 hotfix #2 — closes a trust-boundary gap: the frontend is
+        never trusted for child_display_name/branch_name/course_name/
+        academic_level/parent_display_name/MoyKlass status/anything else.
+        Only mk_user_id is ever taken from a request; every other field a
+        client sends is a hint, never a source of truth. Resolution order:
+          1. the search/bulk-fetch cache (this session, still fresh)
+          2. an existing trusted client_parent_child_links record (a
+             previously-verified real client, independent of this request)
+          3. ONE live MoyKlass bulk fetch covering every id still
+             unresolved after (1)+(2) — never one MoyKlass call per
+             candidate, so this stays cheap even for 1753 ids, and this is
+             exactly what makes verification work again after a server
+             restart wiped the in-memory cache without forcing staff to
+             re-click "Загрузить всех учеников".
+        Returns (verified_by_id, moyklass_error) — moyklass_error is set
+        only if step 3 ran and MoyKlass itself failed (used by the caller to
+        decide whether to fail closed instead of silently under-importing).
+        """
+        verified: dict[str, dict[str, Any]] = {}
+        unresolved: list[str] = []
+        for mk_user_id in mk_user_ids:
+            cached = self._onboarding_verified_candidate(mk_user_id)
+            if cached is not None:
+                verified[mk_user_id] = cached
+            else:
+                unresolved.append(mk_user_id)
+
+        still_unresolved: list[str] = []
+        for mk_user_id in unresolved:
+            local = self.storage.get_trusted_local_client_candidate(mk_user_id)
+            if local is not None:
+                verified[mk_user_id] = local
+            else:
+                still_unresolved.append(mk_user_id)
+
+        moyklass_error: Optional[str] = None
+        if still_unresolved:
+            # Any failure talking to MoyKlass (bad response, timeout,
+            # network exception) is treated as unavailability, never left to
+            # crash the request — see the fail-closed handling in the caller.
+            try:
+                result = self.moyklass.list_users_bulk(
+                    page_size=self._ONBOARDING_BULK_CANDIDATES_PAGE_SIZE,
+                    max_pages=self._ONBOARDING_BULK_CANDIDATES_MAX_PAGES,
+                )
+            except Exception as exc:
+                result = None
+                moyklass_error = str(exc) or "МойКласс недоступен"
+            if result is not None:
+                raw_items = (result.data or {}).get("items", []) if isinstance(result.data, dict) else []
+                fetched = [c for c in (self._onboarding_mk_user_to_candidate(u) for u in raw_items) if c is not None]
+                # Warms the cache too — the next import (or a staff member
+                # opening "Добавить получателей" right after) benefits from
+                # this same fetch instead of triggering another one.
+                self._onboarding_cache_candidates(fetched)
+                by_id = {c["mk_user_id"]: c for c in fetched}
+                for mk_user_id in still_unresolved:
+                    found = by_id.get(mk_user_id)
+                    if found is not None:
+                        verified[mk_user_id] = found
+            if result is not None and not result.ok:
+                moyklass_error = result.error or "МойКласс недоступен"
+        return verified, moyklass_error
+
     def onboarding_campaign_import_recipients(self, auth: dict[str, Any], campaign_id_str: str, body: dict[str, Any]) -> dict[str, Any]:
         """POST /api/client/onboarding/campaigns/{id}/recipients/import
 
         Only ever imports the explicit list of mk_user_ids the staff member
         selected client-side — never the whole MoyKlass database. Idempotent
         per (campaign_id, mk_user_id). Never creates a pilot record (pilot
-        creation only ever happens at invite activation time).
+        creation only ever happens at invite activation time). One request
+        handles the whole selection regardless of size (v7.1.12.1 raised the
+        cap from 500 to ONBOARDING_IMPORT_MAX_BATCH_SIZE=2500 after production
+        hit exactly the old cap trying to add all 1753 bulk-loaded students).
+
+        v7.1.12.1 hotfix #2 — the request body is trusted for exactly one
+        field: mk_user_id. Every other field a client sends (name, branch,
+        course, academic level, parent name, ...) is discarded outright; see
+        _onboarding_resolve_verified_candidates for where the real data comes
+        from instead. An id that can't be verified by any trusted source is
+        never imported — it's reported per-item as candidate_not_verified
+        under "errors", and "failed" in the response reflects it, so the
+        response is never a false "fully successful" for a partial import.
+        If NOTHING could be verified and MoyKlass itself was unreachable,
+        the whole request fails closed (ok=False) rather than silently
+        importing zero real recipients while looking like a normal call.
         """
         denied = self._require_onboarding_campaign_access(auth)
         if denied:
@@ -12519,28 +12663,86 @@ class MiniAppContext:
         raw_recipients = body.get("recipients")
         if not isinstance(raw_recipients, list) or not raw_recipients:
             return {"ok": False, "error": "Список получателей пуст"}
-        if len(raw_recipients) > 500:
-            return {"ok": False, "error": "Слишком много получателей за один раз (максимум 500)"}
-        clean: list[dict[str, Any]] = []
+        if len(raw_recipients) > ONBOARDING_IMPORT_MAX_BATCH_SIZE:
+            return {"ok": False, "error": f"Слишком много получателей за один раз (максимум {ONBOARDING_IMPORT_MAX_BATCH_SIZE})"}
+
+        requested_ids: list[str] = []
+        seen_ids: set[str] = set()
         for r in raw_recipients:
             if not isinstance(r, dict):
                 continue
             mk_user_id = str(r.get("mk_user_id") or "").strip()
-            if not mk_user_id:
+            if not mk_user_id or mk_user_id in seen_ids:
                 continue
-            clean.append({
-                "mk_user_id": mk_user_id,
-                "child_display_name": str(r.get("child_display_name") or "")[:200],
-                "branch_name": str(r.get("branch_name") or "")[:100],
-                "course_name": str(r.get("course_name") or "")[:100],
-                "parent_display_name": str(r.get("parent_display_name") or "")[:200],
-            })
+            seen_ids.add(mk_user_id)
+            requested_ids.append(mk_user_id)
+        if not requested_ids:
+            return {"ok": False, "error": "Список получателей пуст"}
+
+        # Fail fast on campaign state before doing any verification work —
+        # storage.import_onboarding_campaign_recipients enforces this same
+        # rule too, but checking here avoids a wasted MoyKlass round-trip
+        # for a request that was always going to be rejected anyway.
+        campaign = self.storage.get_onboarding_campaign(campaign_id)
+        if not campaign:
+            return {"ok": False, "error": "Кампания не найдена"}
+        if campaign["status"] not in ("draft", "active"):
+            return {"ok": False, "error": "Получателей можно добавлять только в кампанию в статусе draft или active", "reason_code": "invalid_campaign_status"}
+
+        # Already a recipient of THIS campaign: the insert below is a no-op
+        # regardless of name data, so this id never needs verification (and
+        # never risks a candidate_not_verified false-positive just because
+        # its cache entry expired since it was first added).
+        existing_ids = self.storage.get_onboarding_campaign_recipient_mk_ids(campaign_id)
+        to_verify = [mk for mk in requested_ids if mk not in existing_ids]
+
+        verified: dict[str, dict[str, Any]] = {}
+        moyklass_error: Optional[str] = None
+        if to_verify:
+            verified, moyklass_error = self._onboarding_resolve_verified_candidates(to_verify)
+
+        unverified_ids = [mk for mk in to_verify if mk not in verified]
+
+        # Fail closed: nothing at all could be verified (no cache, no local
+        # trusted record, and the live MoyKlass check itself failed) — never
+        # fall back to importing frontend-only data.
+        if to_verify and not verified and moyklass_error:
+            return {
+                "ok": False,
+                "error": "МойКласс временно недоступен, не удалось проверить получателей. Попробуйте позже.",
+                "reason_code": "moyklass_unavailable",
+            }
+
+        clean: list[dict[str, Any]] = []
+        for mk_user_id in requested_ids:
+            if mk_user_id in existing_ids:
+                clean.append({"mk_user_id": mk_user_id, "child_display_name": "", "branch_name": "", "course_name": "", "parent_display_name": ""})
+            elif mk_user_id in verified:
+                v = verified[mk_user_id]
+                clean.append({
+                    "mk_user_id": mk_user_id,
+                    "child_display_name": str(v.get("child_display_name") or "")[:200],
+                    "branch_name": str(v.get("branch_name") or "")[:100],
+                    "course_name": str(v.get("course_name") or "")[:100],
+                    "parent_display_name": "",
+                })
+        errors = [{"mk_user_id": mk, "error_code": "candidate_not_verified"} for mk in unverified_ids]
+
+        # clean may legitimately be empty here (every id was either genuinely
+        # unverifiable or, in the moyklass_error+partial-verified case below,
+        # simply not resolved) — import_onboarding_campaign_recipients treats
+        # an empty list as a no-op (added=0), matching this codebase's
+        # existing batch-endpoint convention (see create_onboarding_invites_
+        # batch) of returning ok=true with per-item failures reported via
+        # counts, rather than failing the whole request over partial misses.
         result = self.storage.import_onboarding_campaign_recipients(campaign_id, clean, actor)
         if result.get("ok"):
+            result["failed"] = len(errors)
+            result["errors"] = errors
             self.storage.log_onboarding_audit_event(
                 event_type="onboarding_recipient_added", campaign_id=campaign_id,
                 actor_telegram_user_id=actor, actor_role=role, result="success",
-                note=f"added={result.get('added')} already_present={result.get('already_present')}",
+                note=f"added={result.get('added')} already_present={result.get('already_present')} failed={len(errors)}",
             )
         return result
 

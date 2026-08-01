@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.1.12" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.1.12.1" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -1242,8 +1242,25 @@
       </div>
     </div>
 
+    <!-- v7.1.12.1 hotfix — large-import (>100 selected) confirm modal -->
+    <div id="wsOcImportConfirmModal" class="pi-modal hidden">
+      <div class="pi-modal-sheet pi-modal-sheet-sm">
+        <div class="pi-modal-head">
+          <h3>Подтверждение</h3>
+          <button class="pi-modal-close" id="wsOcImportConfirmModalClose" type="button">✕</button>
+        </div>
+        <div class="pi-modal-body">
+          <p id="wsOcImportConfirmText" style="margin:0"></p>
+        </div>
+        <div class="pi-modal-footer">
+          <button class="secondary" id="wsOcImportConfirmBack" type="button">Отмена</button>
+          <button class="primary" id="wsOcImportConfirmBtn" type="button">Добавить</button>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.1.12"></script>
+  <script src="/static/app.js?v=7.1.12.1"></script>
 </body>
 </html>

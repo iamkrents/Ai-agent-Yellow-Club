@@ -45,6 +45,10 @@ CONTINUATION_STATUSES = ("unknown", "continues", "undecided", "needs_consultatio
 # once prefixed).
 ONBOARDING_INVITE_TOKEN_PREFIX = "c_"
 ONBOARDING_INVITE_MAX_BATCH_SIZE = 500
+# v7.1.12.1 hotfix — raised from 500: production hit exactly this cap when
+# staff tried to add all 1753 bulk-loaded MoyKlass candidates to a campaign
+# in one request. 2500 leaves headroom above any observed real client count.
+ONBOARDING_IMPORT_MAX_BATCH_SIZE = 2500
 
 # v7.1.12.1 — schedule availability collected alongside a campaign.
 SCHEDULE_PREFERRED_BRANCHES = ("YC1", "YC2", "either", "unknown")
@@ -7558,6 +7562,47 @@ class Storage:
             "no_response": max(0, total - invites_used),
             "availability_filled": filled_availability,
             "availability_missing": max(0, total - filled_availability),
+        }
+
+    def get_onboarding_campaign_recipient_mk_ids(self, campaign_id: int) -> set[str]:
+        """Lightweight companion to list_onboarding_campaign_recipients — just
+        the mk_user_id set, with none of the link/pilot/invite/availability
+        enrichment joins. Used by the import trust-verification path (v7.1.12.1
+        hotfix #2) to cheaply recognize "already a recipient" without paying
+        for data it doesn't need on every import call.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT mk_user_id FROM client_onboarding_recipients WHERE campaign_id=?",
+                (int(campaign_id),),
+            ).fetchall()
+        return {r["mk_user_id"] for r in rows}
+
+    def get_trusted_local_client_candidate(self, mk_user_id: str) -> Optional[dict[str, Any]]:
+        """Trusted-local-record source for import verification (v7.1.12.1
+        hotfix #2) — an active client_parent_child_links row means this
+        mk_user_id was already verified for real at code-creation/activation
+        time by a controlled staff/parent workflow, independent of anything
+        the current request's frontend payload claims. Returns a
+        candidate-shaped dict (child_display_name only — branch/course were
+        never captured by the link flow) or None if no active link exists.
+        """
+        mk_user_id = str(mk_user_id or "").strip()
+        if not mk_user_id:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT child_display_name FROM client_parent_child_links "
+                "WHERE mk_user_id=? AND status='active' ORDER BY linked_at DESC LIMIT 1",
+                (mk_user_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "mk_user_id": mk_user_id,
+            "child_display_name": row["child_display_name"] or "",
+            "branch_name": "",
+            "course_name": "",
         }
 
     def import_onboarding_campaign_recipients(

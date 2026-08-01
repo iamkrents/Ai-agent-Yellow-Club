@@ -157,7 +157,11 @@ class TestEndpointsWired(unittest.TestCase):
         self.assertIn("/api/client/onboarding/campaigns", fn)
 
     def test_import_endpoint(self):
-        fn = _js_fn("_wsOcImportSelected", is_async=True)
+        # v7.1.12.1 hotfix split the single _wsOcImportSelected send into
+        # _wsOcImportAddClicked (threshold check) -> _wsOcImportDoSend (the
+        # actual POST) — see test_onboarding_mass_select_hotfix_v71121.py
+        # for the dedicated coverage of that split.
+        fn = _js_fn("_wsOcImportDoSend", is_async=True)
         self.assertIn("recipients/import", fn)
 
     def test_continuation_status_endpoint(self):
@@ -210,7 +214,9 @@ class TestNoPreviewMarkers(unittest.TestCase):
 
 class TestVersionCacheBust(unittest.TestCase):
     def test_app_js_version_marker(self):
-        self.assertIn('console.log("MiniApp version: v7.1.12");', _js())
+        # v7.1.12.1 hotfix bumped the marker; see test_onboarding_mass_scale_hotfix_v71121.py
+        # for the dedicated version/cache-bust assertions of this specific hotfix.
+        self.assertIn('console.log("MiniApp version: v7.1.12.1");', _js())
 
     def test_index_html_cache_bust(self):
         html = _html()

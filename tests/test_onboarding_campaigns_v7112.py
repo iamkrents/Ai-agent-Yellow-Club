@@ -94,7 +94,25 @@ class OnboardingTestBase(unittest.TestCase):
         self.assertTrue(r.get("ok"), r)
         return r["campaign"]
 
+    def _warm_verified_cache(self, mk_user_ids):
+        """v7.1.12.1 hotfix #2 — onboarding_campaign_import_recipients now
+        only ever imports server-verified data (cache / trusted local record
+        / live MoyKlass check), never whatever a request body claims. Tests
+        that exercise import() directly (rather than through a real search/
+        bulk-fetch call first) simulate "this candidate was already
+        server-verified this session" the same way the real UI produces it —
+        by populating the same cache search/bulk-fetch populate."""
+        import time as _time
+        cache = self.ctx._onboarding_candidates_cache_dict()
+        now = _time.time()
+        for mk in mk_user_ids:
+            mk = str(mk)
+            cache[mk] = (now, {
+                "mk_user_id": mk, "child_display_name": f"Child {mk}", "branch_name": "", "course_name": "",
+            })
+
     def _import(self, campaign_id, mk_user_ids):
+        self._warm_verified_cache(mk_user_ids)
         recs = [{"mk_user_id": mk, "child_display_name": f"Child {mk}"} for mk in mk_user_ids]
         r = self.ctx.onboarding_campaign_import_recipients(self.owner, str(campaign_id), {"recipients": recs})
         self.assertTrue(r.get("ok"), r)
@@ -250,6 +268,7 @@ class TestRecipientImport(OnboardingTestBase):
 
     def test_missing_mk_data_tolerated(self):
         c = self._started_campaign()
+        self._warm_verified_cache(["5001"])
         r = self.ctx.onboarding_campaign_import_recipients(self.owner, str(c["id"]), {
             "recipients": [{"mk_user_id": "5001"}]  # no display name, no branch
         })

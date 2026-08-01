@@ -395,6 +395,11 @@ class TestDeepLinkLength(unittest.TestCase):
         owner = _auth(1, "owner", ctx)
         campaign = ctx.onboarding_campaign_create(owner, {"name": "T", "academic_year": "y"})["campaign"]
         ctx.onboarding_campaign_start(owner, str(campaign["id"]))
+        # v7.1.12.1 hotfix #2 — import only trusts server-verified data now;
+        # warm the cache the same way a real search/bulk-fetch would.
+        ctx._onboarding_candidates_cache_dict()["1"] = (
+            time.time(), {"mk_user_id": "1", "child_display_name": "Child 1", "branch_name": "", "course_name": ""}
+        )
         ctx.onboarding_campaign_import_recipients(owner, str(campaign["id"]), {"recipients": [{"mk_user_id": "1"}]})
         rid = db.list_onboarding_campaign_recipients(campaign["id"])[0]["id"]
         inv = ctx.onboarding_campaign_create_invite(owner, str(campaign["id"]), {"recipient_id": rid})
