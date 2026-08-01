@@ -12366,6 +12366,16 @@ class MiniAppContext:
             "recipients": recipients,
         }
 
+    # v7.1.12.3 hotfix — shared guard for every staff-facing mutation that
+    # targets a campaign by id: the internal standalone availability
+    # container (is_system=1) is never a valid target, regardless of how
+    # staff obtained its id (it's hidden from the list, but the id could
+    # still leak via a recipient's campaign_id in an export or old link).
+    def _require_not_system_campaign(self, campaign: dict[str, Any]) -> Optional[dict[str, Any]]:
+        if campaign and campaign.get("is_system"):
+            return {"ok": False, "error": "Это служебная кампания, управлять ею через интерфейс кампаний нельзя.", "reason_code": "system_campaign"}
+        return None
+
     def _onboarding_campaign_transition(
         self, auth: dict[str, Any], campaign_id_str: str, transition_fn: Any, event_type: str
     ) -> dict[str, Any]:
@@ -12378,6 +12388,9 @@ class MiniAppContext:
             campaign_id = int(campaign_id_str)
         except (TypeError, ValueError):
             return {"ok": False, "error": "invalid campaign id"}
+        sys_denied = self._require_not_system_campaign(self.storage.get_onboarding_campaign(campaign_id))
+        if sys_denied:
+            return sys_denied
         result = transition_fn(campaign_id, actor)
         if result.get("ok"):
             self.storage.log_onboarding_audit_event(
@@ -12877,6 +12890,9 @@ class MiniAppContext:
         campaign = self.storage.get_onboarding_campaign(campaign_id)
         if not campaign:
             return {"ok": False, "error": "Кампания не найдена"}
+        sys_denied = self._require_not_system_campaign(campaign)
+        if sys_denied:
+            return sys_denied
         if campaign["status"] not in ("draft", "active"):
             return {"ok": False, "error": "Получателей можно добавлять только в кампанию в статусе draft или active", "reason_code": "invalid_campaign_status"}
 
@@ -13188,6 +13204,9 @@ class MiniAppContext:
             campaign_id = int(campaign_id_str)
         except (TypeError, ValueError):
             return {"ok": False, "error": "invalid campaign id"}
+        sys_denied = self._require_not_system_campaign(self.storage.get_onboarding_campaign(campaign_id))
+        if sys_denied:
+            return sys_denied
         try:
             recipient_id = int(body.get("recipient_id"))
         except (TypeError, ValueError):
@@ -13280,6 +13299,9 @@ class MiniAppContext:
             campaign_id = int(campaign_id_str)
         except (TypeError, ValueError):
             return {"ok": False, "error": "invalid campaign id"}
+        sys_denied = self._require_not_system_campaign(self.storage.get_onboarding_campaign(campaign_id))
+        if sys_denied:
+            return sys_denied
         recipient_ids_raw = body.get("recipient_ids")
         if not isinstance(recipient_ids_raw, list) or not recipient_ids_raw:
             return {"ok": False, "error": "Список получателей пуст"}
@@ -13345,6 +13367,9 @@ class MiniAppContext:
         campaign = self.storage.get_onboarding_campaign(campaign_id)
         if not campaign:
             return {"ok": False, "error": "Кампания не найдена"}
+        sys_denied = self._require_not_system_campaign(campaign)
+        if sys_denied:
+            return sys_denied
         recipients = self.storage.list_onboarding_campaign_recipients(campaign_id)
         secret = self._onboarding_signing_secret()
 

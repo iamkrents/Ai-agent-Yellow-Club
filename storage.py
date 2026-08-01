@@ -1293,6 +1293,15 @@ class Storage:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ocamp_status ON client_onboarding_campaigns(status, created_at)")
+        # v7.1.12.3 hotfix — reliable flag distinguishing the internal
+        # standalone availability container from real onboarding campaigns.
+        # Self-migrating (_ensure_column), never requires a manual production
+        # DB change: existing rows get is_system=0 (regular campaign) by the
+        # column default, and _ensure_standalone_availability_campaign
+        # retroactively flags a pre-existing standalone campaign the first
+        # time it's looked up after this column exists.
+        self._ensure_column(conn, "client_onboarding_campaigns", "is_system", "is_system INTEGER NOT NULL DEFAULT 0")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ocamp_is_system ON client_onboarding_campaigns(is_system)")
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS client_onboarding_recipients (
@@ -7415,6 +7424,7 @@ class Storage:
         collect_schedule_availability: bool = False,
         note: str = "",
         idempotency_key: Optional[str] = None,
+        is_system: bool = False,
     ) -> dict[str, Any]:
         """Create a new onboarding campaign in status='draft'.
 
@@ -7422,6 +7432,13 @@ class Storage:
         (the frontend mints one per "Создать кампанию" attempt and reuses it
         across retries of the same click), a second call with the same key
         returns the already-created campaign instead of creating a duplicate.
+
+        v7.1.12.3 hotfix — is_system=True marks the one internal standalone
+        availability container (see _ensure_standalone_availability_campaign)
+        so it can be reliably excluded from list_onboarding_campaigns and
+        blocked from staff mutation, independent of its display name. Never
+        set this for a real staff-created campaign — there is no UI path
+        that passes it.
         """
         name = str(name or "").strip()
         if not name:
@@ -7454,11 +7471,11 @@ class Storage:
                     """INSERT INTO client_onboarding_campaigns
                         (name, academic_year, status, invite_ttl_days, default_payment_mode,
                          auto_enroll_payments, survey_enabled, collect_schedule_availability, note, idempotency_key,
-                         created_by, created_at, updated_at)
-                       VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                         is_system, created_by, created_at, updated_at)
+                       VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (name, academic_year, invite_ttl_days, default_payment_mode,
                      1 if auto_enroll_payments else 0, 1 if survey_enabled else 0, 1 if collect_schedule_availability else 0,
-                     str(note or ""), idempotency_key, str(created_by), now, now),
+                     str(note or ""), idempotency_key, 1 if is_system else 0, str(created_by), now, now),
                 )
                 campaign_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         except sqlite3.IntegrityError:
@@ -7481,15 +7498,19 @@ class Storage:
         return dict(row) if row else None
 
     def list_onboarding_campaigns(self, status: Optional[str] = None) -> list[dict[str, Any]]:
+        """v7.1.12.3 hotfix — always excludes the internal standalone
+        availability container (is_system=1): it must never appear in the
+        staff campaign list, its counts, or any status filter over that
+        list — it is not a real onboarding campaign."""
         with self._connect() as conn:
             if status:
                 rows = conn.execute(
-                    "SELECT * FROM client_onboarding_campaigns WHERE status=? ORDER BY created_at DESC",
+                    "SELECT * FROM client_onboarding_campaigns WHERE status=? AND is_system=0 ORDER BY created_at DESC",
                     (str(status),),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM client_onboarding_campaigns ORDER BY created_at DESC"
+                    "SELECT * FROM client_onboarding_campaigns WHERE is_system=0 ORDER BY created_at DESC"
                 ).fetchall()
         campaigns = [dict(r) for r in rows]
         for c in campaigns:
@@ -7818,21 +7839,39 @@ class Storage:
     # campaign history gets a recipient row lazily created inside one
     # reusable, permanently-open "standalone" campaign the first time they
     # ever submit — submit_schedule_availability/get_schedule_availability
-    # themselves are completely unchanged. This campaign is an ordinary
-    # client_onboarding_campaigns row, so staff see its recipients through
-    # the existing campaign list/filters/summary/CSV export with no new
-    # staff-side code at all.
+    # themselves are completely unchanged.
+    #
+    # v7.1.12.3 hotfix — this campaign is flagged is_system=1 (see
+    # web_app_server's staff-facing onboarding_campaign_* methods for the
+    # matching guards) so it is EXCLUDED from the normal staff campaign
+    # list/counts/filters and PROTECTED from start/close/archive/manual
+    # recipient-import/invite-generation/CSV-export — it is an internal
+    # container, not a real campaign, even though staff can still open its
+    # detail view directly (recipients + the schedule summary) to review
+    # CL-code/staff-linked clients' answers, same as any other campaign.
     STANDALONE_AVAILABILITY_CAMPAIGN_NAME = "Возможности по расписанию — все клиенты"
     _STANDALONE_AVAILABILITY_CAMPAIGN_IDEMPOTENCY_KEY = "standalone-availability-campaign-v71123"
 
     def _ensure_standalone_availability_campaign(self, actor: str) -> int:
+        # One query covers both the normal fast path (already is_system=1)
+        # and the one-time retrofit path (a campaign from before is_system
+        # existed, or before this hotfix ran, matched by its idempotency_key
+        # or exact name) — no manual production DB change is ever required.
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT id FROM client_onboarding_campaigns WHERE name=?",
-                (self.STANDALONE_AVAILABILITY_CAMPAIGN_NAME,),
+                "SELECT id, is_system FROM client_onboarding_campaigns "
+                "WHERE idempotency_key=? OR (name=? AND is_system=0)",
+                (self._STANDALONE_AVAILABILITY_CAMPAIGN_IDEMPOTENCY_KEY, self.STANDALONE_AVAILABILITY_CAMPAIGN_NAME),
             ).fetchone()
         if row:
-            return int(row["id"])
+            campaign_id = int(row["id"])
+            if not row["is_system"]:
+                with self._connect() as conn:
+                    conn.execute(
+                        "UPDATE client_onboarding_campaigns SET is_system=1, updated_at=? WHERE id=?",
+                        (now_iso(), campaign_id),
+                    )
+            return campaign_id
         result = self.create_onboarding_campaign(
             self.STANDALONE_AVAILABILITY_CAMPAIGN_NAME,
             academic_year="—", created_by=str(actor or "system"),
@@ -7841,6 +7880,7 @@ class Storage:
                  "подключённых напрямую (CL-код, staff-привязка) — не через onboarding-приглашение. "
                  "Создаётся автоматически при первой отправке формы. Не удалять и не архивировать вручную.",
             idempotency_key=self._STANDALONE_AVAILABILITY_CAMPAIGN_IDEMPOTENCY_KEY,
+            is_system=True,
         )
         campaign_id = int(result["campaign"]["id"])
         self.start_onboarding_campaign(campaign_id, str(actor or "system"))
