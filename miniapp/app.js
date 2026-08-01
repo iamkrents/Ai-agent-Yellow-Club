@@ -80,8 +80,11 @@ const launchTs = urlParams.get("yc_ts") || "";
 const launchSig = urlParams.get("yc_sig") || "";
 // v7.0.97.0 — deep-link tab parameter (e.g. ?tab=client-payments from Telegram notification button)
 const launchTab = urlParams.get("tab") || "";
+// v7.1.12.1 — deep-link straight to the "Возможности по расписанию" form for
+// one specific campaign recipient (from the bot's post-activation button).
+const launchAvailabilityRecipientId = urlParams.get("oc_availability_recipient") || "";
 
-console.log("MiniApp version: v7.1.11");
+console.log("MiniApp version: v7.1.12");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -12242,6 +12245,12 @@ async function boot() {
         loadClientPayments();
       }
     }
+    // v7.1.12.1 — deep-link straight to the schedule-availability form (bot
+    // button after onboarding activation). Backend independently re-checks
+    // that this Telegram user actually owns the recipient's child.
+    if (launchAvailabilityRecipientId && role === "parent") {
+      openOnboardingAvailabilityModal(launchAvailabilityRecipientId);
+    }
     if (role === "kitchen" || role === "restaurant") {
       await loadKitchenMenus();
       return;
@@ -16199,7 +16208,19 @@ function _wsConnHeadHtml() {
 }
 
 function _wsRenderConnection(root) {
-  root.innerHTML = `
+  // v7.1.12 — mode toggle: "По одному" is the original, unchanged flow below
+  // (kept in this same function so every existing static-text test targeting
+  // _wsRenderConnection/_wsRenderConnectionBody keeps matching unmodified);
+  // "Массовое подключение" delegates entirely to _wsRenderCampaignsRoot and
+  // returns early, never touching the single-flow markup/state below.
+  root.innerHTML = `${_wsOcModeToggleHtml()}<div id="wsConnModeRoot"></div>`;
+  _wsOcWireModeToggle();
+  const modeRoot = $("wsConnModeRoot");
+  if (_ocState.mode === "mass") {
+    _wsRenderCampaignsRoot(modeRoot);
+    return;
+  }
+  modeRoot.innerHTML = `
     ${_wsConnHeadHtml()}
     <div class="ws-search-row">
       <label class="ws-search-bar">
@@ -16219,6 +16240,27 @@ function _wsRenderConnection(root) {
     input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); _wsConnSearch(); } });
   }
   _wsRenderConnectionBody();
+}
+
+// v7.1.12 — mode toggle lives above the single/mass flow, never rebuilt by
+// either flow's own re-renders (only _wsRenderConnection itself touches it).
+function _wsOcModeToggleHtml() {
+  return `
+    <div class="ws-oc-mode-toggle" id="wsOcModeToggle">
+      <button type="button" class="ws-oc-mode-btn${_ocState.mode === "single" ? " active" : ""}" data-oc-mode="single">По одному</button>
+      <button type="button" class="ws-oc-mode-btn${_ocState.mode === "mass" ? " active" : ""}" data-oc-mode="mass">Массовое подключение</button>
+    </div>`;
+}
+function _wsOcWireModeToggle() {
+  document.querySelectorAll("#wsOcModeToggle [data-oc-mode]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const mode = btn.dataset.ocMode;
+      if (_ocState.mode === mode) return;
+      _ocState.mode = mode;
+      if (mode === "mass" && _ocState.campaigns === null) _wsOcLoadCampaigns();
+      _wsRenderCurrentTab();
+    });
+  });
 }
 
 function _wsRenderConnectionBody() {
@@ -16632,6 +16674,859 @@ async function _loadWorkspaceDiagnostics() {
     if (_wsState.tab === "diagnostics") _wsRenderDiagnostics(root);
   } catch (e) {
     if (root) root.innerHTML = _wsErrorState("Не удалось загрузить диагностику.", "_loadWorkspaceDiagnostics()");
+  }
+}
+
+// ── v7.1.12 — mass client-onboarding campaigns ────────────────────────────
+// Second mode inside the existing "Подключение" tab, toggled via
+// _wsOcModeToggleHtml() above. Never touches the single-flow (_wsConn*)
+// state or DOM. Role gate matches backend CLIENT_ONBOARDING_CAMPAIGN_ROLES.
+const ONBOARDING_CAMPAIGN_ROLES = ["owner", "admin", "client_manager"];
+function canManageOnboardingCampaigns() {
+  return ONBOARDING_CAMPAIGN_ROLES.includes(state.me?.role || "");
+}
+
+const _ocState = {
+  mode: "single",              // "single" | "mass"
+  view: "list",                 // "list" | "detail"
+  campaigns: null,
+  loading: false,
+  error: "",
+  selectedCampaignId: null,
+  campaignDetail: null,         // { campaign, stats, recipients }
+  detailLoading: false,
+  detailError: "",
+  filters: { continuation_status: "", telegram_connected: "", in_pilot: "", invite_status: "", academic_level: "", availability_filled: "", weekday: "", preferred_branch: "" },
+  selectedRecipientIds: new Set(),
+  bulkBusy: false,
+  batchProgressText: "",
+  batchResult: null,            // last POST .../invites/batch response ({ counts, results })
+  createTtlDays: 30,
+  createBusy: false,
+  importOpen: false,
+  importQuery: "",
+  importResults: null,
+  importSelected: new Set(),    // mk_user_id
+  importBusy: false,
+  importDiagnostics: null,      // { pages_loaded, raw_items, unique_items, stopped_reason } from bulk load
+  importBulkOk: true,
+};
+
+const ONBOARDING_CAMPAIGN_STATUS_LABELS = { draft: "Черновик", active: "Активна", completed: "Завершена", archived: "В архиве" };
+const ONBOARDING_CONTINUATION_LABELS = {
+  unknown: "Не уточнено", continues: "Продолжает обучение", undecided: "Пока не решили",
+  needs_consultation: "Нужна консультация", not_continuing: "Не продолжает",
+};
+const ONBOARDING_INVITE_STATUS_LABELS = { none: "Не создано", active: "Создано", used: "Использовано", revoked: "Отозвано", expired: "Истекло" };
+const ONBOARDING_ACADEMIC_LEVEL_LABELS = {
+  unknown: "Не определён", year_1: "1-й учебный год", year_2: "2-й учебный год",
+  year_3: "3-й учебный год", year_4: "4-й учебный год", advanced: "Продвинутый уровень",
+};
+const ONBOARDING_BRANCH_LABELS = { YC1: "Кульман 1/1", YC2: "Мстиславца 6", either: "Любой", unknown: "Не указан" };
+
+function _wsRenderCampaignsRoot(root) {
+  if (!canManageOnboardingCampaigns()) {
+    root.innerHTML = `<div class="notice error">Массовое подключение доступно только owner, admin и client_manager.</div>`;
+    return;
+  }
+  if (_ocState.view === "detail" && _ocState.selectedCampaignId) {
+    _wsRenderCampaignDetail(root);
+    return;
+  }
+  _wsRenderCampaignsList(root);
+}
+
+async function _wsOcLoadCampaigns() {
+  _ocState.loading = true;
+  _ocState.error = "";
+  if (_ocState.mode === "mass") _wsRenderCurrentTab();
+  try {
+    const data = await apiGet("/api/client/onboarding/campaigns");
+    _ocState.campaigns = data.campaigns || [];
+  } catch (e) {
+    _ocState.campaigns = null;
+    _ocState.error = safeUserError(e);
+  } finally {
+    _ocState.loading = false;
+    if (_ocState.mode === "mass") _wsRenderCurrentTab();
+  }
+}
+
+function _wsRenderCampaignsList(root) {
+  const c = _ocState.campaigns;
+  let bodyHtml;
+  if (_ocState.loading && c === null) {
+    bodyHtml = `<div class="kpi-loading">Загружаю кампании…</div>`;
+  } else if (_ocState.error) {
+    bodyHtml = `<div class="notice error">${escapeHtml(_ocState.error)}
+      <button class="secondary" style="font-size:12px;padding:4px 10px;margin-left:8px" onclick="_wsOcLoadCampaigns()">Повторить</button></div>`;
+  } else if (!c || !c.length) {
+    bodyHtml = `<div class="ws-empty-state">
+      <div class="ws-empty-state-title">Пока нет кампаний</div>
+      <div class="ws-empty-state-desc">Создайте первую кампанию массового подключения.</div>
+    </div>`;
+  } else {
+    bodyHtml = `<div class="ws-conn-results ws-bottom-safe-pad">${c.map(_wsOcCampaignCardHtml).join("")}</div>`;
+  }
+  root.innerHTML = `
+    <div class="ws-oc-list-head">
+      <h3 style="margin:0;font-size:15px">Кампании подключения</h3>
+      <button class="primary" type="button" onclick="_wsOcOpenCreateModal()">Создать кампанию</button>
+    </div>
+    ${bodyHtml}
+  `;
+}
+
+function _wsOcCampaignCardHtml(c) {
+  const s = c.stats || {};
+  const continues = (s.by_continuation_status || {}).continues || 0;
+  return `
+    <article class="card ws-oc-campaign-card">
+      <div class="ws-oc-campaign-card-row">
+        <div class="ws-oc-campaign-name">${escapeHtml(c.name)}</div>
+        <span class="ws-badge ws-badge--${c.status === "active" ? "connected" : c.status === "draft" ? "pending" : "neutral"}">${escapeHtml(ONBOARDING_CAMPAIGN_STATUS_LABELS[c.status] || c.status)}</span>
+      </div>
+      <div class="ws-oc-campaign-meta">${escapeHtml(c.academic_year || "")} · автор: ${escapeHtml(String(c.created_by || ""))} · срок приглашений: ${c.invite_ttl_days} дн.</div>
+      <div class="ws-oc-campaign-stats">
+        <span>Всего: <b>${s.total || 0}</b></span>
+        <span>Продолжают: <b>${continues}</b></span>
+        <span>Приглашений: <b>${s.invites_created || 0}</b></span>
+        <span>Подключены: <b>${s.connected || 0}</b></span>
+        <span>Без ответа: <b>${s.no_response || 0}</b></span>
+      </div>
+      <div class="ws-oc-campaign-actions">
+        <button class="secondary ws-conn-action-btn" type="button" onclick="_wsOcOpenCampaign(${c.id})">Открыть</button>
+        ${c.status === "draft" ? `<button class="primary ws-conn-action-btn" type="button" onclick="_wsOcCampaignAction(${c.id},'start')">Запустить</button>` : ""}
+        ${c.status === "active" ? `<button class="secondary ws-conn-action-btn" type="button" onclick="_wsOcCampaignAction(${c.id},'close')">Закрыть</button>` : ""}
+        ${c.status !== "archived" ? `<button class="secondary ws-conn-action-btn" type="button" onclick="_wsOcCampaignAction(${c.id},'archive')">Архивировать</button>` : ""}
+        <a class="secondary ws-conn-action-btn" href="${_wsOcExportCsvUrl(c.id)}" target="_blank" rel="noopener">Экспортировать</a>
+      </div>
+    </article>`;
+}
+
+async function _wsOcCampaignAction(id, action) {
+  try {
+    const data = await _apiPostRaw(`/api/client/onboarding/campaigns/${id}/${action}`, {});
+    if (data.ok) {
+      setNotice("Готово", "ok");
+      await _wsOcLoadCampaigns();
+    } else {
+      setNotice(data.error || "Ошибка", "error");
+    }
+  } catch (e) {
+    setNotice(safeUserError(e), "error");
+  }
+}
+
+function _wsOcExportCsvUrl(campaignId) {
+  return apiUrl(`/api/client/onboarding/campaigns/${campaignId}/export.csv`);
+}
+
+// ── Create-campaign modal (#wsOcCreateCampaignModal, static in index.html) ─
+function _wsOcOpenCreateModal() {
+  $("wsOcCreateName").value = "";
+  $("wsOcCreateYear").value = "";
+  $("wsOcCreateNote").value = "";
+  $("wsOcCreateAutoEnroll").checked = true;
+  $("wsOcCreateSurvey").checked = false;
+  $("wsOcCreateCollectAvailability").checked = false;
+  _ocState.createTtlDays = 30;
+  document.querySelectorAll("#wsOcCreateTtlRow .ws-oc-ttl-btn").forEach(b => b.classList.toggle("active", Number(b.dataset.ttl) === 30));
+  $("wsOcCreateError")?.classList.add("hidden");
+  // Fresh idempotency key per modal-open (per genuine new attempt) — reused
+  // across retries of the SAME attempt (double-click, network-error retry)
+  // so a double-submit can never create two campaigns.
+  _ocCreateIdempotencyKey = `oc_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  piModalOpen($("wsOcCreateCampaignModal"));
+}
+function _wsOcCloseCreateModal() { piModalClose($("wsOcCreateCampaignModal")); }
+
+async function _wsOcSubmitCreateCampaign() {
+  const errEl = $("wsOcCreateError");
+  errEl?.classList.add("hidden");
+  const name = ($("wsOcCreateName")?.value || "").trim();
+  if (!name) { if (errEl) { errEl.textContent = "Введите название"; errEl.classList.remove("hidden"); } return; }
+  const btn = $("wsOcCreateConfirmBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "Создаю…"; }
+  try {
+    const data = await _apiPostRaw("/api/client/onboarding/campaigns", {
+      name,
+      academic_year: ($("wsOcCreateYear")?.value || "").trim(),
+      invite_ttl_days: _ocState.createTtlDays,
+      auto_enroll_payments: !!$("wsOcCreateAutoEnroll")?.checked,
+      survey_enabled: !!$("wsOcCreateSurvey")?.checked,
+      collect_schedule_availability: !!$("wsOcCreateCollectAvailability")?.checked,
+      note: ($("wsOcCreateNote")?.value || "").trim(),
+      idempotency_key: _ocCreateIdempotencyKey,
+    });
+    if (data.ok) {
+      _wsOcCloseCreateModal();
+      _ocCreateIdempotencyKey = null;
+      setNotice("Кампания создана", "ok");
+      await _wsOcLoadCampaigns();
+    } else if (errEl) {
+      errEl.textContent = data.error || "Ошибка создания кампании"; errEl.classList.remove("hidden");
+    }
+  } catch (e) {
+    if (errEl) { errEl.textContent = safeUserError(e); errEl.classList.remove("hidden"); }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Создать"; }
+  }
+}
+// One key per modal-open, reused across retries of the same attempt so a
+// double-click (or a retry after a network error) can never create two
+// campaigns — see storage.create_onboarding_campaign's idempotency_key.
+let _ocCreateIdempotencyKey = null;
+
+// ── Campaign detail ───────────────────────────────────────────────────────
+function _wsOcOpenCampaign(id) {
+  _ocState.selectedCampaignId = id;
+  _ocState.view = "detail";
+  _ocState.campaignDetail = null;
+  _ocState.filters = { continuation_status: "", telegram_connected: "", in_pilot: "", invite_status: "", academic_level: "", availability_filled: "", weekday: "", preferred_branch: "" };
+  _ocState.selectedRecipientIds = new Set();
+  _ocState.importOpen = false;
+  _ocState.batchResult = null;
+  _wsRenderCurrentTab();
+  _wsOcLoadCampaignDetail();
+}
+function _wsOcBackToList() {
+  _ocState.view = "list";
+  _ocState.selectedCampaignId = null;
+  _wsRenderCurrentTab();
+}
+
+async function _wsOcLoadCampaignDetail() {
+  const id = _ocState.selectedCampaignId;
+  if (!id) return;
+  _ocState.detailLoading = true;
+  _ocState.detailError = "";
+  _wsRenderCurrentTab();
+  try {
+    const qs = new URLSearchParams();
+    Object.entries(_ocState.filters).forEach(([k, v]) => { if (v) qs.set(k, v); });
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    const data = await apiGet(`/api/client/onboarding/campaigns/${id}${suffix}`);
+    _ocState.campaignDetail = data;
+  } catch (e) {
+    _ocState.campaignDetail = null;
+    _ocState.detailError = safeUserError(e);
+  } finally {
+    _ocState.detailLoading = false;
+    _wsRenderCurrentTab();
+  }
+}
+
+function _wsRenderCampaignDetail(root) {
+  const backBtn = `<button class="secondary ws-conn-back-btn" type="button" onclick="_wsOcBackToList()">← К кампаниям</button>`;
+  if (_ocState.detailLoading && !_ocState.campaignDetail) {
+    root.innerHTML = `${backBtn}<div class="kpi-loading">Загружаю кампанию…</div>`;
+    return;
+  }
+  if (_ocState.detailError) {
+    root.innerHTML = `${backBtn}<div class="notice error">${escapeHtml(_ocState.detailError)}
+      <button class="secondary" style="font-size:12px;padding:4px 10px;margin-left:8px" onclick="_wsOcLoadCampaignDetail()">Повторить</button></div>`;
+    return;
+  }
+  const d = _ocState.campaignDetail;
+  if (!d) { root.innerHTML = backBtn; return; }
+  const { campaign, stats, recipients, availability_summary } = d;
+  const s = stats || {};
+  const byStatus = s.by_continuation_status || {};
+  const byBranch = (availability_summary || {}).by_preferred_branch || {};
+
+  root.innerHTML = `
+    ${backBtn}
+    <article class="card">
+      <div class="ws-oc-campaign-card-row">
+        <div class="ws-oc-campaign-name">${escapeHtml(campaign.name)}</div>
+        <span class="ws-badge ws-badge--${campaign.status === "active" ? "connected" : campaign.status === "draft" ? "pending" : "neutral"}">${escapeHtml(ONBOARDING_CAMPAIGN_STATUS_LABELS[campaign.status] || campaign.status)}</span>
+      </div>
+      <div class="ws-oc-campaign-meta">${escapeHtml(campaign.academic_year || "")} · срок приглашений: ${campaign.invite_ttl_days} дн. · автовключение в пилот: ${campaign.auto_enroll_payments ? "да" : "нет"} · опрос: ${campaign.survey_enabled ? "включён" : "выключен"} · возможности по расписанию: ${campaign.collect_schedule_availability ? "собираются" : "не собираются"}</div>
+      <div class="ws-oc-summary">
+        <div class="ws-oc-summary-stat"><b>${s.total || 0}</b>всего</div>
+        <div class="ws-oc-summary-stat"><b>${byStatus.continues || 0}</b>продолжают</div>
+        <div class="ws-oc-summary-stat"><b>${byStatus.undecided || 0}</b>не решили</div>
+        <div class="ws-oc-summary-stat"><b>${byStatus.needs_consultation || 0}</b>консультация</div>
+        <div class="ws-oc-summary-stat"><b>${byStatus.not_continuing || 0}</b>не продолжают</div>
+        <div class="ws-oc-summary-stat"><b>${s.invites_created || 0}</b>приглашений</div>
+        <div class="ws-oc-summary-stat"><b>${s.connected || 0}</b>подключены</div>
+        <div class="ws-oc-summary-stat"><b>${s.availability_filled || 0}</b>заполнили возможности</div>
+        <div class="ws-oc-summary-stat"><b>${s.availability_missing || 0}</b>не заполнили</div>
+        <div class="ws-oc-summary-stat"><b>${byBranch.YC1 || 0}</b>Кульман 1/1</div>
+        <div class="ws-oc-summary-stat"><b>${byBranch.YC2 || 0}</b>Мстиславца 6</div>
+      </div>
+      <div class="ws-oc-campaign-actions">
+        <button class="secondary ws-conn-action-btn" type="button" onclick="_wsOcToggleImport()">${_ocState.importOpen ? "Скрыть добавление" : "Добавить получателей"}</button>
+        <a class="secondary ws-conn-action-btn" href="${_wsOcExportCsvUrl(campaign.id)}" target="_blank" rel="noopener">Экспорт CSV</a>
+        <button class="secondary ws-conn-action-btn" type="button" onclick="_wsOcCopyAllLinks()">Копировать список ссылок</button>
+      </div>
+    </article>
+    ${_ocState.importOpen ? _wsOcImportSectionHtml() : ""}
+    ${_wsOcFilterRowHtml()}
+    ${_wsOcBulkBarHtml()}
+    <div class="ws-conn-results ws-bottom-safe-pad">${(recipients || []).map(_wsOcRecipientCardHtml).join("") || `<div class="ws-empty-state"><div class="ws-empty-state-title">Нет получателей</div><div class="ws-empty-state-desc">Добавьте получателей из МойКласс.</div></div>`}</div>
+  `;
+  _wsOcWireImportSection();
+}
+
+function _wsOcFilterRowHtml() {
+  const f = _ocState.filters;
+  const opt = (val, label, current) => `<option value="${escapeAttr(val)}"${val === current ? " selected" : ""}>${escapeHtml(label)}</option>`;
+  return `
+    <div class="ws-oc-filter-row">
+      <select id="wsOcFilterContinuation" onchange="_wsOcApplyFilter('continuation_status', this.value)">
+        ${opt("", "Все статусы продолжения", f.continuation_status)}
+        ${Object.entries(ONBOARDING_CONTINUATION_LABELS).map(([k, l]) => opt(k, l, f.continuation_status)).join("")}
+      </select>
+      <select id="wsOcFilterConnected" onchange="_wsOcApplyFilter('telegram_connected', this.value)">
+        ${opt("", "Подключение: все", f.telegram_connected)}
+        ${opt("true", "Подключён", f.telegram_connected)}
+        ${opt("false", "Не подключён", f.telegram_connected)}
+      </select>
+      <select id="wsOcFilterPilot" onchange="_wsOcApplyFilter('in_pilot', this.value)">
+        ${opt("", "Пилот: все", f.in_pilot)}
+        ${opt("true", "В пилоте", f.in_pilot)}
+        ${opt("false", "Не в пилоте", f.in_pilot)}
+      </select>
+      <select id="wsOcFilterInvite" onchange="_wsOcApplyFilter('invite_status', this.value)">
+        ${opt("", "Приглашение: все", f.invite_status)}
+        ${Object.entries(ONBOARDING_INVITE_STATUS_LABELS).map(([k, l]) => opt(k, l, f.invite_status)).join("")}
+      </select>
+      <select id="wsOcFilterAcademicLevel" onchange="_wsOcApplyFilter('academic_level', this.value)">
+        ${opt("", "Учебный уровень: все", f.academic_level)}
+        ${Object.entries(ONBOARDING_ACADEMIC_LEVEL_LABELS).map(([k, l]) => opt(k, l, f.academic_level)).join("")}
+      </select>
+      <select id="wsOcFilterAvailability" onchange="_wsOcApplyFilter('availability_filled', this.value)">
+        ${opt("", "Возможности: все", f.availability_filled)}
+        ${opt("true", "Заполнены", f.availability_filled)}
+        ${opt("false", "Не заполнены", f.availability_filled)}
+      </select>
+      <select id="wsOcFilterBranch" onchange="_wsOcApplyFilter('preferred_branch', this.value)">
+        ${opt("", "Филиал: все", f.preferred_branch)}
+        ${Object.entries(ONBOARDING_BRANCH_LABELS).map(([k, l]) => opt(k, l, f.preferred_branch)).join("")}
+      </select>
+      <select id="wsOcFilterWeekday" onchange="_wsOcApplyFilter('weekday', this.value)">
+        ${opt("", "День недели: все", f.weekday)}
+        ${Object.entries(OC_AVAILABILITY_WEEKDAY_LABELS).map(([k, l]) => opt(k, l, f.weekday)).join("")}
+      </select>
+    </div>`;
+}
+function _wsOcApplyFilter(key, value) {
+  _ocState.filters[key] = value;
+  _ocState.selectedRecipientIds = new Set();
+  _wsOcLoadCampaignDetail();
+}
+
+function _wsOcBulkBarHtml() {
+  const n = _ocState.selectedRecipientIds.size;
+  const recipients = (_ocState.campaignDetail?.recipients) || [];
+  const br = _ocState.batchResult;
+  const busyLine = _ocState.bulkBusy ? `<div class="kpi-loading">${escapeHtml(_ocState.batchProgressText || "Обрабатываю…")}</div>` : "";
+  const resultLine = (!_ocState.bulkBusy && br) ? `
+    <div class="ws-oc-summary" style="margin:6px 0">
+      <div class="ws-oc-summary-stat"><b>${br.counts.created}</b>создано</div>
+      <div class="ws-oc-summary-stat"><b>${br.counts.regenerated}</b>перевыпущено</div>
+      <div class="ws-oc-summary-stat"><b>${br.counts.existing}</b>уже было</div>
+      <div class="ws-oc-summary-stat"><b>${br.counts.skipped}</b>пропущено</div>
+      <div class="ws-oc-summary-stat"><b>${br.counts.failed}</b>ошибок</div>
+      ${br.counts.failed ? `<button class="secondary" style="font-size:12px;padding:4px 10px" type="button" onclick="_wsOcRetryFailedBatch()">Повторить только ошибки</button>` : ""}
+    </div>` : "";
+  return `
+    <div class="ws-oc-bulk-bar">
+      <label><input type="checkbox" onchange="_wsOcSelectAllVisible(this.checked)" ${n > 0 && n === recipients.length ? "checked" : ""}/> Выбрать все на странице</label>
+      <span>Выбрано: ${n}</span>
+      ${n > 0 ? `
+        <button class="secondary" style="font-size:12px;padding:4px 10px" type="button" onclick="_wsOcBulkContinuation('continues')">Продолжает</button>
+        <button class="secondary" style="font-size:12px;padding:4px 10px" type="button" onclick="_wsOcBulkContinuation('undecided')">Пока не решили</button>
+        <button class="secondary" style="font-size:12px;padding:4px 10px" type="button" onclick="_wsOcBulkContinuation('needs_consultation')">Нужна консультация</button>
+        <button class="secondary" style="font-size:12px;padding:4px 10px" type="button" onclick="_wsOcBulkContinuation('not_continuing')">Не продолжает</button>
+        <button class="primary" style="font-size:12px;padding:4px 10px" type="button" ${_ocState.bulkBusy ? "disabled" : ""} onclick="_wsOcBulkCreateInvites()">Сформировать приглашения</button>
+      ` : ""}
+    </div>
+    ${busyLine}${resultLine}`;
+}
+function _wsOcSelectAllVisible(checked) {
+  const recipients = (_ocState.campaignDetail?.recipients) || [];
+  _ocState.selectedRecipientIds = checked ? new Set(recipients.map(r => r.id)) : new Set();
+  _wsRenderCurrentTab();
+}
+function _wsOcToggleRecipientSelect(id) {
+  if (_ocState.selectedRecipientIds.has(id)) _ocState.selectedRecipientIds.delete(id);
+  else _ocState.selectedRecipientIds.add(id);
+  _wsRenderCurrentTab();
+}
+
+async function _wsOcBulkContinuation(status) {
+  if (_ocState.bulkBusy) return;
+  const ids = Array.from(_ocState.selectedRecipientIds);
+  if (!ids.length) return;
+  _ocState.bulkBusy = true;
+  try {
+    const data = await _apiPostRaw(`/api/client/onboarding/campaigns/${_ocState.selectedCampaignId}/continuation-status`, {
+      recipient_ids: ids, status,
+    });
+    if (data.ok) {
+      setNotice(`Обновлено: ${data.updated}`, "ok");
+      _ocState.selectedRecipientIds = new Set();
+      await _wsOcLoadCampaignDetail();
+    } else {
+      setNotice(data.error || "Ошибка", "error");
+    }
+  } catch (e) {
+    setNotice(safeUserError(e), "error");
+  } finally {
+    _ocState.bulkBusy = false;
+  }
+}
+
+async function _wsOcSingleContinuation(recipientId, status) {
+  try {
+    const data = await _apiPostRaw(`/api/client/onboarding/campaigns/${_ocState.selectedCampaignId}/continuation-status`, {
+      recipient_id: recipientId, status,
+    });
+    if (data.ok) await _wsOcLoadCampaignDetail();
+    else setNotice(data.error || "Ошибка", "error");
+  } catch (e) {
+    setNotice(safeUserError(e), "error");
+  }
+}
+
+const _ONBOARDING_INVITE_WARN_STATUSES = ["unknown", "undecided", "not_continuing"];
+
+async function _wsOcCreateInvite(recipientId, continuationStatus, forceRegenerate) {
+  if (!forceRegenerate && _ONBOARDING_INVITE_WARN_STATUSES.includes(continuationStatus)) {
+    const label = ONBOARDING_CONTINUATION_LABELS[continuationStatus] || continuationStatus;
+    if (!confirm(`Статус продолжения обучения: «${label}». Всё равно создать приглашение?`)) return;
+  }
+  try {
+    const data = await _apiPostRaw(`/api/client/onboarding/campaigns/${_ocState.selectedCampaignId}/invites`, {
+      recipient_id: recipientId, force_regenerate: !!forceRegenerate,
+    });
+    if (data.ok) {
+      setNotice("Приглашение создано", "ok");
+      await _wsOcLoadCampaignDetail();
+    } else if (data.reason_code === "active_invite_exists") {
+      if (confirm("У получателя уже есть активное приглашение. Отозвать старое и создать новое?")) {
+        await _wsOcCreateInvite(recipientId, continuationStatus, true);
+      }
+    } else {
+      setNotice(data.error || "Ошибка", "error");
+    }
+  } catch (e) {
+    setNotice(safeUserError(e), "error");
+  }
+}
+
+// v7.1.12.1 — one server-side batch call instead of one HTTP request per
+// recipient (safe for 300+ clients — see storage.create_onboarding_invites_batch).
+async function _wsOcBulkCreateInvites(recipientIdsOverride, forceRegenerate) {
+  if (_ocState.bulkBusy) return;
+  const ids = recipientIdsOverride || Array.from(_ocState.selectedRecipientIds);
+  if (!ids.length) return;
+  _ocState.bulkBusy = true;
+  _ocState.batchProgressText = `Формирую приглашения: 0 из ${ids.length}…`;
+  _wsRenderCurrentTab();
+  const key = `oc_batch_${_ocState.selectedCampaignId}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  try {
+    const data = await _apiPostRaw(`/api/client/onboarding/campaigns/${_ocState.selectedCampaignId}/invites/batch`, {
+      recipient_ids: ids, force_regenerate: !!forceRegenerate, idempotency_key: key,
+    });
+    if (data.ok) {
+      _ocState.batchResult = data;
+      const c = data.counts;
+      setNotice(`Готово: создано ${c.created}, перевыпущено ${c.regenerated}, уже было ${c.existing}, пропущено ${c.skipped}, ошибок ${c.failed}`, c.failed ? "error" : "ok");
+    } else {
+      setNotice(data.error || "Ошибка массового формирования приглашений", "error");
+    }
+  } catch (e) {
+    setNotice(safeUserError(e), "error");
+  } finally {
+    _ocState.bulkBusy = false;
+    _ocState.batchProgressText = "";
+    _ocState.selectedRecipientIds = new Set();
+    await _wsOcLoadCampaignDetail();
+  }
+}
+
+function _wsOcRetryFailedBatch() {
+  const failedIds = (_ocState.batchResult?.results || [])
+    .filter(r => r.outcome === "failed" && r.reason !== "not_in_campaign")
+    .map(r => r.recipient_id);
+  if (!failedIds.length) { setNotice("Нет ошибок для повтора", "ok"); return; }
+  _wsOcBulkCreateInvites(failedIds, false);
+}
+
+async function _wsOcRevokeInvite(inviteId, recipientId) {
+  try {
+    const data = await _apiPostRaw(`/api/client/onboarding/invites/${inviteId}/revoke`, {});
+    if (data.ok) {
+      setNotice("Приглашение отозвано", "ok");
+      await _wsOcLoadCampaignDetail();
+    } else setNotice(data.error || "Ошибка", "error");
+  } catch (e) { setNotice(safeUserError(e), "error"); }
+}
+
+async function _wsOcRegenerateInvite(inviteId, recipientId) {
+  try {
+    const data = await _apiPostRaw(`/api/client/onboarding/invites/${inviteId}/regenerate`, {});
+    if (data.ok) {
+      setNotice("Новое приглашение создано", "ok");
+      await _wsOcLoadCampaignDetail();
+    } else setNotice(data.error || "Ошибка", "error");
+  } catch (e) { setNotice(safeUserError(e), "error"); }
+}
+
+// v7.1.12.1 — link is now always the reproducible, server-computed value
+// (rec.invite_link from GET campaign detail), passed in directly — no
+// longer tied to "did I generate this in the current browser tab".
+function _wsOcCopyLink(link) {
+  if (!link) { setNotice("Ссылка недоступна", "error"); return; }
+  if (navigator.clipboard) navigator.clipboard.writeText(link).then(() => setNotice("Ссылка скопирована", "ok"));
+  else prompt("Скопируйте ссылку:", link);
+}
+function _wsOcCopyAllLinks() {
+  const recipients = (_ocState.campaignDetail?.recipients) || [];
+  const lines = recipients
+    .filter(r => r.invite_link)
+    .map(r => `${r.child_display_name || "Ученик"} — ${r.invite_link}`);
+  if (!lines.length) { setNotice("Нет приглашений в этой кампании. Сначала сформируйте приглашения.", "error"); return; }
+  const text = lines.join("\n");
+  if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => setNotice("Список ссылок скопирован", "ok"));
+  else prompt("Скопируйте список:", text);
+}
+
+function _wsOcFormatIntervals(intervals, preference) {
+  const labels = { 1: "Пн", 2: "Вт", 3: "Ср", 4: "Чт", 5: "Пт", 6: "Сб", 7: "Вс" };
+  return (intervals || [])
+    .filter(iv => iv.preference === preference)
+    .map(iv => `${labels[iv.weekday] || iv.weekday} ${iv.start_time}-${iv.end_time}`)
+    .join(", ");
+}
+
+function _wsOcRecipientCardHtml(r) {
+  const checked = _ocState.selectedRecipientIds.has(r.id) ? "checked" : "";
+  const connBadge = r.telegram_connected
+    ? `<span class="ws-badge ws-badge--connected">Подключён</span>`
+    : `<span class="ws-badge ws-badge--neutral">Не подключён</span>`;
+  const contBadge = `<span class="ws-badge ws-badge--${r.continuation_status}">${escapeHtml(ONBOARDING_CONTINUATION_LABELS[r.continuation_status] || r.continuation_status)}</span>`;
+  const pilotBadge = r.in_pilot ? `<span class="ws-badge ws-badge--pending">Пилот: ${escapeHtml(r.pilot_mode || "")}</span>` : "";
+  const inviteLabel = ONBOARDING_INVITE_STATUS_LABELS[r.invite_status] || r.invite_status;
+  const availBadge = r.availability_filled
+    ? `<span class="ws-badge ws-badge--connected">Возможности заполнены</span>`
+    : `<span class="ws-badge ws-badge--neutral">Возможности не заполнены</span>`;
+  // Reproducible link, computed server-side (GET campaign detail) — no
+  // longer tied to "was it created in this browser session" (see report,
+  // "Повторно доступные персональные ссылки").
+  const hasLink = !!r.invite_link;
+
+  let inviteActions = "";
+  if (r.invite_status === "none" || r.invite_status === "expired" || r.invite_status === "revoked") {
+    inviteActions = `<button class="secondary" style="font-size:12px;padding:4px 10px" type="button" onclick="_wsOcCreateInvite(${r.id},'${r.continuation_status}',false)">Создать приглашение</button>`;
+  } else if (r.invite_status === "active") {
+    inviteActions = `
+      ${hasLink ? `<button class="secondary" style="font-size:12px;padding:4px 10px" type="button" onclick="_wsOcCopyLink('${escapeAttr(r.invite_link)}')">Копировать ссылку</button>` : ""}
+      <button class="secondary" style="font-size:12px;padding:4px 10px" type="button" onclick="_wsOcRevokeInvite(${r.invite_id},${r.id})">Отозвать</button>
+      <button class="secondary" style="font-size:12px;padding:4px 10px" type="button" onclick="_wsOcRegenerateInvite(${r.invite_id},${r.id})">Перевыпустить</button>`;
+  } else if (r.invite_status === "used" && hasLink) {
+    inviteActions = `<button class="secondary" style="font-size:12px;padding:4px 10px" type="button" onclick="_wsOcCopyLink('${escapeAttr(r.invite_link)}')">Копировать ссылку (использована)</button>`;
+  }
+
+  const preferredIntervals = _wsOcFormatIntervals(r.availability_intervals, "preferred");
+  const possibleIntervals = _wsOcFormatIntervals(r.availability_intervals, "possible");
+  const availabilityDetail = r.availability_filled ? `
+    <div class="ws-oc-recipient-meta">
+      Филиал: ${escapeHtml(ONBOARDING_BRANCH_LABELS[r.preferred_branch] || r.preferred_branch)}
+      ${r.available_from ? ` · с ${escapeHtml(r.available_from)}` : ""}
+      ${preferredIntervals ? ` · Удобно: ${escapeHtml(preferredIntervals)}` : ""}
+      ${possibleIntervals ? ` · Можем: ${escapeHtml(possibleIntervals)}` : ""}
+      ${r.schedule_comment ? ` · «${escapeHtml(r.schedule_comment)}»` : ""}
+    </div>` : "";
+
+  return `
+    <article class="card ws-oc-recipient-card">
+      <input type="checkbox" class="ws-oc-recipient-check" ${checked} onchange="_wsOcToggleRecipientSelect(${r.id})" />
+      <div class="ws-oc-recipient-body">
+        <div class="ws-oc-recipient-name-row">
+          <div class="ws-oc-recipient-name">${escapeHtml(r.child_display_name || `Ученик #${r.mk_user_id}`)}</div>
+        </div>
+        <div class="ws-oc-recipient-meta">ID МойКласс: ${escapeHtml(String(r.mk_user_id))}${r.branch_name ? ` · ${escapeHtml(r.branch_name)}` : ""}${r.course_name ? ` · ${escapeHtml(r.course_name)}` : ""}${r.parent_display_name ? ` · родитель: ${escapeHtml(r.parent_display_name)}` : ""}</div>
+        ${availabilityDetail}
+        <div class="ws-oc-recipient-badges">${connBadge}${contBadge}${pilotBadge}${availBadge}<span class="ws-badge ws-badge--neutral">Приглашение: ${escapeHtml(inviteLabel)}</span></div>
+        <div class="ws-oc-recipient-actions">
+          <select onchange="_wsOcSingleContinuation(${r.id}, this.value)">
+            ${Object.entries(ONBOARDING_CONTINUATION_LABELS).map(([k, l]) => `<option value="${k}"${k === r.continuation_status ? " selected" : ""}>${escapeHtml(l)}</option>`).join("")}
+          </select>
+          <select onchange="_wsOcSingleAcademicLevel(${r.id}, this.value)">
+            ${Object.entries(ONBOARDING_ACADEMIC_LEVEL_LABELS).map(([k, l]) => `<option value="${k}"${k === r.academic_level ? " selected" : ""}>${escapeHtml(l)}</option>`).join("")}
+          </select>
+          ${inviteActions}
+        </div>
+      </div>
+    </article>`;
+}
+
+async function _wsOcSingleAcademicLevel(recipientId, level) {
+  try {
+    const data = await _apiPostRaw(`/api/client/onboarding/recipients/${recipientId}/academic-level`, { academic_level: level });
+    if (data.ok) await _wsOcLoadCampaignDetail();
+    else setNotice(data.error || "Ошибка", "error");
+  } catch (e) {
+    setNotice(safeUserError(e), "error");
+  }
+}
+
+// ── Import section (search MoyKlass candidates, select, add) ─────────────
+function _wsOcToggleImport() {
+  _ocState.importOpen = !_ocState.importOpen;
+  _wsRenderCurrentTab();
+}
+function _wsOcImportSectionHtml() {
+  const results = _ocState.importResults;
+  let resultsHtml = "";
+  if (_ocState.importBusy) {
+    resultsHtml = `<div class="kpi-loading">Ищу…</div>`;
+  } else if (results === null) {
+    resultsHtml = `<div class="ws-conn-note">Введите имя или ID ученика МойКласс и нажмите «Найти».</div>`;
+  } else if (!results.length) {
+    resultsHtml = `<div class="ws-conn-note">Ничего не найдено.</div>`;
+  } else {
+    resultsHtml = results.map(c => `
+      <label class="ws-oc-recipient-card" style="display:flex">
+        <input type="checkbox" class="ws-oc-recipient-check" data-import-mk="${escapeAttr(c.mk_user_id)}" ${_ocState.importSelected.has(c.mk_user_id) ? "checked" : ""} />
+        <div class="ws-oc-recipient-body">
+          <div class="ws-oc-recipient-name">${escapeHtml(c.child_display_name)}</div>
+          <div class="ws-oc-recipient-meta">ID МойКласс: ${escapeHtml(c.mk_user_id)}${c.branch_name ? ` · ${escapeHtml(c.branch_name)}` : ""}${c.telegram_connected ? " · уже подключён" : ""}${c.pilot_mode ? ` · пилот: ${escapeHtml(c.pilot_mode)}` : ""}</div>
+        </div>
+      </label>`).join("");
+  }
+  const diagLine = _ocState.importDiagnostics ? `
+    <div class="ws-conn-note">
+      Загружено страниц: ${_ocState.importDiagnostics.pages_loaded} · получено: ${_ocState.importDiagnostics.raw_items} · уникальных: ${_ocState.importDiagnostics.unique_items}
+      ${_ocState.importDiagnostics.stopped_reason && _ocState.importDiagnostics.stopped_reason !== "short_page" && _ocState.importDiagnostics.stopped_reason !== "empty_page" ? ` · причина остановки: ${escapeHtml(_ocState.importDiagnostics.stopped_reason)}` : ""}
+      ${!_ocState.importBulkOk ? ` · <b>частичная загрузка, повторите позже</b>` : ""}
+    </div>` : "";
+  return `
+    <article class="card">
+      <div class="ws-search-row">
+        <label class="ws-search-bar">
+          ${WS_ICON_SEARCH}
+          <input id="wsOcImportSearchInput" type="text" placeholder="Имя или ID ученика МойКласс" value="${escapeAttr(_ocState.importQuery)}" autocomplete="off" />
+        </label>
+        <button class="primary" type="button" id="wsOcImportSearchBtn">Найти</button>
+      </div>
+      <div class="ws-oc-campaign-actions">
+        <button class="secondary" type="button" id="wsOcImportLoadAllBtn">Загрузить всех учеников из МойКласс</button>
+      </div>
+      ${diagLine}
+      <div id="wsOcImportResults">${resultsHtml}</div>
+      <div class="ws-oc-campaign-actions" style="margin-top:10px">
+        <button class="primary" type="button" id="wsOcImportAddBtn">Добавить выбранных</button>
+      </div>
+    </article>`;
+}
+function _wsOcWireImportSection() {
+  const input = $("wsOcImportSearchInput");
+  if (input) {
+    input.addEventListener("input", () => { _ocState.importQuery = input.value; });
+    input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); _wsOcSearchCandidates(); } });
+  }
+  $("wsOcImportSearchBtn")?.addEventListener("click", _wsOcSearchCandidates);
+  $("wsOcImportLoadAllBtn")?.addEventListener("click", _wsOcLoadAllCandidates);
+  $("wsOcImportAddBtn")?.addEventListener("click", _wsOcImportSelected);
+  document.querySelectorAll("[data-import-mk]").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const mk = cb.dataset.importMk;
+      if (cb.checked) _ocState.importSelected.add(mk); else _ocState.importSelected.delete(mk);
+    });
+  });
+}
+async function _wsOcSearchCandidates() {
+  const q = (_ocState.importQuery || "").trim();
+  if (!q) return;
+  _ocState.importBusy = true;
+  _ocState.importDiagnostics = null;
+  _wsRenderCurrentTab();
+  try {
+    const data = await apiGet(`/api/client/onboarding/candidates?q=${encodeURIComponent(q)}`);
+    _ocState.importResults = data.candidates || [];
+  } catch (e) {
+    _ocState.importResults = [];
+    setNotice(safeUserError(e), "error");
+  } finally {
+    _ocState.importBusy = false;
+    _wsRenderCurrentTab();
+  }
+}
+
+// v7.1.12 final audit — loads ALL MoyKlass students server-side in one call
+// (see web_app_server.onboarding_campaign_bulk_candidates /
+// MoyKlassClient.list_users_bulk), unlike _wsOcSearchCandidates above which
+// is a name/id search capped at ~30 results. One HTTP request regardless of
+// how many hundred students exist — never one request per page/student.
+async function _wsOcLoadAllCandidates() {
+  _ocState.importBusy = true;
+  _ocState.importDiagnostics = null;
+  _wsRenderCurrentTab();
+  try {
+    const data = await apiGet("/api/client/onboarding/candidates/bulk");
+    _ocState.importResults = data.candidates || [];
+    _ocState.importDiagnostics = data.diagnostics || null;
+    _ocState.importBulkOk = !!data.ok;
+    if (!data.ok) setNotice("Список загружен частично — произошла ошибка МойКласс на одной из страниц", "error");
+  } catch (e) {
+    _ocState.importResults = [];
+    setNotice(safeUserError(e), "error");
+  } finally {
+    _ocState.importBusy = false;
+    _wsRenderCurrentTab();
+  }
+}
+async function _wsOcImportSelected() {
+  const results = _ocState.importResults || [];
+  const chosen = results.filter(c => _ocState.importSelected.has(c.mk_user_id));
+  if (!chosen.length) { setNotice("Выберите хотя бы одного получателя", "error"); return; }
+  try {
+    const data = await _apiPostRaw(`/api/client/onboarding/campaigns/${_ocState.selectedCampaignId}/recipients/import`, {
+      recipients: chosen.map(c => ({
+        mk_user_id: c.mk_user_id, child_display_name: c.child_display_name, branch_name: c.branch_name,
+      })),
+    });
+    if (data.ok) {
+      setNotice(`Добавлено: ${data.added}, уже было: ${data.already_present}`, "ok");
+      _ocState.importSelected = new Set();
+      _ocState.importResults = null;
+      _ocState.importQuery = "";
+      _ocState.importOpen = false;
+      await _wsOcLoadCampaignDetail();
+    } else {
+      setNotice(data.error || "Ошибка", "error");
+    }
+  } catch (e) {
+    setNotice(safeUserError(e), "error");
+  }
+}
+
+// ── v7.1.12.1 — parent-facing "Возможности по расписанию" ────────────────
+// Opened either via the bot's post-activation deep-link (?oc_availability_
+// recipient=<id>, see launchAvailabilityRecipientId) or later from "Мои
+// дети". Always optional — closing/skipping never blocks anything.
+const _ocAvailState = {
+  recipientId: null,
+  branch: "either",
+  intervals: [],   // [{weekday, start_time, end_time, preference}]
+  busy: false,
+};
+const OC_AVAILABILITY_WEEKDAY_LABELS = { 1: "Пн", 2: "Вт", 3: "Ср", 4: "Чт", 5: "Пт", 6: "Сб", 7: "Вс" };
+
+async function openOnboardingAvailabilityModal(recipientId) {
+  _ocAvailState.recipientId = recipientId;
+  _ocAvailState.branch = "either";
+  _ocAvailState.intervals = [];
+  $("ocAvailabilityChildName").textContent = "Загружаю…";
+  $("ocAvailabilityFrom").value = "";
+  $("ocAvailabilityComment").value = "";
+  $("ocAvailabilityError")?.classList.add("hidden");
+  piModalOpen($("ocAvailabilityModal"));
+  try {
+    const data = await apiGet(`/api/client/onboarding/recipients/${encodeURIComponent(recipientId)}/availability`);
+    if (data.ok) {
+      $("ocAvailabilityChildName").textContent = data.child_display_name ? `Ребёнок: ${data.child_display_name}` : "";
+      _ocAvailState.branch = data.preferred_branch || "either";
+      _ocAvailState.intervals = (data.intervals || []).map(iv => ({ ...iv }));
+      $("ocAvailabilityFrom").value = data.available_from || "";
+      $("ocAvailabilityComment").value = data.schedule_comment || "";
+    }
+  } catch (e) {
+    $("ocAvailabilityChildName").textContent = "";
+  }
+  _ocAvailRenderBranchButtons();
+  _ocAvailRenderIntervals();
+}
+
+function _ocAvailRenderBranchButtons() {
+  document.querySelectorAll("#ocAvailabilityBranchRow .ws-oc-ttl-btn").forEach(b => {
+    b.classList.toggle("active", b.dataset.branch === _ocAvailState.branch);
+  });
+}
+
+function _ocAvailIntervalRowHtml(iv, idx) {
+  const weekdayOptions = Object.entries(OC_AVAILABILITY_WEEKDAY_LABELS)
+    .map(([k, l]) => `<option value="${k}"${Number(k) === iv.weekday ? " selected" : ""}>${l}</option>`).join("");
+  return `
+    <div class="oc-interval-row" data-interval-idx="${idx}">
+      <select data-field="weekday">${weekdayOptions}</select>
+      <input type="time" data-field="start_time" value="${escapeAttr(iv.start_time || "")}" />
+      <span>—</span>
+      <input type="time" data-field="end_time" value="${escapeAttr(iv.end_time || "")}" />
+      <button type="button" class="secondary oc-interval-pref-btn${iv.preference === "preferred" ? " active" : ""}" data-field="preference-toggle">${iv.preference === "preferred" ? "Удобно" : "Можем"}</button>
+      <button type="button" class="oc-interval-remove" data-remove-idx="${idx}" aria-label="Удалить">✕</button>
+    </div>`;
+}
+
+function _ocAvailRenderIntervals() {
+  const root = $("ocAvailabilityIntervals");
+  if (!root) return;
+  root.innerHTML = _ocAvailState.intervals.map(_ocAvailIntervalRowHtml).join("") || `<p class="ws-conn-note">Пока не добавлено ни одного интервала.</p>`;
+  root.querySelectorAll("[data-interval-idx]").forEach(rowEl => {
+    const idx = Number(rowEl.dataset.intervalIdx);
+    rowEl.querySelector('[data-field="weekday"]')?.addEventListener("change", e => { _ocAvailState.intervals[idx].weekday = Number(e.target.value); });
+    rowEl.querySelector('[data-field="start_time"]')?.addEventListener("change", e => { _ocAvailState.intervals[idx].start_time = e.target.value; });
+    rowEl.querySelector('[data-field="end_time"]')?.addEventListener("change", e => { _ocAvailState.intervals[idx].end_time = e.target.value; });
+    rowEl.querySelector('[data-field="preference-toggle"]')?.addEventListener("click", () => {
+      _ocAvailState.intervals[idx].preference = _ocAvailState.intervals[idx].preference === "preferred" ? "possible" : "preferred";
+      _ocAvailRenderIntervals();
+    });
+  });
+  root.querySelectorAll("[data-remove-idx]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      _ocAvailState.intervals.splice(Number(btn.dataset.removeIdx), 1);
+      _ocAvailRenderIntervals();
+    });
+  });
+}
+
+function _ocAvailAddInterval() {
+  _ocAvailState.intervals.push({ weekday: 1, start_time: "16:00", end_time: "17:00", preference: "possible" });
+  _ocAvailRenderIntervals();
+}
+
+function _ocAvailError(msg) {
+  const el = $("ocAvailabilityError");
+  if (!el) return;
+  if (!msg) { el.classList.add("hidden"); el.textContent = ""; return; }
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
+
+async function _ocAvailSave() {
+  if (_ocAvailState.busy || !_ocAvailState.recipientId) return;
+  _ocAvailError("");
+  for (const iv of _ocAvailState.intervals) {
+    if (!iv.start_time || !iv.end_time) { _ocAvailError("Заполните время начала и окончания для каждого интервала"); return; }
+    if (iv.start_time >= iv.end_time) { _ocAvailError("Время начала должно быть раньше времени окончания"); return; }
+  }
+  _ocAvailState.busy = true;
+  const btn = $("ocAvailabilitySave");
+  if (btn) { btn.disabled = true; btn.textContent = "Сохраняю…"; }
+  try {
+    const data = await _apiPostRaw(`/api/client/onboarding/recipients/${encodeURIComponent(_ocAvailState.recipientId)}/availability`, {
+      preferred_branch: _ocAvailState.branch,
+      available_from: $("ocAvailabilityFrom")?.value || "",
+      schedule_comment: $("ocAvailabilityComment")?.value || "",
+      intervals: _ocAvailState.intervals,
+    });
+    if (data.ok) {
+      piModalClose($("ocAvailabilityModal"));
+      setNotice("Возможности по расписанию сохранены", "ok");
+    } else {
+      _ocAvailError(data.error || "Ошибка сохранения");
+    }
+  } catch (e) {
+    _ocAvailError(safeUserError(e));
+  } finally {
+    _ocAvailState.busy = false;
+    if (btn) { btn.disabled = false; btn.textContent = "Сохранить"; }
   }
 }
 
@@ -17466,4 +18361,26 @@ document.addEventListener("DOMContentLoaded", () => {
   $("wsConnUnlinkModalBack")?.addEventListener("click", _wsConnCloseUnlink);
   $("wsConnUnlinkModalClose")?.addEventListener("click", _wsConnCloseUnlink);
   $("wsConnUnlinkModal")?.addEventListener("click", e => { if (e.target === $("wsConnUnlinkModal")) _wsConnCloseUnlink(); });
+
+  // v7.1.12 — mass onboarding campaign: create-campaign modal
+  $("wsOcCreateConfirmBtn")?.addEventListener("click", _wsOcSubmitCreateCampaign);
+  $("wsOcCreateModalBack")?.addEventListener("click", _wsOcCloseCreateModal);
+  $("wsOcCreateModalClose")?.addEventListener("click", _wsOcCloseCreateModal);
+  $("wsOcCreateCampaignModal")?.addEventListener("click", e => { if (e.target === $("wsOcCreateCampaignModal")) _wsOcCloseCreateModal(); });
+  document.querySelectorAll("#wsOcCreateTtlRow .ws-oc-ttl-btn").forEach(b => {
+    b.addEventListener("click", () => {
+      _ocState.createTtlDays = Number(b.dataset.ttl);
+      document.querySelectorAll("#wsOcCreateTtlRow .ws-oc-ttl-btn").forEach(x => x.classList.toggle("active", x === b));
+    });
+  });
+
+  // v7.1.12.1 — parent-facing schedule-availability modal
+  $("ocAvailabilitySave")?.addEventListener("click", _ocAvailSave);
+  $("ocAvailabilitySkip")?.addEventListener("click", () => piModalClose($("ocAvailabilityModal")));
+  $("ocAvailabilityModalClose")?.addEventListener("click", () => piModalClose($("ocAvailabilityModal")));
+  $("ocAvailabilityModal")?.addEventListener("click", e => { if (e.target === $("ocAvailabilityModal")) piModalClose($("ocAvailabilityModal")); });
+  $("ocAvailabilityAddInterval")?.addEventListener("click", _ocAvailAddInterval);
+  document.querySelectorAll("#ocAvailabilityBranchRow .ws-oc-ttl-btn").forEach(b => {
+    b.addEventListener("click", () => { _ocAvailState.branch = b.dataset.branch; _ocAvailRenderBranchButtons(); });
+  });
 });

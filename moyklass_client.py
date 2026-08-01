@@ -1082,6 +1082,87 @@ class MoyKlassClient:
         params = {"q": query, "search": query, "name": query, "limit": str(limit)}
         return self.request("GET", "/v1/company/users", params=params)
 
+    def list_users_bulk(
+        self,
+        params: Optional[dict[str, Any]] = None,
+        page_size: int = 200,
+        max_pages: int = 30,
+    ) -> MoyKlassResult:
+        """Page through GET /v1/company/users until exhausted — for bulk
+        campaign-recipient candidate loading (300+ students), unlike
+        get_users()/search_users() above which only ever fetch one page.
+
+        Mirrors the offset/limit pagination pattern already used elsewhere
+        in this file (see the client-flow status scan and
+        _scan_month_endpoint_variants): no response field like `total` is
+        relied on for termination — this codebase's own pagination code
+        never reads one for this endpoint, and nothing here assumes it
+        exists. Termination is purely structural:
+          - an empty page ends the loop ("empty_page")
+          - a page shorter than page_size ends the loop ("short_page") —
+            the ordinary "last page" case
+          - a page whose first item id repeats the previous page's first
+            item id ends the loop ("repeated_page") — a safety valve against
+            an API that ignores `offset` and would otherwise loop forever
+          - max_pages ends the loop ("max_pages_reached") as a hard cap
+          - a failed request ends the loop ("error") and the OVERALL result
+            is ok=False, carrying whatever was collected before the failure
+            as a transparent partial result — never reported as a false
+            full success.
+
+        Deduplicates by user id across pages (defensive against overlapping
+        pages). Returns MoyKlassResult(data={"items": [...], "diagnostics":
+        {pages_loaded, raw_items, unique_items, stopped_reason}}).
+        """
+        base_params = dict(params or {})
+        collected: list[dict] = []
+        seen_ids: set[str] = set()
+        pages_loaded = 0
+        raw_items_count = 0
+        stopped_reason = "max_pages_reached"
+        prev_first_id: Optional[str] = None
+        last_error = ""
+        ok_overall = True
+
+        for page in range(max(1, int(max_pages or 1))):
+            page_params = {**base_params, "limit": str(page_size), "offset": str(page * page_size)}
+            result = self.request("GET", "/v1/company/users", params=page_params)
+            if not result.ok:
+                stopped_reason = "error"
+                last_error = result.error
+                ok_overall = False
+                break
+            items = [x for x in extract_items(result.data) if isinstance(x, dict)]
+            pages_loaded += 1
+            raw_items_count += len(items)
+            if not items:
+                stopped_reason = "empty_page"
+                break
+            first_id = str(items[0].get("id") or items[0].get("userId") or "")
+            if first_id and first_id == prev_first_id:
+                stopped_reason = "repeated_page"
+                break
+            prev_first_id = first_id
+            for item in items:
+                uid = str(item.get("id") or item.get("userId") or "").strip()
+                if not uid or uid in seen_ids:
+                    continue
+                seen_ids.add(uid)
+                collected.append(item)
+            if len(items) < page_size:
+                stopped_reason = "short_page"
+                break
+
+        diagnostics = {
+            "pages_loaded": pages_loaded,
+            "raw_items": raw_items_count,
+            "unique_items": len(collected),
+            "stopped_reason": stopped_reason,
+        }
+        return MoyKlassResult(
+            ok=ok_overall, data={"items": collected, "diagnostics": diagnostics},
+            error=last_error, endpoint="/v1/company/users",
+        )
 
     def get_classes(self, raw_args: str = "") -> MoyKlassResult:
         """Read MoyKlass groups/classes using several known endpoint variants."""

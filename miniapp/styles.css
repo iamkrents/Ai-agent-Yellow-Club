@@ -9129,6 +9129,76 @@ body.keyboard-open .tabs.bottom-tabbar {
   .ws-conn-action-btn { width: 100%; }
 }
 
+/* ── v7.1.12 — mass client-onboarding campaigns ────────────────────────────
+   Reuses .card / .ws-badge / .ws-search-bar / .ws-search-row / .ws-conn-* /
+   .notice / .pi-modal wherever the shape already matches — only new,
+   additively scoped .ws-oc-* selectors below. Card-based layout (not a
+   desktop table) on every viewport by design, so mobile never has to render
+   a shrunk-down table — see report for the explicit trade-off. */
+.ws-oc-mode-toggle { display: flex; gap: 6px; margin-bottom: 12px; background: var(--bg, #f6f7fb); border-radius: 12px; padding: 4px; }
+.ws-oc-mode-btn {
+  flex: 1 1 0; min-height: 38px; border: 0; border-radius: 9px; background: transparent;
+  color: var(--muted); font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.ws-oc-mode-btn.active { background: #fff; color: var(--ink); box-shadow: 0 1px 4px rgba(26,38,66,.10); }
+
+.ws-oc-list-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+.ws-oc-campaign-card { display: flex; flex-direction: column; gap: 8px; }
+.ws-oc-campaign-card-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ws-oc-campaign-name { font-size: 14px; font-weight: 700; color: var(--ink); }
+.ws-oc-campaign-meta { font-size: 12px; color: var(--muted); }
+.ws-oc-campaign-stats { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--ink); }
+.ws-oc-campaign-stats b { font-weight: 800; }
+.ws-oc-campaign-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.ws-oc-field { display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; font-size: 13px; color: var(--ink); }
+.ws-oc-field input[type="text"], .ws-oc-field select {
+  min-height: 40px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: #fff; font-size: 14px; font-family: inherit; color: var(--ink);
+}
+.ws-oc-checkbox-field { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 13px; color: var(--ink); }
+.ws-oc-ttl-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.ws-oc-ttl-btn { min-height: 34px; padding: 0 12px; font-size: 12px; }
+.ws-oc-ttl-btn.active { background: var(--yc-yellow, #FFCB1F); color: #6f5200; border-color: transparent; }
+
+.ws-oc-summary { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0 4px; }
+.ws-oc-summary-stat { font-size: 12px; color: var(--muted); }
+.ws-oc-summary-stat b { display: block; font-size: 16px; font-weight: 800; color: var(--ink); }
+
+.ws-oc-filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.ws-oc-filter-row select { min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 9px; background: #fff; font-size: 12px; color: var(--ink); }
+
+.ws-oc-bulk-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; padding: 8px 10px; background: var(--bg, #f6f7fb); border-radius: 10px; font-size: 12px; }
+.ws-oc-recipient-card { display: flex; gap: 10px; align-items: flex-start; }
+.ws-oc-recipient-check { margin-top: 2px; }
+.ws-oc-recipient-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.ws-oc-recipient-name-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ws-oc-recipient-name { font-size: 13px; font-weight: 700; color: var(--ink); word-break: break-word; }
+.ws-oc-recipient-meta { font-size: 11px; color: var(--muted); }
+.ws-oc-recipient-badges { display: flex; flex-wrap: wrap; gap: 6px; }
+.ws-oc-recipient-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+
+.ws-badge--continues { background: #effbf6; color: #0b7548; }
+.ws-badge--undecided { background: #fff8e6; color: #9a6a00; }
+.ws-badge--needs_consultation { background: #fff0e0; color: #a0501a; }
+.ws-badge--not_continuing { background: #fff0f0; color: #a82d2d; }
+
+@media (max-width: 420px) {
+  .ws-oc-campaign-actions, .ws-oc-recipient-actions { flex-direction: column; }
+  .ws-oc-list-head { flex-direction: column; align-items: stretch; }
+}
+
+/* v7.1.12.1 — parent-facing schedule-availability form (#ocAvailabilityModal)
+   and its interval-row list; also reused read-only in the staff recipient card. */
+.oc-interval-row { display: grid; grid-template-columns: auto 1fr auto 1fr auto auto; gap: 6px; align-items: center; margin-bottom: 8px; }
+.oc-interval-row select, .oc-interval-row input[type="time"] { min-height: 38px; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; background: #fff; font-size: 13px; color: var(--ink); }
+.oc-interval-remove { min-height: 38px; min-width: 38px; border: 0; background: transparent; color: var(--muted); font-size: 16px; cursor: pointer; }
+.oc-interval-pref-btn { min-height: 38px; padding: 0 10px; font-size: 12px; }
+.oc-interval-pref-btn.active { background: var(--yc-yellow, #FFCB1F); color: #6f5200; border-color: transparent; }
+@media (max-width: 480px) {
+  .oc-interval-row { grid-template-columns: 1fr 1fr; grid-auto-rows: auto; }
+}
+
 /* ── v7.1.7 — Payments Workspace "Помощь по оплатам" screen ───────────────
    Internal screen inside #paymentsWorkspaceRoot (not a 6th tab): opening it
    only toggles [hidden] on #wsSubtabs/#wsTabContent/#wsHelpScreen — the

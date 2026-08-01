@@ -81,6 +81,8 @@ class Settings:
     mk_watch_initial_delay_seconds: int
     mk_watch_notify_admins: bool
 
+    bot_username: str  # v7.1.12 — for building https://t.me/<bot_username>?start=... campaign invite links
+    bot_username_is_default: bool  # v7.1.12 — True when TELEGRAM_BOT_USERNAME was not set and the fallback is in use; surfaced in startup diagnostics, never in this value itself
     web_app_url: str
     web_app_host: str
     web_app_port: int
@@ -234,6 +236,8 @@ def load_settings() -> Settings:
         mk_watch_days=max(1, min(int(os.getenv("MK_WATCH_DAYS", "30")), 120)),
         mk_watch_initial_delay_seconds=max(5, int(os.getenv("MK_WATCH_INITIAL_DELAY_SECONDS", "30"))),
         mk_watch_notify_admins=_bool(os.getenv("MK_WATCH_NOTIFY_ADMINS", "true"), True),
+        bot_username=os.getenv("TELEGRAM_BOT_USERNAME", "yellowclubagent_bot").strip().lstrip("@"),
+        bot_username_is_default=not os.getenv("TELEGRAM_BOT_USERNAME", "").strip(),
         web_app_url=os.getenv("WEB_APP_URL", "").strip().rstrip("/"),
         web_app_host=os.getenv("WEB_APP_HOST", "127.0.0.1").strip() or "127.0.0.1",
         web_app_port=max(1, int(os.getenv("WEB_APP_PORT", "8088"))),

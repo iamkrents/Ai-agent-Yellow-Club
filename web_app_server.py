@@ -2,8 +2,10 @@
 # v7.1.0
 from __future__ import annotations
 
+import csv
 import hashlib
 import hmac
+import io
 import json
 import logging
 import mimetypes
@@ -42,7 +44,11 @@ from moyklass_client import (
 )
 from bepaid_client import BePaidClient, build_erip_description
 from food_menu_ocr import ocr_image_to_text
-from storage import Storage, CLIENT_LINK_CODE_TTL_HOURS as _STORAGE_CLIENT_LINK_CODE_TTL_HOURS
+from storage import (
+    Storage,
+    CLIENT_LINK_CODE_TTL_HOURS as _STORAGE_CLIENT_LINK_CODE_TTL_HOURS,
+    ONBOARDING_INVITE_TOKEN_PREFIX,
+)
 from llm import OllamaClient
 from agent_core import AgentCore, AnswerContext
 from query_tools import build_query_profile
@@ -143,6 +149,7 @@ PAYMENT_INTENT_ROLES = {"owner", "admin", "director", "operations", "client_mana
 PAYMENT_MK_POST_ROLES = {"owner", "admin"}  # only senior roles may post to MoyKlass (also gates payment_integrity_audit — do not widen)
 PAYMENT_MK_MANUAL_POST_ROLES = PAYMENT_MK_POST_ROLES | {"client_manager"}  # v7.1.11 — manual "Внести в МойКласс" action only; client_manager still acts only on payments they already see via WORKSPACE_VIEW_ROLES
 PAYMENT_ONBOARDING_STAFF_ROLES = {"owner", "admin", "client_manager"}  # v7.1.11 — staff-only Payments onboarding (client_admin_link_and_enroll); deliberately excludes operations
+CLIENT_ONBOARDING_CAMPAIGN_ROLES = {"owner", "admin", "client_manager"}  # v7.1.12 — mass onboarding campaigns: create/manage + continuation status; same set as PAYMENT_ONBOARDING_STAFF_ROLES, deliberately excludes operations
 CLIENT_LINK_ADMIN_ROLES = {"owner", "admin", "operations", "client_manager"}  # v7.1.7 — client_manager can manage CL- link codes
 CLIENT_LINK_CODE_TTL_HOURS = _STORAGE_CLIENT_LINK_CODE_TTL_HOURS  # v7.1.7 — single source of truth is storage.py
 CLIENT_LINK_MAX_FAILED_ATTEMPTS = 5      # v7.1.7 — brute-force guard on POST /api/client/children/link
@@ -12251,6 +12258,657 @@ class MiniAppContext:
 
         return {"ok": True, "students": students, "total": len(students), "query": q}
 
+    # ── v7.1.12 — mass client-onboarding campaigns (staff endpoints) ─────────
+    # Second, parallel path alongside the point-in-time CL-code flow above —
+    # never replaces it. The parent-facing token preview/confirm/activate/
+    # survey flow is NOT exposed over HTTP: it runs entirely inside the bot
+    # conversation (handlers.py), which already talks to the same Storage
+    # instance directly (see e.g. self.storage.get_staff_test_mode elsewhere
+    # in handlers.py) — adding a second, parallel HTTP auth model for a flow
+    # that only ever runs inside a Telegram chat would add risk without
+    # adding capability. See storage.activate_onboarding_invite /
+    # get_onboarding_invite_preview / submit_continuation_response.
+
+    def _require_onboarding_campaign_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in CLIENT_ONBOARDING_CAMPAIGN_ROLES:
+            return {"ok": False, "error": "Доступно только owner, admin и client_manager."}
+        return None
+
+    def onboarding_campaigns_list(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        """GET /api/client/onboarding/campaigns"""
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        status = str(params.get("status") or "").strip() or None
+        return {"ok": True, "campaigns": self.storage.list_onboarding_campaigns(status)}
+
+    def onboarding_campaign_create(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/client/onboarding/campaigns"""
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        role = self._role_for_user(int(auth["user_id"]))
+        actor = str(auth.get("user_id") or "")
+        result = self.storage.create_onboarding_campaign(
+            name=str(body.get("name") or ""),
+            academic_year=str(body.get("academic_year") or ""),
+            created_by=actor,
+            invite_ttl_days=body.get("invite_ttl_days"),
+            default_payment_mode=str(body.get("default_payment_mode") or "review"),
+            auto_enroll_payments=bool(body.get("auto_enroll_payments", True)),
+            survey_enabled=bool(body.get("survey_enabled", False)),
+            collect_schedule_availability=bool(body.get("collect_schedule_availability", False)),
+            note=str(body.get("note") or ""),
+            idempotency_key=body.get("idempotency_key"),
+        )
+        if result.get("ok") and result.get("created"):
+            self.storage.log_onboarding_audit_event(
+                event_type="onboarding_campaign_created", campaign_id=result["campaign"]["id"],
+                actor_telegram_user_id=actor, actor_role=role, result="success",
+            )
+        return result
+
+    def onboarding_campaign_get(self, auth: dict[str, Any], campaign_id_str: str, params: dict[str, str]) -> dict[str, Any]:
+        """GET /api/client/onboarding/campaigns/{id}"""
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        try:
+            campaign_id = int(campaign_id_str)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid campaign id"}
+        campaign = self.storage.get_onboarding_campaign(campaign_id)
+        if not campaign:
+            return {"ok": False, "error": "Кампания не найдена"}
+        filters: dict[str, Any] = {}
+        for key in ("branch_name", "course_name", "continuation_status", "invite_status"):
+            if params.get(key):
+                filters[key] = params[key]
+        for key in ("academic_level", "preferred_branch"):
+            if params.get(key):
+                filters[key] = params[key]
+        if params.get("telegram_connected") in ("true", "false"):
+            filters["telegram_connected"] = params["telegram_connected"] == "true"
+        if params.get("in_pilot") in ("true", "false"):
+            filters["in_pilot"] = params["in_pilot"] == "true"
+        if params.get("availability_filled") in ("true", "false"):
+            filters["availability_filled"] = params["availability_filled"] == "true"
+        if params.get("weekday"):
+            try:
+                filters["weekday"] = int(params["weekday"])
+            except (TypeError, ValueError):
+                pass
+        recipients = self.storage.list_onboarding_campaign_recipients(campaign_id, filters)
+        secret = self._onboarding_signing_secret()
+        for rec in recipients:
+            rec["invite_link"] = self._onboarding_invite_link_for(rec.get("invite_id"), secret)
+        return {
+            "ok": True, "campaign": campaign,
+            "stats": self.storage.get_onboarding_campaign_stats(campaign_id),
+            "availability_summary": self.storage.get_onboarding_campaign_availability_summary(campaign_id),
+            "recipients": recipients,
+        }
+
+    def _onboarding_campaign_transition(
+        self, auth: dict[str, Any], campaign_id_str: str, transition_fn: Any, event_type: str
+    ) -> dict[str, Any]:
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        role = self._role_for_user(int(auth["user_id"]))
+        actor = str(auth.get("user_id") or "")
+        try:
+            campaign_id = int(campaign_id_str)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid campaign id"}
+        result = transition_fn(campaign_id, actor)
+        if result.get("ok"):
+            self.storage.log_onboarding_audit_event(
+                event_type=event_type, campaign_id=campaign_id,
+                actor_telegram_user_id=actor, actor_role=role, result="success",
+            )
+        return result
+
+    def onboarding_campaign_start(self, auth: dict[str, Any], campaign_id_str: str) -> dict[str, Any]:
+        """POST /api/client/onboarding/campaigns/{id}/start"""
+        return self._onboarding_campaign_transition(
+            auth, campaign_id_str, self.storage.start_onboarding_campaign, "onboarding_campaign_started"
+        )
+
+    def onboarding_campaign_close(self, auth: dict[str, Any], campaign_id_str: str) -> dict[str, Any]:
+        """POST /api/client/onboarding/campaigns/{id}/close"""
+        return self._onboarding_campaign_transition(
+            auth, campaign_id_str, self.storage.close_onboarding_campaign, "onboarding_campaign_closed"
+        )
+
+    def onboarding_campaign_archive(self, auth: dict[str, Any], campaign_id_str: str) -> dict[str, Any]:
+        """POST /api/client/onboarding/campaigns/{id}/archive"""
+        return self._onboarding_campaign_transition(
+            auth, campaign_id_str, self.storage.archive_onboarding_campaign, "onboarding_campaign_archived"
+        )
+
+    def onboarding_campaign_search_candidates(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        """GET /api/client/onboarding/candidates?q=...
+
+        Reuses the exact same MoyKlass search call as admin_client_search_students
+        (no new MoyKlass endpoint invented) so staff can pick real candidates to
+        import into a campaign. Enriched with existing pilot mode + Telegram-link
+        status (read-only, existing storage helpers). branch_name is best-effort
+        only (opportunistically read off whatever the raw MoyKlass object
+        contains — tenant configs vary) and course_name is left blank here
+        (would need a per-student extra MK call); neither ever blocks import.
+        """
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        q = str(params.get("q") or "").strip()
+        if not q:
+            return {"ok": False, "error": "Введите имя ученика или userId МойКласс"}
+        if len(q) > 200:
+            return {"ok": False, "error": "Запрос слишком длинный"}
+
+        mk_results: list[dict] = []
+        if q.isdigit():
+            try:
+                res = self.moyklass.request("GET", f"/v1/company/users/{q}")
+                if res.ok:
+                    u = res.data if isinstance(res.data, dict) else {}
+                    if u.get("id"):
+                        mk_results = [u]
+                    elif isinstance(res.data, list) and res.data:
+                        mk_results = res.data[:10]
+            except Exception:
+                pass
+        else:
+            try:
+                res = self.moyklass.request("GET", "/v1/company/users", params={"q": q, "limit": "30"})
+                if res.ok:
+                    raw = res.data
+                    if isinstance(raw, list):
+                        mk_results = raw[:30]
+                    elif isinstance(raw, dict) and isinstance(raw.get("items"), list):
+                        mk_results = raw["items"][:30]
+            except Exception:
+                pass
+
+        candidates = [self._onboarding_mk_user_to_candidate(u) for u in mk_results]
+        candidates = [c for c in candidates if c is not None]
+        return {"ok": True, "candidates": candidates, "query": q}
+
+    def _onboarding_mk_user_to_candidate(self, u: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """Shared MoyKlass-raw-user -> campaign-candidate mapping, used by
+        both the query search (onboarding_campaign_search_candidates) and
+        the bulk pagination fetch (onboarding_campaign_bulk_candidates) so
+        the two paths can never silently drift apart in shape."""
+        mk_user_id = str(u.get("id") or u.get("userId") or u.get("mk_user_id") or "").strip()
+        if not mk_user_id:
+            return None
+        first = str(u.get("name") or u.get("firstName") or "").strip()
+        last = str(u.get("lastName") or "").strip()
+        full_name = f"{first} {last}".strip() if last else first
+        filial = u.get("filial")
+        branch_name = str(filial.get("name") if isinstance(filial, dict) else (u.get("filialName") or u.get("branch") or "")).strip()
+        pilot = self.storage.get_pilot_client(mk_user_id)
+        link_status = self.storage.get_client_link_status_for_student(mk_user_id)
+        active_link = next((l for l in (link_status.get("links") or []) if l.get("status") == "active"), None)
+        return {
+            "mk_user_id": mk_user_id,
+            "child_display_name": full_name or f"Ученик #{mk_user_id}",
+            "branch_name": branch_name,
+            "course_name": "",
+            "telegram_connected": bool(active_link),
+            "pilot_mode": pilot.get("mode") if pilot else None,
+        }
+
+    _ONBOARDING_BULK_CANDIDATES_MAX_PAGES = 30
+    _ONBOARDING_BULK_CANDIDATES_PAGE_SIZE = 200
+
+    def onboarding_campaign_bulk_candidates(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        """GET /api/client/onboarding/candidates/bulk
+
+        Loads ALL MoyKlass students (not just a search-limited page) via
+        MoyKlassClient.list_users_bulk — the actual fix for "300+ clients":
+        onboarding_campaign_search_candidates above is a name/id SEARCH
+        capped at ~30 results and is not a substitute for this. One backend
+        call does the full pagination server-side; the frontend never issues
+        one HTTP request per page or per candidate. Only ever RETURNS
+        candidates — nothing here creates a recipient row; staff must still
+        explicitly select and call recipients/import.
+        """
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        mk_params: dict[str, Any] = {}
+        # Optional passthrough filter (e.g. a MoyKlass filial/branch id) —
+        # never required; an empty call fetches the full student list.
+        if params.get("filialId"):
+            mk_params["filialId"] = params["filialId"]
+        result = self.moyklass.list_users_bulk(
+            params=mk_params or None,
+            page_size=self._ONBOARDING_BULK_CANDIDATES_PAGE_SIZE,
+            max_pages=self._ONBOARDING_BULK_CANDIDATES_MAX_PAGES,
+        )
+        diagnostics = (result.data or {}).get("diagnostics", {}) if isinstance(result.data, dict) else {}
+        raw_items = (result.data or {}).get("items", []) if isinstance(result.data, dict) else []
+        candidates = [c for c in (self._onboarding_mk_user_to_candidate(u) for u in raw_items) if c is not None]
+        return {
+            "ok": bool(result.ok),
+            "candidates": candidates,
+            "diagnostics": diagnostics,
+            "error": result.error if not result.ok else None,
+        }
+
+    def onboarding_campaign_import_recipients(self, auth: dict[str, Any], campaign_id_str: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/client/onboarding/campaigns/{id}/recipients/import
+
+        Only ever imports the explicit list of mk_user_ids the staff member
+        selected client-side — never the whole MoyKlass database. Idempotent
+        per (campaign_id, mk_user_id). Never creates a pilot record (pilot
+        creation only ever happens at invite activation time).
+        """
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        role = self._role_for_user(int(auth["user_id"]))
+        actor = str(auth.get("user_id") or "")
+        try:
+            campaign_id = int(campaign_id_str)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid campaign id"}
+        raw_recipients = body.get("recipients")
+        if not isinstance(raw_recipients, list) or not raw_recipients:
+            return {"ok": False, "error": "Список получателей пуст"}
+        if len(raw_recipients) > 500:
+            return {"ok": False, "error": "Слишком много получателей за один раз (максимум 500)"}
+        clean: list[dict[str, Any]] = []
+        for r in raw_recipients:
+            if not isinstance(r, dict):
+                continue
+            mk_user_id = str(r.get("mk_user_id") or "").strip()
+            if not mk_user_id:
+                continue
+            clean.append({
+                "mk_user_id": mk_user_id,
+                "child_display_name": str(r.get("child_display_name") or "")[:200],
+                "branch_name": str(r.get("branch_name") or "")[:100],
+                "course_name": str(r.get("course_name") or "")[:100],
+                "parent_display_name": str(r.get("parent_display_name") or "")[:200],
+            })
+        result = self.storage.import_onboarding_campaign_recipients(campaign_id, clean, actor)
+        if result.get("ok"):
+            self.storage.log_onboarding_audit_event(
+                event_type="onboarding_recipient_added", campaign_id=campaign_id,
+                actor_telegram_user_id=actor, actor_role=role, result="success",
+                note=f"added={result.get('added')} already_present={result.get('already_present')}",
+            )
+        return result
+
+    def onboarding_campaign_continuation_status(self, auth: dict[str, Any], campaign_id_str: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/client/onboarding/campaigns/{id}/continuation-status
+
+        Accepts either a single recipient_id or a recipient_ids array (bulk).
+        Every recipient_id's campaign ownership is re-verified server-side —
+        the frontend's campaign_id in the URL is never trusted as proof a
+        recipient belongs to it.
+        """
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        role = self._role_for_user(int(auth["user_id"]))
+        actor = str(auth.get("user_id") or "")
+        try:
+            campaign_id = int(campaign_id_str)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid campaign id"}
+        new_status = str(body.get("status") or "").strip()
+        comment = body.get("comment")
+
+        recipient_ids_raw = body.get("recipient_ids")
+        if isinstance(recipient_ids_raw, list) and recipient_ids_raw:
+            try:
+                recipient_ids = [int(x) for x in recipient_ids_raw]
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "Некорректный список получателей"}
+            owned = []
+            for rid in recipient_ids:
+                rec = self.storage.get_onboarding_recipient(rid)
+                if rec and rec["campaign_id"] == campaign_id:
+                    owned.append(rid)
+            if not owned:
+                return {"ok": False, "error": "Получатели не найдены в этой кампании"}
+            return self.storage.bulk_update_continuation_status(owned, new_status, actor, role, comment=comment)
+
+        try:
+            recipient_id = int(body.get("recipient_id"))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "recipient_id или recipient_ids обязателен"}
+        rec = self.storage.get_onboarding_recipient(recipient_id)
+        if not rec or rec["campaign_id"] != campaign_id:
+            return {"ok": False, "error": "Получатель не найден в этой кампании"}
+        return self.storage.update_recipient_continuation_status(recipient_id, new_status, actor, role, comment=comment, source="staff")
+
+    def onboarding_recipient_academic_level(self, auth: dict[str, Any], recipient_id_str: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/client/onboarding/recipients/{id}/academic-level — staff-only
+        manual override. Always wins over auto-detection and survives any
+        later re-import (see update_recipient_academic_level's docstring)."""
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        role = self._role_for_user(int(auth["user_id"]))
+        actor = str(auth.get("user_id") or "")
+        try:
+            recipient_id = int(recipient_id_str)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid recipient id"}
+        new_level = str(body.get("academic_level") or "").strip()
+        return self.storage.update_recipient_academic_level(recipient_id, new_level, actor, role, comment=body.get("comment"))
+
+    # ── v7.1.12.1 — schedule availability ────────────────────────────────────
+    # Dual authorization: staff (CLIENT_ONBOARDING_CAMPAIGN_ROLES, any
+    # recipient in a campaign they can already see) or the parent who owns
+    # the specific child (role == "parent" AND the recipient's mk_user_id is
+    # among that parent's actively-linked children — never trusted from the
+    # client, always re-derived from client_parent_child_links here).
+
+    def _require_availability_access(self, auth: dict[str, Any], recipient: dict[str, Any]) -> tuple[Optional[str], Optional[dict[str, Any]]]:
+        role = self._role_for_user(int(auth["user_id"]))
+        if role == "parent":
+            parent_tid = str(auth["user_id"])
+            children = self.storage.list_client_children_for_parent(parent_tid)
+            if not any(c.get("mk_user_id") == recipient.get("mk_user_id") for c in children):
+                return None, {"ok": False, "error": "Доступ только к своим детям."}
+            return "parent_app", None
+        if role in CLIENT_ONBOARDING_CAMPAIGN_ROLES:
+            return "staff", None
+        return None, {"ok": False, "error": "Доступ запрещён."}
+
+    def onboarding_recipient_availability_get(self, auth: dict[str, Any], recipient_id_str: str) -> dict[str, Any]:
+        """GET /api/client/onboarding/recipients/{id}/availability"""
+        try:
+            recipient_id = int(recipient_id_str)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid recipient id"}
+        recipient = self.storage.get_onboarding_recipient(recipient_id)
+        if not recipient:
+            return {"ok": False, "error": "Получатель не найден"}
+        _source, denied = self._require_availability_access(auth, recipient)
+        if denied:
+            return denied
+        result = self.storage.get_schedule_availability(recipient_id)
+        if result.get("ok"):
+            result["child_display_name"] = recipient.get("child_display_name")
+            result["campaign_id"] = recipient.get("campaign_id")
+        return result
+
+    def onboarding_recipient_availability_submit(self, auth: dict[str, Any], recipient_id_str: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/client/onboarding/recipients/{id}/availability
+
+        Never blocks or is required for registration itself — activation
+        (storage.activate_onboarding_invite) has already completed by the
+        time this can ever be called; this is purely an optional follow-up.
+        """
+        try:
+            recipient_id = int(recipient_id_str)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid recipient id"}
+        recipient = self.storage.get_onboarding_recipient(recipient_id)
+        if not recipient:
+            return {"ok": False, "error": "Получатель не найден"}
+        source, denied = self._require_availability_access(auth, recipient)
+        if denied:
+            return denied
+        role = self._role_for_user(int(auth["user_id"]))
+        actor = str(auth.get("user_id") or "")
+        intervals = body.get("intervals")
+        if not isinstance(intervals, list):
+            intervals = []
+        return self.storage.submit_schedule_availability(
+            recipient_id, actor, role,
+            preferred_branch=body.get("preferred_branch"),
+            available_from=body.get("available_from"),
+            schedule_comment=body.get("schedule_comment"),
+            intervals=intervals,
+            source=source,
+        )
+
+    # v7.1.12.1 — reproducible HMAC-signed invite links. The deep-link secret
+    # is the app's existing stable secret (telegram_bot_token — the same one
+    # already used for signed Mini App URLs), so a link can be re-derived at
+    # ANY later time (repeat CSV export, a fresh process after a restart,
+    # "copy link" on an old invite) purely from data already in the DB — no
+    # plaintext bearer token is ever stored or needs to be recovered.
+    def _onboarding_signing_secret(self) -> str:
+        return getattr(self.settings, "telegram_bot_token", "") or ""
+
+    def _onboarding_invite_link_from_payload(self, payload: dict[str, Any]) -> str:
+        bot_username = getattr(self.settings, "bot_username", "") or "yellowclubagent_bot"
+        return f"https://t.me/{bot_username}?start={ONBOARDING_INVITE_TOKEN_PREFIX}{payload['invite_id']}_{payload['signature']}"
+
+    def _onboarding_invite_link_for(self, invite_id: Any, secret: Optional[str] = None) -> Optional[str]:
+        """Best-effort reproducible link for a recipient's (possibly absent)
+        invite — returns None when there is no invite at all, and the actual
+        link (regardless of status: active/used/revoked/expired all
+        reproduce) otherwise, per spec: a non-active invite's link may still
+        be displayed, paired with its status, but can never be re-activated."""
+        if not invite_id:
+            return None
+        secret = secret if secret is not None else self._onboarding_signing_secret()
+        payload = self.storage.get_onboarding_invite_link_payload(invite_id, secret)
+        if not payload:
+            return None
+        return self._onboarding_invite_link_from_payload(payload)
+
+    def onboarding_campaign_create_invite(self, auth: dict[str, Any], campaign_id_str: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/client/onboarding/campaigns/{id}/invites
+
+        Body: {recipient_id, force_regenerate?}. Unlike the old random-token
+        scheme, this link is NOT one-shot-visible-only — it can be re-derived
+        later (see _onboarding_invite_link_for / GET campaign detail /
+        export.csv), so nothing here needs special "shown once" handling.
+        """
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        actor = str(auth.get("user_id") or "")
+        try:
+            campaign_id = int(campaign_id_str)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid campaign id"}
+        try:
+            recipient_id = int(body.get("recipient_id"))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "recipient_id обязателен"}
+        force_regenerate = bool(body.get("force_regenerate", False))
+        result = self.storage.create_onboarding_invite(campaign_id, recipient_id, actor, self._onboarding_signing_secret(), force_regenerate=force_regenerate)
+        if not result.get("ok"):
+            return result
+        return {
+            "ok": True,
+            "invite_id": result["invite_id"],
+            "invite_link": self._onboarding_invite_link_from_payload(result),
+            "expires_at": result["expires_at"],
+            "regenerated_from_invite_id": result.get("regenerated_from_invite_id"),
+        }
+
+    def onboarding_invite_revoke(self, auth: dict[str, Any], invite_id_str: str) -> dict[str, Any]:
+        """POST /api/client/onboarding/invites/{id}/revoke"""
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        role = self._role_for_user(int(auth["user_id"]))
+        actor = str(auth.get("user_id") or "")
+        try:
+            invite_id = int(invite_id_str)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid invite id"}
+        return self.storage.revoke_onboarding_invite(invite_id, actor, role)
+
+    def onboarding_invite_regenerate(self, auth: dict[str, Any], invite_id_str: str) -> dict[str, Any]:
+        """POST /api/client/onboarding/invites/{id}/regenerate"""
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        role = self._role_for_user(int(auth["user_id"]))
+        actor = str(auth.get("user_id") or "")
+        try:
+            invite_id = int(invite_id_str)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid invite id"}
+        result = self.storage.regenerate_onboarding_invite(invite_id, actor, role, self._onboarding_signing_secret())
+        if not result.get("ok"):
+            return result
+        return {
+            "ok": True,
+            "invite_id": result["invite_id"],
+            "invite_link": self._onboarding_invite_link_from_payload(result),
+            "expires_at": result["expires_at"],
+        }
+
+    def onboarding_invite_get_link(self, auth: dict[str, Any], invite_id_str: str) -> dict[str, Any]:
+        """POST /api/client/onboarding/invites/{id}/link — re-fetch (never
+        re-activate) a persistent link for an invite that may have been
+        created in an earlier session, process, or even before a server
+        restart. Explicit action so it can carry its own audit event
+        (invite_link_exported) distinct from silently including it in every
+        campaign-detail read.
+        """
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        role = self._role_for_user(int(auth["user_id"]))
+        actor = str(auth.get("user_id") or "")
+        try:
+            invite_id = int(invite_id_str)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid invite id"}
+        payload = self.storage.get_onboarding_invite_link_payload(invite_id, self._onboarding_signing_secret())
+        if not payload:
+            return {"ok": False, "error": "Приглашение не найдено"}
+        self.storage.log_onboarding_audit_event(
+            event_type="invite_link_exported", campaign_id=payload["campaign_id"], recipient_id=payload["recipient_id"],
+            invite_id=invite_id, actor_telegram_user_id=actor, actor_role=role, result="success",
+        )
+        return {"ok": True, "invite_id": invite_id, "invite_link": self._onboarding_invite_link_from_payload(payload), "status": payload["status"], "expires_at": payload["expires_at"]}
+
+    def onboarding_campaign_create_invites_batch(self, auth: dict[str, Any], campaign_id_str: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/client/onboarding/campaigns/{id}/invites/batch
+
+        Body: {recipient_ids: [...], force_regenerate?, idempotency_key?}.
+        One server-side call for up to ONBOARDING_INVITE_MAX_BATCH_SIZE
+        recipients — the frontend never issues one HTTP request per
+        recipient for a 300+-client rollout.
+        """
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        actor = str(auth.get("user_id") or "")
+        try:
+            campaign_id = int(campaign_id_str)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid campaign id"}
+        recipient_ids_raw = body.get("recipient_ids")
+        if not isinstance(recipient_ids_raw, list) or not recipient_ids_raw:
+            return {"ok": False, "error": "Список получателей пуст"}
+        result = self.storage.create_onboarding_invites_batch(
+            campaign_id, recipient_ids_raw, actor, self._onboarding_signing_secret(),
+            force_regenerate=bool(body.get("force_regenerate", False)),
+            idempotency_key=body.get("idempotency_key"),
+        )
+        if not result.get("ok"):
+            return result
+        secret = self._onboarding_signing_secret()
+        for r in result["results"]:
+            if r.get("invite_id") and r.get("signature"):
+                r["invite_link"] = self._onboarding_invite_link_from_payload({"invite_id": r["invite_id"], "signature": r["signature"]})
+                del r["signature"]  # never leave the raw signature sitting in a JSON blob beyond building the link
+        return result
+
+    _ONBOARDING_CSV_HEADER = [
+        "Ребёнок", "MoyKlass ID", "Учебный уровень", "Филиал", "Группа/курс", "Родитель",
+        "Удобные интервалы", "Допустимые интервалы", "Дата начала", "Комментарий",
+        "Статус продолжения", "Статус подключения", "Статус приглашения",
+        "Срок действия", "Персональная ссылка",
+    ]
+    _ONBOARDING_CONTINUATION_LABELS = {
+        "unknown": "Не уточнено", "continues": "Продолжает обучение",
+        "undecided": "Пока не решили", "needs_consultation": "Нужна консультация",
+        "not_continuing": "Не продолжает",
+    }
+    _ONBOARDING_ACADEMIC_LEVEL_LABELS = {
+        "unknown": "Не определён", "year_1": "1-й учебный год", "year_2": "2-й учебный год",
+        "year_3": "3-й учебный год", "year_4": "4-й учебный год", "advanced": "Продвинутый уровень",
+    }
+    _ONBOARDING_WEEKDAY_LABELS = {1: "Пн", 2: "Вт", 3: "Ср", 4: "Чт", 5: "Пт", 6: "Сб", 7: "Вс"}
+
+    @classmethod
+    def _onboarding_format_intervals(cls, intervals: list[dict], preference: str) -> str:
+        parts = [
+            f"{cls._ONBOARDING_WEEKDAY_LABELS.get(iv['weekday'], iv['weekday'])} {iv['start_time']}-{iv['end_time']}"
+            for iv in intervals if iv.get("preference") == preference
+        ]
+        return "; ".join(parts)
+
+    def onboarding_campaign_export_csv(self, auth: dict[str, Any], campaign_id_str: str, params: dict[str, str]) -> "tuple[bytes, str] | dict[str, Any]":
+        """GET /api/client/onboarding/campaigns/{id}/export.csv
+
+        Read-only — never mutates any campaign/recipient/invite row. Never
+        includes token_hash, initData, API keys, or other secrets. Unlike
+        the original one-shot-token design, "Персональная ссылка" is now
+        populated for EVERY invite that exists (any status) — see
+        _onboarding_invite_link_for — because the link is a reproducible
+        HMAC-signed payload, not a stored secret; nothing here is ever the
+        one-and-only chance to see it.
+        """
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        role = self._role_for_user(int(auth["user_id"]))
+        actor = str(auth.get("user_id") or "")
+        try:
+            campaign_id = int(campaign_id_str)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid campaign id"}
+        campaign = self.storage.get_onboarding_campaign(campaign_id)
+        if not campaign:
+            return {"ok": False, "error": "Кампания не найдена"}
+        recipients = self.storage.list_onboarding_campaign_recipients(campaign_id)
+        secret = self._onboarding_signing_secret()
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(self._ONBOARDING_CSV_HEADER)
+        exported_invite_ids = []
+        for r in recipients:
+            continuation_label = self._ONBOARDING_CONTINUATION_LABELS.get(r["continuation_status"], r["continuation_status"])
+            academic_label = self._ONBOARDING_ACADEMIC_LEVEL_LABELS.get(r["academic_level"], r["academic_level"])
+            link_status = "Подключён" if r["telegram_connected"] else "Не подключён"
+            invite_status_label = {
+                "none": "Не создано", "active": "Создано", "used": "Использовано",
+                "revoked": "Отозвано", "expired": "Истекло",
+            }.get(r["invite_status"], r["invite_status"])
+            invite_link = self._onboarding_invite_link_for(r.get("invite_id"), secret) or "—"
+            if r.get("invite_id"):
+                exported_invite_ids.append(r["invite_id"])
+            writer.writerow([
+                r["child_display_name"], r["mk_user_id"], academic_label, r["branch_name"], r["course_name"],
+                r["parent_display_name"],
+                self._onboarding_format_intervals(r["availability_intervals"], "preferred"),
+                self._onboarding_format_intervals(r["availability_intervals"], "possible"),
+                r.get("available_from") or "", r.get("schedule_comment") or "",
+                continuation_label, link_status, invite_status_label,
+                r.get("invite_expires_at") or "", invite_link,
+            ])
+        csv_bytes = ("﻿" + buf.getvalue()).encode("utf-8")  # BOM for Excel Cyrillic
+        filename = f"campaign_{campaign_id}_export.csv"
+        if exported_invite_ids:
+            self.storage.log_onboarding_audit_event(
+                event_type="invite_link_exported", campaign_id=campaign_id,
+                actor_telegram_user_id=actor, actor_role=role, result="success",
+                note=f"csv_export count={len(exported_invite_ids)}",
+            )
+        return csv_bytes, filename
+
     @staticmethod
     def _normalize_payment_intent(pi: dict) -> dict:
         """Add derived frontend-friendly fields to a payment_intent row."""
@@ -17983,6 +18641,19 @@ class MiniAppHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_bytes_download(self, data: bytes, filename: str, mime_type: str) -> None:
+        """Like _send_download, but for content generated in-memory (e.g. a
+        CSV export) rather than an existing file on disk."""
+        safe_name = _safe_filename(filename)
+        quoted = urllib.parse.quote(safe_name)
+        self.send_response(200)
+        self.send_header("Content-Type", mime_type)
+        self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quoted}")
+        self.send_header("Cache-Control", "private, no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def _auth(self, params: dict[str, str]) -> dict[str, Any]:
         init_data = params.get("initData") or ""
         return CTX.validate_init_data(
@@ -18153,6 +18824,28 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.admin_client_link_status(auth, params))
                 if path == "/api/client/admin/search-students":
                     return self._send_json(CTX.admin_client_search_students(auth, params))
+                # ── v7.1.12 — mass client-onboarding campaigns (GET) ─────────
+                if path == "/api/client/onboarding/candidates":
+                    return self._send_json(CTX.onboarding_campaign_search_candidates(auth, params))
+                if path == "/api/client/onboarding/candidates/bulk":
+                    return self._send_json(CTX.onboarding_campaign_bulk_candidates(auth, params))
+                if path == "/api/client/onboarding/campaigns":
+                    return self._send_json(CTX.onboarding_campaigns_list(auth, params))
+                if path.startswith("/api/client/onboarding/campaigns/"):
+                    _oc_rest = path[len("/api/client/onboarding/campaigns/"):]
+                    _oc_parts = _oc_rest.split("/")
+                    if len(_oc_parts) == 1 and _oc_parts[0]:
+                        return self._send_json(CTX.onboarding_campaign_get(auth, _oc_parts[0], params))
+                    if len(_oc_parts) == 2 and _oc_parts[1] == "export.csv":
+                        _oc_export = CTX.onboarding_campaign_export_csv(auth, _oc_parts[0], params)
+                        if isinstance(_oc_export, tuple):
+                            _oc_bytes, _oc_filename = _oc_export
+                            self._send_bytes_download(_oc_bytes, _oc_filename, "text/csv; charset=utf-8")
+                            return True
+                        return self._send_json(_oc_export)
+                if path.startswith("/api/client/onboarding/recipients/") and path.endswith("/availability"):
+                    _ocav_id = path[len("/api/client/onboarding/recipients/"):-len("/availability")]
+                    return self._send_json(CTX.onboarding_recipient_availability_get(auth, _ocav_id))
                 if path == "/api/payments/intents":
                     return self._send_json(CTX.payment_intents_list(auth, params))
                 if path == "/api/payments/moyklass/invoices":
@@ -18463,6 +19156,42 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 return self._send_json(CTX.admin_client_invalidate_code(auth, body))
             if path == "/api/client/admin/unlink":
                 return self._send_json(CTX.admin_client_unlink_child(auth, body))
+            # ── v7.1.12 — mass client-onboarding campaigns (POST) ────────────
+            if path == "/api/client/onboarding/campaigns":
+                return self._send_json(CTX.onboarding_campaign_create(auth, body))
+            if path.startswith("/api/client/onboarding/campaigns/"):
+                _ocp_rest = path[len("/api/client/onboarding/campaigns/"):]
+                _ocp_parts = _ocp_rest.split("/")
+                if len(_ocp_parts) == 2 and _ocp_parts[1] == "start":
+                    return self._send_json(CTX.onboarding_campaign_start(auth, _ocp_parts[0]))
+                if len(_ocp_parts) == 2 and _ocp_parts[1] == "close":
+                    return self._send_json(CTX.onboarding_campaign_close(auth, _ocp_parts[0]))
+                if len(_ocp_parts) == 2 and _ocp_parts[1] == "archive":
+                    return self._send_json(CTX.onboarding_campaign_archive(auth, _ocp_parts[0]))
+                if len(_ocp_parts) == 3 and _ocp_parts[1] == "recipients" and _ocp_parts[2] == "import":
+                    return self._send_json(CTX.onboarding_campaign_import_recipients(auth, _ocp_parts[0], body))
+                if len(_ocp_parts) == 2 and _ocp_parts[1] == "continuation-status":
+                    return self._send_json(CTX.onboarding_campaign_continuation_status(auth, _ocp_parts[0], body))
+                if len(_ocp_parts) == 2 and _ocp_parts[1] == "invites":
+                    return self._send_json(CTX.onboarding_campaign_create_invite(auth, _ocp_parts[0], body))
+                if len(_ocp_parts) == 3 and _ocp_parts[1] == "invites" and _ocp_parts[2] == "batch":
+                    return self._send_json(CTX.onboarding_campaign_create_invites_batch(auth, _ocp_parts[0], body))
+            if path.startswith("/api/client/onboarding/invites/"):
+                _oci_rest = path[len("/api/client/onboarding/invites/"):]
+                _oci_parts = _oci_rest.split("/")
+                if len(_oci_parts) == 2 and _oci_parts[1] == "revoke":
+                    return self._send_json(CTX.onboarding_invite_revoke(auth, _oci_parts[0]))
+                if len(_oci_parts) == 2 and _oci_parts[1] == "regenerate":
+                    return self._send_json(CTX.onboarding_invite_regenerate(auth, _oci_parts[0]))
+                if len(_oci_parts) == 2 and _oci_parts[1] == "link":
+                    return self._send_json(CTX.onboarding_invite_get_link(auth, _oci_parts[0]))
+            if path.startswith("/api/client/onboarding/recipients/"):
+                _ocr_rest = path[len("/api/client/onboarding/recipients/"):]
+                _ocr_parts = _ocr_rest.split("/")
+                if len(_ocr_parts) == 2 and _ocr_parts[1] == "academic-level":
+                    return self._send_json(CTX.onboarding_recipient_academic_level(auth, _ocr_parts[0], body))
+                if len(_ocr_parts) == 2 and _ocr_parts[1] == "availability":
+                    return self._send_json(CTX.onboarding_recipient_availability_submit(auth, _ocr_parts[0], body))
             if path == "/api/food/debug/sync-camp-children":
                 return self._send_json(CTX.food_debug_sync_camp_children(auth, body))
             if path == "/api/food/debug/clear-camp-children":
@@ -18605,6 +19334,22 @@ def run_server() -> None:
         PaymentAutomationGuardian.QUICK_CYCLE_INTERVAL_SECONDS,
         PaymentAutomationGuardian.STARTUP_DELAY_SECONDS,
     )
+    # v7.1.12 — campaign invite links are built from settings.bot_username,
+    # which this (HTTP server) process cannot cross-check against the real
+    # bot identity the way handlers.py's post_init does (await bot.get_me())
+    # — that lives in the separate bot process. Surface whether the fallback
+    # is in use so a misconfigured/missing TELEGRAM_BOT_USERNAME is visible
+    # at startup instead of silently producing wrong invite links. Never
+    # logs the bot token itself.
+    if getattr(CTX.settings, "bot_username_is_default", False):
+        log.warning(
+            "TELEGRAM_BOT_USERNAME not set — campaign invite links will use the "
+            "default bot_username=%r. Confirm this matches the real production bot "
+            "before relying on generated invite links.",
+            CTX.settings.bot_username,
+        )
+    else:
+        log.info("Campaign invite links will use bot_username=%r (from TELEGRAM_BOT_USERNAME).", CTX.settings.bot_username)
     httpd = ThreadingHTTPServer((host, port), MiniAppHandler)
     log.info("Yellow Club Mini App server started: http://%s:%s", host, port)
     log.info("For Telegram Mini App set WEB_APP_URL to an HTTPS URL pointing to this server.")

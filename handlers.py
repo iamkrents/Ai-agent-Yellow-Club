@@ -17,7 +17,7 @@ from admin_panel import AdminPanel
 from agent_core import AgentCore, AnswerContext
 from config import Settings
 from rules import is_question_like, should_smart_reply
-from storage import Storage
+from storage import Storage, ONBOARDING_INVITE_TOKEN_PREFIX
 from trial_manager import extract_trial_data, format_trial_for_admin, has_trial_details, should_start_or_update_trial
 from report_manager import is_parent_report_request, report_need_details_message
 from utils import chunk_telegram, clean_text, extract_command
@@ -89,6 +89,14 @@ class BotHandlers:
         # Pending MoyKlass write operations. Nothing is sent to MoyKlass until /mk_confirm.
         self.pending_mk_writes: dict[int, dict] = {}
         self._schedule_watcher_task: asyncio.Task | None = None
+        # v7.1.12 — mass onboarding campaigns: in-memory only, per Telegram
+        # user_id. pending_onboarding_invites holds the plaintext token
+        # between the "/start c_<token>" confirmation prompt and the
+        # oc_confirm/oc_cancel callback (never persisted, never logged).
+        # pending_onboarding_surveys holds {campaign_id, recipient_id} between
+        # a successful activation's survey prompt and the ocs:<status> answer.
+        self.pending_onboarding_invites: dict[int, dict] = {}
+        self.pending_onboarding_surveys: dict[int, dict] = {}
 
     async def post_init(self, app):
         me = await app.bot.get_me()
@@ -2329,6 +2337,161 @@ class BotHandlers:
                 "Кабинет родителя временно недоступен. Обратитесь к администратору."
             )
 
+    # ── v7.1.12 — mass onboarding campaigns: deep-link activation flow ───────
+    # Entirely bot-conversation-driven (no Mini App screen involved) — see
+    # storage.get_onboarding_invite_preview / activate_onboarding_invite /
+    # submit_continuation_response for the storage-layer logic this simply
+    # narrates to the user. Never creates a Payment Intent, bePaid payment,
+    # publish, or MK post — only a parent-child link and (if the campaign
+    # enables it) a pilot record, exactly like the existing CL-code flow.
+
+    _ONBOARDING_PREVIEW_ERROR_TEXT = {
+        "invite_not_found": "Ссылка недействительна. Обратитесь к администратору Yellow Club.",
+        "invite_expired": "Срок действия этой ссылки истёк. Обратитесь к администратору Yellow Club.",
+        "invite_revoked": "Эта ссылка больше не действительна. Обратитесь к администратору Yellow Club.",
+        "invite_already_used": "Эта ссылка уже была использована.",
+        "campaign_not_active": "Эта кампания подключения сейчас не активна. Обратитесь к администратору Yellow Club.",
+    }
+    _ONBOARDING_ACTIVATE_ERROR_TEXT = {
+        "invite_not_found": "Ссылка недействительна. Обратитесь к администратору Yellow Club.",
+        "invite_expired": "Срок действия этой ссылки истёк. Обратитесь к администратору Yellow Club.",
+        "invite_revoked": "Эта ссылка больше не действительна. Обратитесь к администратору Yellow Club.",
+        "invite_already_used": "Эта ссылка уже была использована другим аккаунтом.",
+        "campaign_not_active": "Эта кампания подключения сейчас не активна. Обратитесь к администратору Yellow Club.",
+        "linked_to_another_user": "Клиент уже подключён к другому аккаунту. Обратитесь к администратору.",
+    }
+
+    async def _handle_onboarding_invite_start(self, msg, user_id: int, raw_args: str) -> None:
+        payload = raw_args[len(ONBOARDING_INVITE_TOKEN_PREFIX):]
+        # v7.1.12.1 — payload is "<invite_id>_<signature>", a reproducible
+        # HMAC-signed link (see storage._onboarding_invite_signature); the
+        # invite_id itself is never a secret, only the signature proves it
+        # wasn't forged, so nothing sensitive is lost by splitting it here.
+        invite_id_str, _sep, signature = payload.partition("_")
+        if not invite_id_str or not signature or not invite_id_str.isdigit():
+            await self._reply(msg, self._ONBOARDING_PREVIEW_ERROR_TEXT["invite_not_found"])
+            return
+        preview = self.storage.get_onboarding_invite_preview(int(invite_id_str), signature, self.settings.telegram_bot_token)
+        if not preview.get("ok"):
+            text = self._ONBOARDING_PREVIEW_ERROR_TEXT.get(
+                preview.get("reason_code"), self._ONBOARDING_PREVIEW_ERROR_TEXT["invite_not_found"]
+            )
+            await self._reply(msg, text)
+            return
+        # Kept only in memory, associated with this Telegram user_id — never
+        # re-derivable from callback_data, never logged.
+        self.pending_onboarding_invites[user_id] = {"invite_id": int(invite_id_str), "signature": signature}
+        name = preview.get("child_display_name") or "ученик"
+        await msg.reply_text(
+            f"Подключить ребёнка {name} к Yellow Club Agent?",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Подтвердить", callback_data="oc_confirm"),
+                InlineKeyboardButton("❌ Отмена", callback_data="oc_cancel"),
+            ]]),
+        )
+
+    async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        if not query or not query.from_user:
+            return
+        await query.answer()
+        data = query.data or ""
+        user_id = query.from_user.id
+
+        if data == "oc_cancel":
+            self.pending_onboarding_invites.pop(user_id, None)
+            await query.edit_message_text("Отменено.")
+            return
+        if data == "oc_confirm":
+            await self._handle_onboarding_confirm_callback(query, user_id)
+            return
+        if data.startswith("ocs:"):
+            await self._handle_onboarding_survey_callback(query, user_id, data[len("ocs:"):])
+            return
+
+    async def _handle_onboarding_confirm_callback(self, query, user_id: int) -> None:
+        pending = self.pending_onboarding_invites.pop(user_id, None)
+        if not pending:
+            await query.edit_message_text("Ссылка уже была обработана или устарела. Запросите новую ссылку у администратора.")
+            return
+        result = self.storage.activate_onboarding_invite(
+            pending["invite_id"], pending["signature"], str(user_id), self.settings.telegram_bot_token
+        )
+        if not result.get("ok"):
+            text = self._ONBOARDING_ACTIVATE_ERROR_TEXT.get(
+                result.get("reason_code"), self._ONBOARDING_ACTIVATE_ERROR_TEXT["invite_not_found"]
+            )
+            await query.edit_message_text(text)
+            return
+
+        name = result.get("child_display_name") or "Ученик"
+        await query.edit_message_text(f"{name} подключён к Yellow Club Agent.")
+
+        # v7.1.12.1 — survey and schedule-availability are independent campaign
+        # settings and may both be enabled at once; neither blocks the other,
+        # and neither ever blocked the activation above.
+        if result.get("survey_enabled") and result.get("campaign_id") and result.get("recipient_id"):
+            self.pending_onboarding_surveys[user_id] = {
+                "campaign_id": result["campaign_id"], "recipient_id": result["recipient_id"],
+            }
+            year = result.get("academic_year") or ""
+            await query.message.reply_text(
+                f"Планируете ли вы продолжать обучение в Yellow Club{f' в {year}' if year else ''}?",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Да, продолжаем", callback_data="ocs:continues")],
+                    [InlineKeyboardButton("Пока не решили", callback_data="ocs:undecided")],
+                    [InlineKeyboardButton("Нужна консультация менеджера", callback_data="ocs:needs_consultation")],
+                    [InlineKeyboardButton("Нет, не продолжаем", callback_data="ocs:not_continuing")],
+                ]),
+            )
+
+        if result.get("collect_schedule_availability") and self.settings.web_app_url and result.get("recipient_id"):
+            avail_url = self._onboarding_availability_miniapp_url(user_id, result["recipient_id"])
+            await query.message.reply_text(
+                "Расскажите, когда ребёнку удобно заниматься — это поможет быстрее собрать группу.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🗓 Указать возможности по расписанию", web_app=WebAppInfo(url=avail_url))]]),
+            )
+            return
+
+        if result.get("survey_enabled") and result.get("campaign_id") and result.get("recipient_id"):
+            return  # survey message above is the natural next step; no extra "open cabinet" button needed
+
+        if self.settings.web_app_url:
+            signed_url = self._signed_miniapp_url(user_id)
+            await query.message.reply_text(
+                "Откройте кабинет, чтобы посмотреть детали.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📲 Открыть кабинет", web_app=WebAppInfo(url=signed_url or self.settings.web_app_url))]]),
+            )
+
+    def _onboarding_availability_miniapp_url(self, user_id: int, recipient_id: int) -> str:
+        """Signed Mini App URL that opens directly to the "Возможности по
+        расписанию" screen for one specific campaign recipient — no
+        discovery list needed, the bot already knows exactly which child.
+        """
+        base = self._signed_miniapp_url(user_id) or self.settings.web_app_url
+        sep = "&" if "?" in base else "?"
+        return f"{base}{sep}oc_availability_recipient={int(recipient_id)}"
+
+    _ONBOARDING_SURVEY_THANK_YOU = {
+        "continues": "Спасибо! Записали: продолжаем обучение.",
+        "undecided": "Спасибо! Записали: пока не решили.",
+        "needs_consultation": "Спасибо! Передадим менеджеру — он свяжется с вами.",
+        "not_continuing": "Спасибо за ответ. Если передумаете — напишите нам.",
+    }
+
+    async def _handle_onboarding_survey_callback(self, query, user_id: int, response_status: str) -> None:
+        pending = self.pending_onboarding_surveys.pop(user_id, None)
+        if not pending:
+            await query.edit_message_text("Этот опрос уже завершён.")
+            return
+        result = self.storage.submit_continuation_response(
+            pending["campaign_id"], pending["recipient_id"], str(user_id), response_status,
+        )
+        if not result.get("ok"):
+            await query.edit_message_text("Не удалось сохранить ответ. Попробуйте ещё раз позже.")
+            return
+        await query.edit_message_text(self._ONBOARDING_SURVEY_THANK_YOU.get(response_status, "Спасибо за ответ!"))
+
     async def _handle_private_flow(self, msg, text: str) -> bool:
         user = msg.from_user
         if not user:
@@ -3136,6 +3299,12 @@ class BotHandlers:
         if cmd in {"start", "register"}:
             if chat.type != "private":
                 await self._reply(msg, "Регистрация проходит в личке с ботом. Откройте бота и напишите /start.")
+                return
+            # v7.1.12 — mass onboarding campaign deep-link. Only a bare "/start"
+            # (no payload, or a payload that isn't our c_ prefix) falls through
+            # to the existing registration/welcome flow below, unchanged.
+            if cmd == "start" and args.strip().startswith(ONBOARDING_INVITE_TOKEN_PREFIX):
+                await self._handle_onboarding_invite_start(msg, user.id, args.strip())
                 return
             if self.admin.has_any_role(user.id):
                 await self.admin.show(msg)

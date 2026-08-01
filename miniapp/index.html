@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.1.11" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.1.12" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -1151,8 +1151,99 @@
       </div>
     </div>
 
+    <!-- v7.1.12 — mass onboarding campaign: create -->
+    <div id="wsOcCreateCampaignModal" class="pi-modal hidden">
+      <div class="pi-modal-sheet pi-modal-sheet-sm">
+        <div class="pi-modal-head">
+          <h3>Новая кампания подключения</h3>
+          <button class="pi-modal-close" id="wsOcCreateModalClose" type="button">✕</button>
+        </div>
+        <div class="pi-modal-body">
+          <label class="ws-oc-field">
+            <span>Название</span>
+            <input type="text" id="wsOcCreateName" placeholder="Продолжающие клиенты — 2026/2027" autocomplete="off" />
+          </label>
+          <label class="ws-oc-field">
+            <span>Учебный год</span>
+            <input type="text" id="wsOcCreateYear" placeholder="2026/2027" autocomplete="off" />
+          </label>
+          <div class="ws-oc-field">
+            <span>Срок действия приглашений</span>
+            <div class="ws-oc-ttl-row" id="wsOcCreateTtlRow">
+              <button type="button" class="secondary ws-oc-ttl-btn" data-ttl="7">7 дней</button>
+              <button type="button" class="secondary ws-oc-ttl-btn" data-ttl="14">14 дней</button>
+              <button type="button" class="secondary ws-oc-ttl-btn" data-ttl="20">20 дней</button>
+              <button type="button" class="secondary ws-oc-ttl-btn active" data-ttl="30">30 дней</button>
+            </div>
+          </div>
+          <label class="ws-oc-checkbox-field">
+            <input type="checkbox" id="wsOcCreateAutoEnroll" checked />
+            <span>Автоматически включать в пилот оплат (mode=review)</span>
+          </label>
+          <label class="ws-oc-checkbox-field">
+            <input type="checkbox" id="wsOcCreateSurvey" />
+            <span>Показывать опрос о продолжении обучения после подключения</span>
+          </label>
+          <label class="ws-oc-checkbox-field">
+            <input type="checkbox" id="wsOcCreateCollectAvailability" />
+            <span>Собирать возможности по расписанию после подключения</span>
+          </label>
+          <label class="ws-oc-field">
+            <span>Заметка (необязательно)</span>
+            <input type="text" id="wsOcCreateNote" placeholder="Служебная заметка" autocomplete="off" />
+          </label>
+          <div id="wsOcCreateError" class="pi-form-error hidden"></div>
+        </div>
+        <div class="pi-modal-footer">
+          <button class="secondary" id="wsOcCreateModalBack" type="button">Отмена</button>
+          <button class="primary" id="wsOcCreateConfirmBtn" type="button">Создать</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- v7.1.12.1 — parent-facing "Возможности по расписанию" (opened from a
+         bot button after onboarding activation, or from Мои дети). Skipping
+         is always safe — it never blocks registration. -->
+    <div id="ocAvailabilityModal" class="pi-modal hidden">
+      <div class="pi-modal-sheet">
+        <div class="pi-modal-head">
+          <h3>Возможности по расписанию</h3>
+          <button class="pi-modal-close" id="ocAvailabilityModalClose" type="button">✕</button>
+        </div>
+        <div class="pi-modal-body">
+          <p class="ws-conn-note" id="ocAvailabilityChildName"></p>
+          <label class="ws-oc-field">
+            <span>Филиал</span>
+            <div class="ws-oc-ttl-row" id="ocAvailabilityBranchRow">
+              <button type="button" class="secondary ws-oc-ttl-btn" data-branch="YC1">Кульман 1/1</button>
+              <button type="button" class="secondary ws-oc-ttl-btn" data-branch="YC2">Мстиславца 6</button>
+              <button type="button" class="secondary ws-oc-ttl-btn active" data-branch="either">Любой</button>
+            </div>
+          </label>
+          <label class="ws-oc-field">
+            <span>Готовы начать с</span>
+            <input type="date" id="ocAvailabilityFrom" />
+          </label>
+          <div class="ws-oc-field">
+            <span>Удобное время</span>
+            <div id="ocAvailabilityIntervals"></div>
+            <button type="button" class="secondary" id="ocAvailabilityAddInterval" style="margin-top:6px">+ Добавить интервал</button>
+          </div>
+          <label class="ws-oc-field">
+            <span>Комментарий (необязательно)</span>
+            <textarea id="ocAvailabilityComment" rows="2" placeholder="Например: только по выходным"></textarea>
+          </label>
+          <div id="ocAvailabilityError" class="pi-form-error hidden"></div>
+        </div>
+        <div class="pi-modal-footer">
+          <button class="secondary" id="ocAvailabilitySkip" type="button">Пропустить</button>
+          <button class="primary" id="ocAvailabilitySave" type="button">Сохранить</button>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.1.11"></script>
+  <script src="/static/app.js?v=7.1.12"></script>
 </body>
 </html>

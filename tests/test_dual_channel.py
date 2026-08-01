@@ -727,6 +727,16 @@ class TestPaymentIntentPostToMoyklassChannel(unittest.TestCase):
         server.settings = cfg
         server.moyklass.is_configured = True
         server._require_moyklass_post_access.return_value = None
+        # v7.1.11 split the role gate: payment_intent_post_to_moyklass calls
+        # _require_moyklass_manual_action_access (client_manager-inclusive),
+        # not _require_moyklass_post_access (owner/admin-only, still used by
+        # moyklass_payment_types/payment_integrity_audit). Both must be
+        # stubbed on this bare, unspec'd MagicMock — otherwise the unstubbed
+        # one auto-generates a truthy MagicMock, which payment_intent_post_
+        # to_moyklass's `if denied: return denied` treats as an access-denied
+        # result and returns immediately, short-circuiting before ever
+        # reaching the erip/acquiring payment-type guard these tests target.
+        server._require_moyklass_manual_action_access.return_value = None
         server.storage.get_payment_intent.return_value = self._paid_intent(paid_channel)
         return server, wasm
 

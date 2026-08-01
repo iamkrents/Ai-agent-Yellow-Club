@@ -4,7 +4,7 @@ import asyncio
 import logging
 import sys
 
-from telegram.ext import ApplicationBuilder, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CallbackQueryHandler, MessageHandler, filters
 
 from admin_panel import AdminPanel
 from agent_core import AgentCore
@@ -46,6 +46,8 @@ def main() -> None:
 
     app = ApplicationBuilder().token(settings.telegram_bot_token).post_init(handlers.post_init).build()
     app.add_handler(MessageHandler(filters.TEXT | filters.Caption(), handlers.handle_message))
+    # v7.1.12 — mass onboarding campaigns: confirm/cancel + continuation survey buttons.
+    app.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
 
     # Python 3.14 compatibility safety; harmless on 3.12.
     try:

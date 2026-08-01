@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -24,6 +25,45 @@ log = logging.getLogger("yellow_club_storage")
 # the caller does not pass an explicit expires_at. Enforced in storage, not
 # only in the frontend, so the TTL holds regardless of caller.
 CLIENT_LINK_CODE_TTL_HOURS = 72
+
+# v7.1.12 — mass client-onboarding campaigns (parallel path, never replaces
+# the point-in-time CL-code flow above). Invites are never open-ended: a
+# campaign always carries an explicit invite_ttl_days, defaulting to 30.
+ONBOARDING_CAMPAIGN_DEFAULT_INVITE_TTL_DAYS = 30
+ONBOARDING_CAMPAIGN_PRESET_INVITE_TTL_DAYS = (7, 14, 20, 30)
+ONBOARDING_CAMPAIGN_MAX_INVITE_TTL_DAYS = 90
+ONBOARDING_CAMPAIGN_STATUSES = ("draft", "active", "completed", "archived")
+ONBOARDING_CAMPAIGN_TRANSITIONS = {
+    "draft": {"active", "archived"},
+    "active": {"completed", "archived"},
+    "completed": {"archived"},
+    "archived": set(),
+}
+CONTINUATION_STATUSES = ("unknown", "continues", "undecided", "needs_consultation", "not_continuing")
+# Deep-link start payload prefix (Telegram start payloads must match
+# ^[A-Za-z0-9_-]{1,64}$ — token_urlsafe(32) is ~43 chars, well under the limit
+# once prefixed).
+ONBOARDING_INVITE_TOKEN_PREFIX = "c_"
+ONBOARDING_INVITE_MAX_BATCH_SIZE = 500
+
+# v7.1.12.1 — schedule availability collected alongside a campaign.
+SCHEDULE_PREFERRED_BRANCHES = ("YC1", "YC2", "either", "unknown")
+SCHEDULE_WEEKDAYS = (1, 2, 3, 4, 5, 6, 7)
+SCHEDULE_PREFERENCES = ("preferred", "possible")
+
+# v7.1.12.1 — academic level. Detection is deliberately conservative: no
+# reliable real-world MoyKlass group-naming convention for level/year was
+# found anywhere in this codebase (searched get_classes/search_classes,
+# format_classes_result, every test fixture, training_state_domain.py — see
+# _detect_academic_level's docstring). The regexes below match the same
+# "N год обучения" / "продвинутый" vocabulary already used in the project's
+# own internal curriculum docs (data/02_learning_tracks.md) and in the UI
+# labels this same feature defines — so IF staff ever encode level this way
+# in a MoyKlass group name, it is detected with high confidence; anything
+# else deliberately resolves to unknown rather than guessing.
+ACADEMIC_LEVELS = ("unknown", "year_1", "year_2", "year_3", "year_4", "advanced")
+ACADEMIC_LEVEL_SOURCES = ("moyklass_group_name", "staff", "previous_campaign")
+ACADEMIC_LEVEL_CONFIDENCES = ("high", "manual", "unknown")
 
 
 _ONLINE_INDICATORS = frozenset(("онлайн", "online", "yc0", "remote", "дистанционно", "дистанц"))
@@ -624,6 +664,7 @@ class Storage:
             self._init_bepaid_tables(conn)
             self._init_payment_intent_tables(conn)
             self._init_client_link_tables(conn)
+            self._init_client_onboarding_campaign_tables(conn)
             self._init_automation_tables(conn)
             self._init_withdrawal_tables(conn)
             self._init_pricing_tables(conn)
@@ -1211,6 +1252,187 @@ class Storage:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cl_rla_actor_time ON client_link_rate_limit_attempts(actor_telegram_user_id, attempted_at)")
+
+    # ── v7.1.12 — mass client-onboarding campaign tables ──────────────────────
+
+    def _init_client_onboarding_campaign_tables(self, conn: sqlite3.Connection) -> None:
+        """Create tables for mass client-onboarding campaigns.
+
+        Second, parallel path alongside the point-in-time CL-code flow above
+        (_init_client_link_tables) — never replaces it. A successful invite
+        activation still writes into the SAME client_parent_child_links table
+        via the same invariants (atomic claim, idempotent same-parent reuse,
+        fail-closed on a different parent), so every existing downstream
+        reader (Connection tab, payment visibility, pilot linkage) treats a
+        campaign-sourced link identically to a CL-code-sourced one. Pilot
+        enrollment reuses ensure_payment_pilot_from_client_link() unchanged.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_onboarding_campaigns (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                name                    TEXT NOT NULL,
+                academic_year           TEXT NOT NULL DEFAULT '',
+                status                  TEXT NOT NULL DEFAULT 'draft',
+                invite_ttl_days         INTEGER NOT NULL DEFAULT 30,
+                default_payment_mode    TEXT NOT NULL DEFAULT 'review',
+                auto_enroll_payments    INTEGER NOT NULL DEFAULT 1,
+                survey_enabled          INTEGER NOT NULL DEFAULT 0,
+                collect_schedule_availability INTEGER NOT NULL DEFAULT 0,
+                note                    TEXT NOT NULL DEFAULT '',
+                idempotency_key         TEXT UNIQUE,
+                created_by              TEXT NOT NULL DEFAULT '',
+                created_at              TEXT NOT NULL,
+                started_at              TEXT,
+                closed_at               TEXT,
+                archived_at             TEXT,
+                updated_at              TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ocamp_status ON client_onboarding_campaigns(status, created_at)")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_onboarding_recipients (
+                id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id                 INTEGER NOT NULL,
+                mk_user_id                  TEXT NOT NULL,
+                child_display_name          TEXT NOT NULL DEFAULT '',
+                branch_name                 TEXT NOT NULL DEFAULT '',
+                course_name                 TEXT NOT NULL DEFAULT '',
+                parent_display_name         TEXT NOT NULL DEFAULT '',
+                continuation_status         TEXT NOT NULL DEFAULT 'unknown',
+                continuation_note           TEXT NOT NULL DEFAULT '',
+                continuation_updated_at     TEXT,
+                continuation_updated_by     TEXT,
+                added_by                    TEXT NOT NULL DEFAULT '',
+                created_at                  TEXT NOT NULL,
+                updated_at                  TEXT NOT NULL,
+                -- v7.1.12.1 — schedule availability (see client_schedule_availability
+                -- for the actual recurring time intervals; these columns hold the
+                -- single-valued parts of the same submission).
+                preferred_branch            TEXT NOT NULL DEFAULT 'unknown',
+                available_from              TEXT,
+                schedule_comment            TEXT NOT NULL DEFAULT '',
+                availability_updated_at     TEXT,
+                availability_source         TEXT,
+                -- v7.1.12.1 — academic level (see _detect_academic_level).
+                academic_level              TEXT NOT NULL DEFAULT 'unknown',
+                academic_level_source       TEXT,
+                academic_level_confidence   TEXT NOT NULL DEFAULT 'unknown',
+                academic_level_raw_group_name TEXT NOT NULL DEFAULT '',
+                UNIQUE(campaign_id, mk_user_id)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ocrec_campaign ON client_onboarding_recipients(campaign_id, continuation_status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ocrec_mk_user ON client_onboarding_recipients(mk_user_id)")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_onboarding_invites (
+                id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id                     INTEGER NOT NULL,
+                recipient_id                    INTEGER NOT NULL,
+                mk_user_id                      TEXT NOT NULL,
+                -- v7.1.12.1: the deep-link is now a reproducible HMAC-signed
+                -- payload derived from (id, campaign_id, mk_user_id) + the
+                -- app's existing stable secret (telegram_bot_token) — see
+                -- _onboarding_invite_signature. token_hash is no longer
+                -- populated for new rows (nullable, kept only so the column
+                -- doesn't need a destructive drop); nothing sensitive is
+                -- stored for the link itself, so it can be re-derived any
+                -- time (repeat CSV export, process restart) without ever
+                -- persisting a plaintext secret.
+                token_hash                      TEXT UNIQUE,
+                status                          TEXT NOT NULL DEFAULT 'active',
+                created_at                      TEXT NOT NULL,
+                created_by                      TEXT NOT NULL DEFAULT '',
+                expires_at                      TEXT NOT NULL,
+                opened_at                       TEXT,
+                used_at                         TEXT,
+                used_by_parent_telegram_user_id TEXT,
+                revoked_at                      TEXT,
+                revoked_by                      TEXT,
+                regenerated_from_invite_id      INTEGER,
+                link_result                     TEXT NOT NULL DEFAULT '',
+                pilot_result                    TEXT NOT NULL DEFAULT '',
+                updated_at                      TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ocinv_campaign ON client_onboarding_invites(campaign_id, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ocinv_recipient ON client_onboarding_invites(recipient_id, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ocinv_mk_user ON client_onboarding_invites(mk_user_id)")
+
+        # Fail-open audit trail — same discipline as client_link_audit_log:
+        # never a full token, never a raw deep-link payload, never initData.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_onboarding_audit_log (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at               TEXT NOT NULL,
+                event_type               TEXT NOT NULL,
+                campaign_id              INTEGER,
+                recipient_id             INTEGER,
+                invite_id                INTEGER,
+                mk_user_id               TEXT,
+                actor_telegram_user_id   TEXT,
+                actor_role               TEXT,
+                result                   TEXT,
+                reason_code              TEXT,
+                old_status               TEXT,
+                new_status               TEXT,
+                note                     TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ocaud_campaign ON client_onboarding_audit_log(campaign_id, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ocaud_recipient ON client_onboarding_audit_log(recipient_id, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ocaud_event ON client_onboarding_audit_log(event_type, created_at)")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_continuation_responses (
+                id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id                 INTEGER NOT NULL,
+                recipient_id                INTEGER NOT NULL,
+                mk_user_id                  TEXT NOT NULL,
+                parent_telegram_user_id     TEXT NOT NULL,
+                response_status             TEXT NOT NULL,
+                comment                     TEXT NOT NULL DEFAULT '',
+                source                      TEXT NOT NULL DEFAULT 'parent_app',
+                submitted_at                TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ocresp_recipient ON client_continuation_responses(recipient_id, submitted_at)")
+
+        # v7.1.12.1 — recurring weekly time intervals a family is available.
+        # No "can't make it" rows are ever stored — absence of an interval
+        # simply means that slot was never selected; free-text nuance goes in
+        # client_onboarding_recipients.schedule_comment instead.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_schedule_availability (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id   INTEGER NOT NULL,
+                recipient_id  INTEGER NOT NULL,
+                weekday       INTEGER NOT NULL,
+                start_time    TEXT NOT NULL,
+                end_time      TEXT NOT NULL,
+                preference    TEXT NOT NULL DEFAULT 'possible',
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL,
+                UNIQUE(recipient_id, weekday, start_time, end_time, preference)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ocavail_recipient ON client_schedule_availability(recipient_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ocavail_campaign_weekday ON client_schedule_availability(campaign_id, weekday)")
+
+        # v7.1.12.1 — idempotency ledger for POST .../invites/batch: a repeat
+        # submission with the same idempotency_key returns the exact same
+        # per-recipient result set instead of re-running the batch.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_onboarding_batch_runs (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id      INTEGER NOT NULL,
+                idempotency_key  TEXT UNIQUE,
+                created_by       TEXT NOT NULL DEFAULT '',
+                created_at       TEXT NOT NULL,
+                result_json      TEXT NOT NULL DEFAULT ''
+            )
+        """)
 
     # ── v7.0.94.0 — Invoice Automation tables ────────────────────────────────
 
@@ -7118,6 +7340,1143 @@ class Storage:
                 )
         except Exception as exc:
             log.warning("client_link_rate_limit_cleanup_failed error=%s", exc)
+
+    # ── v7.1.12 — mass client-onboarding campaigns ────────────────────────────
+    # Second, parallel path alongside the point-in-time CL-code flow above.
+    # activate_onboarding_invite() writes into the SAME client_parent_child_links
+    # table via the same invariants as link_client_child() (atomic claim,
+    # idempotent same-parent reuse, fail-closed on a different parent), and
+    # reuses ensure_payment_pilot_from_client_link() unchanged for pilot
+    # enrollment, so every downstream reader treats both paths identically.
+
+    # v7.1.12.1 — reproducible HMAC-signed invite links. No random secret
+    # token is generated or stored anywhere; the "token" IS the invite's own
+    # id, and the signature is deterministically re-derivable any time from
+    # (invite_id, campaign_id, mk_user_id) + the app's existing stable secret
+    # (settings.telegram_bot_token — the same secret already used for signed
+    # Mini App URLs, see handlers._signed_miniapp_url / web_app_server's
+    # initData HMAC check). This is the reason a repeat CSV export or a
+    # server restart can always reconstruct the exact same working link
+    # without ever having persisted a plaintext bearer token: there was never
+    # a random secret to lose in the first place. Truncated to 24 bytes
+    # (192 bits) of the 256-bit digest — far more margin than needed against
+    # forgery, while keeping the base64url signature comfortably under
+    # Telegram's 64-char start-payload limit alongside the invite id.
+    @staticmethod
+    def _onboarding_invite_signature(invite_id: int, campaign_id: int, mk_user_id: str, secret: str) -> str:
+        import hmac as _hmac
+        import hashlib as _hl
+        import base64 as _b64
+        msg = f"{int(invite_id)}:{int(campaign_id)}:{mk_user_id}".encode("utf-8")
+        digest = _hmac.new((secret or "").encode("utf-8"), msg, _hl.sha256).digest()
+        return _b64.urlsafe_b64encode(digest[:24]).decode("ascii").rstrip("=")
+
+    def _verify_onboarding_invite_signature(self, invite: dict, signature: str, secret: str) -> bool:
+        import hmac as _hmac
+        expected = self._onboarding_invite_signature(invite["id"], invite["campaign_id"], invite["mk_user_id"], secret)
+        return _hmac.compare_digest(expected, str(signature or ""))
+
+    _ACADEMIC_LEVEL_YEAR_RE = re.compile(r"(?<!\d)([1-4])\s*-?\s*(?:й)?\s*год\s+обучени", re.IGNORECASE)
+    _ACADEMIC_LEVEL_ADVANCED_RE = re.compile(r"продвинут|\badvanced\b", re.IGNORECASE)
+
+    @classmethod
+    def _detect_academic_level(cls, raw_group_name: Optional[str]) -> tuple[str, str]:
+        """Return (academic_level, confidence) from a raw MoyKlass group name.
+
+        See the ACADEMIC_LEVELS constant block for why this is intentionally
+        narrow: only an unambiguous "N год обучения" or "продвинутый"/
+        "advanced" token yields a high-confidence result; everything else —
+        including any attempt to infer level from age, subject name, or a
+        bare number — resolves to ("unknown", "unknown") rather than guess.
+        """
+        name = str(raw_group_name or "").strip()
+        if not name:
+            return "unknown", "unknown"
+        if cls._ACADEMIC_LEVEL_ADVANCED_RE.search(name):
+            return "advanced", "high"
+        m = cls._ACADEMIC_LEVEL_YEAR_RE.search(name)
+        if m:
+            return f"year_{m.group(1)}", "high"
+        return "unknown", "unknown"
+
+    def create_onboarding_campaign(
+        self,
+        name: str,
+        academic_year: str,
+        created_by: str,
+        invite_ttl_days: Optional[int] = None,
+        default_payment_mode: str = "review",
+        auto_enroll_payments: bool = True,
+        survey_enabled: bool = False,
+        collect_schedule_availability: bool = False,
+        note: str = "",
+        idempotency_key: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Create a new onboarding campaign in status='draft'.
+
+        v7.1.12 — double-submit safety: when the caller passes idempotency_key
+        (the frontend mints one per "Создать кампанию" attempt and reuses it
+        across retries of the same click), a second call with the same key
+        returns the already-created campaign instead of creating a duplicate.
+        """
+        name = str(name or "").strip()
+        if not name:
+            return {"ok": False, "error": "Название кампании обязательно"}
+        academic_year = str(academic_year or "").strip()
+        if invite_ttl_days is None:
+            invite_ttl_days = ONBOARDING_CAMPAIGN_DEFAULT_INVITE_TTL_DAYS
+        try:
+            invite_ttl_days = int(invite_ttl_days)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Некорректный срок действия приглашений"}
+        if invite_ttl_days < 1 or invite_ttl_days > ONBOARDING_CAMPAIGN_MAX_INVITE_TTL_DAYS:
+            return {"ok": False, "error": f"Срок действия приглашений должен быть от 1 до {ONBOARDING_CAMPAIGN_MAX_INVITE_TTL_DAYS} дней"}
+        default_payment_mode = str(default_payment_mode or "review").strip() or "review"
+        idempotency_key = str(idempotency_key or "").strip() or None
+
+        if idempotency_key:
+            with self._connect() as conn:
+                existing = conn.execute(
+                    "SELECT id FROM client_onboarding_campaigns WHERE idempotency_key=?",
+                    (idempotency_key,),
+                ).fetchone()
+            if existing:
+                return {"ok": True, "campaign": self.get_onboarding_campaign(existing["id"]), "created": False}
+
+        now = now_iso()
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """INSERT INTO client_onboarding_campaigns
+                        (name, academic_year, status, invite_ttl_days, default_payment_mode,
+                         auto_enroll_payments, survey_enabled, collect_schedule_availability, note, idempotency_key,
+                         created_by, created_at, updated_at)
+                       VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (name, academic_year, invite_ttl_days, default_payment_mode,
+                     1 if auto_enroll_payments else 0, 1 if survey_enabled else 0, 1 if collect_schedule_availability else 0,
+                     str(note or ""), idempotency_key, str(created_by), now, now),
+                )
+                campaign_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        except sqlite3.IntegrityError:
+            # Lost a race on idempotency_key to a concurrent identical request.
+            with self._connect() as conn:
+                existing = conn.execute(
+                    "SELECT id FROM client_onboarding_campaigns WHERE idempotency_key=?",
+                    (idempotency_key,),
+                ).fetchone()
+            if existing:
+                return {"ok": True, "campaign": self.get_onboarding_campaign(existing["id"]), "created": False}
+            return {"ok": False, "error": "Не удалось создать кампанию"}
+        return {"ok": True, "campaign": self.get_onboarding_campaign(campaign_id), "created": True}
+
+    def get_onboarding_campaign(self, campaign_id: int) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM client_onboarding_campaigns WHERE id=?", (int(campaign_id),)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_onboarding_campaigns(self, status: Optional[str] = None) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM client_onboarding_campaigns WHERE status=? ORDER BY created_at DESC",
+                    (str(status),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM client_onboarding_campaigns ORDER BY created_at DESC"
+                ).fetchall()
+        campaigns = [dict(r) for r in rows]
+        for c in campaigns:
+            c["stats"] = self.get_onboarding_campaign_stats(c["id"])
+        return campaigns
+
+    def _transition_onboarding_campaign(
+        self, campaign_id: int, to_status: str, actor: str, timestamp_column: Optional[str]
+    ) -> dict[str, Any]:
+        campaign = self.get_onboarding_campaign(campaign_id)
+        if not campaign:
+            return {"ok": False, "error": "Кампания не найдена"}
+        current = campaign["status"]
+        if to_status not in ONBOARDING_CAMPAIGN_TRANSITIONS.get(current, set()):
+            return {"ok": False, "error": f"Недопустимый переход статуса: {current} → {to_status}", "reason_code": "invalid_transition"}
+        now = now_iso()
+        set_clause = "status=?, updated_at=?"
+        params: list[Any] = [to_status, now]
+        if timestamp_column:
+            set_clause += f", {timestamp_column}=?"
+            params.append(now)
+        params.append(int(campaign_id))
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE client_onboarding_campaigns SET {set_clause} WHERE id=?", params
+            )
+        return {"ok": True, "campaign": self.get_onboarding_campaign(campaign_id)}
+
+    def start_onboarding_campaign(self, campaign_id: int, actor: str) -> dict[str, Any]:
+        return self._transition_onboarding_campaign(campaign_id, "active", actor, "started_at")
+
+    def close_onboarding_campaign(self, campaign_id: int, actor: str) -> dict[str, Any]:
+        return self._transition_onboarding_campaign(campaign_id, "completed", actor, "closed_at")
+
+    def archive_onboarding_campaign(self, campaign_id: int, actor: str) -> dict[str, Any]:
+        return self._transition_onboarding_campaign(campaign_id, "archived", actor, "archived_at")
+
+    def get_onboarding_campaign_stats(self, campaign_id: int) -> dict[str, Any]:
+        with self._connect() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) c FROM client_onboarding_recipients WHERE campaign_id=?",
+                (int(campaign_id),),
+            ).fetchone()["c"]
+            by_status_rows = conn.execute(
+                "SELECT continuation_status, COUNT(*) c FROM client_onboarding_recipients "
+                "WHERE campaign_id=? GROUP BY continuation_status",
+                (int(campaign_id),),
+            ).fetchall()
+            invites_created = conn.execute(
+                "SELECT COUNT(DISTINCT recipient_id) c FROM client_onboarding_invites WHERE campaign_id=?",
+                (int(campaign_id),),
+            ).fetchone()["c"]
+            invites_used = conn.execute(
+                "SELECT COUNT(DISTINCT recipient_id) c FROM client_onboarding_invites WHERE campaign_id=? AND status='used'",
+                (int(campaign_id),),
+            ).fetchone()["c"]
+            filled_availability = conn.execute(
+                "SELECT COUNT(*) c FROM client_onboarding_recipients "
+                "WHERE campaign_id=? AND (availability_updated_at IS NOT NULL AND availability_updated_at != '')",
+                (int(campaign_id),),
+            ).fetchone()["c"]
+        by_status = {s: 0 for s in CONTINUATION_STATUSES}
+        for r in by_status_rows:
+            by_status[r["continuation_status"]] = r["c"]
+        return {
+            "total": total,
+            "by_continuation_status": by_status,
+            "invites_created": invites_created,
+            "connected": invites_used,
+            "no_response": max(0, total - invites_used),
+            "availability_filled": filled_availability,
+            "availability_missing": max(0, total - filled_availability),
+        }
+
+    def import_onboarding_campaign_recipients(
+        self, campaign_id: int, recipients: list[dict[str, Any]], added_by: str
+    ) -> dict[str, Any]:
+        """Add explicitly-selected MoyKlass students to a campaign as recipients.
+
+        Idempotent per (campaign_id, mk_user_id) — re-importing an already-added
+        student is a no-op for that row, never a duplicate, never mutates an
+        existing recipient's continuation_status. Never creates a pilot record —
+        pilot creation only ever happens at invite activation time.
+        """
+        campaign = self.get_onboarding_campaign(campaign_id)
+        if not campaign:
+            return {"ok": False, "error": "Кампания не найдена"}
+        if campaign["status"] not in ("draft", "active"):
+            return {"ok": False, "error": "Получателей можно добавлять только в кампанию в статусе draft или active", "reason_code": "invalid_campaign_status"}
+
+        added = 0
+        already_present = 0
+        now = now_iso()
+        detected_events: list[tuple[str, str, str]] = []  # (mk_user_id, level, raw_name), for audit after commit
+        with self._connect() as conn:
+            for r in recipients:
+                mk_user_id = str(r.get("mk_user_id") or "").strip()
+                if not mk_user_id:
+                    continue
+                course_name = str(r.get("course_name") or "")
+                level, confidence = self._detect_academic_level(course_name)
+                try:
+                    conn.execute(
+                        """INSERT INTO client_onboarding_recipients
+                            (campaign_id, mk_user_id, child_display_name, branch_name, course_name,
+                             parent_display_name, continuation_status, added_by, created_at, updated_at,
+                             academic_level, academic_level_source, academic_level_confidence, academic_level_raw_group_name)
+                           VALUES (?, ?, ?, ?, ?, ?, 'unknown', ?, ?, ?, ?, ?, ?, ?)""",
+                        (int(campaign_id), mk_user_id,
+                         str(r.get("child_display_name") or ""),
+                         str(r.get("branch_name") or ""),
+                         course_name,
+                         str(r.get("parent_display_name") or ""),
+                         str(added_by), now, now,
+                         level, ("moyklass_group_name" if course_name else None), confidence, course_name),
+                    )
+                    added += 1
+                    if confidence == "high":
+                        detected_events.append((mk_user_id, level, course_name))
+                except sqlite3.IntegrityError:
+                    already_present += 1
+        for mk_user_id, level, course_name in detected_events:
+            with self._connect() as conn2:
+                rec = conn2.execute(
+                    "SELECT id FROM client_onboarding_recipients WHERE campaign_id=? AND mk_user_id=?",
+                    (int(campaign_id), mk_user_id),
+                ).fetchone()
+            self.log_onboarding_audit_event(
+                event_type="academic_level_detected", campaign_id=campaign_id,
+                recipient_id=rec["id"] if rec else None, mk_user_id=mk_user_id,
+                actor_telegram_user_id=added_by, result="success", new_status=level,
+                note=f"raw_group_name={course_name[:120]}",
+            )
+        return {"ok": True, "added": added, "already_present": already_present}
+
+    def update_recipient_academic_level(
+        self, recipient_id: int, new_level: str, actor_tg_id: str, actor_role: str, comment: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Manual staff override — always wins over auto-detection and is
+        preserved on any later re-import (import is a strict no-op for a
+        recipient that already exists, so nothing here can be silently
+        clobbered by a subsequent import of the same mk_user_id).
+        """
+        new_level = str(new_level or "").strip()
+        if new_level not in ACADEMIC_LEVELS:
+            return {"ok": False, "error": "Некорректный учебный уровень", "reason_code": "invalid_academic_level"}
+        recipient = self.get_onboarding_recipient(recipient_id)
+        if not recipient:
+            return {"ok": False, "error": "Получатель не найден"}
+        old_level = recipient["academic_level"]
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE client_onboarding_recipients
+                   SET academic_level=?, academic_level_source='staff', academic_level_confidence='manual', updated_at=?
+                   WHERE id=?""",
+                (new_level, now, int(recipient_id)),
+            )
+        self.log_onboarding_audit_event(
+            event_type="academic_level_changed", campaign_id=recipient["campaign_id"], recipient_id=recipient_id,
+            mk_user_id=recipient["mk_user_id"], actor_telegram_user_id=actor_tg_id, actor_role=actor_role,
+            result="success", old_status=old_level, new_status=new_level,
+            note=(str(comment)[:500] if comment else None),
+        )
+        return {"ok": True, "recipient": self.get_onboarding_recipient(recipient_id)}
+
+    _TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
+    @classmethod
+    def _validate_schedule_intervals(cls, intervals: list[dict[str, Any]]) -> tuple[Optional[list[dict[str, Any]]], Optional[str]]:
+        """Validate + de-duplicate a submitted interval list. Returns
+        (clean_intervals, None) on success or (None, error_message).
+        Duplicate (weekday, start_time, end_time, preference) tuples are
+        silently collapsed to one — resubmitting the same interval twice in
+        one save is not an error, just redundant input.
+        """
+        clean: list[dict[str, Any]] = []
+        seen: set[tuple] = set()
+        for iv in intervals or []:
+            try:
+                weekday = int(iv.get("weekday"))
+            except (TypeError, ValueError):
+                return None, "Некорректный день недели"
+            if weekday not in SCHEDULE_WEEKDAYS:
+                return None, "День недели должен быть от 1 до 7"
+            start_time = str(iv.get("start_time") or "").strip()
+            end_time = str(iv.get("end_time") or "").strip()
+            if not cls._TIME_RE.match(start_time) or not cls._TIME_RE.match(end_time):
+                return None, "Время должно быть в формате ЧЧ:ММ"
+            if start_time >= end_time:
+                return None, "Время начала должно быть раньше времени окончания"
+            preference = str(iv.get("preference") or "possible").strip()
+            if preference not in SCHEDULE_PREFERENCES:
+                return None, "Некорректный тип предпочтения"
+            key = (weekday, start_time, end_time, preference)
+            if key in seen:
+                continue
+            seen.add(key)
+            clean.append({"weekday": weekday, "start_time": start_time, "end_time": end_time, "preference": preference})
+        return clean, None
+
+    def submit_schedule_availability(
+        self,
+        recipient_id: int,
+        actor_tg_id: str,
+        actor_role: str,
+        preferred_branch: Optional[str] = None,
+        available_from: Optional[str] = None,
+        schedule_comment: Optional[str] = None,
+        intervals: Optional[list[dict[str, Any]]] = None,
+        source: str = "staff",
+    ) -> dict[str, Any]:
+        """Replace a recipient's schedule-availability submission (single-
+        valued fields + the full interval set) as one atomic edit — a parent
+        or staff member returning to "edit" is expected to resubmit the whole
+        form, not append to it, so old intervals are cleared and replaced
+        rather than accumulated forever. Does not touch continuation_status
+        or block/require anything about registration — this is purely
+        informational and always optional.
+        """
+        recipient = self.get_onboarding_recipient(recipient_id)
+        if not recipient:
+            return {"ok": False, "error": "Получатель не найден"}
+        preferred_branch = str(preferred_branch or "unknown").strip()
+        if preferred_branch not in SCHEDULE_PREFERRED_BRANCHES:
+            return {"ok": False, "error": "Некорректный филиал", "reason_code": "invalid_branch"}
+        clean_intervals, err = self._validate_schedule_intervals(intervals or [])
+        if err:
+            return {"ok": False, "error": err, "reason_code": "invalid_interval"}
+        available_from = str(available_from or "").strip() or None
+        schedule_comment = str(schedule_comment or "").strip()
+
+        now = now_iso()
+        is_first_submission = not recipient.get("availability_updated_at")
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE client_onboarding_recipients
+                   SET preferred_branch=?, available_from=?, schedule_comment=?,
+                       availability_updated_at=?, availability_source=?, updated_at=?
+                   WHERE id=?""",
+                (preferred_branch, available_from, schedule_comment, now, source, now, int(recipient_id)),
+            )
+            conn.execute("DELETE FROM client_schedule_availability WHERE recipient_id=?", (int(recipient_id),))
+            for iv in clean_intervals:
+                conn.execute(
+                    """INSERT INTO client_schedule_availability
+                        (campaign_id, recipient_id, weekday, start_time, end_time, preference, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (recipient["campaign_id"], int(recipient_id), iv["weekday"], iv["start_time"], iv["end_time"],
+                     iv["preference"], now, now),
+                )
+        self.log_onboarding_audit_event(
+            event_type="schedule_availability_submitted" if is_first_submission else "schedule_availability_updated",
+            campaign_id=recipient["campaign_id"], recipient_id=recipient_id, mk_user_id=recipient["mk_user_id"],
+            actor_telegram_user_id=actor_tg_id, actor_role=actor_role, result="success",
+            note=f"source={source} intervals={len(clean_intervals)}",
+        )
+        return {"ok": True, "recipient": self.get_onboarding_recipient(recipient_id), "intervals": clean_intervals}
+
+    def get_schedule_availability(self, recipient_id: int) -> dict[str, Any]:
+        recipient = self.get_onboarding_recipient(recipient_id)
+        if not recipient:
+            return {"ok": False, "error": "Получатель не найден"}
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM client_schedule_availability WHERE recipient_id=? ORDER BY weekday ASC, start_time ASC",
+                (int(recipient_id),),
+            ).fetchall()
+        intervals = [{"weekday": r["weekday"], "start_time": r["start_time"], "end_time": r["end_time"], "preference": r["preference"]} for r in rows]
+        return {
+            "ok": True,
+            "preferred_branch": recipient["preferred_branch"],
+            "available_from": recipient["available_from"],
+            "schedule_comment": recipient["schedule_comment"],
+            "availability_updated_at": recipient["availability_updated_at"],
+            "intervals": intervals,
+        }
+
+    def get_onboarding_campaign_availability_summary(self, campaign_id: int, slot_minutes: int = 60) -> dict[str, Any]:
+        """Aggregate, coarse-grained view for the campaign summary screen.
+
+        Source intervals are stored exactly as submitted (no precision lost);
+        this only ever affects how the summary buckets them for display —
+        each stored interval is counted into every slot_minutes-wide bucket
+        it overlaps.
+        """
+        slot_minutes = 60 if slot_minutes not in (30, 60) else slot_minutes
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM client_schedule_availability WHERE campaign_id=?", (int(campaign_id),)
+            ).fetchall()
+        buckets: dict[tuple[int, str], int] = {}
+
+        def _to_minutes(hhmm: str) -> int:
+            h, m = hhmm.split(":")
+            return int(h) * 60 + int(m)
+
+        for r in rows:
+            start_m = _to_minutes(r["start_time"])
+            end_m = _to_minutes(r["end_time"])
+            slot = (start_m // slot_minutes) * slot_minutes
+            while slot < end_m:
+                label = f"{slot // 60:02d}:{slot % 60:02d}"
+                key = (r["weekday"], label)
+                buckets[key] = buckets.get(key, 0) + 1
+                slot += slot_minutes
+        grid = [{"weekday": wd, "slot": slot, "count": c} for (wd, slot), c in sorted(buckets.items())]
+
+        with self._connect() as conn:
+            branch_rows = conn.execute(
+                "SELECT preferred_branch, COUNT(*) c FROM client_onboarding_recipients WHERE campaign_id=? GROUP BY preferred_branch",
+                (int(campaign_id),),
+            ).fetchall()
+        by_branch = {b: 0 for b in SCHEDULE_PREFERRED_BRANCHES}
+        for r in branch_rows:
+            by_branch[r["preferred_branch"] or "unknown"] = r["c"]
+        return {"slot_minutes": slot_minutes, "grid": grid, "by_preferred_branch": by_branch}
+
+    def list_onboarding_campaign_recipients(
+        self, campaign_id: int, filters: Optional[dict[str, Any]] = None
+    ) -> list[dict[str, Any]]:
+        """Recipients enriched with current link/pilot/invite status.
+
+        Composed in Python (not one giant SQL join) — recipient counts per
+        campaign are small enough (hundreds, not tens of thousands) that this
+        is simpler to reason about and keeps each source table's query shape
+        unchanged from how the rest of the module already reads them.
+        """
+        filters = filters or {}
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM client_onboarding_recipients WHERE campaign_id=? ORDER BY created_at ASC",
+                (int(campaign_id),),
+            ).fetchall()
+        recipients = [dict(r) for r in rows]
+        if not recipients:
+            return []
+        mk_ids = [r["mk_user_id"] for r in recipients]
+        placeholders = ",".join("?" * len(mk_ids))
+        with self._connect() as conn:
+            link_rows = conn.execute(
+                f"SELECT mk_user_id, parent_telegram_user_id, linked_at FROM client_parent_child_links "
+                f"WHERE mk_user_id IN ({placeholders}) AND status='active'",
+                mk_ids,
+            ).fetchall()
+            pilot_rows = conn.execute(
+                f"SELECT mk_user_id, mode, enabled FROM payment_automation_pilot_clients WHERE mk_user_id IN ({placeholders})",
+                mk_ids,
+            ).fetchall()
+            invite_rows = conn.execute(
+                f"SELECT * FROM client_onboarding_invites WHERE campaign_id=? AND mk_user_id IN ({placeholders}) "
+                f"ORDER BY created_at ASC",
+                [int(campaign_id)] + mk_ids,
+            ).fetchall()
+        link_by_mk = {r["mk_user_id"]: dict(r) for r in link_rows}
+        pilot_by_mk = {r["mk_user_id"]: dict(r) for r in pilot_rows}
+        # Latest invite per recipient wins (rows are ASC-ordered, so the last
+        # write for a given recipient_id in this loop is the most recent one).
+        latest_invite_by_recipient: dict[int, dict] = {}
+        for r in invite_rows:
+            latest_invite_by_recipient[r["recipient_id"]] = dict(r)
+
+        recipient_ids = [r["id"] for r in recipients]
+        rid_placeholders = ",".join("?" * len(recipient_ids))
+        with self._connect() as conn:
+            avail_rows = conn.execute(
+                f"SELECT * FROM client_schedule_availability WHERE recipient_id IN ({rid_placeholders}) "
+                f"ORDER BY weekday ASC, start_time ASC",
+                recipient_ids,
+            ).fetchall()
+        intervals_by_recipient: dict[int, list[dict]] = {}
+        for r in avail_rows:
+            intervals_by_recipient.setdefault(r["recipient_id"], []).append({
+                "weekday": r["weekday"], "start_time": r["start_time"], "end_time": r["end_time"],
+                "preference": r["preference"],
+            })
+
+        for rec in recipients:
+            link = link_by_mk.get(rec["mk_user_id"])
+            pilot = pilot_by_mk.get(rec["mk_user_id"])
+            invite = latest_invite_by_recipient.get(rec["id"])
+            rec["telegram_connected"] = bool(link)
+            rec["linked_at"] = link.get("linked_at") if link else None
+            rec["pilot_mode"] = pilot.get("mode") if pilot else None
+            rec["pilot_enabled"] = bool(pilot.get("enabled")) if pilot else None
+            rec["in_pilot"] = bool(pilot)
+            if invite:
+                rec["invite_status"] = invite["status"]
+                rec["invite_id"] = invite["id"]
+                rec["invite_expires_at"] = invite["expires_at"]
+            else:
+                rec["invite_status"] = "none"
+                rec["invite_id"] = None
+                rec["invite_expires_at"] = None
+            intervals = intervals_by_recipient.get(rec["id"], [])
+            rec["availability_intervals"] = intervals
+            rec["availability_filled"] = bool(
+                intervals or rec.get("available_from") or (rec.get("schedule_comment") or "").strip()
+                or rec.get("preferred_branch") not in (None, "unknown")
+            )
+
+        # ── filters (applied in Python — small N, keeps SQL above unchanged) ──
+        if filters.get("branch_name"):
+            recipients = [r for r in recipients if r["branch_name"] == filters["branch_name"]]
+        if filters.get("course_name"):
+            recipients = [r for r in recipients if r["course_name"] == filters["course_name"]]
+        if filters.get("continuation_status"):
+            recipients = [r for r in recipients if r["continuation_status"] == filters["continuation_status"]]
+        if filters.get("telegram_connected") is not None:
+            want = bool(filters["telegram_connected"])
+            recipients = [r for r in recipients if r["telegram_connected"] == want]
+        if filters.get("in_pilot") is not None:
+            want = bool(filters["in_pilot"])
+            recipients = [r for r in recipients if r["in_pilot"] == want]
+        if filters.get("invite_status"):
+            recipients = [r for r in recipients if r["invite_status"] == filters["invite_status"]]
+        if filters.get("academic_level"):
+            recipients = [r for r in recipients if r["academic_level"] == filters["academic_level"]]
+        if filters.get("availability_filled") is not None:
+            want = bool(filters["availability_filled"])
+            recipients = [r for r in recipients if r["availability_filled"] == want]
+        if filters.get("weekday"):
+            wd = int(filters["weekday"])
+            recipients = [r for r in recipients if any(iv["weekday"] == wd for iv in r["availability_intervals"])]
+        if filters.get("preferred_branch"):
+            recipients = [r for r in recipients if r["preferred_branch"] == filters["preferred_branch"]]
+        return recipients
+
+    def get_onboarding_recipient(self, recipient_id: int) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM client_onboarding_recipients WHERE id=?", (int(recipient_id),)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_recipient_continuation_status(
+        self,
+        recipient_id: int,
+        new_status: str,
+        actor_tg_id: str,
+        actor_role: str,
+        comment: Optional[str] = None,
+        source: str = "staff",
+    ) -> dict[str, Any]:
+        """Change one recipient's continuation status, always through the audit
+        trail (client_onboarding_audit_log, event_type=continuation_status_changed)
+        — this is the single place both the survey response path and the
+        manual staff-override path converge, so neither can silently clobber
+        the other: every change, from either source, is recorded with
+        old/new value, actor, and timestamp.
+        """
+        new_status = str(new_status or "").strip()
+        if new_status not in CONTINUATION_STATUSES:
+            return {"ok": False, "error": "Некорректный статус продолжения обучения", "reason_code": "invalid_status"}
+        recipient = self.get_onboarding_recipient(recipient_id)
+        if not recipient:
+            return {"ok": False, "error": "Получатель не найден"}
+        old_status = recipient["continuation_status"]
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE client_onboarding_recipients
+                   SET continuation_status=?, continuation_note=?, continuation_updated_at=?,
+                       continuation_updated_by=?, updated_at=?
+                   WHERE id=?""",
+                (new_status, str(comment or ""), now, str(actor_tg_id), now, int(recipient_id)),
+            )
+        self.log_onboarding_audit_event(
+            event_type="continuation_status_changed",
+            campaign_id=recipient["campaign_id"],
+            recipient_id=recipient_id,
+            mk_user_id=recipient["mk_user_id"],
+            actor_telegram_user_id=actor_tg_id,
+            actor_role=actor_role,
+            result="success",
+            old_status=old_status,
+            new_status=new_status,
+            note=(str(comment)[:500] if comment else f"source={source}"),
+        )
+        return {"ok": True, "recipient": self.get_onboarding_recipient(recipient_id), "old_status": old_status, "new_status": new_status}
+
+    def bulk_update_continuation_status(
+        self,
+        recipient_ids: list[int],
+        new_status: str,
+        actor_tg_id: str,
+        actor_role: str,
+        comment: Optional[str] = None,
+    ) -> dict[str, Any]:
+        updated = 0
+        failed: list[int] = []
+        for rid in recipient_ids:
+            result = self.update_recipient_continuation_status(
+                rid, new_status, actor_tg_id, actor_role, comment=comment, source="staff_bulk"
+            )
+            if result.get("ok"):
+                updated += 1
+            else:
+                failed.append(rid)
+        return {"ok": True, "updated": updated, "failed": failed}
+
+    def log_onboarding_audit_event(
+        self,
+        event_type: str,
+        campaign_id: Optional[int] = None,
+        recipient_id: Optional[int] = None,
+        invite_id: Optional[int] = None,
+        mk_user_id: Optional[str] = None,
+        actor_telegram_user_id: Optional[str] = None,
+        actor_role: Optional[str] = None,
+        result: Optional[str] = None,
+        reason_code: Optional[str] = None,
+        old_status: Optional[str] = None,
+        new_status: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> None:
+        """Best-effort audit insert for the onboarding-campaign system.
+
+        Fail-open, mirroring log_client_link_audit_event: never raises, never
+        stores a full token, raw deep-link payload, initData, or MoyKlass API
+        keys via `note`.
+        """
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """INSERT INTO client_onboarding_audit_log
+                        (created_at, event_type, campaign_id, recipient_id, invite_id, mk_user_id,
+                         actor_telegram_user_id, actor_role, result, reason_code, old_status, new_status, note)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S"), str(event_type or ""),
+                        int(campaign_id) if campaign_id is not None else None,
+                        int(recipient_id) if recipient_id is not None else None,
+                        int(invite_id) if invite_id is not None else None,
+                        str(mk_user_id) if mk_user_id is not None else None,
+                        str(actor_telegram_user_id) if actor_telegram_user_id is not None else None,
+                        str(actor_role) if actor_role is not None else None,
+                        str(result) if result is not None else None,
+                        str(reason_code) if reason_code is not None else None,
+                        str(old_status) if old_status is not None else None,
+                        str(new_status) if new_status is not None else None,
+                        str(note) if note is not None else None,
+                    ),
+                )
+        except Exception as exc:
+            log.warning("onboarding_audit_write_failed event_type=%s error=%s", event_type, exc)
+
+    def list_onboarding_audit_events(self, campaign_id: int, limit: int = 200) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit or 200), 500))
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM client_onboarding_audit_log WHERE campaign_id=? ORDER BY created_at DESC, id DESC LIMIT ?",
+                (int(campaign_id), limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_onboarding_invite(
+        self, campaign_id: int, recipient_id: int, created_by: str, signing_secret: str, force_regenerate: bool = False
+    ) -> dict[str, Any]:
+        """Create a one-time personal invite for a campaign recipient.
+
+        Only issuable while the campaign is 'active' (draft campaigns are for
+        setup/review only). If an active invite already exists for this
+        recipient: without force_regenerate, refuses and reports the existing
+        invite id (explicit staff confirmation required before burning it);
+        with force_regenerate=True, the old active invite is revoked and a
+        fresh one is issued, linked via regenerated_from_invite_id.
+        """
+        campaign = self.get_onboarding_campaign(campaign_id)
+        if not campaign:
+            return {"ok": False, "error": "Кампания не найдена"}
+        if campaign["status"] != "active":
+            return {"ok": False, "error": "Приглашения можно формировать только для запущенной кампании", "reason_code": "campaign_not_active"}
+        recipient = self.get_onboarding_recipient(recipient_id)
+        if not recipient or recipient["campaign_id"] != campaign_id:
+            return {"ok": False, "error": "Получатель не найден в этой кампании"}
+
+        with self._connect() as conn:
+            existing_active = conn.execute(
+                "SELECT * FROM client_onboarding_invites WHERE recipient_id=? AND status='active'",
+                (int(recipient_id),),
+            ).fetchone()
+        if existing_active and not force_regenerate:
+            return {
+                "ok": False,
+                "error": "У получателя уже есть активное приглашение. Подтвердите перевыпуск, чтобы отозвать старое и создать новое.",
+                "reason_code": "active_invite_exists",
+                "existing_invite_id": existing_active["id"],
+            }
+
+        now = now_iso()
+        regenerated_from_id = None
+        if existing_active and force_regenerate:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE client_onboarding_invites SET status='revoked', revoked_at=?, revoked_by=?, updated_at=? WHERE id=? AND status='active'",
+                    (now, str(created_by), now, existing_active["id"]),
+                )
+            regenerated_from_id = existing_active["id"]
+            self.log_onboarding_audit_event(
+                event_type="onboarding_invite_revoked", campaign_id=campaign_id, recipient_id=recipient_id,
+                invite_id=existing_active["id"], mk_user_id=recipient["mk_user_id"],
+                actor_telegram_user_id=created_by, result="success", note="auto_revoked_for_regeneration",
+            )
+
+        expires_at = (datetime.utcnow() + timedelta(days=int(campaign["invite_ttl_days"]))).strftime("%Y-%m-%dT%H:%M:%S")
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO client_onboarding_invites
+                    (campaign_id, recipient_id, mk_user_id, status,
+                     created_at, created_by, expires_at, regenerated_from_invite_id, updated_at)
+                   VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)""",
+                (int(campaign_id), int(recipient_id), recipient["mk_user_id"],
+                 now, str(created_by), expires_at, regenerated_from_id, now),
+            )
+            invite_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        signature = self._onboarding_invite_signature(invite_id, campaign_id, recipient["mk_user_id"], signing_secret)
+
+        self.log_onboarding_audit_event(
+            event_type="onboarding_invite_regenerated" if regenerated_from_id else "onboarding_invite_created",
+            campaign_id=campaign_id, recipient_id=recipient_id, invite_id=invite_id,
+            mk_user_id=recipient["mk_user_id"], actor_telegram_user_id=created_by, result="success",
+        )
+        return {
+            "ok": True,
+            "invite_id": invite_id,
+            "signature": signature,
+            "expires_at": expires_at,
+            "regenerated_from_invite_id": regenerated_from_id,
+        }
+
+    def create_onboarding_invites_batch(
+        self,
+        campaign_id: int,
+        recipient_ids: list[int],
+        created_by: str,
+        signing_secret: str,
+        force_regenerate: bool = False,
+        idempotency_key: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Create/regenerate invites for up to ONBOARDING_INVITE_MAX_BATCH_SIZE
+        recipients in one server-side call — the reason a 300+-client rollout
+        never needs 300 separate frontend HTTP requests. Reuses
+        create_onboarding_invite() per recipient unchanged (same one-active-
+        invite-per-recipient rule, same audit events, same signature scheme),
+        just orchestrates it with per-recipient error isolation and an
+        explicit outcome for every id: created / existing / regenerated /
+        skipped / failed. A repeat submission with the same idempotency_key
+        returns the exact same result set instead of re-running anything.
+        """
+        campaign = self.get_onboarding_campaign(campaign_id)
+        if not campaign:
+            return {"ok": False, "error": "Кампания не найдена"}
+        if campaign["status"] != "active":
+            return {"ok": False, "error": "Приглашения можно формировать только для запущенной кампании", "reason_code": "campaign_not_active"}
+
+        recipient_ids = list(recipient_ids or [])
+        if not recipient_ids:
+            return {"ok": False, "error": "Список получателей пуст"}
+        if len(recipient_ids) > ONBOARDING_INVITE_MAX_BATCH_SIZE:
+            return {"ok": False, "error": f"Максимум {ONBOARDING_INVITE_MAX_BATCH_SIZE} получателей за один запрос", "reason_code": "batch_too_large"}
+
+        idempotency_key = str(idempotency_key or "").strip() or None
+        if idempotency_key:
+            with self._connect() as conn:
+                existing_run = conn.execute(
+                    "SELECT result_json FROM client_onboarding_batch_runs WHERE idempotency_key=?",
+                    (idempotency_key,),
+                ).fetchone()
+            if existing_run:
+                return {"ok": True, "results": json.loads(existing_run["result_json"]), "replayed": True}
+
+        seen_ids: set[int] = set()
+        results: list[dict[str, Any]] = []
+        counts = {"created": 0, "existing": 0, "regenerated": 0, "skipped": 0, "failed": 0}
+        for raw_rid in recipient_ids:
+            try:
+                rid = int(raw_rid)
+            except (TypeError, ValueError):
+                counts["failed"] += 1
+                results.append({"recipient_id": raw_rid, "outcome": "failed", "reason": "invalid_recipient_id"})
+                continue
+            if rid in seen_ids:
+                counts["skipped"] += 1
+                results.append({"recipient_id": rid, "outcome": "skipped", "reason": "duplicate_in_request"})
+                continue
+            seen_ids.add(rid)
+
+            recipient = self.get_onboarding_recipient(rid)
+            if not recipient or recipient["campaign_id"] != campaign_id:
+                counts["failed"] += 1
+                results.append({"recipient_id": rid, "outcome": "failed", "reason": "not_in_campaign"})
+                continue
+
+            try:
+                r = self.create_onboarding_invite(campaign_id, rid, created_by, signing_secret, force_regenerate=force_regenerate)
+            except Exception as exc:
+                counts["failed"] += 1
+                results.append({"recipient_id": rid, "outcome": "failed", "reason": "internal_error"})
+                log.warning("onboarding_batch_invite_recipient_failed campaign_id=%s recipient_id=%s error=%s", campaign_id, rid, exc)
+                continue
+
+            if r.get("ok"):
+                outcome = "regenerated" if r.get("regenerated_from_invite_id") else "created"
+                counts[outcome] += 1
+                results.append({"recipient_id": rid, "outcome": outcome, "invite_id": r["invite_id"],
+                                 "signature": r["signature"], "expires_at": r["expires_at"]})
+            elif r.get("reason_code") == "active_invite_exists":
+                counts["existing"] += 1
+                results.append({"recipient_id": rid, "outcome": "existing", "invite_id": r.get("existing_invite_id")})
+            else:
+                counts["failed"] += 1
+                results.append({"recipient_id": rid, "outcome": "failed", "reason": r.get("reason_code") or r.get("error")})
+
+        now = now_iso()
+        if idempotency_key:
+            try:
+                with self._connect() as conn:
+                    conn.execute(
+                        """INSERT INTO client_onboarding_batch_runs
+                            (campaign_id, idempotency_key, created_by, created_at, result_json)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (int(campaign_id), idempotency_key, str(created_by), now, json.dumps(results)),
+                    )
+            except sqlite3.IntegrityError:
+                pass  # lost a race on idempotency_key — the other writer's result is authoritative
+
+        event_type = "onboarding_invites_batch_regenerated" if force_regenerate else "onboarding_invites_batch_created"
+        self.log_onboarding_audit_event(
+            event_type=event_type, campaign_id=campaign_id, actor_telegram_user_id=created_by, result="success",
+            note=f"created={counts['created']} existing={counts['existing']} regenerated={counts['regenerated']} "
+                 f"skipped={counts['skipped']} failed={counts['failed']}",
+        )
+        return {"ok": True, "results": results, "counts": counts, "replayed": False}
+
+    def revoke_onboarding_invite(self, invite_id: int, actor_tg_id: str, actor_role: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM client_onboarding_invites WHERE id=?", (int(invite_id),)).fetchone()
+        if not row:
+            return {"ok": False, "error": "Приглашение не найдено"}
+        invite = dict(row)
+        if invite["status"] != "active":
+            return {"ok": False, "error": f"Приглашение уже в статусе {invite['status']}", "reason_code": "invite_not_active"}
+        now = now_iso()
+        with self._connect() as conn:
+            claim = conn.execute(
+                "UPDATE client_onboarding_invites SET status='revoked', revoked_at=?, revoked_by=?, updated_at=? WHERE id=? AND status='active'",
+                (now, str(actor_tg_id), now, int(invite_id)),
+            )
+        if claim.rowcount != 1:
+            return {"ok": False, "error": "Приглашение уже изменено", "reason_code": "invite_not_active"}
+        self.log_onboarding_audit_event(
+            event_type="onboarding_invite_revoked", campaign_id=invite["campaign_id"], recipient_id=invite["recipient_id"],
+            invite_id=invite_id, mk_user_id=invite["mk_user_id"], actor_telegram_user_id=actor_tg_id,
+            actor_role=actor_role, result="success",
+        )
+        return {"ok": True}
+
+    def regenerate_onboarding_invite(self, invite_id: int, actor_tg_id: str, actor_role: str, signing_secret: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM client_onboarding_invites WHERE id=?", (int(invite_id),)).fetchone()
+        if not row:
+            return {"ok": False, "error": "Приглашение не найдено"}
+        invite = dict(row)
+        return self.create_onboarding_invite(invite["campaign_id"], invite["recipient_id"], actor_tg_id, signing_secret, force_regenerate=True)
+
+    def get_onboarding_invite_link_payload(self, invite_id: int, signing_secret: str) -> Optional[dict[str, Any]]:
+        """Re-derive an invite's deep-link payload at any later time (repeat
+        CSV export, a fresh process after a restart, a "copy link" click on
+        an invite from a previous session) — deterministic, no lookup table
+        of past plaintext tokens needed because none was ever stored. Works
+        (and is meant to be shown, per spec) regardless of current status —
+        callers pair this with the invite's own `status` field so a revoked/
+        used/expired link is visibly non-functional without hiding it.
+        """
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM client_onboarding_invites WHERE id=?", (int(invite_id),)).fetchone()
+        if not row:
+            return None
+        invite = dict(row)
+        signature = self._onboarding_invite_signature(invite["id"], invite["campaign_id"], invite["mk_user_id"], signing_secret)
+        return {
+            "invite_id": invite["id"], "signature": signature, "status": invite["status"],
+            "expires_at": invite["expires_at"], "campaign_id": invite["campaign_id"], "recipient_id": invite["recipient_id"],
+        }
+
+    def get_onboarding_invite_preview(self, invite_id: Any, signature: str, signing_secret: str) -> dict[str, Any]:
+        """Read-only lookup for the bot's confirmation step — validates the
+        signature, shape/state/expiry, without consuming the invite. Never
+        returns anything that would let a caller re-derive the signature
+        offline (the secret itself is never returned).
+        """
+        try:
+            invite_id = int(invite_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "reason_code": "invite_not_found"}
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM client_onboarding_invites WHERE id=?", (invite_id,)).fetchone()
+        if not row:
+            return {"ok": False, "reason_code": "invite_not_found"}
+        invite = dict(row)
+        if not self._verify_onboarding_invite_signature(invite, signature, signing_secret):
+            return {"ok": False, "reason_code": "invite_not_found"}
+        campaign = self.get_onboarding_campaign(invite["campaign_id"])
+        recipient = self.get_onboarding_recipient(invite["recipient_id"])
+        now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        if invite["status"] == "active" and invite.get("expires_at") and invite["expires_at"] < now:
+            return {"ok": False, "reason_code": "invite_expired"}
+        if invite["status"] == "revoked":
+            return {"ok": False, "reason_code": "invite_revoked"}
+        if invite["status"] == "used":
+            return {"ok": False, "reason_code": "invite_already_used"}
+        if not campaign or campaign["status"] != "active":
+            return {"ok": False, "reason_code": "campaign_not_active"}
+        return {
+            "ok": True,
+            "child_display_name": recipient.get("child_display_name") if recipient else "",
+            "campaign_id": campaign["id"],
+            "academic_year": campaign.get("academic_year"),
+        }
+
+    def activate_onboarding_invite(
+        self, invite_id: Any, signature: str, parent_telegram_user_id: str, signing_secret: str, now: Optional[str] = None
+    ) -> dict[str, Any]:
+        """Redeem a campaign invite: create the parent-child link (same
+        client_parent_child_links table and invariants as link_client_child),
+        then — if the campaign has auto_enroll_payments — ensure a pilot via
+        ensure_payment_pilot_from_client_link(), unchanged.
+
+        Mirrors link_client_child()'s exact safety shape:
+          - atomic active→used claim (race-safe one-time use)
+          - same-parent re-activation is idempotent (already_linked=True)
+          - a different existing parent fails closed, never leaks their id
+        Never creates a Payment Intent, bePaid payment, publish, or MK post.
+        """
+        parent_telegram_user_id = str(parent_telegram_user_id or "").strip()
+        now = now or datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        try:
+            invite_id = int(invite_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "reason_code": "invite_not_found"}
+        if not parent_telegram_user_id:
+            return {"ok": False, "reason_code": "invite_not_found"}
+
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM client_onboarding_invites WHERE id=?", (invite_id,)).fetchone()
+            if not row:
+                return {"ok": False, "reason_code": "invite_not_found"}
+            invite = dict(row)
+            if not self._verify_onboarding_invite_signature(invite, signature, signing_secret):
+                # A bad signature is indistinguishable from "not found" —
+                # never confirms/denies that an invite_id exists.
+                return {"ok": False, "reason_code": "invite_not_found"}
+
+            if invite["status"] == "active" and invite.get("expires_at") and invite["expires_at"] < now:
+                conn.execute(
+                    "UPDATE client_onboarding_invites SET status='expired', updated_at=? WHERE id=? AND status='active'",
+                    (now, invite["id"]),
+                )
+                invite["status"] = "expired"
+
+            campaign = self.get_onboarding_campaign(invite["campaign_id"])
+            if not campaign:
+                return {"ok": False, "reason_code": "invite_not_found"}
+            recipient = self.get_onboarding_recipient(invite["recipient_id"])
+            mk_user_id = invite["mk_user_id"]
+            child_display_name = recipient.get("child_display_name") if recipient else ""
+
+            if invite["status"] == "used":
+                if invite.get("used_by_parent_telegram_user_id") == parent_telegram_user_id:
+                    pilot_result = None
+                    if campaign.get("auto_enroll_payments"):
+                        pilot_result = self.ensure_payment_pilot_from_client_link(mk_user_id, parent_telegram_user_id, now)
+                    return {
+                        "ok": True, "already_linked": True, "mk_user_id": mk_user_id,
+                        "child_display_name": child_display_name, "campaign_id": campaign["id"],
+                        "recipient_id": invite["recipient_id"],
+                        "academic_year": campaign.get("academic_year"),
+                        "survey_enabled": bool(campaign.get("survey_enabled")),
+                        "collect_schedule_availability": bool(campaign.get("collect_schedule_availability")),
+                        "pilot_created": bool(pilot_result and pilot_result.get("created")),
+                    }
+                return {"ok": False, "reason_code": "invite_already_used"}
+            if invite["status"] == "revoked":
+                return {"ok": False, "reason_code": "invite_revoked"}
+            if invite["status"] == "expired":
+                return {"ok": False, "reason_code": "invite_expired"}
+            if invite["status"] != "active":
+                return {"ok": False, "reason_code": "invite_already_used"}
+            if campaign["status"] != "active":
+                return {"ok": False, "reason_code": "campaign_not_active"}
+
+            existing_active_link = conn.execute(
+                "SELECT * FROM client_parent_child_links WHERE mk_user_id=? AND status='active'",
+                (mk_user_id,),
+            ).fetchone()
+            if existing_active_link:
+                ex = dict(existing_active_link)
+                if ex["parent_telegram_user_id"] != parent_telegram_user_id:
+                    # Fail closed — never transfer, never leak the other user's id.
+                    self.log_onboarding_audit_event(
+                        event_type="onboarding_invite_failed", campaign_id=campaign["id"],
+                        recipient_id=invite["recipient_id"], invite_id=invite["id"], mk_user_id=mk_user_id,
+                        actor_telegram_user_id=parent_telegram_user_id, actor_role="parent",
+                        result="failed", reason_code="linked_to_another_user",
+                    )
+                    return {"ok": False, "reason_code": "linked_to_another_user"}
+
+            # Atomic claim: only one concurrent activation can flip active→used.
+            claim = conn.execute(
+                "UPDATE client_onboarding_invites SET status='used', used_at=?, used_by_parent_telegram_user_id=?, updated_at=? WHERE id=? AND status='active'",
+                (now, parent_telegram_user_id, now, invite["id"]),
+            )
+            if claim.rowcount != 1:
+                return {"ok": False, "reason_code": "invite_already_used"}
+
+            if not existing_active_link:
+                conn.execute(
+                    """INSERT INTO client_parent_child_links
+                        (parent_telegram_user_id, mk_user_id, child_display_name, status,
+                         linked_at, linked_by_code_id, created_at, updated_at)
+                       VALUES (?, ?, ?, 'active', ?, NULL, ?, ?)""",
+                    (parent_telegram_user_id, mk_user_id, child_display_name, now, now, now),
+                )
+
+        pilot_result = None
+        if campaign.get("auto_enroll_payments"):
+            pilot_result = self.ensure_payment_pilot_from_client_link(mk_user_id, parent_telegram_user_id, now)
+            if pilot_result and pilot_result.get("created"):
+                self.log_onboarding_audit_event(
+                    event_type="payment_pilot_created_from_campaign", campaign_id=campaign["id"],
+                    recipient_id=invite["recipient_id"], invite_id=invite["id"], mk_user_id=mk_user_id,
+                    actor_telegram_user_id=parent_telegram_user_id, result="success",
+                )
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE client_onboarding_invites SET link_result=?, pilot_result=?, updated_at=? WHERE id=?",
+                (json.dumps({"linked": True}), json.dumps(pilot_result or {}), now, invite["id"]),
+            )
+        self.log_onboarding_audit_event(
+            event_type="onboarding_invite_used", campaign_id=campaign["id"], recipient_id=invite["recipient_id"],
+            invite_id=invite["id"], mk_user_id=mk_user_id, actor_telegram_user_id=parent_telegram_user_id,
+            actor_role="parent", result="success",
+        )
+        return {
+            "ok": True, "already_linked": False, "mk_user_id": mk_user_id,
+            "child_display_name": child_display_name, "campaign_id": campaign["id"],
+            "recipient_id": invite["recipient_id"],
+            "academic_year": campaign.get("academic_year"),
+            "survey_enabled": bool(campaign.get("survey_enabled")),
+            "collect_schedule_availability": bool(campaign.get("collect_schedule_availability")),
+            "pilot_created": bool(pilot_result and pilot_result.get("created")),
+        }
+
+    def submit_continuation_response(
+        self, campaign_id: int, recipient_id: int, parent_telegram_user_id: str,
+        response_status: str, comment: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Record a parent's survey answer and route the resulting status
+        change through update_recipient_continuation_status(), so it is
+        indistinguishable (in the audit trail) from a manual staff change —
+        both always produce a continuation_status_changed event, so neither
+        can silently overwrite the other without a trace.
+        """
+        response_status = str(response_status or "").strip()
+        valid_responses = [s for s in CONTINUATION_STATUSES if s != "unknown"]
+        if response_status not in valid_responses:
+            return {"ok": False, "error": "Некорректный ответ", "reason_code": "invalid_status"}
+        recipient = self.get_onboarding_recipient(recipient_id)
+        if not recipient or recipient["campaign_id"] != campaign_id:
+            return {"ok": False, "error": "Получатель не найден"}
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO client_continuation_responses
+                    (campaign_id, recipient_id, mk_user_id, parent_telegram_user_id,
+                     response_status, comment, source, submitted_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'parent_app', ?)""",
+                (int(campaign_id), int(recipient_id), recipient["mk_user_id"], str(parent_telegram_user_id),
+                 response_status, str(comment or ""), now),
+            )
+        result = self.update_recipient_continuation_status(
+            recipient_id, response_status, actor_tg_id=parent_telegram_user_id, actor_role="parent",
+            comment=comment, source="parent_app",
+        )
+        self.log_onboarding_audit_event(
+            event_type="continuation_response_submitted", campaign_id=campaign_id, recipient_id=recipient_id,
+            mk_user_id=recipient["mk_user_id"], actor_telegram_user_id=parent_telegram_user_id,
+            actor_role="parent", result="success", new_status=response_status,
+        )
+        return {"ok": True, "recipient": result.get("recipient")}
 
     def find_duplicate_payment_intents(
         self,

@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT))
 
 from storage import Storage
 
-CURRENT_VERSION = "7.1.11"
+CURRENT_VERSION = "7.1.12"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -584,11 +584,11 @@ class TestVersionV715(unittest.TestCase):
     """Test 34: version marker is v7.1.8."""
 
     def test_34_version_v715(self):
-        """app.js has MiniApp version: v7.1.11; index.html has v=7.1.11."""
+        """app.js has MiniApp version: v7.1.12; index.html has v=7.1.12."""
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("v7.1.11", js, "app.js version marker must contain v7.1.11")
-        self.assertIn("v=7.1.11", html, "index.html cache-bust must be v=7.1.11")
+        self.assertIn("v7.1.12", js, "app.js version marker must contain v7.1.12")
+        self.assertIn("v=7.1.12", html, "index.html cache-bust must be v=7.1.12")
 
 
 if __name__ == "__main__":
