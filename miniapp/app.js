@@ -13257,7 +13257,10 @@ function canShowMkPostButton(pi) {
   const notCancelled = pi.status !== "cancelled";
   const notIgnored = pi.status !== "ignored";
   const notAlreadyPosted = pi.status !== "posted_to_moyklass" && !pi.mk_payment_id && !pi.mk_posted_at;
-  const notInProgress = pi.mk_posting_status !== "claiming";
+  // v7.1.11 — backend's readiness gate (payment_intent_moyklass_readiness's
+  // no_active_claim check) treats both "claiming" and "ambiguous" as an
+  // active/blocked posting attempt, not just "claiming" — mirror both here.
+  const notInProgress = !["claiming", "ambiguous"].includes(pi.mk_posting_status);
   const hasTrustedIdentifiers = !!pi.mk_invoice_id && !!pi.mk_user_id;
   return roleAllowed && paymentConfirmed && amountKnownPositive && notWithdrawn
     && notCancelled && notIgnored && notAlreadyPosted && notInProgress && hasTrustedIdentifiers;
@@ -16034,7 +16037,123 @@ const _wsConnState = {
   statusError: "",
   newCode: null,          // { code, expires_at } — in-memory only, shown once
   busy: false,            // action button in flight (create/revoke/unlink)
+  onboardParentId: "",    // v7.1.11 — staff onboarding form: parent Telegram ID input
+  onboardCode: "",        // v7.1.11 — staff onboarding form: CL- code input
+  onboardBusy: false,
+  onboardError: "",
+  onboardResult: null,    // last POST /api/client/admin/link-and-enroll response (kept until next submit)
 };
+
+// v7.1.11 — mirrors backend PAYMENT_ONBOARDING_STAFF_ROLES (web_app_server.py).
+// UI gate only — the endpoint independently re-derives the role from auth
+// server-side and never trusts anything the client sends.
+const PAYMENT_ONBOARDING_ROLES = ["owner", "admin", "client_manager"];
+function canUseStaffOnboarding() {
+  const r = state.me?.role || "";
+  return PAYMENT_ONBOARDING_ROLES.includes(r);
+}
+
+// v7.1.11 — staff-facing "enter a CL- code now" action for the Connection tab.
+// Distinct from the code-generation actions above (_wsConnCreateCode etc.),
+// which only issue a code for the client/parent to self-enter later. This
+// calls the staff-only onboarding endpoint directly, which both links the
+// code AND ensures a payment automation pilot record — see
+// client_admin_link_and_enroll() in web_app_server.py.
+const WS_PAYMENT_ONBOARDING_MODE_LABELS = {
+  review: "Режим: с подтверждением менеджера",
+  auto: "Режим: автоматически",
+  observe: "Режим: наблюдение",
+};
+
+function _wsConnOnboardResultHtml(res) {
+  if (!res) return "";
+  if (!res.ok) {
+    return `<div class="notice error" style="margin-top:10px">${escapeHtml(_wsConnErrorMessage(res))}</div>`;
+  }
+  const pa = res.payment_automation || {};
+  if (pa.automation_status === "failed") {
+    return `<div class="notice error" style="margin-top:10px">
+      <div>Клиент добавлен, но автоматизацию оплат подключить не удалось</div>
+      <div>Повторите подключение или обратитесь к администратору</div>
+    </div>`;
+  }
+  if (pa.mode === "disabled") {
+    return `<div class="notice ok" style="margin-top:10px">
+      <div>Клиент привязан</div>
+      <div>Автоматизация оплат отключена</div>
+    </div>`;
+  }
+  const modeLabel = WS_PAYMENT_ONBOARDING_MODE_LABELS[pa.mode] || "";
+  return `<div class="notice ok" style="margin-top:10px">
+    <div>Клиент добавлен в автоматизацию</div>
+    ${modeLabel ? `<div>${escapeHtml(modeLabel)}</div>` : ""}
+  </div>`;
+}
+
+function _wsConnOnboardHtml() {
+  if (!canUseStaffOnboarding()) return "";
+  const st = _wsConnState;
+  return `
+    <article class="card ws-conn-detail-card" style="margin-top:12px">
+      <h3 class="ws-conn-success-title" style="margin:0 0 4px;font-size:14px">Подключить и включить оплаты</h3>
+      <p class="ws-conn-note">Введите код CL-, который клиент передал вам, и его Telegram ID — клиент будет подключён и включён в автоматизацию оплат сразу.</p>
+      <div class="ws-search-row">
+        <label class="ws-search-bar">
+          <input id="wsConnOnboardParentId" type="text" placeholder="Telegram ID клиента" value="${escapeAttr(st.onboardParentId)}"
+                 autocomplete="off" autocorrect="off" spellcheck="false" oninput="_wsConnOnboardInput('onboardParentId', this.value)" />
+        </label>
+        <label class="ws-search-bar">
+          <input id="wsConnOnboardCode" type="text" placeholder="CL-XXXXXXXX" maxlength="11" value="${escapeAttr(st.onboardCode)}"
+                 autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" oninput="_wsConnOnboardInput('onboardCode', this.value)" />
+        </label>
+      </div>
+      <div id="wsConnOnboardError" class="notice error hidden"></div>
+      <div class="ws-conn-actions">
+        <button class="primary ws-conn-action-btn" type="button" id="wsConnOnboardBtn" onclick="_wsConnSubmitOnboard()" ${st.onboardBusy ? "disabled" : ""}>Подключить</button>
+      </div>
+      ${_wsConnOnboardResultHtml(st.onboardResult)}
+    </article>`;
+}
+
+function _wsConnOnboardInput(field, value) {
+  _wsConnState[field] = value;
+}
+
+function _wsConnOnboardError(msg) {
+  const el = $("wsConnOnboardError");
+  if (!el) return;
+  if (!msg) { el.classList.add("hidden"); el.textContent = ""; return; }
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
+
+async function _wsConnSubmitOnboard() {
+  if (_wsConnState.onboardBusy) return;
+  const parentId = (_wsConnState.onboardParentId || "").trim();
+  const code = (_wsConnState.onboardCode || "").trim().toUpperCase();
+  if (!parentId) { _wsConnOnboardError("Введите Telegram ID клиента"); return; }
+  if (!code) { _wsConnOnboardError("Введите код CL-"); return; }
+  _wsConnOnboardError("");
+  _wsConnState.onboardBusy = true;
+  _wsConnState.onboardResult = null;
+  _wsRenderConnectionBody();
+  try {
+    const data = await _apiPostRaw("/api/client/admin/link-and-enroll", {
+      parent_telegram_user_id: parentId,
+      code,
+    });
+    _wsConnState.onboardBusy = false;
+    _wsConnState.onboardResult = data;
+    _wsRenderConnectionBody();
+    // Refresh the selected student's status badge so a successful link is
+    // reflected immediately, matching the existing create-code/unlink flows.
+    if (data.ok && _wsConnState.selected) await _wsConnLoadStatus();
+  } catch (e) {
+    _wsConnState.onboardBusy = false;
+    _wsConnState.onboardResult = { ok: false, error: safeUserError(e) };
+    _wsRenderConnectionBody();
+  }
+}
 
 // Raw GET helper (like _apiPostRaw): apiGet() throws away reason_code on
 // failure by design (`throw new Error(data.error)`), but the Connection tab
@@ -16293,7 +16412,8 @@ function _wsConnDetailHtml() {
       ${body}
       <div id="wsConnActionError" class="notice notice-error hidden" style="margin:10px 0 0"></div>
       <div class="ws-conn-actions">${actions}</div>
-    </article>`;
+    </article>
+    ${_wsConnOnboardHtml()}`;
 }
 
 function _wsConnNewCodeSuccessHtml() {
