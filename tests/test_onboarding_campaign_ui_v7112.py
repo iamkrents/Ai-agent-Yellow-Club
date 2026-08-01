@@ -214,9 +214,9 @@ class TestNoPreviewMarkers(unittest.TestCase):
 
 class TestVersionCacheBust(unittest.TestCase):
     def test_app_js_version_marker(self):
-        # v7.1.12.2 bumped the marker; see test_onboarding_mass_select_hotfix_v71121.py
+        # v7.1.12.3 bumped the marker; see test_onboarding_mass_select_hotfix_v71121.py
         # for the dedicated version/cache-bust assertions of that earlier hotfix.
-        self.assertIn('console.log("MiniApp version: v7.1.12.2");', _js())
+        self.assertIn('console.log("MiniApp version: v7.1.12.3");', _js())
 
     def test_index_html_cache_bust(self):
         html = _html()

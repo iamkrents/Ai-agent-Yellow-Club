@@ -84,7 +84,7 @@ const launchTab = urlParams.get("tab") || "";
 // one specific campaign recipient (from the bot's post-activation button).
 const launchAvailabilityRecipientId = urlParams.get("oc_availability_recipient") || "";
 
-console.log("MiniApp version: v7.1.12.2");
+console.log("MiniApp version: v7.1.12.3");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -7797,6 +7797,107 @@ function copyCampCodesList() {
   }
 }
 
+// v7.1.12.3 — permanent "Возможности для расписания" entry, reachable from
+// the parent's home screen for ANY client-linked child regardless of how
+// they were linked (CL-code / onboarding invite / staff link) and
+// regardless of campaign/invite/continuation_status/pilot/payment state.
+// Separate top-level state container (mirrors the existing _ocState/
+// _ocAvailState pattern), not folded into the shared `state` object.
+const _wsScheduleAvailState = {
+  picking: false,          // multi-child picker shown instead of the entry card
+  statusByMk: {},          // mk_user_id -> { filled, availability_updated_at }
+  statusLoading: false,
+};
+
+function _wsScheduleAvailCardHtml() {
+  const children = state.clientChildren || [];
+  if (!children.length) return "";  // 6.1 — no linked children: hide entirely, no error
+  if (children.length === 1) {
+    const mk = children[0].mk_user_id;
+    return `
+      <div class="parent-children-section">
+        <button type="button" class="parent-schedule-avail-card" id="wsScheduleAvailCard" data-mk="${escapeAttr(mk)}">
+          <div class="parent-schedule-avail-title">Возможности для расписания</div>
+          <div class="parent-schedule-avail-subtitle">Укажите подходящие дни и время занятий</div>
+        </button>
+      </div>`;
+  }
+  if (!_wsScheduleAvailState.picking) {
+    return `
+      <div class="parent-children-section">
+        <button type="button" class="parent-schedule-avail-card" id="wsScheduleAvailCard">
+          <div class="parent-schedule-avail-title">Возможности для расписания</div>
+          <div class="parent-schedule-avail-subtitle">Укажите подходящие дни и время занятий</div>
+        </button>
+      </div>`;
+  }
+  const rows = children.map(c => {
+    const st = _wsScheduleAvailState.statusByMk[c.mk_user_id];
+    const filled = !!st?.filled;
+    const statusLabel = _wsScheduleAvailState.statusLoading ? "Проверяю…" : (filled ? "Заполнено" : "Не заполнено");
+    const updated = filled && st?.availability_updated_at ? ` · обновлено ${escapeHtml(String(st.availability_updated_at).slice(0, 10))}` : "";
+    return `
+      <button type="button" class="parent-schedule-avail-child-row" data-mk="${escapeAttr(c.mk_user_id)}">
+        <span class="parent-schedule-avail-child-name">${escapeHtml(c.display_name || "Ученик")}</span>
+        <span class="parent-schedule-avail-child-status${filled ? " parent-schedule-avail-child-status--filled" : ""}">${statusLabel}${updated}</span>
+      </button>`;
+  }).join("");
+  return `
+    <div class="parent-children-section">
+      <h4 class="parent-children-section-title">Возможности для расписания</h4>
+      <p class="parent-link-hint">Выберите ребёнка</p>
+      <div class="parent-schedule-avail-picker">${rows}</div>
+      <button type="button" class="secondary" id="wsScheduleAvailPickerBack">Назад</button>
+    </div>`;
+}
+
+async function _wsScheduleAvailLoadStatuses() {
+  if (_wsScheduleAvailState.statusLoading) return;  // 6.4 — no duplicate in-flight requests
+  _wsScheduleAvailState.statusLoading = true;
+  renderMyChildren();
+  const children = state.clientChildren || [];
+  await Promise.all(children.map(async c => {
+    try {
+      const data = await apiGet(`/api/client/schedule-availability/${encodeURIComponent(c.mk_user_id)}`);
+      if (data.ok) _wsScheduleAvailState.statusByMk[c.mk_user_id] = { filled: !!data.filled, availability_updated_at: data.availability_updated_at };
+    } catch (e) { /* leave this child's status unknown — non-fatal, form itself still opens fine */ }
+  }));
+  _wsScheduleAvailState.statusLoading = false;
+  renderMyChildren();
+}
+
+// 6.6 — after a successful save, refresh just this child's cached status so
+// the entry card / picker reflect it immediately without a full Mini App restart.
+async function _wsScheduleAvailRefreshStatus(mkUserId) {
+  try {
+    const data = await apiGet(`/api/client/schedule-availability/${encodeURIComponent(mkUserId)}`);
+    if (data.ok) _wsScheduleAvailState.statusByMk[mkUserId] = { filled: !!data.filled, availability_updated_at: data.availability_updated_at };
+  } catch (e) { /* non-fatal — status badge just won't update until next picker open */ }
+  renderMyChildren();
+}
+
+function _wsScheduleAvailWire() {
+  const card = $("wsScheduleAvailCard");
+  if (card) {
+    card.addEventListener("click", () => {
+      const mk = card.dataset.mk;
+      if (mk) {
+        openClientScheduleAvailabilityModal(mk);
+      } else {
+        _wsScheduleAvailState.picking = true;
+        _wsScheduleAvailLoadStatuses();
+      }
+    });
+  }
+  document.querySelectorAll(".parent-schedule-avail-child-row").forEach(btn => {
+    btn.addEventListener("click", () => openClientScheduleAvailabilityModal(btn.dataset.mk));
+  });
+  $("wsScheduleAvailPickerBack")?.addEventListener("click", () => {
+    _wsScheduleAvailState.picking = false;
+    renderMyChildren();
+  });
+}
+
 // ---- Parent interface (my-children tab) ── v7.0.93.1 ----
 function renderMyChildren() {
   const root = $("myChildrenContent");
@@ -7858,6 +7959,7 @@ function renderMyChildren() {
     </div>`;
 
   root.innerHTML = `
+    ${_wsScheduleAvailCardHtml()}
     <div class="parent-children-section">
       <h4 class="parent-children-section-title">Оплаты</h4>
       ${clientCardsHtml ? `<div class="parent-children-list">${clientCardsHtml}</div>` : ""}
@@ -7888,6 +7990,8 @@ function renderMyChildren() {
     input.addEventListener("keydown", e => { if (e.key === "Enter") btn?.click(); });
   }
   if (btn) btn.addEventListener("click", linkChild);
+
+  _wsScheduleAvailWire();
 }
 
 async function loadMyChildren() {
@@ -17669,14 +17773,24 @@ async function _wsOcImportDoSend(chosen) {
 // дети". Always optional — closing/skipping never blocks anything.
 const _ocAvailState = {
   recipientId: null,
+  mkUserId: null,        // v7.1.12.3 — set instead of recipientId for the permanent, non-campaign entry point
   branch: "either",
   intervals: [],   // [{weekday, start_time, end_time, preference}]
   busy: false,
 };
 const OC_AVAILABILITY_WEEKDAY_LABELS = { 1: "Пн", 2: "Вт", 3: "Ср", 4: "Чт", 5: "Пт", 6: "Сб", 7: "Вс" };
 
-async function openOnboardingAvailabilityModal(recipientId) {
-  _ocAvailState.recipientId = recipientId;
+// v7.1.12.3 — the modal is shared by two identity modes: the original
+// campaign-recipient-id flow (onboarding deep-link, unchanged) and the new
+// permanent mk_user_id-keyed flow (reachable from "Мои дети" for ANY linked
+// client). Exactly one of _ocAvailState.recipientId/mkUserId is set at a
+// time; this picks the matching endpoint so load/save code stays shared.
+function _ocAvailEndpointPath() {
+  if (_ocAvailState.mkUserId) return `/api/client/schedule-availability/${encodeURIComponent(_ocAvailState.mkUserId)}`;
+  return `/api/client/onboarding/recipients/${encodeURIComponent(_ocAvailState.recipientId)}/availability`;
+}
+
+async function _ocAvailOpenModal() {
   _ocAvailState.branch = "either";
   _ocAvailState.intervals = [];
   $("ocAvailabilityChildName").textContent = "Загружаю…";
@@ -17685,19 +17799,37 @@ async function openOnboardingAvailabilityModal(recipientId) {
   $("ocAvailabilityError")?.classList.add("hidden");
   piModalOpen($("ocAvailabilityModal"));
   try {
-    const data = await apiGet(`/api/client/onboarding/recipients/${encodeURIComponent(recipientId)}/availability`);
+    const data = await apiGet(_ocAvailEndpointPath());
     if (data.ok) {
       $("ocAvailabilityChildName").textContent = data.child_display_name ? `Ребёнок: ${data.child_display_name}` : "";
       _ocAvailState.branch = data.preferred_branch || "either";
       _ocAvailState.intervals = (data.intervals || []).map(iv => ({ ...iv }));
       $("ocAvailabilityFrom").value = data.available_from || "";
       $("ocAvailabilityComment").value = data.schedule_comment || "";
+    } else {
+      _ocAvailError(data.error || "Ошибка загрузки");
     }
   } catch (e) {
     $("ocAvailabilityChildName").textContent = "";
+    _ocAvailError(safeUserError(e));
   }
   _ocAvailRenderBranchButtons();
   _ocAvailRenderIntervals();
+}
+
+async function openOnboardingAvailabilityModal(recipientId) {
+  _ocAvailState.recipientId = recipientId;
+  _ocAvailState.mkUserId = null;
+  await _ocAvailOpenModal();
+}
+
+// v7.1.12.3 — permanent entry point: reachable any time from "Мои дети" for
+// any client-linked child, regardless of CL-code/invite/staff-link origin,
+// campaign membership, continuation_status, or invite presence.
+async function openClientScheduleAvailabilityModal(mkUserId) {
+  _ocAvailState.mkUserId = String(mkUserId);
+  _ocAvailState.recipientId = null;
+  await _ocAvailOpenModal();
 }
 
 function _ocAvailRenderBranchButtons() {
@@ -17756,7 +17888,7 @@ function _ocAvailError(msg) {
 }
 
 async function _ocAvailSave() {
-  if (_ocAvailState.busy || !_ocAvailState.recipientId) return;
+  if (_ocAvailState.busy || !(_ocAvailState.recipientId || _ocAvailState.mkUserId)) return;
   _ocAvailError("");
   for (const iv of _ocAvailState.intervals) {
     if (!iv.start_time || !iv.end_time) { _ocAvailError("Заполните время начала и окончания для каждого интервала"); return; }
@@ -17766,7 +17898,7 @@ async function _ocAvailSave() {
   const btn = $("ocAvailabilitySave");
   if (btn) { btn.disabled = true; btn.textContent = "Сохраняю…"; }
   try {
-    const data = await _apiPostRaw(`/api/client/onboarding/recipients/${encodeURIComponent(_ocAvailState.recipientId)}/availability`, {
+    const data = await _apiPostRaw(_ocAvailEndpointPath(), {
       preferred_branch: _ocAvailState.branch,
       available_from: $("ocAvailabilityFrom")?.value || "",
       schedule_comment: $("ocAvailabilityComment")?.value || "",
@@ -17774,7 +17906,10 @@ async function _ocAvailSave() {
     });
     if (data.ok) {
       piModalClose($("ocAvailabilityModal"));
-      setNotice("Возможности по расписанию сохранены", "ok");
+      setNotice("Возможности для расписания сохранены", "ok");
+      // v7.1.12.3 — refresh local fill-status so the permanent entry card /
+      // child picker reflect the save immediately, no Mini App restart needed.
+      if (_ocAvailState.mkUserId) await _wsScheduleAvailRefreshStatus(_ocAvailState.mkUserId);
     } else {
       _ocAvailError(data.error || "Ошибка сохранения");
     }

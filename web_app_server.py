@@ -13004,12 +13004,18 @@ class MiniAppContext:
     # among that parent's actively-linked children — never trusted from the
     # client, always re-derived from client_parent_child_links here).
 
-    def _require_availability_access(self, auth: dict[str, Any], recipient: dict[str, Any]) -> tuple[Optional[str], Optional[dict[str, Any]]]:
+    def _require_availability_access(self, auth: dict[str, Any], mk_user_id: Any) -> tuple[Optional[str], Optional[dict[str, Any]]]:
+        """v7.1.12.3 — keyed directly on mk_user_id rather than a recipient
+        dict (pure refactor, identical behavior to the pre-v7.1.12.3 version
+        which just read recipient.get("mk_user_id") internally) so the new
+        permanent, non-campaign entry point (client_schedule_availability_*)
+        can reuse the exact same ownership check without needing a
+        client_onboarding_recipients row to exist first."""
         role = self._role_for_user(int(auth["user_id"]))
         if role == "parent":
             parent_tid = str(auth["user_id"])
             children = self.storage.list_client_children_for_parent(parent_tid)
-            if not any(c.get("mk_user_id") == recipient.get("mk_user_id") for c in children):
+            if not any(str(c.get("mk_user_id")) == str(mk_user_id) for c in children):
                 return None, {"ok": False, "error": "Доступ только к своим детям."}
             return "parent_app", None
         if role in CLIENT_ONBOARDING_CAMPAIGN_ROLES:
@@ -13025,7 +13031,7 @@ class MiniAppContext:
         recipient = self.storage.get_onboarding_recipient(recipient_id)
         if not recipient:
             return {"ok": False, "error": "Получатель не найден"}
-        _source, denied = self._require_availability_access(auth, recipient)
+        _source, denied = self._require_availability_access(auth, recipient.get("mk_user_id"))
         if denied:
             return denied
         result = self.storage.get_schedule_availability(recipient_id)
@@ -13048,7 +13054,7 @@ class MiniAppContext:
         recipient = self.storage.get_onboarding_recipient(recipient_id)
         if not recipient:
             return {"ok": False, "error": "Получатель не найден"}
-        source, denied = self._require_availability_access(auth, recipient)
+        source, denied = self._require_availability_access(auth, recipient.get("mk_user_id"))
         if denied:
             return denied
         role = self._role_for_user(int(auth["user_id"]))
@@ -13064,6 +13070,80 @@ class MiniAppContext:
             intervals=intervals,
             source=source,
         )
+
+    # v7.1.12.3 — permanent schedule-availability entry point for ANY linked
+    # client (CL-code, onboarding invite, or staff/manual link), independent
+    # of campaign/recipient/invite/continuation_status/pilot/payment state.
+    # Identity here is mk_user_id (the stable, already-trusted concept
+    # _require_availability_access checks ownership against) rather than
+    # recipient_id — bridged internally via storage.get_or_create_recipient_
+    # for_client so the underlying storage layer (submit_schedule_
+    # availability/get_schedule_availability/client_schedule_availability)
+    # is reused completely unchanged, with zero new tables.
+    def client_schedule_availability_get(self, auth: dict[str, Any], mk_user_id_str: str) -> dict[str, Any]:
+        """GET /api/client/schedule-availability/{mk_user_id}
+
+        Read-only: never creates a recipient row just from viewing the form
+        (e.g. the multi-child picker probing fill-status for each child) —
+        a student with no prior submission gets a blank-form shape back.
+        """
+        mk_user_id = str(mk_user_id_str or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "invalid mk_user_id"}
+        _source, denied = self._require_availability_access(auth, mk_user_id)
+        if denied:
+            return denied
+        trusted = self.storage.get_trusted_local_client_candidate(mk_user_id)
+        display_name = (trusted or {}).get("child_display_name") or None
+        status = self.storage.get_availability_status_for_mk_user(mk_user_id)
+        if not status.get("recipient_id"):
+            return {
+                "ok": True, "filled": False, "child_display_name": display_name,
+                "preferred_branch": "unknown", "available_from": None, "schedule_comment": "",
+                "availability_updated_at": None, "intervals": [],
+            }
+        result = self.storage.get_schedule_availability(status["recipient_id"])
+        if result.get("ok"):
+            result["filled"] = bool(result.get("availability_updated_at"))
+            result["child_display_name"] = display_name or self.storage.get_onboarding_recipient(status["recipient_id"]).get("child_display_name")
+        return result
+
+    def client_schedule_availability_submit(self, auth: dict[str, Any], mk_user_id_str: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/client/schedule-availability/{mk_user_id}
+
+        Lazily finds-or-creates the underlying recipient row (reusing an
+        existing one from a real campaign if this student already has one —
+        never a second, fragmented row) then delegates to the exact same
+        storage.submit_schedule_availability used by the onboarding-invite
+        flow. child_display_name is always re-derived server-side from the
+        trusted client_parent_child_links row, never taken from the request
+        body.
+        """
+        mk_user_id = str(mk_user_id_str or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "invalid mk_user_id"}
+        source, denied = self._require_availability_access(auth, mk_user_id)
+        if denied:
+            return denied
+        role = self._role_for_user(int(auth["user_id"]))
+        actor = str(auth.get("user_id") or "")
+        trusted = self.storage.get_trusted_local_client_candidate(mk_user_id)
+        display_name = (trusted or {}).get("child_display_name") or f"Ученик #{mk_user_id}"
+        recipient = self.storage.get_or_create_recipient_for_client(mk_user_id, display_name, actor)
+        intervals = body.get("intervals")
+        if not isinstance(intervals, list):
+            intervals = []
+        result = self.storage.submit_schedule_availability(
+            recipient["id"], actor, role,
+            preferred_branch=body.get("preferred_branch"),
+            available_from=body.get("available_from"),
+            schedule_comment=body.get("schedule_comment"),
+            intervals=intervals,
+            source=source,
+        )
+        if result.get("ok"):
+            result["filled"] = True
+        return result
 
     # v7.1.12.1 — reproducible HMAC-signed invite links. The deep-link secret
     # is the app's existing stable secret (telegram_bot_token — the same one
@@ -19241,6 +19321,9 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 if path.startswith("/api/client/onboarding/recipients/") and path.endswith("/availability"):
                     _ocav_id = path[len("/api/client/onboarding/recipients/"):-len("/availability")]
                     return self._send_json(CTX.onboarding_recipient_availability_get(auth, _ocav_id))
+                if path.startswith("/api/client/schedule-availability/"):
+                    _csa_mk = path[len("/api/client/schedule-availability/"):]
+                    return self._send_json(CTX.client_schedule_availability_get(auth, _csa_mk))
                 if path == "/api/payments/intents":
                     return self._send_json(CTX.payment_intents_list(auth, params))
                 if path == "/api/payments/moyklass/invoices":
@@ -19587,6 +19670,9 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.onboarding_recipient_academic_level(auth, _ocr_parts[0], body))
                 if len(_ocr_parts) == 2 and _ocr_parts[1] == "availability":
                     return self._send_json(CTX.onboarding_recipient_availability_submit(auth, _ocr_parts[0], body))
+            if path.startswith("/api/client/schedule-availability/"):
+                _csa_mk = path[len("/api/client/schedule-availability/"):]
+                return self._send_json(CTX.client_schedule_availability_submit(auth, _csa_mk, body))
             if path == "/api/food/debug/sync-camp-children":
                 return self._send_json(CTX.food_debug_sync_camp_children(auth, body))
             if path == "/api/food/debug/clear-camp-children":

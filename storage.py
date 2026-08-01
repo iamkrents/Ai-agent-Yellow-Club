@@ -7809,6 +7809,89 @@ class Storage:
             "intervals": intervals,
         }
 
+    # v7.1.12.3 — permanent schedule-availability entry for ALL linked
+    # clients (not just onboarding-campaign recipients). client_schedule_
+    # availability is keyed on recipient_id -> client_onboarding_recipients,
+    # which only exists for students imported into a campaign. Rather than
+    # adding a second, mk_user_id-keyed availability table (a real parallel
+    # model the release brief explicitly says to avoid), a client with no
+    # campaign history gets a recipient row lazily created inside one
+    # reusable, permanently-open "standalone" campaign the first time they
+    # ever submit — submit_schedule_availability/get_schedule_availability
+    # themselves are completely unchanged. This campaign is an ordinary
+    # client_onboarding_campaigns row, so staff see its recipients through
+    # the existing campaign list/filters/summary/CSV export with no new
+    # staff-side code at all.
+    STANDALONE_AVAILABILITY_CAMPAIGN_NAME = "Возможности по расписанию — все клиенты"
+    _STANDALONE_AVAILABILITY_CAMPAIGN_IDEMPOTENCY_KEY = "standalone-availability-campaign-v71123"
+
+    def _ensure_standalone_availability_campaign(self, actor: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM client_onboarding_campaigns WHERE name=?",
+                (self.STANDALONE_AVAILABILITY_CAMPAIGN_NAME,),
+            ).fetchone()
+        if row:
+            return int(row["id"])
+        result = self.create_onboarding_campaign(
+            self.STANDALONE_AVAILABILITY_CAMPAIGN_NAME,
+            academic_year="—", created_by=str(actor or "system"),
+            collect_schedule_availability=True,
+            note="Системная кампания-контейнер для возможностей по расписанию клиентов, "
+                 "подключённых напрямую (CL-код, staff-привязка) — не через onboarding-приглашение. "
+                 "Создаётся автоматически при первой отправке формы. Не удалять и не архивировать вручную.",
+            idempotency_key=self._STANDALONE_AVAILABILITY_CAMPAIGN_IDEMPOTENCY_KEY,
+        )
+        campaign_id = int(result["campaign"]["id"])
+        self.start_onboarding_campaign(campaign_id, str(actor or "system"))
+        return campaign_id
+
+    def get_or_create_recipient_for_client(
+        self, mk_user_id: str, child_display_name: str, actor: str
+    ) -> dict[str, Any]:
+        """Find an existing client_onboarding_recipients row for this
+        mk_user_id (from ANY campaign — a client who came through a real
+        onboarding invite already has one and it is reused, never
+        duplicated), or lazily create one in the standalone campaign.
+        """
+        mk_user_id = str(mk_user_id or "").strip()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM client_onboarding_recipients WHERE mk_user_id=? ORDER BY updated_at DESC LIMIT 1",
+                (mk_user_id,),
+            ).fetchone()
+        if row:
+            return dict(row)
+        campaign_id = self._ensure_standalone_availability_campaign(actor)
+        self.import_onboarding_campaign_recipients(
+            campaign_id, [{"mk_user_id": mk_user_id, "child_display_name": str(child_display_name or "")}], actor,
+        )
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM client_onboarding_recipients WHERE campaign_id=? AND mk_user_id=?",
+                (campaign_id, mk_user_id),
+            ).fetchone()
+        return dict(row)
+
+    def get_availability_status_for_mk_user(self, mk_user_id: str) -> dict[str, Any]:
+        """Read-only status check — never creates a recipient row just from
+        being asked "is this filled in yet" (e.g. the multi-child picker
+        listing several students). Returns recipient_id=None when nothing
+        has ever been submitted for this student."""
+        mk_user_id = str(mk_user_id or "").strip()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, availability_updated_at FROM client_onboarding_recipients WHERE mk_user_id=? ORDER BY updated_at DESC LIMIT 1",
+                (mk_user_id,),
+            ).fetchone()
+        if not row:
+            return {"recipient_id": None, "filled": False, "availability_updated_at": None}
+        return {
+            "recipient_id": int(row["id"]),
+            "filled": bool(row["availability_updated_at"]),
+            "availability_updated_at": row["availability_updated_at"],
+        }
+
     def get_onboarding_campaign_availability_summary(self, campaign_id: int, slot_minutes: int = 60) -> dict[str, Any]:
         """Aggregate, coarse-grained view for the campaign summary screen.
 

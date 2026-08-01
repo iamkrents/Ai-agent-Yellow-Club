@@ -161,7 +161,7 @@ class TestVersion(unittest.TestCase):
         js = _js()
         self.assertIn("styles.css?v=7.1.12", html)
         self.assertIn("app.js?v=7.1.12", html)
-        self.assertIn('console.log("MiniApp version: v7.1.12.2")', js)
+        self.assertIn('console.log("MiniApp version: v7.1.12.3")', js)
 
 
 # ---------------------------------------------------------------------------
