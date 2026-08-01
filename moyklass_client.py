@@ -1164,6 +1164,20 @@ class MoyKlassClient:
             error=last_error, endpoint="/v1/company/users",
         )
 
+    def list_lesson_records_between(self, date_from: date, date_to: date, limit: int = 20000) -> MoyKlassResult:
+        """Public entry point for GET /v1/company/lessonRecords over an
+        arbitrary date range (v7.1.13 research: "students from schedule
+        period"). Thin wrapper around the already-production-tested
+        _scan_lesson_records_for_month — despite its name (originally written
+        for one calendar month), it takes an arbitrary [date_from, date_to)
+        window and paginates it correctly; live testing against the real
+        account confirmed a single call across an 11-month range (2025-09-01
+        to today, ~12.6k records) completes correctly in ~38s. Exists as a
+        named public method so callers outside this module don't need to
+        reach into a "_"-prefixed internal.
+        """
+        return self._scan_lesson_records_for_month(date_from, date_to, limit=limit)
+
     def get_classes(self, raw_args: str = "") -> MoyKlassResult:
         """Read MoyKlass groups/classes using several known endpoint variants."""
         params = self._parse_params(raw_args, default_limit="60")

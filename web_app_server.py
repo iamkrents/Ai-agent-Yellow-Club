@@ -2051,6 +2051,13 @@ class MiniAppContext:
         # cache instead of trusting frontend-supplied name/branch/course
         # fields — those are always re-read from here.
         self._onboarding_candidates_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        # v7.1.13 research — "students from schedule period" source. Keyed by
+        # (date_from, date_to, minimum_lessons, attended_only, exclude_cancelled_classes,
+        # exclude_cancelled_enrollments) -> (fetched_at_ts, result_dict). Deliberately a
+        # SEPARATE dict from _onboarding_candidates_cache — a schedule-filtered
+        # subset must never be silently merged with or mistaken for the "all
+        # MoyKlass clients" cache.
+        self._onboarding_schedule_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
 
     def validate_init_data(self, init_data: str, dev_user_id: str = "", unsafe_user_id: str = "", yc_user_id: str = "", yc_ts: str = "", yc_sig: str = "") -> dict[str, Any]:
         if self.settings.web_app_dev_mode and dev_user_id:
@@ -12559,6 +12566,190 @@ class MiniAppContext:
             "error": result.error if not result.ok else None,
         }
 
+    # ── v7.1.13 research — "students from schedule period" candidate source ──
+    # Live audit against the real MoyKlass account (2025-09-01..today, 334
+    # days) confirmed: lesson.status is reliably 0 (not held) or 1 (held) —
+    # no cancelled (status="3") lesson was ever observed in this account's
+    # real data; lessonRecord.skip (enrollment-level cancel flag) was 0/12599
+    # true — never observed true either. Both filters are still implemented
+    # (defensive, correct, and forward-compatible if either value ever
+    # appears), but neither is validated against a real positive example —
+    # honestly documented rather than claimed proven. lessonRecord.visit
+    # (attendance) DID show real variance (10408 true / 2191 false) and is
+    # treated as reliable.
+    _MK_CANCELLED_LESSON_STATUSES = ("3", "cancelled", "отменено", "canceled")
+    _ONBOARDING_SCHEDULE_MAX_PERIOD_DAYS = 400
+    _ONBOARDING_SCHEDULE_MIN_LESSONS_ALLOWED = (1, 2, 4, 8)
+    _ONBOARDING_SCHEDULE_RECORDS_LIMIT = 100000
+    _ONBOARDING_SCHEDULE_LESSONS_LIMIT = 60000
+    _ONBOARDING_SCHEDULE_CACHE_TTL_SECONDS = 600
+
+    def _onboarding_schedule_cache_dict(self) -> dict[tuple[Any, ...], tuple[float, dict[str, Any]]]:
+        """Lazily creates the cache dict if missing — same rationale as
+        _onboarding_candidates_cache_dict: tests across this project build
+        MiniAppContext via object.__new__(), bypassing __init__."""
+        cache = getattr(self, "_onboarding_schedule_cache", None)
+        if cache is None:
+            cache = {}
+            self._onboarding_schedule_cache = cache
+        return cache
+
+    def _onboarding_list_students_from_schedule(
+        self, date_from: date, date_to: date, minimum_lessons: int, attended_only: bool,
+        exclude_cancelled_classes: bool, exclude_cancelled_enrollments: bool,
+    ) -> dict[str, Any]:
+        """Read-only aggregation over MoyKlass lessons + lessonRecords for a
+        date range — never creates, imports, or touches any recipient/
+        invitation/pilot/payment record. Two live MoyKlass calls total
+        (get_lessons_between + list_lesson_records_between), each already
+        paginating server-side internally — never one request per lesson or
+        per student. Short-lived cache keyed by every input parameter, kept
+        in a dict separate from the "all clients" candidates cache.
+        """
+        cache_key = (date_from.isoformat(), date_to.isoformat(), int(minimum_lessons),
+                     bool(attended_only), bool(exclude_cancelled_classes), bool(exclude_cancelled_enrollments))
+        cache = self._onboarding_schedule_cache_dict()
+        cached = cache.get(cache_key)
+        if cached and (time.time() - cached[0]) <= self._ONBOARDING_SCHEDULE_CACHE_TTL_SECONDS:
+            return cached[1]
+
+        lessons_result = self.moyklass.get_lessons_between(
+            date_from.isoformat(), date_to.isoformat(), limit=self._ONBOARDING_SCHEDULE_LESSONS_LIMIT,
+        )
+        lesson_items = [x for x in extract_items(lessons_result.data) if isinstance(x, dict)] if lessons_result.ok else []
+        cancelled_lessons = sum(1 for it in lesson_items if str(it.get("status")) in self._MK_CANCELLED_LESSON_STATUSES)
+
+        records_result = self.moyklass.list_lesson_records_between(
+            date_from, date_to, limit=self._ONBOARDING_SCHEDULE_RECORDS_LIMIT,
+        )
+        records = (records_result.data or {}).get("lessonRecords", []) if isinstance(records_result.data, dict) else []
+
+        no_user_id = 0
+        cancelled_enrollments = 0
+        cancelled_class_records = 0
+        by_user_count: dict[str, int] = {}
+        by_user_attended: dict[str, int] = {}
+        for r in records:
+            if not isinstance(r, dict):
+                continue
+            uid = r.get("userId") or r.get("studentId") or r.get("clientId") or r.get("idUser")
+            if not uid:
+                no_user_id += 1
+                continue
+            uid = str(uid)
+            skip = bool(r.get("skip"))
+            if skip:
+                cancelled_enrollments += 1
+            lesson = r.get("lesson") if isinstance(r.get("lesson"), dict) else {}
+            lesson_status = str(lesson.get("status")) if lesson else str(r.get("lessonStatus"))
+            lesson_cancelled = lesson_status in self._MK_CANCELLED_LESSON_STATUSES
+            if lesson_cancelled:
+                cancelled_class_records += 1
+            if (exclude_cancelled_enrollments and skip) or (exclude_cancelled_classes and lesson_cancelled):
+                continue
+            by_user_count[uid] = by_user_count.get(uid, 0) + 1
+            visit = r.get("visit")
+            visited = visit is True or str(visit).lower() in ("1", "true", "yes", "y", "да")
+            if visited:
+                by_user_attended[uid] = by_user_attended.get(uid, 0) + 1
+
+        source_counts = by_user_attended if attended_only else by_user_count
+        threshold = max(1, int(minimum_lessons))
+        eligible_ids = [uid for uid, c in source_counts.items() if c >= threshold]
+
+        distribution = {"1": 0, "2-3": 0, "4-7": 0, "8-15": 0, "16+": 0}
+        for c in by_user_count.values():
+            bucket = "1" if c == 1 else "2-3" if c <= 3 else "4-7" if c <= 7 else "8-15" if c <= 15 else "16+"
+            distribution[bucket] += 1
+
+        result = {
+            "ok": bool(lessons_result.ok) and bool(records_result.ok),
+            "mk_user_ids": eligible_ids,
+            "diagnostics": {
+                "lessons_found": len(lesson_items),
+                "cancelled_lessons": cancelled_lessons,
+                "lesson_records_found": len(records),
+                "cancelled_class_records": cancelled_class_records,
+                "cancelled_enrollments": cancelled_enrollments,
+                "records_without_mk_user_id": no_user_id,
+                "unique_students_any_record": len(by_user_count),
+                "unique_students_attended": len(by_user_attended),
+                "unique_students_2plus": sum(1 for c in by_user_count.values() if c >= 2),
+                "unique_students_4plus": sum(1 for c in by_user_count.values() if c >= 4),
+                "unique_students_8plus": sum(1 for c in by_user_count.values() if c >= 8),
+                "unique_students_eligible": len(eligible_ids),
+                "distribution": distribution,
+                "lessons_error": lessons_result.error if not lessons_result.ok else None,
+                "records_error": records_result.error if not records_result.ok else None,
+            },
+        }
+        cache[cache_key] = (time.time(), result)
+        return result
+
+    def onboarding_campaign_candidates_from_schedule(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        """GET /api/client/onboarding/candidates/from-schedule
+
+        Read-only candidate discovery: which real MoyKlass students had
+        enough non-cancelled schedule activity in [date_from, date_to] to be
+        worth inviting into a new onboarding campaign. Never creates a
+        recipient, invite, pilot record, or payment intent — only ever
+        RETURNS candidates in the exact same shape onboarding_campaign_
+        bulk_candidates returns, so the existing selection UI (manual
+        checkbox, "Выбрать всех загруженных — N", "Снять выбор", single
+        import request) works unchanged.
+        """
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        date_from_str = str(params.get("date_from") or "").strip()
+        date_to_str = str(params.get("date_to") or "").strip()
+        try:
+            date_from = date.fromisoformat(date_from_str)
+            date_to = date.fromisoformat(date_to_str)
+        except ValueError:
+            return {"ok": False, "error": "Некорректный формат даты (ожидается YYYY-MM-DD)"}
+        if date_from > date_to:
+            return {"ok": False, "error": "Дата начала не может быть позже даты окончания"}
+        if (date_to - date_from).days > self._ONBOARDING_SCHEDULE_MAX_PERIOD_DAYS:
+            return {"ok": False, "error": f"Период не может превышать {self._ONBOARDING_SCHEDULE_MAX_PERIOD_DAYS} дней"}
+        try:
+            minimum_lessons = int(params.get("minimum_lessons") or 1)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Некорректное значение minimum_lessons"}
+        if minimum_lessons not in self._ONBOARDING_SCHEDULE_MIN_LESSONS_ALLOWED:
+            return {"ok": False, "error": f"minimum_lessons должен быть одним из {self._ONBOARDING_SCHEDULE_MIN_LESSONS_ALLOWED}"}
+        attended_only = str(params.get("attended_only") or "").strip().lower() in ("1", "true", "yes")
+        exclude_cancelled_classes = str(params.get("exclude_cancelled_classes", "true")).strip().lower() not in ("0", "false", "no")
+        exclude_cancelled_enrollments = str(params.get("exclude_cancelled_enrollments", "true")).strip().lower() not in ("0", "false", "no")
+
+        schedule = self._onboarding_list_students_from_schedule(
+            date_from, date_to, minimum_lessons, attended_only, exclude_cancelled_classes, exclude_cancelled_enrollments,
+        )
+        if not schedule["mk_user_ids"] and not schedule["ok"]:
+            return {
+                "ok": False,
+                "error": "МойКласс временно недоступен, не удалось загрузить расписание за период",
+                "diagnostics": schedule["diagnostics"],
+            }
+
+        # Names/branch resolved via the SAME bulk-candidates path used by the
+        # "all clients" source — one extra call, never a second parallel
+        # source of truth for display data, and it warms the same
+        # verification cache the import endpoint relies on.
+        bulk = self.onboarding_campaign_bulk_candidates(auth, {})
+        by_id = {c["mk_user_id"]: c for c in (bulk.get("candidates") or [])}
+        candidates = [by_id[mk] for mk in schedule["mk_user_ids"] if mk in by_id]
+        missing = len(schedule["mk_user_ids"]) - len(candidates)
+
+        diagnostics = dict(schedule["diagnostics"])
+        diagnostics["missing_from_bulk_users"] = missing
+        return {
+            "ok": bool(schedule["ok"]) and bool(bulk.get("ok")),
+            "candidates": candidates,
+            "diagnostics": diagnostics,
+            "error": None if schedule["ok"] else "Частичные данные — МойКласс вернул ошибку на части запроса",
+        }
+
     def _onboarding_resolve_verified_candidates(
         self, mk_user_ids: list[str]
     ) -> tuple[dict[str, dict[str, Any]], Optional[str]]:
@@ -19031,6 +19222,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.onboarding_campaign_search_candidates(auth, params))
                 if path == "/api/client/onboarding/candidates/bulk":
                     return self._send_json(CTX.onboarding_campaign_bulk_candidates(auth, params))
+                if path == "/api/client/onboarding/candidates/from-schedule":
+                    return self._send_json(CTX.onboarding_campaign_candidates_from_schedule(auth, params))
                 if path == "/api/client/onboarding/campaigns":
                     return self._send_json(CTX.onboarding_campaigns_list(auth, params))
                 if path.startswith("/api/client/onboarding/campaigns/"):

@@ -84,7 +84,7 @@ const launchTab = urlParams.get("tab") || "";
 // one specific campaign recipient (from the bot's post-activation button).
 const launchAvailabilityRecipientId = urlParams.get("oc_availability_recipient") || "";
 
-console.log("MiniApp version: v7.1.12.1");
+console.log("MiniApp version: v7.1.12.2");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -16710,6 +16710,19 @@ const _ocState = {
   importBusy: false,
   importDiagnostics: null,      // { pages_loaded, raw_items, unique_items, stopped_reason } from bulk load
   importBulkOk: true,
+  // v7.1.13 research — "Ученики из расписания за период" candidate source.
+  // Defaults informed by a real audit of this MoyKlass account
+  // (2025-09-01..today): minimum 2 lessons excludes one-time/trial-only
+  // visitors (25% of ever-enrolled students had zero non-trial lessons)
+  // while still including everyone with genuine repeat attendance.
+  importSource: "all",          // "all" | "schedule"
+  scheduleDateFrom: "2025-09-01",
+  scheduleDateTo: new Date().toISOString().slice(0, 10),
+  scheduleMinimumLessons: 2,
+  scheduleAttendedOnly: false,
+  scheduleExcludeCancelledClasses: true,
+  scheduleExcludeCancelledEnrollments: true,
+  scheduleDiagnostics: null,    // aggregated, non-personal counts from the last /from-schedule search
 };
 
 const ONBOARDING_CAMPAIGN_STATUS_LABELS = { draft: "Черновик", active: "Активна", completed: "Завершена", archived: "В архиве" };
@@ -17298,6 +17311,70 @@ function _wsOcExistingRecipientIds() {
   return new Set((_ocState.campaignDetail?.recipients || []).map(r => String(r.mk_user_id)));
 }
 
+// v7.1.13 research — source picker for the import block: real MoyKlass
+// "all clients" bulk fetch, or the new schedule-period-derived candidate
+// list. Switching source never clears an in-progress selection — only a
+// fresh search (in either source) replaces importResults.
+const ONBOARDING_SCHEDULE_CRITERION_LABELS = {
+  enrolled_1: "Был записан хотя бы на 1 занятие",
+  attended_1: "Посещал хотя бы 1 занятие",
+  min_2: "Минимум 2 занятия",
+  min_4: "Минимум 4 занятия",
+  min_8: "Минимум 8 занятий",
+};
+function _wsOcImportSourceToggleHtml() {
+  return `
+    <div class="ws-oc-mode-toggle" style="margin-bottom:10px">
+      <button type="button" class="ws-oc-mode-btn${_ocState.importSource === "all" ? " active" : ""}" data-import-source="all">Все клиенты МойКласс</button>
+      <button type="button" class="ws-oc-mode-btn${_ocState.importSource === "schedule" ? " active" : ""}" data-import-source="schedule">Ученики из расписания за период</button>
+    </div>`;
+}
+function _wsOcScheduleCriterionValue() {
+  if (_ocState.scheduleAttendedOnly) return "attended_1";
+  if (_ocState.scheduleMinimumLessons >= 8) return "min_8";
+  if (_ocState.scheduleMinimumLessons >= 4) return "min_4";
+  if (_ocState.scheduleMinimumLessons >= 2) return "min_2";
+  return "enrolled_1";
+}
+function _wsOcScheduleFilterFormHtml() {
+  const criterion = _wsOcScheduleCriterionValue();
+  return `
+    <div class="ws-oc-schedule-form">
+      <label class="ws-oc-field">
+        <span>С даты</span>
+        <input type="date" id="wsOcScheduleFrom" value="${escapeAttr(_ocState.scheduleDateFrom)}" />
+      </label>
+      <label class="ws-oc-field">
+        <span>По дату</span>
+        <input type="date" id="wsOcScheduleTo" value="${escapeAttr(_ocState.scheduleDateTo)}" />
+      </label>
+      <label class="ws-oc-field">
+        <span>Критерий</span>
+        <select id="wsOcScheduleCriterion">
+          ${Object.entries(ONBOARDING_SCHEDULE_CRITERION_LABELS).map(([k, l]) => `<option value="${k}"${k === criterion ? " selected" : ""}>${escapeHtml(l)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="ws-oc-checkbox-field">
+        <input type="checkbox" id="wsOcScheduleExclCancelledClasses" ${_ocState.scheduleExcludeCancelledClasses ? "checked" : ""} />
+        <span>Исключать отменённые занятия</span>
+      </label>
+      <label class="ws-oc-checkbox-field">
+        <input type="checkbox" id="wsOcScheduleExclCancelledEnrollments" ${_ocState.scheduleExcludeCancelledEnrollments ? "checked" : ""} />
+        <span>Исключать отменённые записи</span>
+      </label>
+      <div class="ws-oc-campaign-actions">
+        <button class="secondary" type="button" id="wsOcScheduleSearchBtn">Найти учеников</button>
+      </div>
+    </div>`;
+}
+function _wsOcScheduleDiagnosticsHtml() {
+  const d = _ocState.scheduleDiagnostics;
+  if (!d) return "";
+  return `
+    <div class="ws-conn-note">
+      Найдено занятий: ${d.lessons_found ?? 0} · Записей учеников: ${d.lesson_records_found ?? 0} · Уникальных учеников: ${d.unique_students_eligible ?? 0} · Исключено отменённых: ${(d.cancelled_class_records ?? 0) + (d.cancelled_enrollments ?? 0)} · Без MoyKlass ID: ${d.records_without_mk_user_id ?? 0}
+    </div>`;
+}
 function _wsOcImportSectionHtml() {
   const results = _ocState.importResults;
   const existingIds = _wsOcExistingRecipientIds();
@@ -17306,7 +17383,9 @@ function _wsOcImportSectionHtml() {
   if (_ocState.importBusy) {
     resultsHtml = `<div class="kpi-loading">Ищу…</div>`;
   } else if (results === null) {
-    resultsHtml = `<div class="ws-conn-note">Введите имя или ID ученика МойКласс и нажмите «Найти».</div>`;
+    resultsHtml = _ocState.importSource === "schedule"
+      ? `<div class="ws-conn-note">Задайте период и критерий, затем нажмите «Найти учеников».</div>`
+      : `<div class="ws-conn-note">Введите имя или ID ученика МойКласс и нажмите «Найти».</div>`;
   } else if (!results.length) {
     resultsHtml = `<div class="ws-conn-note">Ничего не найдено.</div>`;
   } else {
@@ -17330,16 +17409,15 @@ function _wsOcImportSectionHtml() {
       </label>`;
     }).join("");
   }
-  const diagLine = _ocState.importDiagnostics ? `
+  const diagLine = _ocState.importSource === "schedule" ? _wsOcScheduleDiagnosticsHtml() : (_ocState.importDiagnostics ? `
     <div class="ws-conn-note">
       Загружено страниц: ${_ocState.importDiagnostics.pages_loaded} · получено: ${_ocState.importDiagnostics.raw_items} · уникальных: ${_ocState.importDiagnostics.unique_items}
       ${_ocState.importDiagnostics.stopped_reason && _ocState.importDiagnostics.stopped_reason !== "short_page" && _ocState.importDiagnostics.stopped_reason !== "empty_page" ? ` · причина остановки: ${escapeHtml(_ocState.importDiagnostics.stopped_reason)}` : ""}
       ${!_ocState.importBulkOk ? ` · <b>частичная загрузка, повторите позже</b>` : ""}
-    </div>` : "";
+    </div>` : "");
   const selectedCount = _ocState.importSelected.size;
   const addLabel = selectedCount > 0 ? `Добавить выбранных — ${selectedCount}` : "Добавить выбранных";
-  return `
-    <article class="card">
+  const sourceFormHtml = _ocState.importSource === "schedule" ? _wsOcScheduleFilterFormHtml() : `
       <div class="ws-search-row">
         <label class="ws-search-bar">
           ${WS_ICON_SEARCH}
@@ -17349,7 +17427,11 @@ function _wsOcImportSectionHtml() {
       </div>
       <div class="ws-oc-campaign-actions">
         <button class="secondary" type="button" id="wsOcImportLoadAllBtn">Загрузить всех учеников из МойКласс</button>
-      </div>
+      </div>`;
+  return `
+    <article class="card">
+      ${_wsOcImportSourceToggleHtml()}
+      ${sourceFormHtml}
       ${diagLine}
       ${massSelectHtml}
       <div id="wsOcImportResults">${resultsHtml}</div>
@@ -17358,7 +17440,19 @@ function _wsOcImportSectionHtml() {
       </div>
     </article>`;
 }
+function _wsOcSetImportSource(source) {
+  if (_ocState.importSource === source) return;
+  _ocState.importSource = source;
+  _wsRenderCurrentTab();
+}
+function _wsOcScheduleCriterionChanged(value) {
+  _ocState.scheduleAttendedOnly = value === "attended_1";
+  _ocState.scheduleMinimumLessons = value === "min_8" ? 8 : value === "min_4" ? 4 : value === "min_2" ? 2 : 1;
+}
 function _wsOcWireImportSection() {
+  document.querySelectorAll("[data-import-source]").forEach(btn => {
+    btn.addEventListener("click", () => _wsOcSetImportSource(btn.dataset.importSource));
+  });
   const input = $("wsOcImportSearchInput");
   if (input) {
     input.addEventListener("input", () => { _ocState.importQuery = input.value; });
@@ -17366,6 +17460,12 @@ function _wsOcWireImportSection() {
   }
   $("wsOcImportSearchBtn")?.addEventListener("click", _wsOcSearchCandidates);
   $("wsOcImportLoadAllBtn")?.addEventListener("click", _wsOcLoadAllCandidates);
+  $("wsOcScheduleFrom")?.addEventListener("change", e => { _ocState.scheduleDateFrom = e.target.value; });
+  $("wsOcScheduleTo")?.addEventListener("change", e => { _ocState.scheduleDateTo = e.target.value; });
+  $("wsOcScheduleCriterion")?.addEventListener("change", e => _wsOcScheduleCriterionChanged(e.target.value));
+  $("wsOcScheduleExclCancelledClasses")?.addEventListener("change", e => { _ocState.scheduleExcludeCancelledClasses = e.target.checked; });
+  $("wsOcScheduleExclCancelledEnrollments")?.addEventListener("change", e => { _ocState.scheduleExcludeCancelledEnrollments = e.target.checked; });
+  $("wsOcScheduleSearchBtn")?.addEventListener("click", _wsOcSearchScheduleCandidates);
   $("wsOcSelectAllBtn")?.addEventListener("click", _wsOcImportSelectAllLoaded);
   $("wsOcDeselectAllBtn")?.addEventListener("click", _wsOcImportDeselectAll);
   $("wsOcImportAddBtn")?.addEventListener("click", _wsOcImportAddClicked);
@@ -17443,6 +17543,43 @@ async function _wsOcLoadAllCandidates() {
     _ocState.importDiagnostics = data.diagnostics || null;
     _ocState.importBulkOk = !!data.ok;
     if (!data.ok) setNotice("Список загружен частично — произошла ошибка МойКласс на одной из страниц", "error");
+  } catch (e) {
+    _ocState.importResults = [];
+    setNotice(safeUserError(e), "error");
+  } finally {
+    _ocState.importBusy = false;
+    _wsRenderCurrentTab();
+  }
+}
+// v7.1.13 research — "Ученики из расписания за период": server-side
+// aggregation over real MoyKlass lessons + lessonRecords for the given date
+// range/criteria, one HTTP request regardless of how many months or lessons
+// the period spans. Populates the exact same _ocState.importResults/
+// importSelected the "all clients" and search sources use, so select-all/
+// deselect/manual-check/single-import-request all work unchanged.
+async function _wsOcSearchScheduleCandidates() {
+  _ocState.importBusy = true;
+  _ocState.scheduleDiagnostics = null;
+  _wsRenderCurrentTab();
+  try {
+    const qs = new URLSearchParams({
+      date_from: _ocState.scheduleDateFrom,
+      date_to: _ocState.scheduleDateTo,
+      minimum_lessons: String(_ocState.scheduleMinimumLessons),
+      attended_only: _ocState.scheduleAttendedOnly ? "true" : "false",
+      exclude_cancelled_classes: _ocState.scheduleExcludeCancelledClasses ? "true" : "false",
+      exclude_cancelled_enrollments: _ocState.scheduleExcludeCancelledEnrollments ? "true" : "false",
+    });
+    const data = await apiGet(`/api/client/onboarding/candidates/from-schedule?${qs.toString()}`);
+    if (data.ok || data.candidates) {
+      _ocState.importResults = data.candidates || [];
+      _ocState.scheduleDiagnostics = data.diagnostics || null;
+      if (!data.ok) setNotice(data.error || "Список загружен частично", "error");
+    } else {
+      _ocState.importResults = [];
+      _ocState.scheduleDiagnostics = data.diagnostics || null;
+      setNotice(data.error || "Ошибка", "error");
+    }
   } catch (e) {
     _ocState.importResults = [];
     setNotice(safeUserError(e), "error");

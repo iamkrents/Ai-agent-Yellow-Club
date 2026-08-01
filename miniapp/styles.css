@@ -9212,6 +9212,13 @@ body.keyboard-open .tabs.bottom-tabbar {
   .ws-oc-mass-select-count { margin-left: 0; text-align: center; }
 }
 
+/* v7.1.13 research — "Ученики из расписания за период" candidate-source
+   filter form (date range, criterion, exclude-cancelled toggles). Reuses
+   .ws-oc-field/.ws-oc-checkbox-field styling already defined above. */
+.ws-oc-schedule-form { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+.ws-oc-schedule-form .ws-oc-field,
+.ws-oc-schedule-form .ws-oc-checkbox-field { margin-bottom: 8px; }
+
 /* v7.1.12.1 — parent-facing schedule-availability form (#ocAvailabilityModal)
    and its interval-row list; also reused read-only in the staff recipient card. */
 .oc-interval-row { display: grid; grid-template-columns: auto 1fr auto 1fr auto auto; gap: 6px; align-items: center; margin-bottom: 8px; }

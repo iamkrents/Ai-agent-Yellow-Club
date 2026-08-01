@@ -412,13 +412,16 @@ class TestResponsiveWidth(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestHotfixVersion(unittest.TestCase):
-    def test_app_js_version_is_v71121(self):
-        self.assertIn('console.log("MiniApp version: v7.1.12.1");', _js())
+    # v7.1.12.2 superseded this hotfix's own version bump — these assert the
+    # CURRENT marker/cache-bust, not the historical v7.1.12.1 this file was
+    # originally written against.
+    def test_app_js_version_is_current(self):
+        self.assertIn('console.log("MiniApp version: v7.1.12.2");', _js())
 
-    def test_index_html_cache_bust_is_v71121(self):
+    def test_index_html_cache_bust_is_current(self):
         html = _html()
-        self.assertIn("styles.css?v=7.1.12.1", html)
-        self.assertIn("app.js?v=7.1.12.1", html)
+        self.assertIn("styles.css?v=7.1.12.2", html)
+        self.assertIn("app.js?v=7.1.12.2", html)
 
 
 if __name__ == "__main__":
