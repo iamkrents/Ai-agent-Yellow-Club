@@ -2049,6 +2049,46 @@ button:active,
   }
 }
 
+/* v7.1.13.1 — owner-only "Клиент / родитель" test role: trusted
+   client-context lookup panel. Own scoped input styling — .test-role-
+   controls only ever styled <select> (see the round-2 note on
+   .otn-controls for why that's a known trap to avoid repeating). */
+.test-client-ctx input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line, #edf0f5);
+  border-radius: 14px;
+  padding: 11px 12px;
+  background: #fff;
+  color: var(--ink, #111);
+  font: inherit;
+  font-weight: 700;
+}
+.test-client-ctx-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 14px;
+}
+.test-client-ctx-row b { display: block; font-size: 13px; }
+.test-client-ctx-row span { display: block; margin-top: 2px; font-size: 12px; color: var(--muted, #7b8190); }
+
+.owner-test-client-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border-radius: 16px;
+  background: #fff3ce;
+  border: 1px solid rgba(255, 196, 20, .5);
+}
+.owner-test-client-banner b { display: block; font-size: 13px; color: #7c5c00; }
+.owner-test-client-banner span { display: block; margin-top: 2px; font-size: 12px; color: #8a7a3a; }
+
 /* v4.6.0 - bottom role tab bar and AI question screen */
 .app-shell {
   padding-bottom: calc(148px + env(safe-area-inset-bottom));

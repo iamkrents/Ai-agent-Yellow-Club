@@ -133,6 +133,11 @@ TEST_ROLE_OPTIONS = [
     {"value": "client_manager", "label": "Клиент-менеджер", "needsTeacher": False},
     {"value": "director", "label": "Директор", "needsTeacher": False},
     {"value": "kitchen", "label": "Кухня", "needsTeacher": False},
+    # v7.1.13.1 — owner/admin-only production smoke testing of the client
+    # cabinet. Requires a separate trusted client context (see
+    # owner_test_client_lookup/_select) — picking this role alone shows an
+    # empty cabinet, since the owner's own Telegram id has no client links.
+    {"value": "parent", "label": "Клиент / родитель", "needsTeacher": False, "needsClientContext": True},
 ]
 LESSON_ROLES = {"owner", "teacher", "methodist", "operations", "intern"}
 SCHEDULE_ROLES = {"owner", "teacher", "methodist", "operations"}
@@ -2151,6 +2156,83 @@ class MiniAppContext:
         real_role = self._base_role_for_user(user_id)
         return int(user_id or 0) in set(int(x) for x in (self.settings.admin_ids or []) if x) or real_role in FULL_ADMIN_ROLES
 
+    # ── v7.1.13.1 — owner-only "Клиент / родитель" test role ──────────────────
+    # Audit finding that motivated this: _role_for_user() only swaps the
+    # EFFECTIVE ROLE (staff_users.test_role); every client-facing handler
+    # then still resolves client data by querying client_parent_child_links/
+    # parent_child_links keyed on auth["user_id"] itself (the owner's REAL
+    # Telegram id, e.g. 7850692063). The owner is never a real client, so
+    # that id has no rows there — flipping to "parent" alone always shows an
+    # empty cabinet. A trusted, server-resolved substitute identity is
+    # required. _effective_client_identity is the single choke point every
+    # client-facing GET must call instead of str(auth["user_id"]) directly;
+    # it only ever returns something other than the real id when ALL of the
+    # following hold, so a normal client can never trigger it via any
+    # query/body/header: real role is owner/admin (_can_use_role_test),
+    # test mode is enabled, the stored test_role is exactly "parent", and a
+    # client_parent_telegram_id was already persisted by
+    # owner_test_client_select (which itself re-validated it against real
+    # link tables before storing).
+    def _owner_test_client_mode_active(self, auth: dict[str, Any]) -> bool:
+        # Defensive: several older tests build a minimal MiniAppContext via
+        # __new__ that only sets .storage and monkey-patches
+        # ._role_for_user, never .settings — those pre-date this feature
+        # entirely and must keep working unchanged. A context with no
+        # settings object at all can never have real test-mode data.
+        if getattr(self, "settings", None) is None:
+            return False
+        real_uid = int(auth["user_id"])
+        if not self._can_use_role_test(real_uid):
+            return False
+        test = self.storage.get_staff_test_mode(real_uid)
+        return bool(test.get("enabled") and test.get("role") == "parent" and test.get("client_parent_telegram_id"))
+
+    def _effective_client_identity(self, auth: dict[str, Any]) -> str:
+        """The Telegram id whose client data a request should read/write.
+        Real parents always get their own real_uid back unchanged — this
+        function does not weaken their existing ownership checks in any
+        way, it only ever substitutes an id for the owner/admin test path."""
+        real_uid = int(auth["user_id"])
+        if self._owner_test_client_mode_active(auth):
+            test = self.storage.get_staff_test_mode(real_uid)
+            ctx = str(test.get("client_parent_telegram_id") or "").strip()
+            if ctx:
+                return ctx
+        return str(real_uid)
+
+    def owner_test_client_lookup(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/owner/test-client/lookup — read-only. Never creates,
+        modifies, or unlinks anything; only searches existing ACTIVE rows in
+        client_parent_child_links/parent_child_links."""
+        user_id = int(auth["user_id"])
+        if not self._can_use_role_test(user_id):
+            return {"ok": False, "error": "Доступно только владельцу/админу."}
+        query = str(body.get("query") or "").strip()
+        if not query:
+            return {"ok": False, "error": "Укажите mk_user_id ребёнка или Telegram ID родителя."}
+        candidates = self.storage.find_trusted_client_context_candidates(query)
+        if not candidates:
+            return {"ok": False, "error": "Связь не найдена. Ребёнок или родитель должны быть уже подключены."}
+        return {"ok": True, "candidates": candidates}
+
+    def owner_test_client_select(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/owner/test-client/select — sets the trusted client
+        preview context. parent_telegram_id is ALWAYS re-validated here
+        against real link tables server-side before being stored — a
+        client-supplied id that doesn't resolve to any real, active link is
+        rejected outright, regardless of what the frontend sent."""
+        user_id = int(auth["user_id"])
+        if not self._can_use_role_test(user_id):
+            return {"ok": False, "error": "Доступно только владельцу/админу."}
+        parent_telegram_id = str(body.get("parent_telegram_id") or "").strip()
+        if not parent_telegram_id:
+            return {"ok": False, "error": "Не выбран родитель."}
+        candidates = self.storage.find_trusted_client_context_candidates(parent_telegram_id)
+        if not any(c["parent_telegram_id"] == parent_telegram_id for c in candidates):
+            return {"ok": False, "error": "Этот Telegram ID не найден среди действующих связей."}
+        self.storage.set_staff_test_client_context(user_id, parent_telegram_id)
+        return {"ok": True, "me": self.me(auth)}
+
     def _client_cabinet_enabled(self, user_id: int) -> bool:
         """v7.1.13 round 2 — safe rollout gate for the new client cabinet.
         Server-side only: callers must always pass auth["user_id"] (never a
@@ -2329,8 +2411,17 @@ class MiniAppContext:
         unread_notification_count = 0
         client_cabinet_v7113_enabled = False
         client_notifications_enabled = False
+        # v7.1.13.1 — owner-only "Клиент / родитель" test role: client DATA
+        # (client_kind, unread count) is read via the trusted substituted
+        # identity when active, so a real GET round-trip actually shows
+        # something during production smoke testing. The pilot-gate booleans
+        # below deliberately keep using the REAL owner user_id, never the
+        # substituted one — gates must reflect what the owner is actually
+        # allowlisted for, not the previewed client's own gate status.
+        owner_test_client_mode = self._owner_test_client_mode_active(auth)
+        effective_client_id = self._effective_client_identity(auth) if role == "parent" else str(user_id)
         if role == "parent":
-            client_kind = self.storage.get_client_kind_for_parent(user_id)
+            client_kind = self.storage.get_client_kind_for_parent(effective_client_id)
             client_food_entry_visible = bool(
                 getattr(self.settings, "client_food_entry_visible", True)
             ) and client_kind in ("food_only", "combined")
@@ -2338,10 +2429,20 @@ class MiniAppContext:
             client_notifications_enabled = self._client_notifications_enabled(user_id)
             if client_notifications_enabled:
                 unread_notification_count = self.storage.count_unread_client_notifications(
-                    user_id, allowed_categories=self._notification_allowed_categories(client_kind),
+                    effective_client_id, allowed_categories=self._notification_allowed_categories(client_kind),
                 )
         can_test = self._can_use_role_test(user_id)
-        test_mode = self.storage.get_staff_test_mode(user_id) if can_test else {"enabled": False, "role": "", "mk_teacher_id": ""}
+        test_mode = self.storage.get_staff_test_mode(user_id) if can_test else {"enabled": False, "role": "", "mk_teacher_id": "", "client_parent_telegram_id": ""}
+        owner_test_client_context = None
+        if owner_test_client_mode:
+            _candidates = self.storage.find_trusted_client_context_candidates(effective_client_id)
+            _ctx = next((c for c in _candidates if c["parent_telegram_id"] == effective_client_id), None)
+            if _ctx:
+                owner_test_client_context = {
+                    "parentTelegramId": _ctx["parent_telegram_id"],
+                    "clientKind": _ctx["client_kind"],
+                    "children": [{"mkUserId": c["mk_user_id"], "displayName": c["display_name"], "source": c["source"]} for c in _ctx["children"]],
+                }
         capabilities = self._capabilities_for_user(user_id)
         _mk_name = str(staff.get("mk_teacher_name") or "").strip()
         _full_name = str(staff.get("full_name") or "").strip()
@@ -2390,6 +2491,12 @@ class MiniAppContext:
             # disabled state — never trust a client-supplied override.
             "clientCabinetV7113Enabled": client_cabinet_v7113_enabled,
             "clientNotificationsEnabled": client_notifications_enabled,
+            # v7.1.13.1 — drives the "Тестовый режим: кабинет клиента" banner
+            # and the "Вернуться в кабинет владельца" button; real clients
+            # never see this (owner_test_client_mode is only ever true for
+            # the real owner/admin Telegram id, see _owner_test_client_mode_active).
+            "ownerTestClientMode": owner_test_client_mode,
+            "ownerTestClientContext": owner_test_client_context,
             "campClassNameFilter": (
                 str(getattr(self.settings, "camp_lesson_name_filter", "") or "").strip()
                 or str(getattr(self.settings, "camp_class_name_filter", "Summer Camp") or "Summer Camp").strip()
@@ -2400,7 +2507,7 @@ class MiniAppContext:
         }
         if can_test:
             mvp_mode = bool(getattr(self.settings, "mvp_release_mode", False))
-            _mvp_role_values = {"owner", "admin", "teacher", "methodist", "intern", "director", "client_manager", "kitchen", "operations"}
+            _mvp_role_values = {"owner", "admin", "teacher", "methodist", "intern", "director", "client_manager", "kitchen", "operations", "parent"}
             role_opts = [o for o in TEST_ROLE_OPTIONS if o["value"] in _mvp_role_values] if mvp_mode else TEST_ROLE_OPTIONS
             data["roleOptions"] = role_opts
             data["testTeachers"] = self._test_teacher_options()
@@ -2415,6 +2522,14 @@ class MiniAppContext:
             self.storage.clear_staff_test_mode(user_id)
             return {"ok": True, "me": self.me(auth)}
         role = str(payload.get("role") or "").strip().lower()
+        if role == "parent":
+            # v7.1.13.1 — "Клиент / родитель" can only be entered through
+            # owner_test_client_select (POST /api/owner/test-client/select),
+            # which re-validates a real, already-linked parent before
+            # storing anything — this direct role-switch path is never
+            # sufficient on its own (test item #4: rejected without a
+            # trusted client context).
+            return {"ok": False, "error": "Выберите клиента через /api/owner/test-client/select."}
         valid_roles = {str(x.get("value")) for x in TEST_ROLE_OPTIONS}
         mvp_mode = bool(getattr(self.settings, "mvp_release_mode", False))
         if mvp_mode:
@@ -3203,8 +3318,7 @@ class MiniAppContext:
     def food_my_children(self, auth: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
-        user_id = int(auth["user_id"])
-        parent_telegram_id = str(user_id)
+        parent_telegram_id = self._effective_client_identity(auth)
         children = self.storage.list_children_for_parent(parent_telegram_id)
         return {"ok": True, "children": children}
 
@@ -3512,8 +3626,7 @@ class MiniAppContext:
     def food_my_orders(self, auth: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
-        user_id = int(auth["user_id"])
-        orders = self.storage.list_food_orders_for_parent(str(user_id))
+        orders = self.storage.list_food_orders_for_parent(self._effective_client_identity(auth))
         return {"ok": True, "orders": orders}
 
     def _check_order_preconditions(
@@ -3569,6 +3682,10 @@ class MiniAppContext:
     def food_submit_order(self, auth: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
+        if self._owner_test_client_mode_active(auth):
+            # v7.1.13.1 — creating a Food order is explicitly forbidden in
+            # owner-test-client mode, even against a real linked child.
+            return {"ok": False, "error": "owner_test_mode_food_order_blocked"}
         err, menu_id, mk_student_id, menu = self._check_order_preconditions(auth, payload)
         if err:
             return {"ok": False, "error": err}
@@ -3602,6 +3719,8 @@ class MiniAppContext:
     def food_skip_order(self, auth: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
+        if self._owner_test_client_mode_active(auth):
+            return {"ok": False, "error": "owner_test_mode_food_order_blocked"}
         err, menu_id, mk_student_id, menu = self._check_order_preconditions(auth, payload)
         if err:
             return {"ok": False, "error": err}
@@ -3774,8 +3893,7 @@ class MiniAppContext:
     def food_active_menus(self, auth: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "food_module_enabled", False):
             return {"ok": False, "error": "food_module_disabled"}
-        user_id = int(auth["user_id"])
-        children = self.storage.list_children_for_parent(str(user_id))
+        children = self.storage.list_children_for_parent(self._effective_client_identity(auth))
         if not children:
             return {"ok": True, "childrenRequired": True, "children": [], "menus": []}
 
@@ -11781,7 +11899,7 @@ class MiniAppContext:
         role = self._role_for_user(int(auth["user_id"]))
         if role != "parent":
             return {"ok": False, "error": "Доступ только для родителей."}
-        parent_telegram_id = str(auth["user_id"])
+        parent_telegram_id = self._effective_client_identity(auth)
         intents = self.storage.list_client_visible_payment_intents(parent_telegram_id)
         result = []
         _inactive_opt = {"cancelled", "superseded", "expired"}
@@ -11846,6 +11964,12 @@ class MiniAppContext:
         role = self._role_for_user(int(auth["user_id"]))
         if role != "parent":
             return {"ok": False, "error": "Доступ только для родителей."}
+        if self._owner_test_client_mode_active(auth):
+            # v7.1.13.1 — this "GET" self-heals by creating a real bePaid
+            # acquiring checkout token/URL; that is a genuine payment action
+            # and must never run against a real client's payment intent
+            # just because the owner is previewing their cabinet.
+            return {"ok": False, "error": "owner_test_mode_payment_blocked"}
 
         pi = self.storage.get_payment_intent(public_id)
         if not pi:
@@ -11904,7 +12028,7 @@ class MiniAppContext:
         role = self._role_for_user(int(auth["user_id"]))
         if role != "parent":
             return {"ok": False, "error": "Доступ только для родителей."}
-        parent_tid = str(auth["user_id"])
+        parent_tid = self._effective_client_identity(auth)
 
         client_links = self.storage.list_client_children_for_parent(parent_tid)
         client_children = [
@@ -11955,7 +12079,7 @@ class MiniAppContext:
             # v7.1.13 round 2 — safe disabled state: no data leaked, no
             # error surfaced to the client, table itself untouched.
             return {"ok": True, "notifications": [], "has_more": False, "disabled": True}
-        user_id = str(auth["user_id"])
+        user_id = self._effective_client_identity(auth)
         client_kind = self.storage.get_client_kind_for_parent(user_id)
         allowed = self._notification_allowed_categories(client_kind)
         try:
@@ -11989,7 +12113,7 @@ class MiniAppContext:
             notification_id = int(notification_id_str)
         except (TypeError, ValueError):
             return {"ok": False, "error": "invalid notification id"}
-        user_id = str(auth["user_id"])
+        user_id = self._effective_client_identity(auth)
         client_kind = self.storage.get_client_kind_for_parent(user_id)
         allowed = self._notification_allowed_categories(client_kind)
         item = self.storage.get_client_notification_for_recipient(notification_id, user_id, allowed_categories=allowed)
@@ -12011,7 +12135,7 @@ class MiniAppContext:
             notification_id = int(notification_id_str)
         except (TypeError, ValueError):
             return {"ok": False, "error": "invalid notification id"}
-        user_id = str(auth["user_id"])
+        user_id = self._effective_client_identity(auth)
         # Re-verify current visibility (same query as GET) before marking —
         # an unlinked child's notification can't be touched even by its
         # original recipient row.
@@ -12119,6 +12243,12 @@ class MiniAppContext:
         role = self._role_for_user(int(auth["user_id"]))
         if role != "parent":
             return {"ok": False, "error": "Доступ только для родителей."}
+        if self._owner_test_client_mode_active(auth):
+            # v7.1.13.1 — never allowed: creating a new client_parent_child_
+            # links row "just to test" is explicitly forbidden, and this
+            # would otherwise link the code to the OWNER's own real
+            # Telegram id, not the previewed client's.
+            return {"ok": False, "error": "owner_test_mode_link_blocked"}
         parent_tid = str(auth["user_id"])
         now_dt = datetime.utcnow()
         unavailable = {
@@ -13235,11 +13365,14 @@ class MiniAppContext:
         client_onboarding_recipients row to exist first."""
         role = self._role_for_user(int(auth["user_id"]))
         if role == "parent":
-            parent_tid = str(auth["user_id"])
+            parent_tid = self._effective_client_identity(auth)
             children = self.storage.list_client_children_for_parent(parent_tid)
             if not any(str(c.get("mk_user_id")) == str(mk_user_id) for c in children):
                 return None, {"ok": False, "error": "Доступ только к своим детям."}
-            return "parent_app", None
+            # v7.1.13.1 — distinct source so a save made by the owner
+            # previewing a client's cabinet is never indistinguishable in
+            # storage/audit data from a submission the real parent made.
+            return ("owner_test" if self._owner_test_client_mode_active(auth) else "parent_app"), None
         if role in CLIENT_ONBOARDING_CAMPAIGN_ROLES:
             return "staff", None
         return None, {"ok": False, "error": "Доступ запрещён."}
@@ -13347,6 +13480,12 @@ class MiniAppContext:
         source, denied = self._require_availability_access(auth, mk_user_id)
         if denied:
             return denied
+        # v7.1.13.1 — an owner previewing a real client's cabinet must
+        # explicitly confirm before a save actually writes to that client's
+        # data; a real parent's own flow is completely unaffected (never
+        # asked for this flag, source is "owner_test" only in test mode).
+        if source == "owner_test" and not bool(body.get("ownerTestConfirm")):
+            return {"ok": False, "error": "owner_confirm_required"}
         role = self._role_for_user(int(auth["user_id"]))
         actor = str(auth.get("user_id") or "")
         trusted = self.storage.get_trusted_local_client_candidate(mk_user_id)
@@ -19918,6 +20057,12 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             # staff communications center)
             if path == "/api/owner/test-notifications":
                 return self._send_json(CTX.owner_test_notification_create(auth, body))
+            # v7.1.13.1 — owner-only "Клиент / родитель" test role: trusted
+            # client-context lookup/select, never a raw frontend override
+            if path == "/api/owner/test-client/lookup":
+                return self._send_json(CTX.owner_test_client_lookup(auth, body))
+            if path == "/api/owner/test-client/select":
+                return self._send_json(CTX.owner_test_client_select(auth, body))
             if path == "/api/food/debug/sync-camp-children":
                 return self._send_json(CTX.food_debug_sync_camp_children(auth, body))
             if path == "/api/food/debug/clear-camp-children":

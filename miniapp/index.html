@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.1.13" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.1.13.1" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -38,6 +38,34 @@
         <button class="primary" id="applyTestRole">Применить</button>
         <button class="secondary" id="clearTestRole">Сбросить</button>
       </div>
+      <!-- v7.1.13.1 — owner-only "Клиент / родитель" test role needs a
+           SEPARATE trusted client context (picking the role alone shows an
+           empty cabinet — the owner's own Telegram id has no client
+           links). Never accepts client data directly; the backend
+           re-validates the query against real client_parent_child_links/
+           parent_child_links rows before anything is stored. -->
+      <div class="test-role-controls test-client-ctx hidden" id="testClientContextPanel">
+        <label>
+          <span>mk_user_id ребёнка или Telegram ID родителя</span>
+          <input type="text" id="testClientContextQuery" placeholder="Например: 70001 или 700001" />
+        </label>
+        <button type="button" class="secondary" id="testClientContextLookupBtn">Найти клиента</button>
+        <div id="testClientContextError" class="hidden error-msg"></div>
+        <div id="testClientContextResults"></div>
+      </div>
+    </section>
+
+    <!-- v7.1.13.1 — shown only while the owner is previewing a real
+         client's cabinet via the test role; a real client never sees
+         this (ownerTestClientMode is only ever true for the real
+         owner/admin Telegram id, see _owner_test_client_mode_active in
+         web_app_server.py). -->
+    <section class="owner-test-client-banner hidden" id="ownerTestClientBanner">
+      <div>
+        <b>Тестовый режим: кабинет клиента</b>
+        <span id="ownerTestClientBannerContext"></span>
+      </div>
+      <button type="button" class="secondary" id="ownerTestClientBackBtn">Вернуться в кабинет владельца</button>
     </section>
 
     <!-- v7.1.13 §12 — interim owner-only notification smoke-test sender.
@@ -1506,6 +1534,6 @@
 
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.1.13"></script>
+  <script src="/static/app.js?v=7.1.13.1"></script>
 </body>
 </html>

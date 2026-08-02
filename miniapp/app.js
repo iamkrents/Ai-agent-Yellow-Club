@@ -84,7 +84,7 @@ const launchTab = urlParams.get("tab") || "";
 // one specific campaign recipient (from the bot's post-activation button).
 const launchAvailabilityRecipientId = urlParams.get("oc_availability_recipient") || "";
 
-console.log("MiniApp version: v7.1.13");
+console.log("MiniApp version: v7.1.13.1");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -1294,9 +1294,13 @@ function setupRoleUi() {
     if (cabinetEnabled) {
       _updateNotifNavBadge();
       _applyCabinetNavIcons();
+      renderOwnerTestClientBanner();
+    } else {
+      $("ownerTestClientBanner")?.classList.add("hidden");
     }
   } else {
     document.body.classList.remove("role-parent-cabinet");
+    $("ownerTestClientBanner")?.classList.add("hidden");
   }
 
   // Kitchen role: show kitchen + kitchen-editor tabs
@@ -1424,9 +1428,18 @@ function renderTestRolePanel() {
     : `<option value="">Нет привязанных teacherId</option>`;
   teacherSelect.value = testMode.mk_teacher_id || state.me.mkTeacherId || (teachers[0]?.id || "");
 
+  const ctxPanel = $("testClientContextPanel");
+  const applyBtn = $("applyTestRole");
   const updateTeacherVisibility = () => {
     const selected = options.find(o => o.value === roleSelect.value);
     teacherLabel.classList.toggle("hidden", !selected?.needsTeacher);
+    // v7.1.13.1 — "Клиент / родитель" is never applied via the normal
+    // "Применить" button (the backend rejects it outright, see
+    // set_test_role): it can only be entered through the trusted
+    // client-context lookup/select flow below.
+    const needsCtx = !!selected?.needsClientContext;
+    if (ctxPanel) ctxPanel.classList.toggle("hidden", !needsCtx);
+    if (applyBtn) applyBtn.classList.toggle("hidden", needsCtx);
   };
   roleSelect.onchange = updateTeacherVisibility;
   updateTeacherVisibility();
@@ -1435,6 +1448,76 @@ function renderTestRolePanel() {
     ? `Сейчас включён тест: ${roleLabel(testMode.role)}. Реальная роль: ${state.me.realRoleLabel || roleLabel(state.me.realRole)}.`
     : `Сейчас реальная роль: ${state.me.realRoleLabel || roleLabel(state.me.realRole || state.me.role)}.`;
   $("testRoleStatus").textContent = status;
+}
+
+// v7.1.13.1 — owner-only "Клиент / родитель" test role: trusted
+// client-context lookup. Never sends anything the backend would treat as
+// client data — just a search query; the server re-derives everything
+// from client_parent_child_links/parent_child_links.
+async function ownerTestClientLookup() {
+  const query = ($("testClientContextQuery")?.value || "").trim();
+  const errEl = $("testClientContextError");
+  const resultsEl = $("testClientContextResults");
+  if (errEl) errEl.classList.add("hidden");
+  if (resultsEl) resultsEl.innerHTML = "";
+  if (!query) {
+    if (errEl) { errEl.textContent = "Введите mk_user_id или Telegram ID."; errEl.classList.remove("hidden"); }
+    return;
+  }
+  try {
+    const data = await apiPost("/api/owner/test-client/lookup", { query });
+    if (!data.ok) {
+      if (errEl) { errEl.textContent = data.error || "Связь не найдена."; errEl.classList.remove("hidden"); }
+      return;
+    }
+    const candidates = data.candidates || [];
+    if (resultsEl) {
+      resultsEl.innerHTML = candidates.map(c => `
+        <button type="button" class="secondary test-client-ctx-row" data-parent-id="${escapeAttr(c.parent_telegram_id)}">
+          <b>Родитель ${escapeHtml(c.parent_telegram_id)}</b> · ${escapeHtml(c.client_kind)}
+          <span>${c.children.map(ch => escapeHtml(ch.display_name)).join(", ")}</span>
+        </button>`).join("");
+      resultsEl.querySelectorAll("[data-parent-id]").forEach(btn => {
+        btn.addEventListener("click", () => ownerTestClientSelect(btn.dataset.parentId));
+      });
+    }
+  } catch (e) {
+    if (errEl) { errEl.textContent = safeUserError(e); errEl.classList.remove("hidden"); }
+  }
+}
+
+async function ownerTestClientSelect(parentTelegramId) {
+  const errEl = $("testClientContextError");
+  if (errEl) errEl.classList.add("hidden");
+  try {
+    setNotice("Открываю кабинет клиента...", "");
+    const data = await apiPost("/api/owner/test-client/select", { parent_telegram_id: parentTelegramId });
+    if (!data.ok) {
+      if (errEl) { errEl.textContent = data.error || "Не удалось открыть кабинет."; errEl.classList.remove("hidden"); }
+      setNotice("", "");
+      return;
+    }
+    await reloadCabinetAfterRoleChange();
+  } catch (e) {
+    if (errEl) { errEl.textContent = safeUserError(e); errEl.classList.remove("hidden"); }
+    setNotice("", "");
+  }
+}
+
+// v7.1.13.1 — compact banner shown only while ownerTestClientMode is true
+// (real clients never see it, see _owner_test_client_mode_active).
+function renderOwnerTestClientBanner() {
+  const banner = $("ownerTestClientBanner");
+  if (!banner) return;
+  const active = !!state.me?.ownerTestClientMode;
+  banner.classList.toggle("hidden", !active);
+  if (!active) return;
+  const ctx = state.me?.ownerTestClientContext;
+  const ctxEl = $("ownerTestClientBannerContext");
+  if (ctxEl) {
+    const childNames = (ctx?.children || []).map(c => c.displayName).join(", ");
+    ctxEl.textContent = ctx ? `Родитель: ${ctx.parentTelegramId} / ребёнок: ${childNames || "—"}` : "";
+  }
 }
 
 function lessonCardClass(item) {
@@ -8414,7 +8497,14 @@ function _cabDispatchNotificationAction(actionKey) {
 function renderOwnerTestNotificationPanel() {
   const panel = $("ownerTestNotificationPanel");
   if (!panel) return;
-  panel.classList.toggle("hidden", !state.me?.capabilities?.canUseTestRoles);
+  // v7.1.13.1 — stays owner-only, but must not intrude into the "Клиент /
+  // родитель" preview: the whole point of that mode is an honest
+  // production-fidelity look at what a real client sees, and this panel
+  // is never part of that. canUseTestRoles is based on the REAL role (see
+  // _can_use_role_test/_base_role_for_user), so without this extra check
+  // it would otherwise keep showing throughout the client-context preview.
+  const show = !!state.me?.capabilities?.canUseTestRoles && !state.me?.ownerTestClientMode;
+  panel.classList.toggle("hidden", !show);
 }
 
 async function sendOwnerTestNotification() {
@@ -12875,6 +12965,8 @@ async function boot() {
   $("closeLesson").addEventListener("click", closeLessonModal);
   $("applyTestRole")?.addEventListener("click", applyTestRole);
   $("clearTestRole")?.addEventListener("click", clearTestRole);
+  $("testClientContextLookupBtn")?.addEventListener("click", ownerTestClientLookup);
+  $("ownerTestClientBackBtn")?.addEventListener("click", clearTestRole);
   // v7.1.13
   $("otnSend")?.addEventListener("click", sendOwnerTestNotification);
   $("notificationDetailClose")?.addEventListener("click", () => piModalClose($("notificationDetailModal")));
@@ -14710,10 +14802,16 @@ function renderClientPaymentCard(pi) {
       // v7.0.99.0: card pay button fetches fresh token on click
       const safePid = escapeHtml(pi.public_id);
       const safeUrl = escapeHtml(pi.acquiring_payment_url);
+      // v7.1.13.1 — the backend already blocks the token-fetch endpoint in
+      // owner-test-client mode (client_payment_card_token); this disables
+      // the CTA itself so the owner sees a clear reason instead of a
+      // click-then-error round-trip. No real payment flow is ever reachable
+      // here for a previewed client.
+      const testBlocked = !!state.me?.ownerTestClientMode;
       acqBlock = `
         <div class="cp-pay-method">
           <div class="cp-pay-method-title">Оплата банковской картой</div>
-          <button class="cp-card-pay-btn" onclick="cpOpenCardPay(event,'${safePid}','${safeUrl}')">Оплатить банковской картой</button>
+          <button class="cp-card-pay-btn" ${testBlocked ? "disabled" : ""} onclick="${testBlocked ? "" : `cpOpenCardPay(event,'${safePid}','${safeUrl}')`}">${testBlocked ? "Недоступно в тестовом режиме" : "Оплатить банковской картой"}</button>
         </div>`;
     }
     let erpBlock = "";
@@ -18797,6 +18895,19 @@ async function _availScreenSave() {
   const err = _ocAvailValidate();
   if (err) { if (errEl) { errEl.textContent = err.message; errEl.classList.remove("hidden"); } return; }
   if (errEl) errEl.classList.add("hidden");
+  // v7.1.13.1 — the backend requires ownerTestConfirm=true for a save made
+  // while previewing a real client's cabinet (see client_schedule_
+  // availability_submit); ask explicitly here rather than silently
+  // attaching it, so the owner always sees which real client this writes
+  // to before it happens. A real parent's own save is completely
+  // unaffected (never prompted, source is never "owner_test" for them).
+  const ownerTestMode = !!state.me?.ownerTestClientMode;
+  if (ownerTestMode) {
+    const ctx = state.me?.ownerTestClientContext;
+    const childName = ctx?.children?.find(c => String(c.mkUserId) === String(_ocAvailState.mkUserId))?.displayName || "этого ребёнка";
+    const confirmed = window.confirm(`Сохранить возможности для расписания для ${childName} (тестовый режим, реальный клиент)?`);
+    if (!confirmed) return;
+  }
   _ocAvailState.busy = true;
   const btn = $("availSaveBtn");
   if (btn) { btn.disabled = true; btn.textContent = "Сохраняю…"; }
@@ -18806,6 +18917,7 @@ async function _availScreenSave() {
       available_from: _ocAvailState.availableFrom || "",
       schedule_comment: _ocAvailState.comment || "",
       intervals: _ocAvailState.intervals,
+      ...(ownerTestMode ? { ownerTestConfirm: true } : {}),
     });
     if (data.ok) {
       setNotice("Возможности для расписания сохранены", "ok");

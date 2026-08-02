@@ -382,6 +382,13 @@ class Storage:
             self._ensure_column(conn, "staff_users", "test_role", "test_role TEXT")
             self._ensure_column(conn, "staff_users", "test_mk_teacher_id", "test_mk_teacher_id TEXT")
             self._ensure_column(conn, "staff_users", "test_enabled", "test_enabled INTEGER DEFAULT 0")
+            # v7.1.13.1 — owner-only "Клиент / родитель" test role: the
+            # Telegram id of a REAL, already-linked parent whose client
+            # cabinet the owner is previewing. Always resolved server-side
+            # against client_parent_child_links/parent_child_links (see
+            # find_trusted_client_context_candidates) before being stored
+            # here — never accepted as-is from the frontend.
+            self._ensure_column(conn, "staff_users", "test_client_parent_telegram_id", "test_client_parent_telegram_id TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_staff_users_role ON staff_users(role, status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_staff_users_mk_teacher ON staff_users(mk_teacher_id)")
 
@@ -4834,7 +4841,8 @@ class Storage:
     def clear_staff_test_mode(self, user_id: int) -> bool:
         with self._connect() as conn:
             conn.execute(
-                "UPDATE staff_users SET test_enabled=0, test_role='', test_mk_teacher_id='', updated_at=? WHERE user_id=?",
+                "UPDATE staff_users SET test_enabled=0, test_role='', test_mk_teacher_id='', "
+                "test_client_parent_telegram_id='', updated_at=? WHERE user_id=?",
                 (now_iso(), int(user_id)),
             )
             return True
@@ -4864,16 +4872,86 @@ class Storage:
 
     def get_staff_test_mode(self, user_id: int | None) -> dict[str, Any]:
         if not user_id:
-            return {"enabled": False, "role": "", "mk_teacher_id": ""}
+            return {"enabled": False, "role": "", "mk_teacher_id": "", "client_parent_telegram_id": ""}
         user = self.get_staff_user(user_id)
         if not user:
-            return {"enabled": False, "role": "", "mk_teacher_id": ""}
+            return {"enabled": False, "role": "", "mk_teacher_id": "", "client_parent_telegram_id": ""}
         enabled = bool(int(user.get("test_enabled") or 0))
         return {
             "enabled": enabled,
             "role": str(user.get("test_role") or "").strip(),
             "mk_teacher_id": str(user.get("test_mk_teacher_id") or "").strip(),
+            # v7.1.13.1 — set only via set_staff_test_client_context, which
+            # re-validates against client_parent_child_links/parent_child_links
+            # first; never written from a raw frontend value.
+            "client_parent_telegram_id": str(user.get("test_client_parent_telegram_id") or "").strip(),
         }
+
+    def set_staff_test_client_context(self, user_id: int, parent_telegram_id: str) -> bool:
+        """v7.1.13.1 — owner-only "Клиент / родитель" test role: store which
+        REAL, already-linked parent's cabinet the owner is previewing.
+        Callers (web_app_server.owner_test_client_select) must already have
+        re-validated parent_telegram_id against find_trusted_client_context_
+        candidates — this method itself does not re-check, it only persists.
+        Never creates/modifies client_parent_child_links or parent_child_links."""
+        parent_telegram_id = str(parent_telegram_id or "").strip()
+        if not parent_telegram_id:
+            return False
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO staff_users(user_id, username, full_name, role, status, created_at, updated_at, test_role, test_enabled, test_client_parent_telegram_id)
+                VALUES (?, '', '', 'owner', 'active', ?, ?, 'parent', 1, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    test_role='parent',
+                    test_enabled=1,
+                    test_client_parent_telegram_id=excluded.test_client_parent_telegram_id,
+                    updated_at=excluded.updated_at
+                """,
+                (int(user_id), now, now, parent_telegram_id),
+            )
+            return True
+
+    def find_trusted_client_context_candidates(self, query: str) -> list[dict[str, Any]]:
+        """v7.1.13.1 — read-only lookup for the owner-only "Клиент / родитель"
+        test role. Given a raw mk_user_id/mk_student_id or Telegram id typed
+        by the owner, finds already-existing ACTIVE links only — never
+        creates, modifies, or unlinks anything. Returns one entry per
+        distinct parent_telegram_id, each with their real linked children
+        (both client and food links) and resolved client_kind, so the
+        frontend can present a picker when the query is ambiguous (e.g. a
+        Telegram id with several children, or matches on both systems)."""
+        query = str(query or "").strip()
+        if not query:
+            return []
+        parent_ids: set[str] = set()
+        with self._connect() as conn:
+            for row in conn.execute(
+                "SELECT DISTINCT parent_telegram_user_id FROM client_parent_child_links WHERE status='active' AND (mk_user_id=? OR parent_telegram_user_id=?)",
+                (query, query),
+            ).fetchall():
+                parent_ids.add(str(row[0]))
+            for row in conn.execute(
+                "SELECT DISTINCT parent_telegram_id FROM parent_child_links WHERE active=1 AND (mk_student_id=? OR parent_telegram_id=?)",
+                (query, query),
+            ).fetchall():
+                parent_ids.add(str(row[0]))
+        candidates: list[dict[str, Any]] = []
+        for pid in sorted(parent_ids):
+            client_children = self.list_client_children_for_parent(pid)
+            food_children = self.list_children_for_parent(pid)
+            if not client_children and not food_children:
+                continue
+            candidates.append({
+                "parent_telegram_id": pid,
+                "client_kind": self.get_client_kind_for_parent(pid),
+                "children": (
+                    [{"mk_user_id": c["mk_user_id"], "display_name": c.get("child_display_name") or "Ученик", "source": "client"} for c in client_children]
+                    + [{"mk_user_id": c.get("mk_student_id"), "display_name": c.get("full_name") or "Ребёнок", "source": "food"} for c in food_children]
+                ),
+            })
+        return candidates
 
 
 
