@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.1.13.1" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.1.13.2" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -61,11 +61,11 @@
          owner/admin Telegram id, see _owner_test_client_mode_active in
          web_app_server.py). -->
     <section class="owner-test-client-banner hidden" id="ownerTestClientBanner">
-      <div>
-        <b>Тестовый режим: кабинет клиента</b>
+      <div class="owner-test-client-banner-text">
+        <b>Тестовый кабинет</b>
         <span id="ownerTestClientBannerContext"></span>
       </div>
-      <button type="button" class="secondary" id="ownerTestClientBackBtn">Вернуться в кабинет владельца</button>
+      <button type="button" class="owner-test-client-banner-btn" id="ownerTestClientBackBtn">Вернуться в кабинет владельца</button>
     </section>
 
     <!-- v7.1.13 §12 — interim owner-only notification smoke-test sender.
@@ -77,30 +77,39 @@
          assumes a fixed 4-column role-picker shape that doesn't fit this
          7-field form. Still a temporary smoke-test tool, not a staff
          communications page — one client, one message, nothing else. -->
+    <!-- v7.1.13.2 — labels are Russian-only for staff readability; the
+         option value="" attributes stay the existing English enum values
+         (family/child/general/... ) unchanged, since those are exactly
+         what gets POSTed to /api/owner/test-notifications — only the
+         visible text changed, the API contract did not. -->
     <section class="test-role-panel hidden" id="ownerTestNotificationPanel">
       <div class="test-role-head">
-        <div><b>Тест уведомлений (только owner/admin)</b></div>
+        <div>
+          <b>Тестовое уведомление одному клиенту</b>
+          <span>Используется владельцем для проверки отображения уведомлений. Это не массовая рассылка.</span>
+        </div>
       </div>
       <div class="otn-controls">
         <label>
-          <span>mk_user_id тестового клиента</span>
+          <span>ID ученика в МойКласс</span>
           <input type="text" id="otnMkUserId" placeholder="Например: 50001" />
+          <small class="otn-hint">ID ребёнка, которому реально придёт тестовое уведомление.</small>
         </label>
         <div class="otn-controls-row">
           <label>
             <span>Кому</span>
             <select id="otnScope">
-              <option value="family">Семье (family)</option>
-              <option value="child">Ребёнку (child)</option>
+              <option value="family">Семье</option>
+              <option value="child">Конкретному ребёнку</option>
             </select>
           </label>
           <label>
             <span>Категория</span>
             <select id="otnCategory">
-              <option value="general">general</option>
-              <option value="food">food</option>
-              <option value="payments">payments</option>
-              <option value="schedule">schedule</option>
+              <option value="general">Общее</option>
+              <option value="food">Питание</option>
+              <option value="payments">Оплаты</option>
+              <option value="schedule">Расписание</option>
             </select>
           </label>
         </div>
@@ -108,17 +117,17 @@
           <label>
             <span>Приоритет</span>
             <select id="otnPriority">
-              <option value="normal">normal</option>
-              <option value="important">important</option>
+              <option value="normal">Обычное</option>
+              <option value="important">Важное</option>
             </select>
           </label>
           <label>
             <span>Действие</span>
             <select id="otnActionKey">
-              <option value="none">none</option>
-              <option value="open_payments">open_payments</option>
-              <option value="open_availability">open_availability</option>
-              <option value="open_home">open_home</option>
+              <option value="none">Без кнопки</option>
+              <option value="open_payments">Открыть оплаты</option>
+              <option value="open_availability">Открыть возможности для расписания</option>
+              <option value="open_home">Открыть главную</option>
             </select>
           </label>
         </div>
@@ -129,6 +138,7 @@
         <label>
           <span>Текст</span>
           <textarea id="otnBody" rows="3" placeholder="Текст сообщения"></textarea>
+          <small class="otn-hint">Отправится только выбранному ребёнку/семье — массовая рассылка здесь недоступна.</small>
         </label>
         <button class="primary" id="otnSend" style="width:100%">Создать тестовое уведомление</button>
       </div>
@@ -204,6 +214,13 @@
            via openClientScheduleAvailabilityModal/-Picker. -->
       <button class="tab parent-only hidden" data-tab="availability" type="button" aria-hidden="true" tabindex="-1">
         <span class="tab-icon"></span><span class="tab-label">Возможности</span>
+      </button>
+      <!-- v7.1.13.2 — same "never a visible nav item" pattern as
+           "availability" above: exists only so activateTab("notification-
+           detail") has a matching .tab[data-tab] element. Reached only via
+           openNotificationDetail() (notifications list row click). -->
+      <button class="tab parent-only hidden" data-tab="notification-detail" type="button" aria-hidden="true" tabindex="-1">
+        <span class="tab-icon"></span><span class="tab-label">Уведомление</span>
       </button>
       <button class="tab" data-tab="ask" type="button">
         <span class="tab-icon">💬</span><span class="tab-label">Чат</span>
@@ -963,6 +980,22 @@
         <div id="notificationsListContent"></div>
       </section>
 
+      <!-- v7.1.13.2 — notification detail is now a full-page client
+           subpage (matches the approved client-cabinet-v7113 design),
+           replacing the previous low bottom-sheet. Same premium
+           sub-header/back-button language as #tab-availability. Storage,
+           ownership, read_at, action whitelist, API — all unchanged; this
+           is purely a different DOM presentation of the same data. -->
+      <section id="tab-notification-detail" class="tab-panel cabinet-panel">
+        <div class="cab-header cab-header--sub">
+          <button type="button" class="cab-icon-btn cab-header-back" id="notifDetailBack" aria-label="Назад"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+          <div class="cab-header-text">
+            <h2 class="cab-header-sub-title">Уведомление</h2>
+          </div>
+        </div>
+        <div id="notificationDetailContent"></div>
+      </section>
+
       <!-- v7.1.13 — "Ещё": Мои дети / Возможности / Питание / Помощь / Профиль. -->
       <section id="tab-more" class="tab-panel cabinet-panel">
         <div class="cab-header cab-header--sub">
@@ -1501,19 +1534,6 @@
       </div>
     </div>
 
-    <!-- v7.1.13 — notification detail overlay (not a chat bubble; a plain
-         message detail). Opened from the notifications list. -->
-    <div id="notificationDetailModal" class="pi-modal hidden">
-      <div class="pi-modal-sheet">
-        <div class="pi-modal-head">
-          <h3>Уведомление</h3>
-          <button class="pi-modal-close" id="notificationDetailClose" type="button">✕</button>
-        </div>
-        <div class="pi-modal-body">
-          <div id="notificationDetailContent"></div>
-        </div>
-      </div>
-    </div>
 
     <!-- v7.1.12.1 hotfix — large-import (>100 selected) confirm modal -->
     <div id="wsOcImportConfirmModal" class="pi-modal hidden">
@@ -1534,6 +1554,6 @@
 
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.1.13.1"></script>
+  <script src="/static/app.js?v=7.1.13.2"></script>
 </body>
 </html>

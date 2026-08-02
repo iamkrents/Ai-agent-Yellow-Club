@@ -37,22 +37,35 @@ if (tg && typeof tg.onEvent === "function") {
 }
 window.addEventListener("resize", _updateTgViewportHeight, { passive: true });
 
-// Mark body/html for Telegram CSS and immediately set hardcoded top offset.
-// We set --app-top-safe-offset directly on <html> so it wins over any CSS body-class rule.
+// v7.1.13.2 — mark body/html for Telegram CSS. --app-top-safe-offset
+// starts from the CSS var chain (Telegram's own content-safe-area var when
+// injected, else its plain safe-area var, else env()) — no hardcoded pixel
+// guess — see the matching :root rule in styles.css. Set directly on
+// <html> so it wins over any CSS body-class rule.
 if (tg) {
   document.body.classList.add("is-telegram-webapp");
   document.documentElement.classList.add("is-telegram-webapp");
   document.documentElement.style.setProperty(
     "--app-top-safe-offset",
-    "calc(env(safe-area-inset-top, 0px) + 56px)"
+    "var(--tg-content-safe-area-inset-top, var(--tg-safe-area-inset-top, env(safe-area-inset-top, 0px)))"
   );
 }
 
-// Refine offset when Bot API 8.0+ safeAreaInsets gives the precise value
+// Refine with the WebApp JS API's own reported values when available —
+// still real device/client data, never a fixed guess. Prefers
+// contentSafeAreaInset (already includes Telegram's own header chrome,
+// Bot API 8.0+) over the plainer safeAreaInsets (device notch only).
 function _applySafeArea() {
+  const content = tg?.contentSafeAreaInset || tg?.contentSafeAreaInsets;
+  if (content && typeof content.top === "number" && content.top >= 0) {
+    document.documentElement.style.setProperty("--app-top-safe-offset", content.top + "px");
+    return;
+  }
   const top = tg?.safeAreaInsets?.top;
-  if (typeof top === "number" && top > 60) {
-    // API includes physical notch + Telegram chrome — use directly with small buffer
+  if (typeof top === "number" && top >= 0) {
+    // Device-notch-only value — Telegram's own chrome isn't included here,
+    // so keep a small fixed breathing-room addition (not a guess at the
+    // full chrome height like the old +56px was).
     document.documentElement.style.setProperty("--tg-safe-top", top + "px");
     document.documentElement.style.setProperty("--app-top-safe-offset", (top + 8) + "px");
   }
@@ -84,7 +97,7 @@ const launchTab = urlParams.get("tab") || "";
 // one specific campaign recipient (from the bot's post-activation button).
 const launchAvailabilityRecipientId = urlParams.get("oc_availability_recipient") || "";
 
-console.log("MiniApp version: v7.1.13.1");
+console.log("MiniApp version: v7.1.13.2");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -1516,7 +1529,9 @@ function renderOwnerTestClientBanner() {
   const ctxEl = $("ownerTestClientBannerContext");
   if (ctxEl) {
     const childNames = (ctx?.children || []).map(c => c.displayName).join(", ");
-    ctxEl.textContent = ctx ? `Родитель: ${ctx.parentTelegramId} / ребёнок: ${childNames || "—"}` : "";
+    const text = ctx ? `Родитель: ${ctx.parentTelegramId} · ${childNames || "—"}` : "";
+    ctxEl.textContent = text;
+    ctxEl.title = text; // full text on long-press/hover — the row itself truncates with an ellipsis
   }
 }
 
@@ -8441,8 +8456,13 @@ const NOTIF_ACTION_LABELS = {
   open_home: "На главную",
 };
 
+// v7.1.13.2 — full-page client subpage (was a low bottom-sheet with tiny
+// text before this hotfix; approved client-cabinet-v7113 always used a
+// standalone page here, same pattern as the availability screen). Only the
+// DOM presentation changed — storage, ownership, read_at, the action
+// whitelist and the API calls below are byte-for-byte the same as before.
 async function openNotificationDetail(id) {
-  piModalOpen($("notificationDetailModal"));
+  activateTab("notification-detail");
   const root = $("notificationDetailContent");
   if (root) root.innerHTML = `<div class="kpi-loading">Загружаю…</div>`;
   try {
@@ -8457,6 +8477,10 @@ async function openNotificationDetail(id) {
       if (state.me) state.me.unreadNotificationCount = newUnread;
       _updateNotifNavBadge(newUnread);
       renderClientNotifications();
+      // Re-render read status on the page currently being shown, without
+      // a second network round-trip.
+      const n2 = { ...data.notification, unread: false };
+      renderNotificationDetail(n2);
       if (document.getElementById("tab-home")?.classList.contains("active")) renderClientHome();
     }
   } catch (e) {
@@ -8464,20 +8488,25 @@ async function openNotificationDetail(id) {
   }
 }
 
+const NOTIF_CATEGORY_LABELS = {
+  general: "Общее", payments: "Оплаты", schedule: "Расписание", food: "Питание", news: "Новости",
+};
+
 function renderNotificationDetail(n) {
   const root = $("notificationDetailContent");
   if (!root) return;
   const childName = n.scope === "child" ? cabChildNameForMk(n.mk_user_id) : "";
   root.innerHTML = `
-    <h3 style="margin:0 0 10px">${escapeHtml(n.title)}</h3>
+    <h1 class="cab-notif-detail-title">${escapeHtml(n.title)}</h1>
     <div class="cab-notif-detail-meta">
       <span class="cab-badge cab-badge--muted">${escapeHtml(cabFormatDate(n.created_at))}</span>
+      ${NOTIF_CATEGORY_LABELS[n.category] ? `<span class="cab-badge cab-badge--muted">${escapeHtml(NOTIF_CATEGORY_LABELS[n.category])}</span>` : ""}
       <span class="cab-badge cab-badge--info">${n.scope === "child" ? escapeHtml(childName || "Ребёнок") : "Все дети"}</span>
       ${n.priority === "important" ? `<span class="cab-badge cab-badge--danger">Важно</span>` : ""}
     </div>
     <p class="cab-notif-detail-body">${escapeHtml(n.body)}</p>
-    ${n.action_key && n.action_key !== "none" ? `<button type="button" class="primary" id="notifActionBtn" style="width:100%;margin-top:12px">${escapeHtml(NOTIF_ACTION_LABELS[n.action_key] || "Открыть")}</button>` : ""}
-    <p class="cab-notif-detail-read">${n.unread ? "" : "✓ Отмечено как прочитано"}</p>
+    ${n.action_key && n.action_key !== "none" ? `<button type="button" class="primary" id="notifActionBtn" style="width:100%;margin-top:16px">${escapeHtml(NOTIF_ACTION_LABELS[n.action_key] || "Открыть")}</button>` : ""}
+    <p class="cab-notif-detail-read">${n.unread ? "" : "✓ Отмечено как прочитанное"}</p>
   `;
   $("notifActionBtn")?.addEventListener("click", () => _cabDispatchNotificationAction(n.action_key));
 }
@@ -8485,7 +8514,6 @@ function renderNotificationDetail(n) {
 // action_key is already backend-whitelisted (NOTIFICATION_ACTION_KEYS); this
 // is purely a local dispatch table, never arbitrary frontend routing/JS.
 function _cabDispatchNotificationAction(actionKey) {
-  piModalClose($("notificationDetailModal"));
   if (actionKey === "open_payments") activateTab("client-payments");
   else if (actionKey === "open_availability") {
     const mk = state.clientHomeActiveChildId || (state.clientChildren || [])[0]?.mk_user_id;
@@ -12969,7 +12997,7 @@ async function boot() {
   $("ownerTestClientBackBtn")?.addEventListener("click", clearTestRole);
   // v7.1.13
   $("otnSend")?.addEventListener("click", sendOwnerTestNotification);
-  $("notificationDetailClose")?.addEventListener("click", () => piModalClose($("notificationDetailModal")));
+  $("notifDetailBack")?.addEventListener("click", () => activateTab("notifications"));
   $("ocAvailabilityEditBtn")?.addEventListener("click", () => _ocAvailSetMode("edit"));
   $("ocAvailabilitySuccessEditBtn")?.addEventListener("click", () => _ocAvailSetMode("edit"));
   $("askForm")?.addEventListener("submit", sendAskQuestion);

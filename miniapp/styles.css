@@ -1,4 +1,15 @@
 @import url("https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800;900&display=swap");
+/* v7.1.13.2 — the approved Mini App design is light-only. Without an
+   explicit color-scheme, WebKit/iOS renders native form controls (select
+   popups especially) using the OS dark-mode UA palette when the device is
+   in dark mode, regardless of this file's own light colors — the reported
+   "black dropdown, white text" bug. This is the root-cause fix; the
+   explicit background/color/border on individual control types below is
+   defense in depth for browsers that don't fully honor color-scheme on
+   every widget. */
+:root {
+  color-scheme: light only;
+}
 :root {
   --yellow: #ffd84d;
   --yellow-2: #fff3bd;
@@ -570,6 +581,60 @@ input, textarea, select {
 button {
   font-weight: 800;
   letter-spacing: .01em;
+}
+/* v7.1.13.2 — explicit light styling for every native form-control type,
+   so a dark device theme can never leave one unreadable (defense in depth
+   alongside color-scheme: light above). option/optgroup only accept a
+   narrow set of CSS properties in most browsers (background/color) —
+   still worth setting explicitly since option popups are exactly where
+   the reported bug appeared. */
+input, textarea, select, button {
+  color-scheme: light;
+}
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+textarea,
+select {
+  background: #fff;
+  color: var(--ink, #172033);
+  border: 1px solid var(--line, #e8ecf4);
+  -webkit-appearance: none;
+  appearance: none;
+}
+select {
+  /* Custom chevron so removing the native (theme-dependent) arrow via
+     appearance:none doesn't leave the control looking unfinished. */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23657089' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 16px;
+  padding-right: 34px;
+}
+option, optgroup {
+  background: #fff;
+  color: var(--ink, #172033);
+}
+input[type="date"],
+input[type="time"],
+input[type="datetime-local"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: #fff;
+  color: var(--ink, #172033);
+}
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: none;
+  opacity: 1;
+}
+/* Buttons keep the existing app-wide button:disabled{opacity:.5} dimming
+   convention (defined later in this file) — only native form FIELDS get
+   an explicit readable disabled style here, since those are what the
+   reported dark-device bug actually affected. */
+input:disabled, textarea:disabled, select:disabled {
+  -webkit-text-fill-color: var(--muted, #657089);
+  color: var(--muted, #657089);
+  opacity: 1;
+  background: #f2f3f7;
 }
 .dark {
   background: var(--yc-navy);
@@ -2075,19 +2140,41 @@ button:active,
 .test-client-ctx-row b { display: block; font-size: 13px; }
 .test-client-ctx-row span { display: block; margin-top: 2px; font-size: 12px; color: var(--muted, #7b8190); }
 
+/* v7.1.13.2 — roughly half the previous height: single compact row,
+   smaller type, a small icon-scale button instead of a full-size one so
+   it never dominates the card. Still clearly a distinct warning-toned
+   surface (stays noticeable/safe), just not competing with the premium
+   header below it. */
 .owner-test-client-banner {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  margin: 0 0 12px;
-  padding: 10px 14px;
-  border-radius: 16px;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  border-radius: 12px;
   background: #fff3ce;
   border: 1px solid rgba(255, 196, 20, .5);
 }
-.owner-test-client-banner b { display: block; font-size: 13px; color: #7c5c00; }
-.owner-test-client-banner span { display: block; margin-top: 2px; font-size: 12px; color: #8a7a3a; }
+.owner-test-client-banner-text { min-width: 0; flex: 1 1 auto; }
+.owner-test-client-banner b { display: block; font-size: 11px; font-weight: 800; color: #7c5c00; line-height: 1.25; }
+.owner-test-client-banner span {
+  display: block; font-size: 10.5px; color: #8a7a3a; line-height: 1.25;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.owner-test-client-banner-btn {
+  flex: 0 0 auto;
+  max-width: 40%;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(124, 92, 0, .3);
+  background: #fff;
+  color: #7c5c00;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: normal;
+}
 
 /* v4.6.0 - bottom role tab bar and AI question screen */
 .app-shell {
@@ -6202,17 +6289,21 @@ body.is-telegram-webapp {
    --app-top-safe-offset directly on <html> via JS (beats any CSS rule).
    ══════════════════════════════════════════════════════════════════════ */
 
+/* v7.1.13.2 — replaced the old hardcoded "+56px" Telegram-chrome guess
+   with Telegram's own injected content-safe-area CSS variables (present on
+   clients that support them), falling back to the older/plainer Telegram
+   safe-area variable, and finally to the standard env() — never a bare
+   fixed pixel value. --tg-content-safe-area-inset-top already accounts for
+   Telegram's own header controls when the client provides it, so no
+   separate guessed buffer is layered on top of it (avoids double padding).
+   JS (_applySafeArea in app.js) may still refine --app-top-safe-offset
+   directly with Telegram's precise contentSafeAreaInset/safeAreaInsets
+   values when the WebApp JS API reports them — same var, no second offset
+   stacked underneath. */
 :root {
-  --tg-safe-top:           env(safe-area-inset-top, 0px);
+  --tg-safe-top:           var(--tg-content-safe-area-inset-top, var(--tg-safe-area-inset-top, env(safe-area-inset-top, 0px)));
   --tg-native-top-overlay: 0px;
   --app-top-safe-offset:   calc(var(--tg-safe-top) + var(--tg-native-top-overlay));
-}
-
-/* CSS fallback: 56px covers the Telegram close-button row above the content.
-   JS overrides --app-top-safe-offset on <html> inline at startup;
-   Bot API 8.0+ replaces it with safeAreaInsets.top + 8px if available. */
-body.is-telegram-webapp {
-  --tg-native-top-overlay: 56px;
 }
 
 /* Higher specificity (0,2,1) beats the plain .app-shell (0,1,0) rules above */
@@ -9829,9 +9920,14 @@ body.role-parent-cabinet .tabs.bottom-tabbar .tab:active {
 .cab-notif-row-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 6px; color: #9aa2b4; font-size: 11px; }
 .cab-notif-row-important { color: #d84c4c; font-weight: 700; }
 
-.cab-notif-detail-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-.cab-notif-detail-body { font-size: 14px; line-height: 1.55; white-space: pre-line; }
-.cab-notif-detail-read { margin-top: 14px; color: #9aa2b4; font-size: 11.5px; }
+/* v7.1.13.2 — full-page notification detail: readable at a glance (16px+
+   body, generous line-height), the content starts at the top of the page
+   instead of being pinned to the bottom of a short bottom-sheet. */
+.cab-notif-detail-title { margin: 4px 0 12px; font-size: 20px; font-weight: 800; letter-spacing: -0.01em; line-height: 1.3; color: var(--ink, #111); }
+.cab-notif-detail-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.cab-notif-detail-body { font-size: 16px; line-height: 1.5; white-space: pre-line; color: var(--ink, #111); }
+.cab-notif-detail-read { margin-top: 16px; color: #9aa2b4; font-size: 12px; }
+#tab-notification-detail.tab-panel.active { padding-bottom: 110px; }
 
 /* ---- Availability modal: day-chips / preference buttons / summary / success ---- */
 .oc-day-chip-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 8px; }
@@ -10025,6 +10121,9 @@ body.role-parent-cabinet .tabs.bottom-tabbar .tab:active {
 }
 .otn-controls textarea { min-height: 76px; resize: vertical; line-height: 1.4; }
 .otn-controls-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+/* v7.1.13.2 — short helper text under a field, explaining scope in plain
+   Russian ("this only reaches the one client you named", not a broadcast). */
+.otn-hint { display: block; margin: 5px 2px 0; font-size: 11px; color: var(--muted, #7b8190); line-height: 1.35; }
 
 /* .test-role-status had no styling at all before — success/error read
    identically as plain text. Used by both the existing test-role panel
