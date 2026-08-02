@@ -55,6 +55,19 @@ SCHEDULE_PREFERRED_BRANCHES = ("YC1", "YC2", "either", "unknown")
 SCHEDULE_WEEKDAYS = (1, 2, 3, 4, 5, 6, 7)
 SCHEDULE_PREFERENCES = ("preferred", "possible")
 
+# v7.1.13 — client notification center.
+NOTIFICATION_CATEGORIES = ("general", "food", "payments", "schedule")
+NOTIFICATION_PRIORITIES = ("normal", "important")
+NOTIFICATION_SCOPES = ("family", "child")
+# Backend-enforced whitelist — see web_app_server._client_notification_action_dispatch.
+# Never accept an arbitrary frontend route/JS string as an action_key.
+NOTIFICATION_ACTION_KEYS = ("open_payments", "open_availability", "open_home", "none")
+# v7.1.13 addendum — a food-only client (no active client_parent_child_links,
+# only parent_child_links) must never see tuition-payment or permanent-
+# schedule notifications, even a family-scope one, unless they are also a
+# regular/combined client. Regular/combined/none clients see every category.
+NOTIFICATION_CATEGORIES_FOOD_ONLY = ("general", "food")
+
 # v7.1.12.1 — academic level. Detection is deliberately conservative: no
 # reliable real-world MoyKlass group-naming convention for level/year was
 # found anywhere in this codebase (searched get_classes/search_classes,
@@ -668,6 +681,7 @@ class Storage:
             self._init_bepaid_tables(conn)
             self._init_payment_intent_tables(conn)
             self._init_client_link_tables(conn)
+            self._init_client_notification_tables(conn)
             self._init_client_onboarding_campaign_tables(conn)
             self._init_automation_tables(conn)
             self._init_withdrawal_tables(conn)
@@ -1256,6 +1270,49 @@ class Storage:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cl_rla_actor_time ON client_link_rate_limit_attempts(actor_telegram_user_id, attempted_at)")
+
+    # ── v7.1.13 — client notification center tables ───────────────────────────
+    # Two entities per the approved spec: the message itself
+    # (client_notifications) and a per-recipient fan-out row
+    # (client_notification_recipients) created at send time — read/unread is
+    # tracked per Telegram user on the recipient row, never on the message.
+    # Ownership is still re-verified dynamically at read time against
+    # client_parent_child_links (see list_client_notifications_for_recipient)
+    # so an unlink after the fact revokes access even though the recipient
+    # row itself is untouched.
+    def _init_client_notification_tables(self, conn: sqlite3.Connection) -> None:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_notifications (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                title                   TEXT NOT NULL,
+                body                    TEXT NOT NULL,
+                category                TEXT NOT NULL DEFAULT 'general',
+                priority                TEXT NOT NULL DEFAULT 'normal',
+                scope                   TEXT NOT NULL,
+                mk_user_id              TEXT,
+                action_key              TEXT NOT NULL DEFAULT 'none',
+                created_by_telegram_id  TEXT NOT NULL,
+                created_at              TEXT NOT NULL,
+                expires_at              TEXT,
+                metadata_json           TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cnotif_mk_user ON client_notifications(mk_user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cnotif_created ON client_notifications(id)")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_notification_recipients (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                notification_id         INTEGER NOT NULL,
+                recipient_telegram_id   TEXT NOT NULL,
+                read_at                 TEXT,
+                in_app_status           TEXT NOT NULL DEFAULT 'active',
+                created_at              TEXT NOT NULL,
+                UNIQUE(notification_id, recipient_telegram_id)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cnotif_recip_recipient ON client_notification_recipients(recipient_telegram_id, read_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cnotif_recip_notif ON client_notification_recipients(notification_id)")
 
     # ── v7.1.12 — mass client-onboarding campaign tables ──────────────────────
 
@@ -7118,6 +7175,214 @@ class Storage:
                 (parent_telegram_user_id,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── v7.1.13 addendum — food-only / regular / combined client kind ─────────
+    # Computed purely from presence of ACTIVE rows in the two pre-existing,
+    # independent link systems. Never trust a frontend-supplied flag for
+    # this (e.g. is_food_only) — always recomputed here from real link rows.
+    def get_client_kind_for_parent(self, parent_telegram_id: str) -> str:
+        """Returns 'food_only' | 'regular' | 'combined' | 'none'."""
+        parent_telegram_id = str(parent_telegram_id or "").strip()
+        if not parent_telegram_id:
+            return "none"
+        with self._connect() as conn:
+            has_food = conn.execute(
+                "SELECT 1 FROM parent_child_links WHERE parent_telegram_id=? AND active=1 LIMIT 1",
+                (parent_telegram_id,),
+            ).fetchone() is not None
+            has_client = conn.execute(
+                "SELECT 1 FROM client_parent_child_links WHERE parent_telegram_user_id=? AND status='active' LIMIT 1",
+                (parent_telegram_id,),
+            ).fetchone() is not None
+        if has_food and has_client:
+            return "combined"
+        if has_food:
+            return "food_only"
+        if has_client:
+            return "regular"
+        return "none"
+
+    def get_active_parent_telegram_ids_for_mk_user(self, mk_user_id: str) -> list[str]:
+        """All currently-active parent_telegram_user_id values linked to this
+        mk_user_id (usually one, but the schema allows more). Used to resolve
+        who a child/family-scope notification actually fans out to — never
+        trust an mk_user_id -> telegram_id mapping supplied by the frontend."""
+        mk_user_id = str(mk_user_id or "").strip()
+        if not mk_user_id:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT parent_telegram_user_id FROM client_parent_child_links "
+                "WHERE mk_user_id=? AND status='active'",
+                (mk_user_id,),
+            ).fetchall()
+        return [str(r["parent_telegram_user_id"]) for r in rows if r["parent_telegram_user_id"]]
+
+    # ── v7.1.13 — client notification center ───────────────────────────────
+    # recipient_telegram_ids passed into create_client_notification() is
+    # ALREADY resolved by the caller (web_app_server) against
+    # client_parent_child_links — storage.py stays a pure persistence layer
+    # here, same separation used everywhere else in this file. Ownership is
+    # re-verified dynamically at READ time too (see the EXISTS subquery
+    # below), so unlinking a child after the fact revokes access even
+    # though the recipient row itself is untouched.
+    def create_client_notification(
+        self,
+        *,
+        title: str,
+        body: str,
+        category: str,
+        priority: str,
+        scope: str,
+        mk_user_id: Optional[str],
+        action_key: str,
+        created_by_telegram_id: str,
+        recipient_telegram_ids: list[str],
+        expires_at: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        now = now_iso()
+        recipients = sorted({str(r).strip() for r in recipient_telegram_ids if str(r or "").strip()})
+        if not recipients:
+            return {"ok": False, "error": "Нет получателей."}
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO client_notifications
+                   (title, body, category, priority, scope, mk_user_id, action_key,
+                    created_by_telegram_id, created_at, expires_at, metadata_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(title), str(body), str(category), str(priority), str(scope),
+                    str(mk_user_id) if mk_user_id else None, str(action_key),
+                    str(created_by_telegram_id), now, expires_at,
+                    json.dumps(metadata) if metadata is not None else None,
+                ),
+            )
+            notification_id = int(cur.lastrowid)
+            for rid in recipients:
+                conn.execute(
+                    """INSERT OR IGNORE INTO client_notification_recipients
+                       (notification_id, recipient_telegram_id, read_at, in_app_status, created_at)
+                       VALUES (?, ?, NULL, 'active', ?)""",
+                    (notification_id, rid, now),
+                )
+        return {"ok": True, "id": notification_id, "recipient_count": len(recipients)}
+
+    @staticmethod
+    def _notification_visibility_sql() -> str:
+        """Shared WHERE fragment: family scope trusts the pre-resolved
+        recipient row; child scope re-checks CURRENT active link status."""
+        return """
+            r.recipient_telegram_id = ?
+            AND r.in_app_status = 'active'
+            AND (n.expires_at IS NULL OR n.expires_at > ?)
+            AND (
+                n.scope = 'family'
+                OR (
+                    n.scope = 'child'
+                    AND EXISTS (
+                        SELECT 1 FROM client_parent_child_links l
+                        WHERE l.parent_telegram_user_id = r.recipient_telegram_id
+                          AND CAST(l.mk_user_id AS TEXT) = CAST(n.mk_user_id AS TEXT)
+                          AND l.status = 'active'
+                    )
+                )
+            )
+        """
+
+    def list_client_notifications_for_recipient(
+        self,
+        recipient_telegram_id: str,
+        *,
+        allowed_categories: Optional[tuple[str, ...]] = None,
+        limit: int = 20,
+        before_id: Optional[int] = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        recipient_telegram_id = str(recipient_telegram_id or "").strip()
+        if not recipient_telegram_id:
+            return [], False
+        limit = max(1, min(int(limit or 20), 100))
+        query = f"""
+            SELECT n.id, n.title, n.body, n.category, n.priority, n.scope,
+                   n.mk_user_id, n.action_key, n.created_at, r.read_at
+            FROM client_notification_recipients r
+            JOIN client_notifications n ON n.id = r.notification_id
+            WHERE {self._notification_visibility_sql()}
+        """
+        params: list[Any] = [recipient_telegram_id, now_iso()]
+        if allowed_categories is not None:
+            placeholders = ",".join("?" for _ in allowed_categories)
+            query += f" AND n.category IN ({placeholders})"
+            params.extend(allowed_categories)
+        if before_id:
+            query += " AND n.id < ?"
+            params.append(int(before_id))
+        query += " ORDER BY n.id DESC LIMIT ?"
+        params.append(limit + 1)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        items = [dict(r) for r in rows]
+        has_more = len(items) > limit
+        return items[:limit], has_more
+
+    def count_unread_client_notifications(
+        self, recipient_telegram_id: str, *, allowed_categories: Optional[tuple[str, ...]] = None,
+    ) -> int:
+        recipient_telegram_id = str(recipient_telegram_id or "").strip()
+        if not recipient_telegram_id:
+            return 0
+        query = f"""
+            SELECT COUNT(*) AS c
+            FROM client_notification_recipients r
+            JOIN client_notifications n ON n.id = r.notification_id
+            WHERE {self._notification_visibility_sql()}
+              AND r.read_at IS NULL
+        """
+        params: list[Any] = [recipient_telegram_id, now_iso()]
+        if allowed_categories is not None:
+            placeholders = ",".join("?" for _ in allowed_categories)
+            query += f" AND n.category IN ({placeholders})"
+            params.extend(allowed_categories)
+        with self._connect() as conn:
+            row = conn.execute(query, params).fetchone()
+        return int(row["c"]) if row else 0
+
+    def get_client_notification_for_recipient(
+        self, notification_id: int, recipient_telegram_id: str,
+        *, allowed_categories: Optional[tuple[str, ...]] = None,
+    ) -> Optional[dict[str, Any]]:
+        recipient_telegram_id = str(recipient_telegram_id or "").strip()
+        if not recipient_telegram_id:
+            return None
+        query = f"""
+            SELECT n.id, n.title, n.body, n.category, n.priority, n.scope,
+                   n.mk_user_id, n.action_key, n.created_at, r.read_at
+            FROM client_notification_recipients r
+            JOIN client_notifications n ON n.id = r.notification_id
+            WHERE n.id = ? AND {self._notification_visibility_sql()}
+        """
+        params: list[Any] = [int(notification_id), recipient_telegram_id, now_iso()]
+        if allowed_categories is not None:
+            placeholders = ",".join("?" for _ in allowed_categories)
+            query += f" AND n.category IN ({placeholders})"
+            params.extend(allowed_categories)
+        with self._connect() as conn:
+            row = conn.execute(query, params).fetchone()
+        return dict(row) if row else None
+
+    def mark_client_notification_read(self, notification_id: int, recipient_telegram_id: str) -> bool:
+        """Idempotent: repeated calls keep the FIRST read_at, never error,
+        and always report success as long as a recipient row exists."""
+        recipient_telegram_id = str(recipient_telegram_id or "").strip()
+        now = now_iso()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """UPDATE client_notification_recipients
+                   SET read_at = COALESCE(read_at, ?)
+                   WHERE notification_id = ? AND recipient_telegram_id = ?""",
+                (now, int(notification_id), recipient_telegram_id),
+            )
+        return cur.rowcount > 0
 
     def unlink_client_child(
         self,

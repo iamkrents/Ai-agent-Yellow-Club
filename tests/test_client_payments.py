@@ -341,8 +341,14 @@ class Test09FrontendStaticAnalysis(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.js = APP_JS.read_text(encoding="utf-8")
-        # Extract CLIENT_PAYMENT_STATUS_LABELS block
-        start = cls.js.find("CLIENT_PAYMENT_STATUS_LABELS")
+        # Extract the CLIENT_PAYMENT_STATUS_LABELS object *declaration*
+        # specifically (anchored on "const ...", not the bare constant
+        # name) — v7.1.13's Home dashboard added an earlier usage site
+        # (CLIENT_PAYMENT_STATUS_LABELS[actionItem.status] || ...), so a
+        # bare-name search here would grab that usage instead of the
+        # actual object literal and silently check the wrong text.
+        start = cls.js.find("const CLIENT_PAYMENT_STATUS_LABELS")
+        assert start != -1, "CLIENT_PAYMENT_STATUS_LABELS declaration not found"
         end = cls.js.find("};", start) + 2
         cls.labels_block = cls.js[start:end]
         # Extract renderClientPaymentCard body

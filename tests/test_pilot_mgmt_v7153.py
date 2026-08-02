@@ -460,11 +460,11 @@ class TestVersionV7153(unittest.TestCase):
         """index.html cache-bust and app.js console version must be v7.1.8."""
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.12", html, "index.html cache-bust must be v=7.1.12")
+        self.assertIn("v=7.1.13", html, "index.html cache-bust must be v=7.1.13")
         self.assertIn(
-            'console.log("MiniApp version: v7.1.12.3")',
+            'console.log("MiniApp version: v7.1.13")',
             js,
-            "app.js must log v7.1.12.3",
+            "app.js must log v7.1.13",
         )
 
 

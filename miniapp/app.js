@@ -84,7 +84,7 @@ const launchTab = urlParams.get("tab") || "";
 // one specific campaign recipient (from the bot's post-activation button).
 const launchAvailabilityRecipientId = urlParams.get("oc_availability_recipient") || "";
 
-console.log("MiniApp version: v7.1.12.3");
+console.log("MiniApp version: v7.1.13");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -186,6 +186,13 @@ const state = {
   clientPayments: [],
   clientPaymentsBusy: false,
   clientPaymentsPollTimer: null,
+  // v7.1.13 — client cabinet
+  clientHomeBooted: false,
+  clientHomeActiveChildId: null,
+  notifications: null,
+  notificationsHasMore: false,
+  notificationsBusy: false,
+  unreadNotificationCount: 0,
 };
 
 function $(id) { return document.getElementById(id); }
@@ -1128,6 +1135,79 @@ function renderChatChips() {
   ).join("");
 }
 
+// v7.1.13 round 2 — monochrome line icons for the client cabinet (nav +
+// "Ещё" rows), hand-written inline SVG (24x24, 2px stroke) so no new icon
+// library is pulled in just for this. Shared by CabinetBottomNav icon-swap
+// (staff/kitchen nav buttons never run this, so their emoji are untouched)
+// and renderClientMore()/renderClientProfile()'s row icons — one set, one
+// place, guaranteed identical size/stroke/color everywhere it's used.
+const CAB_ICONS = {
+  home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V10"/></svg>',
+  payments: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>',
+  notifications: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 4 1.5 5.5 2 6H4c.5-.5 2-2 2-6z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>',
+  more: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>',
+  food: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v7a2 2 0 0 0 2 2v11"/><path d="M6 2v7"/><path d="M9 2v7"/><path d="M18 2c-2 0-3 2-3 5v3h3v10"/></svg>',
+  help: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.5-2.5 2-2.5 4"/><circle cx="12" cy="17" r="0.6" fill="currentColor" stroke="none"/></svg>',
+  profile: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>',
+  myChildren: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3"/><path d="M2 20c0-3.3 3-5 7-5s7 1.7 7 5"/><circle cx="17" cy="9" r="2.5"/><path d="M15 20c.3-2.5 2-4 4.5-4"/></svg>',
+  availability: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M12 14v3l2 1"/></svg>',
+  back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>',
+};
+
+// Only touches nav buttons the client cabinet actually shows — staff/
+// kitchen buttons (lessons/reports/admin/etc.) are never in this map, so
+// their emoji are never replaced.
+const CAB_NAV_ICON_BY_TAB = {
+  home: "home", "client-payments": "payments", notifications: "notifications",
+  more: "more", food: "food", help: "help", profile: "profile",
+};
+
+function _applyCabinetNavIcons() {
+  Object.entries(CAB_NAV_ICON_BY_TAB).forEach(([tab, iconKey]) => {
+    const el = document.querySelector(`.tab[data-tab="${tab}"] .tab-icon`);
+    if (el) el.innerHTML = CAB_ICONS[iconKey];
+  });
+}
+
+// v7.1.13 visual polish pass — one shared premium header, two variants,
+// matching the approved figma-yellow-club client-cabinet-v7113 prototype
+// (ClientHeader for Главная/food-only landing; SubpageHeader for every
+// other cabinet screen). Never sticky (see report): stays in normal flow
+// at the top of each panel's content, so it can never overlap content or
+// fight the bottom nav for space, and needs no extra safe-area handling
+// beyond what .app-shell already applies at the app-shell level.
+//   mode: "home" — eyebrow + avatar + greeting + optional child line + bell
+//   mode: "sub"  — optional back button + title + optional subtitle
+function _cabHeaderHtml(opts) {
+  const o = opts || {};
+  if (o.mode === "home") {
+    return `
+      <div class="cab-header">
+        <div class="cab-header-identity">
+          <span class="cab-header-avatar" aria-hidden="true">${escapeHtml((o.avatarInitial || "?").slice(0, 1).toUpperCase())}</span>
+          <div class="cab-header-text">
+            <p class="cab-header-eyebrow">Yellow Club</p>
+            <h2 class="cab-header-title">${escapeHtml(o.title || "")}</h2>
+            ${o.subtitle ? `<p class="cab-header-child">${escapeHtml(o.subtitle)}</p>` : ""}
+          </div>
+        </div>
+        ${o.showBell ? `
+          <button type="button" class="cab-header-bell cab-icon-btn" id="${o.bellId || "cabHeaderBell"}" aria-label="${o.unread > 0 ? `Уведомления, ${o.unread} новых` : "Уведомления"}">
+            ${CAB_ICONS.notifications}
+            ${o.unread > 0 ? `<span class="cab-header-bell-dot">${o.unread > 99 ? "99+" : o.unread}</span>` : ""}
+          </button>` : ""}
+      </div>`;
+  }
+  return `
+    <div class="cab-header cab-header--sub">
+      ${o.showBack ? `<button type="button" class="cab-icon-btn cab-header-back" id="${o.backId || "cabHeaderBack"}" aria-label="Назад">${CAB_ICONS.back}</button>` : ""}
+      <div class="cab-header-text">
+        <h2 class="cab-header-sub-title">${escapeHtml(o.title || "")}</h2>
+        ${o.subtitle ? `<p class="cab-header-sub-desc" id="${o.subtitleId || ""}">${escapeHtml(o.subtitle)}</p>` : ""}
+      </div>
+    </div>`;
+}
+
 function setupRoleUi() {
   const role = state.me?.role || "";
   const testMode = state.me?.testMode || {};
@@ -1179,15 +1259,44 @@ function setupRoleUi() {
   }
   document.querySelectorAll(".subtab").forEach(el => el.classList.toggle("active", el.dataset.adminTab === state.adminTab));
 
-  // Parent role: override all tab visibility and show only parent tabs
+  // Parent role: override all tab visibility and show only parent tabs.
+  // v7.1.13 — the 4-item cabinet nav depends on client kind (computed
+  // server-side in /api/me, never trusted from a frontend flag): a
+  // food-only client (city programme / camp only, no client_parent_child_links)
+  // gets a simplified 4-tab kabinet built around Питание; regular/combined
+  // clients get the full Главная/Оплаты/Уведомления/Ещё cabinet. Both are
+  // still exactly 4 nav buttons — DOM order (index.html) already puts the
+  // right buttons in the right visual order for each set, no CSS "order"
+  // hacks needed. "my-children"/"food"/"help" panels themselves are
+  // completely unchanged — they're just reached via Ещё (or, for food-only,
+  // directly) instead of being top-level nav items.
   if (role === "parent") {
-    const parentAllowed = ["my-children", "food", "client-payments", "help"];
+    // v7.1.13 round 2 — CLIENT_CABINET_V7113_ENABLED safe-rollout gate,
+    // computed server-side in /api/me (state.me.clientCabinetV7113Enabled;
+    // never a frontend flag). While closed for this user, they fall back
+    // to the exact pre-v7.1.13 4-tab set — those panels/handlers were never
+    // removed, only demoted from top-level nav once the cabinet shipped, so
+    // this is a real working fallback, not a stub.
+    const cabinetEnabled = !!state.me?.clientCabinetV7113Enabled;
+    const clientKind = state.me?.clientKind || "none";
+    const parentAllowed = !cabinetEnabled
+      ? ["my-children", "food", "client-payments", "help"]
+      : clientKind === "food_only"
+        ? ["food", "notifications", "help", "profile"]
+        : ["home", "client-payments", "notifications", "more"];
     document.querySelectorAll(".tab[data-tab]").forEach(t => {
       t.classList.toggle("hidden", !parentAllowed.includes(t.dataset.tab));
     });
     document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.add("hidden"));
-    $("appTitle").textContent = "Оплаты · Yellow Club";
+    document.body.classList.toggle("role-parent-cabinet", cabinetEnabled);
+    $("appTitle").textContent = cabinetEnabled ? "Yellow Club" : "Оплаты · Yellow Club";
     $("roleBadge").textContent = "Родитель";
+    if (cabinetEnabled) {
+      _updateNotifNavBadge();
+      _applyCabinetNavIcons();
+    }
+  } else {
+    document.body.classList.remove("role-parent-cabinet");
   }
 
   // Kitchen role: show kitchen + kitchen-editor tabs
@@ -1234,6 +1343,7 @@ function setupRoleUi() {
   renderRoleHelp();
   renderChatChips();
   renderTestRolePanel();
+  renderOwnerTestNotificationPanel();
   ensureVisibleActiveTab();
 }
 
@@ -1273,7 +1383,17 @@ function activateTab(name) {
   if (name === "reports") { loadReports(); loadKpi(); renderChildrenReport(); renderBepaid(); loadBepaidStatus(); }
   if (name === "ask") renderAskMessages();
   if (name === "my-children") { if (state.myChildren === null) loadMyChildren(); else renderMyChildren(); }
-  if (name === "food") { if (state.activeMenus === null) loadActiveMenus(); else renderParentFoodMenu(); }
+  if (name === "food") {
+    if (isParent()) _cabRenderFoodHeader();
+    if (isParent() && !clientFoodEntryAllowed()) { renderFoodEntryDisabled(); }
+    else if (state.activeMenus === null) loadActiveMenus();
+    else renderParentFoodMenu();
+  }
+  // v7.1.13 — client cabinet
+  if (name === "home") { if (!state.clientHomeBooted) loadClientHomeData(); else renderClientHome(); }
+  if (name === "notifications") loadClientNotifications();
+  if (name === "more") renderClientMore();
+  if (name === "profile") renderClientProfile();
   if (name === "my-lunch") { renderStaffFoodLunch($("myLunchContent")); }
   if (name === "kitchen-editor") {
     const root = $("kitchenEditorContent");
@@ -7801,60 +7921,25 @@ function copyCampCodesList() {
 // the parent's home screen for ANY client-linked child regardless of how
 // they were linked (CL-code / onboarding invite / staff link) and
 // regardless of campaign/invite/continuation_status/pilot/payment state.
-// Separate top-level state container (mirrors the existing _ocState/
-// _ocAvailState pattern), not folded into the shared `state` object.
+// v7.1.13 — re-hosted from "Мои дети" onto the new Главная dashboard (per
+// approved client-cabinet-v7113 design): the status cache and API calls
+// below are unchanged, only WHERE they render moved. The old in-place
+// "picking" multi-child list is retired — Home's own child switcher
+// (renderClientHome) is now the single place a parent picks which child's
+// data they're looking at, so a second, separate picker here would be
+// redundant. Separate top-level state container (mirrors the existing
+// _ocState/_ocAvailState pattern), not folded into the shared `state` object.
 const _wsScheduleAvailState = {
-  picking: false,          // multi-child picker shown instead of the entry card
   statusByMk: {},          // mk_user_id -> { filled, availability_updated_at }
   statusLoading: false,
 };
 
-function _wsScheduleAvailCardHtml() {
-  const children = state.clientChildren || [];
-  if (!children.length) return "";  // 6.1 — no linked children: hide entirely, no error
-  if (children.length === 1) {
-    const mk = children[0].mk_user_id;
-    return `
-      <div class="parent-children-section">
-        <button type="button" class="parent-schedule-avail-card" id="wsScheduleAvailCard" data-mk="${escapeAttr(mk)}">
-          <div class="parent-schedule-avail-title">Возможности для расписания</div>
-          <div class="parent-schedule-avail-subtitle">Укажите подходящие дни и время занятий</div>
-        </button>
-      </div>`;
-  }
-  if (!_wsScheduleAvailState.picking) {
-    return `
-      <div class="parent-children-section">
-        <button type="button" class="parent-schedule-avail-card" id="wsScheduleAvailCard">
-          <div class="parent-schedule-avail-title">Возможности для расписания</div>
-          <div class="parent-schedule-avail-subtitle">Укажите подходящие дни и время занятий</div>
-        </button>
-      </div>`;
-  }
-  const rows = children.map(c => {
-    const st = _wsScheduleAvailState.statusByMk[c.mk_user_id];
-    const filled = !!st?.filled;
-    const statusLabel = _wsScheduleAvailState.statusLoading ? "Проверяю…" : (filled ? "Заполнено" : "Не заполнено");
-    const updated = filled && st?.availability_updated_at ? ` · обновлено ${escapeHtml(String(st.availability_updated_at).slice(0, 10))}` : "";
-    return `
-      <button type="button" class="parent-schedule-avail-child-row" data-mk="${escapeAttr(c.mk_user_id)}">
-        <span class="parent-schedule-avail-child-name">${escapeHtml(c.display_name || "Ученик")}</span>
-        <span class="parent-schedule-avail-child-status${filled ? " parent-schedule-avail-child-status--filled" : ""}">${statusLabel}${updated}</span>
-      </button>`;
-  }).join("");
-  return `
-    <div class="parent-children-section">
-      <h4 class="parent-children-section-title">Возможности для расписания</h4>
-      <p class="parent-link-hint">Выберите ребёнка</p>
-      <div class="parent-schedule-avail-picker">${rows}</div>
-      <button type="button" class="secondary" id="wsScheduleAvailPickerBack">Назад</button>
-    </div>`;
-}
-
+// Eagerly loads fill-status for every linked child (not just the active
+// one) so switching the Home child-switcher never needs a fresh network
+// call just to show the availability card's state.
 async function _wsScheduleAvailLoadStatuses() {
-  if (_wsScheduleAvailState.statusLoading) return;  // 6.4 — no duplicate in-flight requests
+  if (_wsScheduleAvailState.statusLoading) return;  // no duplicate in-flight requests
   _wsScheduleAvailState.statusLoading = true;
-  renderMyChildren();
   const children = state.clientChildren || [];
   await Promise.all(children.map(async c => {
     try {
@@ -7863,39 +7948,503 @@ async function _wsScheduleAvailLoadStatuses() {
     } catch (e) { /* leave this child's status unknown — non-fatal, form itself still opens fine */ }
   }));
   _wsScheduleAvailState.statusLoading = false;
-  renderMyChildren();
+  if (document.getElementById("tab-home")?.classList.contains("active")) renderClientHome();
 }
 
-// 6.6 — after a successful save, refresh just this child's cached status so
-// the entry card / picker reflect it immediately without a full Mini App restart.
+// After a successful save, refresh just this child's cached status so the
+// Home card reflects it immediately without a full Mini App restart.
 async function _wsScheduleAvailRefreshStatus(mkUserId) {
   try {
     const data = await apiGet(`/api/client/schedule-availability/${encodeURIComponent(mkUserId)}`);
     if (data.ok) _wsScheduleAvailState.statusByMk[mkUserId] = { filled: !!data.filled, availability_updated_at: data.availability_updated_at };
-  } catch (e) { /* non-fatal — status badge just won't update until next picker open */ }
-  renderMyChildren();
+  } catch (e) { /* non-fatal — card just won't update until next Home visit */ }
+  if (document.getElementById("tab-home")?.classList.contains("active")) renderClientHome();
 }
 
-function _wsScheduleAvailWire() {
-  const card = $("wsScheduleAvailCard");
-  if (card) {
-    card.addEventListener("click", () => {
-      const mk = card.dataset.mk;
-      if (mk) {
-        openClientScheduleAvailabilityModal(mk);
+// ---- Client cabinet dashboard (Главная) ── v7.1.13 ----
+// Replaces the old "my-children is the home screen" model per the approved
+// client-cabinet-v7113 design. Reuses existing bootstrap calls
+// (loadMyChildren/loadClientPayments/_wsScheduleAvailLoadStatuses) rather
+// than adding a new aggregate endpoint — no per-card network request.
+
+const CAB_BRANCH_LABELS = { YC1: "Кульман 1/1", YC2: "Мстиславца 6", either: "Любой", unknown: "—" };
+const CAB_WEEKDAY_LABELS = { 1: "Пн", 2: "Вт", 3: "Ср", 4: "Чт", 5: "Пт", 6: "Сб", 7: "Вс" };
+const CAB_MONTHS_RU = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+
+// Single unified human date format for the whole cabinet — never a raw ISO
+// string in the UI.
+function cabFormatDate(iso) {
+  if (!iso) return "";
+  const s = String(iso).slice(0, 10);
+  const parts = s.split("-");
+  if (parts.length !== 3) return s;
+  const [y, m, d] = parts;
+  const mi = parseInt(m, 10) - 1;
+  const mName = CAB_MONTHS_RU[mi];
+  return mName ? `${parseInt(d, 10)} ${mName} ${y}` : s;
+}
+
+function clientFoodEntryAllowed() {
+  // Server-computed: settings flag AND clientKind in (food_only, combined).
+  // Never trust a frontend flag for this — see v7.1.13 addendum.
+  return !!state.me?.clientFoodEntryVisible;
+}
+
+function renderFoodEntryDisabled() {
+  const root = $("foodContent");
+  if (!root) return;
+  root.innerHTML = `
+    <div class="parent-link-card">
+      <h3>Сейчас у вас нет активных программ</h3>
+      <p class="parent-link-hint">Раздел питания временно недоступен. Ваши данные и история сохранены — обратитесь в раздел «Помощь», если у вас есть вопросы.</p>
+    </div>`;
+}
+
+function _updateNotifNavBadge(count) {
+  if (typeof count === "number") state.unreadNotificationCount = count;
+  const n = state.unreadNotificationCount || 0;
+  const badge = $("notifNavBadge");
+  if (badge) { badge.textContent = n > 9 ? "9+" : String(n); badge.classList.toggle("hidden", n <= 0); }
+}
+
+function _cabPaymentSummaryForChild(mkUserId) {
+  const items = (state.clientPayments || []).filter(p => String(p.mk_user_id) === String(mkUserId));
+  if (!items.length) return { state: "no_data" };
+  const actionItem = items.find(p => ["bepaid_requires_check", "cancelled"].includes(p.status));
+  if (actionItem) {
+    return { state: "action_required", amount: fmtByn(actionItem.amount_byn), dueLabel: CLIENT_PAYMENT_STATUS_LABELS[actionItem.status] || "Нужно действие" };
+  }
+  const pendingItem = items.find(p => !["paid", "posted_to_moyklass"].includes(p.status));
+  if (pendingItem) {
+    return { state: "pending", amount: fmtByn(pendingItem.amount_byn), dueLabel: CLIENT_PAYMENT_STATUS_LABELS[pendingItem.status] || "Ожидает оплаты" };
+  }
+  const paidItem = items[0];
+  return { state: "paid", amount: fmtByn(paidItem.amount_byn), dueLabel: paidItem.paid_at ? `Оплачено ${cabFormatDate(paidItem.paid_at)}` : "Оплачено" };
+}
+
+const CAB_PAYMENT_META = {
+  paid:            { badge: "success", label: "Всё оплачено" },
+  pending:         { badge: "pending", label: "Ожидается оплата" },
+  action_required: { badge: "danger",  label: "Нужно действие" },
+  no_data:         { badge: "muted",   label: "Нет счетов" },
+};
+
+function _cabPaymentCardHtml(activeChild) {
+  if (!activeChild) return "";
+  const summary = _cabPaymentSummaryForChild(activeChild.mk_user_id);
+  const meta = CAB_PAYMENT_META[summary.state] || CAB_PAYMENT_META.no_data;
+  return `
+    <button type="button" class="cab-card cab-card--clickable" id="cabPaymentCard">
+      <div class="cab-card-head">
+        <span class="cab-card-title">Оплаты</span>
+        <span class="cab-badge cab-badge--${meta.badge}">${meta.label}</span>
+      </div>
+      ${summary.state === "no_data"
+        ? `<p class="cab-card-desc">Пока нет выставленных счетов.</p>`
+        : `<p class="cab-card-amount">${escapeHtml(summary.amount || "")}</p><p class="cab-card-desc">${escapeHtml(summary.dueLabel || "")}</p>`}
+    </button>`;
+}
+
+function _cabAvailabilityCardHtml(activeChild) {
+  if (!activeChild) return "";
+  const st = _wsScheduleAvailState.statusByMk[activeChild.mk_user_id];
+  const filled = !!st?.filled;
+  const updated = filled && st?.availability_updated_at ? cabFormatDate(st.availability_updated_at) : "";
+  return `
+    <button type="button" class="cab-card cab-card--accent cab-card--clickable" id="cabAvailCard" data-mk="${escapeAttr(activeChild.mk_user_id)}">
+      <div class="cab-card-head">
+        <span class="cab-card-title">Возможности для расписания</span>
+        <span class="cab-badge cab-badge--${filled ? "success" : "warning"}">${filled ? "Заполнено" : "Не заполнено"}</span>
+      </div>
+      <p class="cab-card-desc">${filled ? "Данные сохранены." : "Укажите удобные дни и время — так мы быстрее подберём расписание."}</p>
+      ${filled && updated ? `<p class="cab-card-meta">Обновлено ${escapeHtml(updated)}</p>` : ""}
+      <span class="cab-card-link">${filled ? "Изменить" : "Заполнить"}</span>
+    </button>`;
+}
+
+function _cabNotificationsCardHtml() {
+  const count = state.me?.unreadNotificationCount || 0;
+  const last = (state.notifications || [])[0];
+  return `
+    <button type="button" class="cab-card cab-card--clickable" id="cabNotifCard">
+      <div class="cab-card-head">
+        <span class="cab-card-title">Уведомления</span>
+        <span class="cab-badge cab-badge--${count > 0 ? "info" : "muted"}">${count > 0 ? `${count} новых` : "Нет новых"}</span>
+      </div>
+      <p class="cab-card-desc">${last ? escapeHtml(last.title) : "Здесь будут важные сообщения от Yellow Club."}</p>
+    </button>`;
+}
+
+function _cabFoodCardHtml() {
+  if (!clientFoodEntryAllowed()) return "";
+  return `
+    <button type="button" class="cab-card cab-card--clickable" id="cabFoodCard">
+      <div class="cab-card-head">
+        <span class="cab-card-title">Питание</span>
+        <span class="cab-badge cab-badge--muted">Временный раздел</span>
+      </div>
+      <p class="cab-card-desc">Городская программа питания — открывается в отдельном разделе.</p>
+    </button>`;
+}
+
+// Graceful shortening for a compact chip — a real, complete name fragment,
+// never a mid-syllable CSS-ellipsis cut. A hyphenated double first name
+// ("Вероника-Александра") still reads as one unbroken "word" to the
+// browser, so on a narrow chip it would otherwise clip mid-name; prefer
+// the piece before the hyphen instead. The FULL name is always still
+// available via title="" on the chip.
+function _cabShortChildName(name) {
+  const first = (name || "Ученик").trim().split(" ")[0] || "Ученик";
+  if (first.length > 12 && first.includes("-")) return first.split("-")[0];
+  return first;
+}
+
+function _cabChildSwitcherHtml(children, activeId) {
+  if (!children || children.length <= 1) return "";
+  const chips = children.map(c => {
+    const active = String(c.mk_user_id) === String(activeId);
+    const fullName = c.display_name || "Ученик";
+    return `<button type="button" class="cab-switch-chip${active ? " active" : ""}" data-mk="${escapeAttr(c.mk_user_id)}" title="${escapeAttr(fullName)}" aria-label="${escapeAttr(fullName)}">${escapeHtml(_cabShortChildName(fullName))}</button>`;
+  }).join("");
+  return `<div class="cab-switcher" role="tablist" aria-label="Выбор ребёнка">${chips}</div>`;
+}
+
+function _cabHeadline(activeChild) {
+  if (!activeChild) return "Привяжите ребёнка, чтобы начать пользоваться кабинетом.";
+  const pay = _cabPaymentSummaryForChild(activeChild.mk_user_id);
+  const availFilled = !!_wsScheduleAvailState.statusByMk[activeChild.mk_user_id]?.filled;
+  const unread = state.me?.unreadNotificationCount || 0;
+  const openItems = [pay.state === "action_required", !availFilled, unread > 0].filter(Boolean).length;
+  if (openItems === 0) return "Всё в порядке — открытых вопросов нет.";
+  if (openItems === 1) return "Есть 1 вопрос, требующий внимания.";
+  return `Есть ${openItems} вопроса, требующих внимания.`;
+}
+
+async function loadClientHomeData() {
+  const root = $("clientHomeContent");
+  if (root) root.innerHTML = `<div class="kpi-loading">Загружаю…</div>`;
+  try {
+    if (state.myChildren === null) await loadMyChildren();
+    await loadClientPayments();
+    await _wsScheduleAvailLoadStatuses();
+  } catch (e) { /* individual loaders already surface their own errors */ }
+  state.clientHomeBooted = true;
+  renderClientHome();
+}
+
+function renderClientHome() {
+  const root = $("clientHomeContent");
+  if (!root) return;
+  const children = state.clientChildren || [];
+  if ((!state.clientHomeActiveChildId || !children.some(c => String(c.mk_user_id) === String(state.clientHomeActiveChildId))) && children.length) {
+    state.clientHomeActiveChildId = children[0].mk_user_id;
+  }
+  const activeChild = children.find(c => String(c.mk_user_id) === String(state.clientHomeActiveChildId)) || children[0] || null;
+  const greetingName = (state.me?.telegramUser?.first_name || state.me?.fullName || "").trim();
+  const unread = state.me?.unreadNotificationCount || 0;
+  // v7.1.13 — header context line: a combined client (courses + city
+  // programme) gets a neutral type label instead of a single child's name
+  // (they may have differently-named children on each side, and the label
+  // communicates scope more accurately); with one child, show that child's
+  // name directly; with several, name a specific selection rather than
+  // listing everyone (the full switcher is right below the header anyway).
+  let headerSubtitle = "";
+  if (state.me?.clientKind === "combined") {
+    headerSubtitle = "Курсы и городская программа";
+  } else if (activeChild && children.length === 1) {
+    headerSubtitle = (activeChild.display_name || "").split(" ")[0] || "";
+  } else if (activeChild && children.length > 1) {
+    headerSubtitle = `Выбран ребёнок: ${(activeChild.display_name || "").split(" ")[0] || ""}`;
+  }
+
+  root.innerHTML = `
+    ${_cabHeaderHtml({
+      mode: "home",
+      avatarInitial: greetingName || "?",
+      title: `Привет${greetingName ? ", " + greetingName : ""}!`,
+      subtitle: headerSubtitle,
+      showBell: true,
+      unread,
+    })}
+    <p class="cab-headline">${escapeHtml(_cabHeadline(activeChild))}</p>
+    ${!children.length ? `
+      <div class="empty">У вас пока нет привязанных детей. Перейдите в «Ещё → Мои дети», чтобы привязать ребёнка по коду.</div>
+    ` : `
+      ${_cabChildSwitcherHtml(children, state.clientHomeActiveChildId)}
+      <div class="cab-card-grid">
+        ${_cabPaymentCardHtml(activeChild)}
+        ${_cabAvailabilityCardHtml(activeChild)}
+        ${_cabNotificationsCardHtml()}
+        ${_cabFoodCardHtml()}
+      </div>
+      <button type="button" class="secondary cab-more-link" id="cabGoMoreBtn">Мои дети и профиль</button>
+    `}
+  `;
+
+  $("cabHeaderBell")?.addEventListener("click", () => activateTab("notifications"));
+  $("cabPaymentCard")?.addEventListener("click", () => activateTab("client-payments"));
+  $("cabAvailCard")?.addEventListener("click", e => {
+    const mk = e.currentTarget.dataset.mk;
+    if (mk) openClientScheduleAvailabilityModal(mk);
+  });
+  $("cabNotifCard")?.addEventListener("click", () => activateTab("notifications"));
+  $("cabFoodCard")?.addEventListener("click", () => activateTab("food"));
+  $("cabGoMoreBtn")?.addEventListener("click", () => activateTab("more"));
+  document.querySelectorAll(".cab-switch-chip").forEach(chip => {
+    chip.addEventListener("click", () => {
+      state.clientHomeActiveChildId = chip.dataset.mk;
+      renderClientHome();
+    });
+  });
+}
+
+// ---- Client cabinet: "Ещё" and "Профиль" ── v7.1.13 ----
+
+function renderClientMore() {
+  const root = $("clientMoreContent");
+  if (!root) return;
+  const rows = [
+    { id: "my-children", icon: "myChildren", title: "Мои дети", desc: "Список детей и привязка нового ребёнка" },
+    { id: "availability", icon: "availability", title: "Возможности для расписания", desc: "Удобные дни и время занятий" },
+  ];
+  if (clientFoodEntryAllowed()) rows.push({ id: "food", icon: "food", title: "Питание", desc: "Городская программа питания" });
+  rows.push({ id: "help", icon: "help", title: "Помощь и поддержка", desc: "Частые вопросы и связь с администратором" });
+  rows.push({ id: "profile", icon: "profile", title: "Профиль", desc: "Имя и контактные данные" });
+
+  root.innerHTML = `<div class="cab-more-list">${rows.map(r => `
+    <button type="button" class="cab-more-row" data-target="${escapeAttr(r.id)}">
+      <span class="cab-more-row-icon">${CAB_ICONS[r.icon]}</span>
+      <span class="cab-more-row-text">
+        <span class="cab-more-row-title">${escapeHtml(r.title)}</span>
+        <span class="cab-more-row-desc">${escapeHtml(r.desc)}</span>
+      </span>
+      <span class="cab-more-row-chevron">›</span>
+    </button>`).join("")}</div>`;
+
+  root.querySelectorAll("[data-target]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const target = btn.dataset.target;
+      if (target === "availability") {
+        // v7.1.13 round 2 — no pre-selected child context here (unlike the
+        // Главная card, which already knows the active child from the
+        // switcher) — always offer the picker when there's more than one.
+        openClientScheduleAvailabilityPicker();
       } else {
-        _wsScheduleAvailState.picking = true;
-        _wsScheduleAvailLoadStatuses();
+        activateTab(target);
       }
     });
+  });
+}
+
+function renderClientProfile() {
+  const root = $("clientProfileContent");
+  if (!root) return;
+  const name = state.me?.telegramUser?.first_name || state.me?.fullName || "Родитель";
+  const username = state.me?.telegramUser?.username ? `@${state.me.telegramUser.username}` : "";
+  root.innerHTML = `
+    <div class="cab-profile-card">
+      <span class="cab-header-avatar" aria-hidden="true">${escapeHtml((name || "?").slice(0, 1).toUpperCase())}</span>
+      <div>
+        <p class="cab-profile-name">${escapeHtml(name)}</p>
+        <p class="cab-profile-meta">${username ? escapeHtml(username) + " · " : ""}Родитель · Yellow Club</p>
+      </div>
+    </div>
+    <div class="cab-more-list">
+      <button type="button" class="cab-more-row" id="cabProfileMyChildrenBtn">
+        <span class="cab-more-row-icon">${CAB_ICONS.myChildren}</span>
+        <span class="cab-more-row-text">
+          <span class="cab-more-row-title">Мои дети</span>
+          <span class="cab-more-row-desc">Список детей и привязка ребёнка по коду</span>
+        </span>
+        <span class="cab-more-row-chevron">›</span>
+      </button>
+    </div>`;
+  $("cabProfileMyChildrenBtn")?.addEventListener("click", () => activateTab("my-children"));
+}
+
+// ---- Client notification center ── v7.1.13 ----
+// Not a chat: a flat, paginated list of discrete messages. Server already
+// enforces ownership/scope/food-only-category filtering — this layer only
+// renders what the API returns and maps a whitelisted action_key to a
+// local screen (never arbitrary frontend routing).
+
+function cabChildNameForMk(mk) {
+  const c = (state.clientChildren || []).find(x => String(x.mk_user_id) === String(mk));
+  return c?.display_name || "";
+}
+
+async function loadClientNotifications(loadMore) {
+  if (state.notificationsBusy) return;
+  // v7.1.13 round 2 — CLIENT_NOTIFICATIONS_ENABLED gate: when closed for
+  // this user (server-computed, state.me.clientNotificationsEnabled), show
+  // a safe "coming soon" state instead of calling the API. Independent of
+  // the cabinet-shell gate so notifications can be piloted separately.
+  if (!state.me?.clientNotificationsEnabled) {
+    state.notifications = [];
+    state.notificationsHasMore = false;
+    renderClientNotifications();
+    return;
   }
-  document.querySelectorAll(".parent-schedule-avail-child-row").forEach(btn => {
-    btn.addEventListener("click", () => openClientScheduleAvailabilityModal(btn.dataset.mk));
+  const root = $("notificationsListContent");
+  if (!loadMore) {
+    if (root) root.innerHTML = `<div class="kpi-loading">Загружаю…</div>`;
+  }
+  state.notificationsBusy = true;
+  try {
+    const beforeId = loadMore && state.notifications?.length ? state.notifications[state.notifications.length - 1].id : null;
+    const url = "/api/client/notifications" + (beforeId ? `?before_id=${encodeURIComponent(beforeId)}&limit=20` : "?limit=20");
+    const data = await apiGet(url);
+    if (data.ok) {
+      state.notifications = loadMore ? [...(state.notifications || []), ...data.notifications] : data.notifications;
+      state.notificationsHasMore = !!data.has_more;
+      renderClientNotifications();
+    } else if (root) {
+      root.innerHTML = `<div class="error-msg">${escapeHtml(data.error || "Ошибка загрузки")}</div>`;
+    }
+  } catch (e) {
+    if (root) root.innerHTML = `<div class="error-msg">${escapeHtml(safeUserError(e))}</div>`;
+  } finally {
+    state.notificationsBusy = false;
+  }
+}
+
+function renderClientNotifications() {
+  const root = $("notificationsListContent");
+  if (!root) return;
+  const subtitleEl = $("notifListSubtitle");
+  if (!state.me?.clientNotificationsEnabled) {
+    if (subtitleEl) subtitleEl.textContent = "";
+    root.innerHTML = `<div class="empty">Раздел уведомлений скоро станет доступен.</div>`;
+    return;
+  }
+  const list = state.notifications || [];
+  const unreadCount = list.filter(n => n.unread).length;
+  if (subtitleEl) subtitleEl.textContent = unreadCount > 0 ? `${unreadCount} новых` : "Всё прочитано";
+
+  if (!list.length) {
+    root.innerHTML = `<div class="empty">Пока нет уведомлений. Здесь появятся важные сообщения от Yellow Club.</div>`;
+    return;
+  }
+
+  root.innerHTML = `
+    <div class="cab-notif-list">
+      ${list.map(n => `
+        <button type="button" class="cab-notif-row${n.unread ? " is-unread" : ""}" data-id="${escapeAttr(n.id)}">
+          ${n.priority === "important" ? `<span class="cab-notif-row-stripe" aria-hidden="true"></span>` : ""}
+          <div class="cab-notif-row-main">
+            <div class="cab-notif-row-top">
+              <span class="cab-notif-row-title">${n.unread ? `<span class="cab-notif-row-dot" aria-hidden="true"></span>` : ""}${escapeHtml(n.title)}</span>
+              <span class="cab-notif-row-date">${escapeHtml(cabFormatDate(n.created_at))}</span>
+            </div>
+            <p class="cab-notif-row-snippet">${escapeHtml((n.body || "").slice(0, 140))}</p>
+            <div class="cab-notif-row-meta">
+              <span>${n.scope === "child" ? escapeHtml(cabChildNameForMk(n.mk_user_id) || "Ребёнок") : "Все дети"}</span>
+              ${n.priority === "important" ? `<span class="cab-notif-row-important">⚠ Важно</span>` : ""}
+            </div>
+          </div>
+        </button>`).join("")}
+    </div>
+    ${state.notificationsHasMore ? `<button type="button" class="secondary" id="notifLoadMoreBtn" style="width:100%;margin-top:10px">Показать ещё</button>` : ""}
+  `;
+  root.querySelectorAll("[data-id]").forEach(btn => {
+    btn.addEventListener("click", () => openNotificationDetail(Number(btn.dataset.id)));
   });
-  $("wsScheduleAvailPickerBack")?.addEventListener("click", () => {
-    _wsScheduleAvailState.picking = false;
-    renderMyChildren();
-  });
+  $("notifLoadMoreBtn")?.addEventListener("click", () => loadClientNotifications(true));
+}
+
+const NOTIF_ACTION_LABELS = {
+  open_payments: "Перейти к оплате",
+  open_availability: "Открыть возможности по расписанию",
+  open_home: "На главную",
+};
+
+async function openNotificationDetail(id) {
+  piModalOpen($("notificationDetailModal"));
+  const root = $("notificationDetailContent");
+  if (root) root.innerHTML = `<div class="kpi-loading">Загружаю…</div>`;
+  try {
+    const data = await apiGet(`/api/client/notifications/${encodeURIComponent(id)}`);
+    if (!data.ok) { if (root) root.innerHTML = `<div class="error-msg">${escapeHtml(data.error || "Ошибка загрузки")}</div>`; return; }
+    renderNotificationDetail(data.notification);
+    if (data.notification.unread) {
+      await apiPost(`/api/client/notifications/${encodeURIComponent(id)}/read`, {});
+      const item = (state.notifications || []).find(n => n.id === id);
+      if (item) item.unread = false;
+      const newUnread = Math.max(0, (state.me?.unreadNotificationCount || 0) - 1);
+      if (state.me) state.me.unreadNotificationCount = newUnread;
+      _updateNotifNavBadge(newUnread);
+      renderClientNotifications();
+      if (document.getElementById("tab-home")?.classList.contains("active")) renderClientHome();
+    }
+  } catch (e) {
+    if (root) root.innerHTML = `<div class="error-msg">${escapeHtml(safeUserError(e))}</div>`;
+  }
+}
+
+function renderNotificationDetail(n) {
+  const root = $("notificationDetailContent");
+  if (!root) return;
+  const childName = n.scope === "child" ? cabChildNameForMk(n.mk_user_id) : "";
+  root.innerHTML = `
+    <h3 style="margin:0 0 10px">${escapeHtml(n.title)}</h3>
+    <div class="cab-notif-detail-meta">
+      <span class="cab-badge cab-badge--muted">${escapeHtml(cabFormatDate(n.created_at))}</span>
+      <span class="cab-badge cab-badge--info">${n.scope === "child" ? escapeHtml(childName || "Ребёнок") : "Все дети"}</span>
+      ${n.priority === "important" ? `<span class="cab-badge cab-badge--danger">Важно</span>` : ""}
+    </div>
+    <p class="cab-notif-detail-body">${escapeHtml(n.body)}</p>
+    ${n.action_key && n.action_key !== "none" ? `<button type="button" class="primary" id="notifActionBtn" style="width:100%;margin-top:12px">${escapeHtml(NOTIF_ACTION_LABELS[n.action_key] || "Открыть")}</button>` : ""}
+    <p class="cab-notif-detail-read">${n.unread ? "" : "✓ Отмечено как прочитано"}</p>
+  `;
+  $("notifActionBtn")?.addEventListener("click", () => _cabDispatchNotificationAction(n.action_key));
+}
+
+// action_key is already backend-whitelisted (NOTIFICATION_ACTION_KEYS); this
+// is purely a local dispatch table, never arbitrary frontend routing/JS.
+function _cabDispatchNotificationAction(actionKey) {
+  piModalClose($("notificationDetailModal"));
+  if (actionKey === "open_payments") activateTab("client-payments");
+  else if (actionKey === "open_availability") {
+    const mk = state.clientHomeActiveChildId || (state.clientChildren || [])[0]?.mk_user_id;
+    if (mk) openClientScheduleAvailabilityModal(mk);
+  } else if (actionKey === "open_home") activateTab("home");
+}
+
+// ---- v7.1.13 §12 — TEMPORARY owner-only notification smoke-test sender ----
+function renderOwnerTestNotificationPanel() {
+  const panel = $("ownerTestNotificationPanel");
+  if (!panel) return;
+  panel.classList.toggle("hidden", !state.me?.capabilities?.canUseTestRoles);
+}
+
+async function sendOwnerTestNotification() {
+  const btn = $("otnSend");
+  const statusEl = $("otnStatus");
+  const payload = {
+    mk_user_id: ($("otnMkUserId")?.value || "").trim(),
+    scope: $("otnScope")?.value || "family",
+    category: $("otnCategory")?.value || "general",
+    priority: $("otnPriority")?.value || "normal",
+    action_key: $("otnActionKey")?.value || "none",
+    title: ($("otnTitle")?.value || "").trim(),
+    body: ($("otnBody")?.value || "").trim(),
+  };
+  if (btn) btn.disabled = true;
+  if (statusEl) { statusEl.textContent = "Отправляю…"; statusEl.className = "test-role-status"; }
+  try {
+    const data = await _apiPostRaw("/api/owner/test-notifications", payload);
+    if (data.ok) {
+      statusEl.textContent = `Готово: уведомление #${data.id} создано, получателей: ${data.recipient_count}`;
+      statusEl.className = "test-role-status ok";
+    } else {
+      statusEl.textContent = data.error || "Ошибка";
+      statusEl.className = "test-role-status error";
+    }
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = safeUserError(e); statusEl.className = "test-role-status error"; }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ---- Parent interface (my-children tab) ── v7.0.93.1 ----
@@ -7958,8 +8507,10 @@ function renderMyChildren() {
       <p class="parent-link-footnote">Код выдаётся администратором Yellow Club.</p>
     </div>`;
 
+  // v7.1.13 — the "Возможности для расписания" entry card moved to the new
+  // Главная dashboard (renderClientHome); this tab is reached via Ещё now
+  // and is purely the children list + link-by-code forms (approved design).
   root.innerHTML = `
-    ${_wsScheduleAvailCardHtml()}
     <div class="parent-children-section">
       <h4 class="parent-children-section-title">Оплаты</h4>
       ${clientCardsHtml ? `<div class="parent-children-list">${clientCardsHtml}</div>` : ""}
@@ -7990,8 +8541,6 @@ function renderMyChildren() {
     input.addEventListener("keydown", e => { if (e.key === "Enter") btn?.click(); });
   }
   if (btn) btn.addEventListener("click", linkChild);
-
-  _wsScheduleAvailWire();
 }
 
 async function loadMyChildren() {
@@ -12326,6 +12875,11 @@ async function boot() {
   $("closeLesson").addEventListener("click", closeLessonModal);
   $("applyTestRole")?.addEventListener("click", applyTestRole);
   $("clearTestRole")?.addEventListener("click", clearTestRole);
+  // v7.1.13
+  $("otnSend")?.addEventListener("click", sendOwnerTestNotification);
+  $("notificationDetailClose")?.addEventListener("click", () => piModalClose($("notificationDetailModal")));
+  $("ocAvailabilityEditBtn")?.addEventListener("click", () => _ocAvailSetMode("edit"));
+  $("ocAvailabilitySuccessEditBtn")?.addEventListener("click", () => _ocAvailSetMode("edit"));
   $("askForm")?.addEventListener("submit", sendAskQuestion);
   $("askInput")?.addEventListener("input", autoResizeChatInput);
   $("askInput")?.addEventListener("focus", () => setChatInputFocused(true));
@@ -14223,10 +14777,63 @@ function renderClientPaymentCard(pi) {
     </div>`;
 }
 
+// v7.1.13 visual polish — Оплаты shows every child's invoices together
+// (not filtered to one active child, unlike the Home cards), so the header
+// subtitle only claims a specific child's name when there is exactly one —
+// otherwise it falls back to the original generic description rather than
+// implying a filter that doesn't actually exist.
+// v7.1.13 visual polish — food-only clients never see Главная (their nav
+// swaps it for Питание), so for THEM this tab IS the cabinet home: same
+// ClientHeader treatment as renderClientHome() (greeting/avatar/bell).
+// Combined clients still have a real Главная and only reach Питание as a
+// secondary screen via "Ещё" — for them this stays a plain sub-header
+// (title + descriptive subtitle), matching Payments/Notifications/More, so
+// the greeting isn't shown twice in one session. Uses state.myChildren
+// (food-linked children, source==="food") — separate from
+// state.clientChildren (CL-linked regular children), see loadMyChildren().
+// No food ordering/business logic touched.
+function _cabRenderFoodHeader() {
+  const slot = $("foodHeaderSlot");
+  if (!slot) return;
+  if (state.me?.clientKind !== "food_only") {
+    slot.innerHTML = _cabHeaderHtml({ mode: "sub", title: "Питание", subtitle: (state.me?.campClassNameFilter || "").trim() || "Городская программа" });
+    return;
+  }
+  const greetingName = (state.me?.telegramUser?.first_name || state.me?.fullName || "").trim();
+  // v7.1.13 — food-only context line names the actual programme when known
+  // (campClassNameFilter, already exposed by /api/me) rather than a child's
+  // name, per the approved design's food-only example ("Городская
+  // программа" / the real programme name).
+  const subtitle = (state.me?.campClassNameFilter || "").trim() || "Городская программа";
+  slot.innerHTML = _cabHeaderHtml({
+    mode: "home",
+    avatarInitial: greetingName || "?",
+    title: `Привет${greetingName ? ", " + greetingName : ""}!`,
+    subtitle,
+    showBell: true,
+    unread: state.me?.unreadNotificationCount || 0,
+    bellId: "cabFoodHeaderBell",
+  });
+  $("cabFoodHeaderBell")?.addEventListener("click", () => activateTab("notifications"));
+  if (state.myChildren === null) { loadMyChildren().then(_cabRenderFoodHeader); }
+}
+
+function _cabRenderPaymentsHeader() {
+  const slot = $("paymentsHeaderSlot");
+  if (!slot) return;
+  const children = state.clientChildren || [];
+  const subtitle = children.length === 1
+    ? ((children[0].display_name || "").split(" ")[0] || "Счета на оплату от Yellow Club")
+    : "Счета на оплату от Yellow Club";
+  slot.innerHTML = _cabHeaderHtml({ mode: "sub", title: "Оплаты", subtitle });
+}
+
 async function loadClientPayments() {
   if (!isParent()) return;
   const listEl = $("clientPaymentsList");
   if (!listEl) return;
+  _cabRenderPaymentsHeader();
+  if (state.myChildren === null) { loadMyChildren().then(_cabRenderPaymentsHeader); }
   if (state.clientPaymentsBusy) return;
   state.clientPaymentsBusy = true;
   listEl.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:16px">Загрузка...</div>`;
@@ -17771,19 +18378,123 @@ async function _wsOcImportDoSend(chosen) {
 // Opened either via the bot's post-activation deep-link (?oc_availability_
 // recipient=<id>, see launchAvailabilityRecipientId) or later from "Мои
 // дети". Always optional — closing/skipping never blocks anything.
+// v7.1.13 round 2 — ONE shared data model for availability, used by BOTH
+// DOM presentations: the legacy bottom-sheet modal (#ocAvailabilityModal,
+// onboarding-invite context, "Пропустить") and the new full-page cabinet
+// screen (#tab-availability, standalone context, "Отмена"). availableFrom/
+// comment now live on this state object (not read ad hoc from whichever
+// modal's DOM field happened to be visible) specifically so summary/
+// success/save logic is identical regardless of which surface is active.
+// No second backend model, no second validation ruleset — only two thin
+// DOM-glue layers at the bottom of this file differ.
 const _ocAvailState = {
   recipientId: null,
   mkUserId: null,        // v7.1.12.3 — set instead of recipientId for the permanent, non-campaign entry point
   branch: "either",
+  availableFrom: "",
+  comment: "",
   intervals: [],   // [{weekday, start_time, end_time, preference}]
   busy: false,
+  mode: "edit",
 };
 const OC_AVAILABILITY_WEEKDAY_LABELS = { 1: "Пн", 2: "Вт", 3: "Ср", 4: "Чт", 5: "Пт", 6: "Сб", 7: "Вс" };
 
-// v7.1.12.3 — the modal is shared by two identity modes: the original
-// campaign-recipient-id flow (onboarding deep-link, unchanged) and the new
-// permanent mk_user_id-keyed flow (reachable from "Мои дети" for ANY linked
-// client). Exactly one of _ocAvailState.recipientId/mkUserId is set at a
+function _ocAvailIntervalDaysLabel(intervals) {
+  const days = [...new Set(intervals.map(iv => iv.weekday))].sort((a, b) => a - b).map(d => OC_AVAILABILITY_WEEKDAY_LABELS[d]);
+  return days.length ? days.join(", ") : "—";
+}
+
+// prefix: "ocSummary" (modal) or "availSummary" (full-page screen) — same
+// element-naming convention, different root.
+function _ocAvailFillSummaryView(prefix) {
+  prefix = prefix || "ocSummary";
+  const branchEl = $(`${prefix}Branch`); if (branchEl) branchEl.textContent = CAB_BRANCH_LABELS[_ocAvailState.branch] || "—";
+  const fromEl = $(`${prefix}From`); if (fromEl) fromEl.textContent = _ocAvailState.availableFrom ? cabFormatDate(_ocAvailState.availableFrom) : "—";
+  const commentRow = $(`${prefix}CommentRow`);
+  if (commentRow) commentRow.classList.toggle("hidden", !_ocAvailState.comment);
+  const commentEl = $(`${prefix}Comment`); if (commentEl) commentEl.textContent = _ocAvailState.comment || "";
+  const intervalsEl = $(`${prefix}Intervals`);
+  if (intervalsEl) {
+    intervalsEl.innerHTML = _ocAvailState.intervals.map(iv =>
+      `<span class="oc-summary-chip oc-summary-chip--${iv.preference === "preferred" ? "preferred" : "possible"}">${OC_AVAILABILITY_WEEKDAY_LABELS[iv.weekday] || ""} ${escapeHtml(iv.start_time || "")}–${escapeHtml(iv.end_time || "")}</span>`
+    ).join("");
+  }
+}
+
+// prefix: "ocSuccess" (modal) or "availSuccess" (full-page screen).
+function _ocAvailFillSuccessView(prefix) {
+  prefix = prefix || "ocSuccess";
+  const branchEl = $(`${prefix}Branch`); if (branchEl) branchEl.textContent = CAB_BRANCH_LABELS[_ocAvailState.branch] || "—";
+  const daysEl = $(`${prefix}Days`); if (daysEl) daysEl.textContent = _ocAvailIntervalDaysLabel(_ocAvailState.intervals);
+  const countEl = $(`${prefix}Count`); if (countEl) countEl.textContent = String(_ocAvailState.intervals.length);
+}
+
+// v7.1.13 round 2 — shared validation: at least one interval, every
+// interval has both times, end > start. Returns null when valid, else
+// {message, index} — index >= 0 points at the specific offending interval
+// row so the UI can flag it in place (index -1 = no-intervals-at-all,
+// no single row to point at).
+function _ocAvailValidate() {
+  if (!_ocAvailState.intervals.length) return { message: "Добавьте хотя бы один интервал", index: -1 };
+  for (let i = 0; i < _ocAvailState.intervals.length; i++) {
+    const iv = _ocAvailState.intervals[i];
+    if (!iv.start_time || !iv.end_time) return { message: "Заполните время начала и окончания", index: i };
+    if (iv.start_time >= iv.end_time) return { message: "Окончание должно быть позже начала", index: i };
+  }
+  return null;
+}
+
+// Highlights the specific invalid interval row (if any) inside rootId and
+// disables/enables saveBtnId accordingly. Called after every interval
+// edit, in both the modal and the full-page screen — this is what makes
+// "Save disabled without valid data" a live, always-current state rather
+// than something only checked at click time.
+function _ocAvailApplyRowValidation(rootId, saveBtnId) {
+  const err = _ocAvailValidate();
+  const root = $(rootId);
+  if (root) {
+    root.querySelectorAll(".oc-interval-row-v2").forEach(el => el.classList.remove("oc-interval-row-v2--invalid"));
+    root.querySelectorAll(".oc-interval-row-note").forEach(el => el.remove());
+    if (err && err.index >= 0) {
+      const rowEl = root.querySelector(`[data-interval-idx="${err.index}"]`);
+      if (rowEl) {
+        rowEl.classList.add("oc-interval-row-v2--invalid");
+        const note = document.createElement("p");
+        note.className = "oc-interval-row-note";
+        note.textContent = err.message;
+        rowEl.appendChild(note);
+      }
+    }
+  }
+  const btn = $(saveBtnId);
+  if (btn) btn.disabled = !!err;
+  return err;
+}
+
+// v7.1.13 round 2 — three mutually-exclusive views inside the MODAL only
+// (view/edit/success). The full-page screen has its own _availScreenSetMode
+// with an extra "picker"/"loading"/"error" state — see below.
+function _ocAvailSetMode(mode) {
+  _ocAvailState.mode = mode;
+  $("ocAvailabilitySummaryView")?.classList.toggle("hidden", mode !== "view");
+  $("ocAvailabilitySuccessView")?.classList.toggle("hidden", mode !== "success");
+  $("ocAvailabilityEditView")?.classList.toggle("hidden", mode !== "edit");
+  $("ocAvailabilityFooter")?.classList.toggle("hidden", mode !== "edit");
+  if (mode === "view") _ocAvailFillSummaryView("ocSummary");
+  if (mode === "success") _ocAvailFillSuccessView("ocSuccess");
+  if (mode === "edit") {
+    // Modal is reached ONLY via the onboarding-invite deep link now
+    // (openOnboardingAvailabilityModal) — the standalone cabinet entry
+    // opens the full-page screen instead (openClientScheduleAvailabilityModal
+    // below). So the modal's secondary button is always "Пропустить".
+    const skipBtn = $("ocAvailabilitySkip");
+    if (skipBtn) skipBtn.textContent = "Пропустить";
+    _ocAvailApplyRowValidation("ocAvailabilityIntervals", "ocAvailabilitySave");
+  }
+}
+
+// v7.1.12.3 — the modal and the full-page screen share one identity
+// scheme: exactly one of _ocAvailState.recipientId/mkUserId is set at a
 // time; this picks the matching endpoint so load/save code stays shared.
 function _ocAvailEndpointPath() {
   if (_ocAvailState.mkUserId) return `/api/client/schedule-availability/${encodeURIComponent(_ocAvailState.mkUserId)}`;
@@ -17793,10 +18504,13 @@ function _ocAvailEndpointPath() {
 async function _ocAvailOpenModal() {
   _ocAvailState.branch = "either";
   _ocAvailState.intervals = [];
+  _ocAvailState.availableFrom = "";
+  _ocAvailState.comment = "";
   $("ocAvailabilityChildName").textContent = "Загружаю…";
   $("ocAvailabilityFrom").value = "";
   $("ocAvailabilityComment").value = "";
   $("ocAvailabilityError")?.classList.add("hidden");
+  _ocAvailSetMode("edit");
   piModalOpen($("ocAvailabilityModal"));
   try {
     const data = await apiGet(_ocAvailEndpointPath());
@@ -17804,8 +18518,18 @@ async function _ocAvailOpenModal() {
       $("ocAvailabilityChildName").textContent = data.child_display_name ? `Ребёнок: ${data.child_display_name}` : "";
       _ocAvailState.branch = data.preferred_branch || "either";
       _ocAvailState.intervals = (data.intervals || []).map(iv => ({ ...iv }));
-      $("ocAvailabilityFrom").value = data.available_from || "";
-      $("ocAvailabilityComment").value = data.schedule_comment || "";
+      _ocAvailState.availableFrom = data.available_from || "";
+      _ocAvailState.comment = data.schedule_comment || "";
+      $("ocAvailabilityFrom").value = _ocAvailState.availableFrom;
+      $("ocAvailabilityComment").value = _ocAvailState.comment;
+      _ocAvailRenderBranchButtons();
+      _ocAvailRenderIntervals();
+      // Preserves the existing (already-approved) modal behavior: a
+      // returning onboarding link with already-filled data opens to the
+      // read-only summary first, same as before this round's changes —
+      // only the standalone/cabinet path moved to the full-page screen.
+      _ocAvailSetMode(data.filled ? "view" : "edit");
+      return;
     } else {
       _ocAvailError(data.error || "Ошибка загрузки");
     }
@@ -17823,32 +18547,62 @@ async function openOnboardingAvailabilityModal(recipientId) {
   await _ocAvailOpenModal();
 }
 
-// v7.1.12.3 — permanent entry point: reachable any time from "Мои дети" for
-// any client-linked child, regardless of CL-code/invite/staff-link origin,
-// campaign membership, continuation_status, or invite presence.
-async function openClientScheduleAvailabilityModal(mkUserId) {
-  _ocAvailState.mkUserId = String(mkUserId);
-  _ocAvailState.recipientId = null;
-  await _ocAvailOpenModal();
+// v7.1.13 round 2 — the standalone cabinet entry now opens the full-page
+// screen (#tab-availability), never the bottom-sheet modal (see §A.4 of
+// the visual-review fix pass) — the modal is reserved for the onboarding-
+// invite deep link only. mkUserId is required here; use
+// openClientScheduleAvailabilityPicker() when it isn't known yet and might
+// need a child picker first.
+function openClientScheduleAvailabilityModal(mkUserId) {
+  activateTab("availability");
+  _availScreenOpenFor(mkUserId);
 }
 
-function _ocAvailRenderBranchButtons() {
-  document.querySelectorAll("#ocAvailabilityBranchRow .ws-oc-ttl-btn").forEach(b => {
+// Entry point for contexts with no pre-selected child (the "Ещё" row) —
+// shows a picker when there's more than one linked child, per approved
+// design, rather than silently reusing whatever was last active on
+// Главная.
+function openClientScheduleAvailabilityPicker() {
+  const children = state.clientChildren || [];
+  if (!children.length) { setNotice("Сначала привяжите ребёнка", "error"); return; }
+  activateTab("availability");
+  if (children.length === 1) {
+    _availScreenOpenFor(children[0].mk_user_id);
+  } else {
+    _availScreenShowPicker(children);
+  }
+}
+
+function _ocAvailRenderBranchButtons(rootSelector) {
+  document.querySelectorAll(`${rootSelector || "#ocAvailabilityBranchRow"} .ws-oc-ttl-btn`).forEach(b => {
     b.classList.toggle("active", b.dataset.branch === _ocAvailState.branch);
   });
 }
 
+// v7.1.13 — day-chips replace the native weekday <select> (visual proposal
+// from the approved prototype: same underlying value 1-7 Monday-start, just
+// a faster one-tap interaction). Preferred/Possible are now two distinct,
+// clearly-labelled buttons instead of one toggle, per approved design.
+function _ocAvailDayChipsHtml(idx, selectedWeekday) {
+  return Object.entries(OC_AVAILABILITY_WEEKDAY_LABELS).map(([k, l]) =>
+    `<button type="button" class="oc-day-chip${Number(k) === selectedWeekday ? " active" : ""}" data-day-idx="${idx}" data-day-value="${k}">${l}</button>`
+  ).join("");
+}
+
 function _ocAvailIntervalRowHtml(iv, idx) {
-  const weekdayOptions = Object.entries(OC_AVAILABILITY_WEEKDAY_LABELS)
-    .map(([k, l]) => `<option value="${k}"${Number(k) === iv.weekday ? " selected" : ""}>${l}</option>`).join("");
   return `
-    <div class="oc-interval-row" data-interval-idx="${idx}">
-      <select data-field="weekday">${weekdayOptions}</select>
-      <input type="time" data-field="start_time" value="${escapeAttr(iv.start_time || "")}" />
-      <span>—</span>
-      <input type="time" data-field="end_time" value="${escapeAttr(iv.end_time || "")}" />
-      <button type="button" class="secondary oc-interval-pref-btn${iv.preference === "preferred" ? " active" : ""}" data-field="preference-toggle">${iv.preference === "preferred" ? "Удобно" : "Можем"}</button>
-      <button type="button" class="oc-interval-remove" data-remove-idx="${idx}" aria-label="Удалить">✕</button>
+    <div class="oc-interval-row-v2" data-interval-idx="${idx}">
+      <div class="oc-day-chip-row">${_ocAvailDayChipsHtml(idx, iv.weekday)}</div>
+      <div class="oc-interval-time-row">
+        <input type="time" data-field="start_time" value="${escapeAttr(iv.start_time || "")}" />
+        <span>—</span>
+        <input type="time" data-field="end_time" value="${escapeAttr(iv.end_time || "")}" />
+        <button type="button" class="oc-interval-remove" data-remove-idx="${idx}" aria-label="Удалить интервал">✕</button>
+      </div>
+      <div class="oc-pref-row">
+        <button type="button" class="oc-pref-btn oc-pref-btn--preferred${iv.preference === "preferred" ? " active" : ""}" data-field="pref-preferred">Предпочтительно</button>
+        <button type="button" class="oc-pref-btn oc-pref-btn--possible${iv.preference !== "preferred" ? " active" : ""}" data-field="pref-possible">Возможно</button>
+      </div>
     </div>`;
 }
 
@@ -17858,13 +18612,16 @@ function _ocAvailRenderIntervals() {
   root.innerHTML = _ocAvailState.intervals.map(_ocAvailIntervalRowHtml).join("") || `<p class="ws-conn-note">Пока не добавлено ни одного интервала.</p>`;
   root.querySelectorAll("[data-interval-idx]").forEach(rowEl => {
     const idx = Number(rowEl.dataset.intervalIdx);
-    rowEl.querySelector('[data-field="weekday"]')?.addEventListener("change", e => { _ocAvailState.intervals[idx].weekday = Number(e.target.value); });
-    rowEl.querySelector('[data-field="start_time"]')?.addEventListener("change", e => { _ocAvailState.intervals[idx].start_time = e.target.value; });
-    rowEl.querySelector('[data-field="end_time"]')?.addEventListener("change", e => { _ocAvailState.intervals[idx].end_time = e.target.value; });
-    rowEl.querySelector('[data-field="preference-toggle"]')?.addEventListener("click", () => {
-      _ocAvailState.intervals[idx].preference = _ocAvailState.intervals[idx].preference === "preferred" ? "possible" : "preferred";
-      _ocAvailRenderIntervals();
+    rowEl.querySelectorAll("[data-day-value]").forEach(chip => {
+      chip.addEventListener("click", () => {
+        _ocAvailState.intervals[idx].weekday = Number(chip.dataset.dayValue);
+        _ocAvailRenderIntervals();
+      });
     });
+    rowEl.querySelector('[data-field="start_time"]')?.addEventListener("change", e => { _ocAvailState.intervals[idx].start_time = e.target.value; _ocAvailApplyRowValidation("ocAvailabilityIntervals", "ocAvailabilitySave"); });
+    rowEl.querySelector('[data-field="end_time"]')?.addEventListener("change", e => { _ocAvailState.intervals[idx].end_time = e.target.value; _ocAvailApplyRowValidation("ocAvailabilityIntervals", "ocAvailabilitySave"); });
+    rowEl.querySelector('[data-field="pref-preferred"]')?.addEventListener("click", () => { _ocAvailState.intervals[idx].preference = "preferred"; _ocAvailRenderIntervals(); });
+    rowEl.querySelector('[data-field="pref-possible"]')?.addEventListener("click", () => { _ocAvailState.intervals[idx].preference = "possible"; _ocAvailRenderIntervals(); });
   });
   root.querySelectorAll("[data-remove-idx]").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -17872,6 +18629,7 @@ function _ocAvailRenderIntervals() {
       _ocAvailRenderIntervals();
     });
   });
+  _ocAvailApplyRowValidation("ocAvailabilityIntervals", "ocAvailabilitySave");
 }
 
 function _ocAvailAddInterval() {
@@ -17890,26 +18648,26 @@ function _ocAvailError(msg) {
 async function _ocAvailSave() {
   if (_ocAvailState.busy || !(_ocAvailState.recipientId || _ocAvailState.mkUserId)) return;
   _ocAvailError("");
-  for (const iv of _ocAvailState.intervals) {
-    if (!iv.start_time || !iv.end_time) { _ocAvailError("Заполните время начала и окончания для каждого интервала"); return; }
-    if (iv.start_time >= iv.end_time) { _ocAvailError("Время начала должно быть раньше времени окончания"); return; }
-  }
+  const err = _ocAvailValidate();
+  if (err) { _ocAvailError(err.message); return; }
   _ocAvailState.busy = true;
   const btn = $("ocAvailabilitySave");
   if (btn) { btn.disabled = true; btn.textContent = "Сохраняю…"; }
   try {
     const data = await _apiPostRaw(_ocAvailEndpointPath(), {
       preferred_branch: _ocAvailState.branch,
-      available_from: $("ocAvailabilityFrom")?.value || "",
-      schedule_comment: $("ocAvailabilityComment")?.value || "",
+      available_from: _ocAvailState.availableFrom || "",
+      schedule_comment: _ocAvailState.comment || "",
       intervals: _ocAvailState.intervals,
     });
     if (data.ok) {
-      piModalClose($("ocAvailabilityModal"));
       setNotice("Возможности для расписания сохранены", "ok");
-      // v7.1.12.3 — refresh local fill-status so the permanent entry card /
-      // child picker reflect the save immediately, no Mini App restart needed.
+      // v7.1.12.3 — refresh local fill-status so the Home card reflects the
+      // save immediately, no Mini App restart needed.
       if (_ocAvailState.mkUserId) await _wsScheduleAvailRefreshStatus(_ocAvailState.mkUserId);
+      // v7.1.13 — stay open on a "Сохранено" resume (branch/days/count +
+      // Изменить) instead of auto-closing, per approved design.
+      _ocAvailSetMode("success");
     } else {
       _ocAvailError(data.error || "Ошибка сохранения");
     }
@@ -17917,7 +18675,151 @@ async function _ocAvailSave() {
     _ocAvailError(safeUserError(e));
   } finally {
     _ocAvailState.busy = false;
-    if (btn) { btn.disabled = false; btn.textContent = "Сохранить"; }
+    if (btn) { btn.disabled = !!_ocAvailValidate(); btn.textContent = "Сохранить"; }
+  }
+}
+
+// ── v7.1.13 round 2 — full-page cabinet screen (#tab-availability) ────────
+// Standalone/cabinet context only. Reuses _ocAvailState (the single shared
+// data model), _ocAvailValidate/_ocAvailApplyRowValidation, the day-chip/
+// interval-row HTML generators, _ocAvailFillSummaryView/_ocAvailFillSuccessView,
+// _ocAvailEndpointPath, and _wsScheduleAvailRefreshStatus — everything
+// EXCEPT the DOM glue below is identical to the modal's. Secondary button
+// is always "Отмена" (there is no multi-step onboarding sequence to skip
+// forward in from here).
+
+function _availScreenSetMode(mode) {
+  $("availScreenPicker")?.classList.toggle("hidden", mode !== "picker");
+  $("availScreenLoading")?.classList.toggle("hidden", mode !== "loading");
+  $("availScreenError")?.classList.toggle("hidden", mode !== "error");
+  $("availScreenSummary")?.classList.toggle("hidden", mode !== "summary");
+  $("availScreenSuccess")?.classList.toggle("hidden", mode !== "success");
+  $("availScreenEdit")?.classList.toggle("hidden", mode !== "edit");
+  $("availScreenFooter")?.classList.toggle("hidden", mode !== "edit");
+  if (mode === "summary") _ocAvailFillSummaryView("availSummary");
+  if (mode === "success") _ocAvailFillSuccessView("availSuccess");
+  if (mode === "edit") _ocAvailApplyRowValidation("availIntervals", "availSaveBtn");
+}
+
+function _availScreenShowPicker(children) {
+  _ocAvailState.mkUserId = null;
+  _ocAvailState.recipientId = null;
+  $("availScreenChildName").textContent = "Выберите ребёнка";
+  const root = $("availScreenPicker");
+  if (root) {
+    root.innerHTML = children.map(c => {
+      const st = _wsScheduleAvailState.statusByMk[c.mk_user_id];
+      const filled = !!st?.filled;
+      return `<button type="button" class="avail-picker-row" data-mk="${escapeAttr(c.mk_user_id)}">
+        <span class="avail-picker-row-name">${escapeHtml(c.display_name || "Ученик")}</span>
+        <span class="avail-picker-row-status${filled ? " avail-picker-row-status--filled" : ""}">${filled ? "Заполнено" : "Не заполнено"}</span>
+      </button>`;
+    }).join("");
+    root.querySelectorAll("[data-mk]").forEach(btn => {
+      btn.addEventListener("click", () => _availScreenOpenFor(btn.dataset.mk));
+    });
+  }
+  _availScreenSetMode("picker");
+}
+
+async function _availScreenOpenFor(mkUserId) {
+  if (!mkUserId) { _availScreenShowPicker(state.clientChildren || []); return; }
+  _ocAvailState.mkUserId = String(mkUserId);
+  _ocAvailState.recipientId = null;
+  _ocAvailState.branch = "either";
+  _ocAvailState.intervals = [];
+  _ocAvailState.availableFrom = "";
+  _ocAvailState.comment = "";
+  const knownName = cabChildNameForMk(mkUserId);
+  $("availScreenChildName").textContent = knownName ? `Ребёнок: ${knownName}` : "Загружаю…";
+  $("availFrom").value = "";
+  $("availComment").value = "";
+  _availScreenSetMode("loading");
+  try {
+    const data = await apiGet(`/api/client/schedule-availability/${encodeURIComponent(mkUserId)}`);
+    if (data.ok) {
+      $("availScreenChildName").textContent = data.child_display_name ? `Ребёнок: ${data.child_display_name}` : (knownName ? `Ребёнок: ${knownName}` : "");
+      _ocAvailState.branch = data.preferred_branch || "either";
+      _ocAvailState.intervals = (data.intervals || []).map(iv => ({ ...iv }));
+      _ocAvailState.availableFrom = data.available_from || "";
+      _ocAvailState.comment = data.schedule_comment || "";
+      $("availFrom").value = _ocAvailState.availableFrom;
+      $("availComment").value = _ocAvailState.comment;
+      _ocAvailRenderBranchButtons("#availBranchRow");
+      _availScreenRenderIntervals();
+      // Already-filled data opens to the read-only summary first —
+      // "Изменить" switches to the edit form.
+      _availScreenSetMode(data.filled ? "summary" : "edit");
+    } else {
+      $("availScreenError").textContent = data.error || "Ошибка загрузки";
+      _availScreenSetMode("error");
+    }
+  } catch (e) {
+    $("availScreenError").textContent = safeUserError(e);
+    _availScreenSetMode("error");
+  }
+}
+
+function _availScreenRenderIntervals() {
+  const root = $("availIntervals");
+  if (!root) return;
+  root.innerHTML = _ocAvailState.intervals.map(_ocAvailIntervalRowHtml).join("") || `<p class="ws-conn-note">Пока не добавлено ни одного интервала.</p>`;
+  root.querySelectorAll("[data-interval-idx]").forEach(rowEl => {
+    const idx = Number(rowEl.dataset.intervalIdx);
+    rowEl.querySelectorAll("[data-day-value]").forEach(chip => {
+      chip.addEventListener("click", () => {
+        _ocAvailState.intervals[idx].weekday = Number(chip.dataset.dayValue);
+        _availScreenRenderIntervals();
+      });
+    });
+    rowEl.querySelector('[data-field="start_time"]')?.addEventListener("change", e => { _ocAvailState.intervals[idx].start_time = e.target.value; _ocAvailApplyRowValidation("availIntervals", "availSaveBtn"); });
+    rowEl.querySelector('[data-field="end_time"]')?.addEventListener("change", e => { _ocAvailState.intervals[idx].end_time = e.target.value; _ocAvailApplyRowValidation("availIntervals", "availSaveBtn"); });
+    rowEl.querySelector('[data-field="pref-preferred"]')?.addEventListener("click", () => { _ocAvailState.intervals[idx].preference = "preferred"; _availScreenRenderIntervals(); });
+    rowEl.querySelector('[data-field="pref-possible"]')?.addEventListener("click", () => { _ocAvailState.intervals[idx].preference = "possible"; _availScreenRenderIntervals(); });
+  });
+  root.querySelectorAll("[data-remove-idx]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      _ocAvailState.intervals.splice(Number(btn.dataset.removeIdx), 1);
+      _availScreenRenderIntervals();
+    });
+  });
+  _ocAvailApplyRowValidation("availIntervals", "availSaveBtn");
+}
+
+function _availScreenAddInterval() {
+  _ocAvailState.intervals.push({ weekday: 1, start_time: "16:00", end_time: "17:00", preference: "possible" });
+  _availScreenRenderIntervals();
+}
+
+async function _availScreenSave() {
+  if (_ocAvailState.busy || !_ocAvailState.mkUserId) return;
+  const errEl = $("availFormError");
+  const err = _ocAvailValidate();
+  if (err) { if (errEl) { errEl.textContent = err.message; errEl.classList.remove("hidden"); } return; }
+  if (errEl) errEl.classList.add("hidden");
+  _ocAvailState.busy = true;
+  const btn = $("availSaveBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "Сохраняю…"; }
+  try {
+    const data = await _apiPostRaw(_ocAvailEndpointPath(), {
+      preferred_branch: _ocAvailState.branch,
+      available_from: _ocAvailState.availableFrom || "",
+      schedule_comment: _ocAvailState.comment || "",
+      intervals: _ocAvailState.intervals,
+    });
+    if (data.ok) {
+      setNotice("Возможности для расписания сохранены", "ok");
+      await _wsScheduleAvailRefreshStatus(_ocAvailState.mkUserId);
+      _availScreenSetMode("success");
+    } else if (errEl) {
+      errEl.textContent = data.error || "Ошибка сохранения";
+      errEl.classList.remove("hidden");
+    }
+  } catch (e) {
+    if (errEl) { errEl.textContent = safeUserError(e); errEl.classList.remove("hidden"); }
+  } finally {
+    _ocAvailState.busy = false;
+    if (btn) { btn.disabled = !!_ocAvailValidate(); btn.textContent = "Сохранить"; }
   }
 }
 
@@ -18699,14 +19601,14 @@ document.addEventListener("DOMContentLoaded", () => {
   $("piWithdrawModalClose")?.addEventListener("click", closeWithdrawModal);
   $("piWithdrawModal")?.addEventListener("click", e => { if (e.target === $("piWithdrawModal")) closeWithdrawModal(); });
 
-  // Client payments tab: load when tab becomes active
+  // Client payments tab: load when tab becomes active.
+  // v7.1.13 round 2 — no longer touches #appTitle/#roleBadge here: the
+  // global .topbar is hidden for the whole client cabinet (body.role-
+  // parent-cabinet, see styles.css) precisely because a single shared
+  // title node kept leaking stale text across tab switches. Each cabinet
+  // tab now owns its own header inside its own content.
   document.querySelectorAll('.tab[data-tab="client-payments"]').forEach(btn => {
     btn.addEventListener("click", () => {
-      // Context guard: always show parent-facing header on this tab,
-      // regardless of legacy DB role (restaurant/kitchen/food).
-      const _t = $("appTitle"); if (_t) _t.textContent = "Оплаты · Yellow Club";
-      const _b = $("roleBadge"); if (_b) _b.textContent = "Родитель";
-      // Clear role-notice on every navigation to client-payments — badge already shows role.
       const _n = $("notice"); if (_n) { _n.textContent = ""; _n.className = "notice"; }
       if (isParent()) loadClientPayments();
     });
@@ -18773,6 +19675,22 @@ document.addEventListener("DOMContentLoaded", () => {
   $("ocAvailabilityAddInterval")?.addEventListener("click", _ocAvailAddInterval);
   document.querySelectorAll("#ocAvailabilityBranchRow .ws-oc-ttl-btn").forEach(b => {
     b.addEventListener("click", () => { _ocAvailState.branch = b.dataset.branch; _ocAvailRenderBranchButtons(); });
+  });
+  $("ocAvailabilityFrom")?.addEventListener("change", e => { _ocAvailState.availableFrom = e.target.value; });
+  $("ocAvailabilityComment")?.addEventListener("input", e => { _ocAvailState.comment = e.target.value; });
+
+  // v7.1.13 round 2 — full-page cabinet availability screen (#tab-availability)
+  $("availScreenBack")?.addEventListener("click", () => activateTab("home"));
+  $("availSecondaryBtn")?.addEventListener("click", () => activateTab("home"));
+  $("availSaveBtn")?.addEventListener("click", _availScreenSave);
+  $("availAddInterval")?.addEventListener("click", _availScreenAddInterval);
+  $("availSummaryEditBtn")?.addEventListener("click", () => _availScreenSetMode("edit"));
+  $("availSuccessEditBtn")?.addEventListener("click", () => _availScreenSetMode("edit"));
+  $("availSuccessHomeBtn")?.addEventListener("click", () => activateTab("home"));
+  $("availFrom")?.addEventListener("change", e => { _ocAvailState.availableFrom = e.target.value; });
+  $("availComment")?.addEventListener("input", e => { _ocAvailState.comment = e.target.value; });
+  document.querySelectorAll("#availBranchRow .ws-oc-ttl-btn").forEach(b => {
+    b.addEventListener("click", () => { _ocAvailState.branch = b.dataset.branch; _ocAvailRenderBranchButtons("#availBranchRow"); });
   });
 
   // v7.1.12.1 hotfix — large-import (>100 selected) confirm modal

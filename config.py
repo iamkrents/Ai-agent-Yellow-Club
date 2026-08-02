@@ -94,6 +94,20 @@ class Settings:
     intern_trial_material_url: str
 
     food_module_enabled: bool
+    # v7.1.13 — separate from food_module_enabled (which gates the whole
+    # Food Module/kitchen backend). This only controls whether the CLIENT
+    # cabinet shows an entry point (home card / nav tab) to it. Turning
+    # this off does not touch orders, history, or the staff/kitchen UI.
+    client_food_entry_visible: bool
+    # v7.1.13 round 2 — trusted rollout gates, same allowlist idiom as
+    # admin_ids/senior_teacher_ids (comma-separated Telegram user ids,
+    # parsed server-side, never trusted from a request). Default OFF:
+    # existing clients keep seeing the pre-v7.1.13 UI until explicitly
+    # enabled globally or for specific pilot Telegram ids.
+    client_cabinet_v7113_enabled: bool
+    client_cabinet_v7113_pilot_telegram_ids: List[int]
+    client_notifications_enabled: bool
+    client_notifications_pilot_telegram_ids: List[int]
     food_location_yc1: str
     food_location_yc2: str
     food_location_yc3: str
@@ -247,6 +261,11 @@ def load_settings() -> Settings:
         mvp_release_mode=_bool(os.getenv("MVP_RELEASE_MODE", "false"), False),
         intern_trial_material_url=os.getenv("INTERN_TRIAL_MATERIAL_URL", "").strip(),
         food_module_enabled=_bool(os.getenv("FOOD_MODULE_ENABLED", "false"), False),
+        client_food_entry_visible=_bool(os.getenv("CLIENT_FOOD_ENTRY_VISIBLE", "true"), True),
+        client_cabinet_v7113_enabled=_bool(os.getenv("CLIENT_CABINET_V7113_ENABLED", "false"), False),
+        client_cabinet_v7113_pilot_telegram_ids=_split_ints(os.getenv("CLIENT_CABINET_V7113_PILOT_TELEGRAM_IDS", "")),
+        client_notifications_enabled=_bool(os.getenv("CLIENT_NOTIFICATIONS_ENABLED", "false"), False),
+        client_notifications_pilot_telegram_ids=_split_ints(os.getenv("CLIENT_NOTIFICATIONS_PILOT_TELEGRAM_IDS", "")),
         food_location_yc1=os.getenv("FOOD_LOCATION_YC1", "Кульман 1/1").strip(),
         food_location_yc2=os.getenv("FOOD_LOCATION_YC2", "Мстиславца 6").strip(),
         food_location_yc3=os.getenv("FOOD_LOCATION_YC3", "").strip(),

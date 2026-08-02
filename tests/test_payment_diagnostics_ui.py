@@ -74,8 +74,12 @@ class TestNewInternalTab(unittest.TestCase):
 # ws-subtab only (see TestNewInternalTab above).
 GLOBAL_NAV_TAB_ORDER = [
     "intern", "lessons", "reports", "windows", "schedule", "tasks",
-    "my-children", "food", "client-payments", "kitchen", "kitchen-editor",
-    "restaurant", "my-lunch", "help", "ask", "payments-workspace", "admin",
+    # v7.1.13 — client cabinet shell: "home"/"notifications"/"more" are new,
+    # "my-children"/"food"/"client-payments" unchanged, "profile" is new
+    # (inserted after "help"). See the v7.1.13 final report.
+    "home", "my-children", "food", "client-payments", "notifications", "more",
+    "kitchen", "kitchen-editor",
+    "restaurant", "my-lunch", "help", "profile", "ask", "payments-workspace", "admin",
 ]
 
 
@@ -252,9 +256,9 @@ class TestCssMobile(unittest.TestCase):
 
 class TestVersionMarker(unittest.TestCase):
     def test_25_cache_bust_is_v7110(self):
-        self.assertIn("app.js?v=7.1.12", INDEX_HTML)
-        self.assertIn("styles.css?v=7.1.12", INDEX_HTML)
-        self.assertIn('console.log("MiniApp version: v7.1.12.3")', APP_JS)
+        self.assertIn("app.js?v=7.1.13", INDEX_HTML)
+        self.assertIn("styles.css?v=7.1.13", INDEX_HTML)
+        self.assertIn('console.log("MiniApp version: v7.1.13")', APP_JS)
 
 
 class TestPreviewRemoved(unittest.TestCase):
@@ -283,7 +287,7 @@ class TestPreviewRemoved(unittest.TestCase):
 
     def test_28_script_tail_is_plain_production_form(self):
         tail = INDEX_HTML[INDEX_HTML.rfind("<script"):]
-        self.assertIn('src="/static/app.js?v=7.1.12.3"', tail)
+        self.assertIn('src="/static/app.js?v=7.1.13"', tail)
         self.assertNotIn("(function ()", tail)
 
     def test_29_production_boot_and_diagnostics_endpoint_still_wired(self):

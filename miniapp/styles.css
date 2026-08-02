@@ -9520,3 +9520,475 @@ body.keyboard-open .tabs.bottom-tabbar {
   .ws-diag-summary__top button { width: 100%; min-height: 44px; }
 }
 [data-ws-diag-recheck] { min-height: 44px; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   v7.1.13 — Client cabinet ("Единый кабинет клиента и центр уведомлений")
+   Adapted from the approved figma-yellow-club client-cabinet-v7113 review
+   onto THIS app's existing tokens (--yellow/--ink/--muted/--card/--bg/
+   --shadow — see :root, line ~3383) rather than porting the prototype's
+   own --yc-* variable names. Everything below is scoped so it only ever
+   affects the parent/client cabinet — nothing here touches staff/admin/
+   kitchen screens, .tabs.bottom-tabbar's base rule, or existing .pi-modal
+   behavior for other modals.
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* ---- Bottom nav: fully opaque for the client cabinet only ----
+   Scoped under body.role-parent-cabinet (set in setupRoleUi() only when
+   role === "parent") so the 12-tab staff nav keeps its original
+   translucent/blur look untouched. */
+body.role-parent-cabinet .tabs.bottom-tabbar {
+  background: var(--card, #fff);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* v7.1.13 round 2 — the global staff-oriented .topbar ("Оплаты · Yellow
+   Club" etc.) doesn't belong in the client cabinet at all: Главная has its
+   own rich ClientHeader (.cab-header, rendered inside the tab content),
+   and every other cabinet tab has its own .section-head — exactly like the
+   approved prototype (no shared outer app-level title bar). Hiding the
+   whole element, rather than trying to keep a shared #appTitle node in
+   sync across every tab switch, is what actually guarantees it can never
+   show a stale previous-tab title again. */
+body.role-parent-cabinet .topbar { display: none; }
+
+/* v7.1.13 round 2 — client-only bottom nav, matches approved
+   client-cabinet-v7113: no dark pill on the active tab (unlike staff nav),
+   just a yellow icon-circle + dark ink icon/label. Scoped strictly under
+   body.role-parent-cabinet so none of this touches the shared staff/
+   kitchen/admin nav rules above (.tab.active, .tabs.bottom-tabbar .tab.active
+   etc.) — those are untouched, and this block wins on both specificity
+   (extra body.role-parent-cabinet ancestor) and source order (appended
+   last). Icons themselves are swapped from emoji to inline monochrome SVG
+   at runtime for client-visible buttons only (see _applyCabinetNavIcons in
+   app.js) — the underlying <span class="tab-icon"> markup is shared with
+   staff, so staff never sees this run. */
+body.role-parent-cabinet .tabs.bottom-tabbar .tab {
+  color: #8a8f9c;
+  font-weight: 650;
+}
+body.role-parent-cabinet .tabs.bottom-tabbar .tab-icon {
+  background: transparent;
+  color: inherit;
+  transition: background 140ms ease, color 140ms ease;
+}
+body.role-parent-cabinet .tabs.bottom-tabbar .tab-icon svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+body.role-parent-cabinet .tabs.bottom-tabbar .tab.active {
+  background: transparent;
+  color: var(--ink, #111);
+  font-weight: 800;
+  box-shadow: none;
+  transform: none;
+}
+body.role-parent-cabinet .tabs.bottom-tabbar .tab.active .tab-icon {
+  background: var(--yellow, #ffcb1f);
+  color: var(--ink, #111);
+}
+body.role-parent-cabinet .tabs.bottom-tabbar .tab:active {
+  transform: translateY(1px) scale(0.98);
+}
+/* v7.1.13 visual polish round 2 — removed the previous dark-mode navy
+   override (#171c2b) for this nav: it was the actual root cause of the
+   "heavy dark navy panel" feedback (system/Telegram dark theme triggered
+   it even though the rest of the cabinet — and the approved prototype,
+   which has no dark variant — stays light). The client cabinet nav is now
+   unconditionally light/opaque (var(--card, #fff), set above), matching
+   "светлый полностью непрозрачный фон" regardless of system theme. Staff
+   nav is untouched either way — these rules are role-parent-cabinet only. */
+
+.tab-badge {
+  position: absolute;
+  top: 2px;
+  right: 14px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #d84c4c;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+.tab { position: relative; }
+
+.cabinet-panel { padding-bottom: 8px; }
+
+/* ---- Client header (Главная) ---- */
+/* v7.1.13 visual polish pass — premium header, faithful to the approved
+   figma-yellow-club client-cabinet-v7113 prototype: no boxed/gradient card
+   around the header itself (that reads as a banner/ad block, explicitly
+   ruled out) — the premium feel comes from the yellow avatar circle and
+   the floating white icon-buttons (soft shadow, thin border) against the
+   plain page background. Shared .cab-icon-btn is reused by the header
+   bell AND the availability screen's back button, so both surfaces read
+   as one consistent "premium accent control" language. */
+/* v7.1.13 visual polish round 2 — the header is now a real branded
+   card-surface (soft cream-to-yellow gradient, thin yellow-tinted border,
+   gentle shadow), not typography floating on the plain page background —
+   this is what actually reads as a "premium brand zone" at a glance,
+   per direct visual feedback that the previous no-card version felt too
+   plain. Kept deliberately soft (low-opacity gradient stops, thin border,
+   diffuse shadow) so it stays "premium quiet", not a loud banner. */
+.cab-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-bottom: 14px;
+  padding: 15px 16px;
+  border-radius: 22px;
+  background: linear-gradient(160deg, #fffdf5 0%, #fff3ce 100%);
+  border: 1px solid rgba(255, 196, 20, .32);
+  box-shadow: 0 10px 26px rgba(255, 186, 20, .14), 0 1px 3px rgba(23, 23, 23, .04);
+}
+.cab-header-identity { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.cab-header-avatar {
+  flex: 0 0 auto; width: 46px; height: 46px; display: grid; place-items: center;
+  border-radius: 50%; background: var(--yellow, #ffcb1f); color: #665100; font-weight: 800; font-size: 16px;
+}
+.cab-header-text { min-width: 0; }
+.cab-header-eyebrow { margin: 0 0 2px; font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #9a7d00; }
+.cab-header-title { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: -0.01em; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cab-header-child { margin: 2px 0 0; font-size: 12.5px; color: var(--muted, #7b8190); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.cab-icon-btn {
+  position: relative; flex: 0 0 auto; width: 43px; height: 43px; display: grid; place-items: center;
+  border: 1px solid var(--line, #edf0f5); border-radius: 14px; background: var(--card, #fff);
+  color: var(--ink, #111); cursor: pointer;
+  box-shadow: 0 4px 14px rgba(23, 23, 23, .06);
+  transition: transform 120ms ease;
+}
+.cab-icon-btn:active { transform: translateY(1px) scale(.97); }
+.cab-icon-btn svg { width: 20px; height: 20px; display: block; }
+
+.cab-header-bell-dot {
+  position: absolute; top: -5px; right: -5px; min-width: 18px; height: 18px; padding: 0 4px;
+  display: inline-flex; align-items: center; justify-content: center; border-radius: 999px;
+  background: #b14343; color: #fff; font-size: 10px; font-weight: 800; border: 2px solid var(--card, #fff);
+}
+
+.cab-headline { margin: 10px 2px 14px; font-size: 13px; color: var(--muted, #7b8190); }
+
+/* Sub-page header (Оплаты/Уведомления/Ещё/Профиль/Availability): title +
+   optional subtitle only — no eyebrow/avatar/bell, matching the approved
+   SubpageHeader (repeating the brand wordmark on every screen would read
+   as clutter, not premium — confirmed against the design reference). */
+/* Subpage variant: same branded surface language, deliberately more
+   compact (less vertical padding, no avatar/eyebrow row) so it reads as
+   "the same family, a smaller sibling" rather than a full duplicate of
+   the Home header. */
+.cab-header--sub { align-items: center; gap: 10px; padding: 13px 15px; margin-bottom: 16px; }
+.cab-header-sub-title { margin: 0; font-size: 20px; font-weight: 800; letter-spacing: -0.01em; line-height: 1.25; color: var(--ink, #111); }
+.cab-header-sub-desc { margin: 3px 0 0; font-size: 13px; color: var(--muted, #7b8190); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cab-header-back { margin-top: 1px; }
+
+/* ---- Child switcher ---- */
+.cab-switcher { display: flex; flex-wrap: nowrap; gap: 6px; margin-bottom: 14px; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.cab-switcher::-webkit-scrollbar { display: none; }
+/* v7.1.13 round 2 — explicit, bulletproof colors (never inherited) so
+   this can never pick up an unrelated accent color: white/neutral when
+   inactive, solid yellow when active — the only two states that exist. */
+.cab-switch-chip {
+  flex: 0 0 auto;
+  max-width: 180px;
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid var(--line, #edf0f5);
+  background: var(--card, #fff);
+  color: var(--muted, #7b8190);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cab-switch-chip.active {
+  border-color: transparent;
+  background: var(--yellow, #ffcb1f);
+  color: #6f5200;
+}
+
+/* ---- Home module cards ---- */
+.cab-card-grid { display: flex; flex-direction: column; gap: 10px; }
+.cab-card {
+  display: block; width: 100%; text-align: left; font: inherit; color: inherit;
+  padding: 12px; border: 1px solid var(--line, #edf0f5); border-radius: 16px;
+  background: var(--card, #fff); box-shadow: var(--shadow, 0 8px 24px rgba(0,0,0,.06));
+}
+.cab-card--clickable { cursor: pointer; }
+.cab-card--clickable:active { transform: scale(0.99); }
+.cab-card--accent { background: linear-gradient(180deg, #fff8cf 0%, var(--card, #fff) 70%); }
+.cab-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.cab-card-title { font-size: 14px; font-weight: 750; }
+.cab-card-amount { margin: 8px 0 0; font-size: 20px; font-weight: 800; letter-spacing: -.02em; }
+.cab-card-desc { margin: 6px 0 0; font-size: 12.5px; color: var(--muted, #7b8190); line-height: 1.4; }
+.cab-card-meta { margin: 4px 0 0; font-size: 11px; color: #9aa2b4; }
+.cab-card-link { display: inline-block; margin-top: 8px; font-size: 12.5px; font-weight: 750; color: #9a7d00; }
+
+.cab-more-link { width: 100%; margin-top: 10px; }
+
+/* ---- Status badges — soft tone pairs, never a solid aggressive card ---- */
+.cab-badge {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 999px;
+  font-size: 11px; font-weight: 750; white-space: nowrap;
+}
+.cab-badge--success { color: #1a7a4c; background: #e8f8ef; }
+.cab-badge--pending { color: #9b6b05; background: #fff7df; }
+.cab-badge--warning { color: #956018; background: #fcf2e5; }
+.cab-badge--danger  { color: #b14343; background: #fceeee; }
+.cab-badge--info    { color: #3457a6; background: #eaf0fd; }
+.cab-badge--muted   { color: #6b6b6b; background: #eef0f2; }
+
+/* ---- "Ещё" / Профиль rows ---- */
+.cab-more-list { display: flex; flex-direction: column; gap: 8px; }
+.cab-more-row {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 44px; padding: 12px;
+  border: 1px solid var(--line, #edf0f5); border-radius: 14px; background: var(--card, #fff);
+  text-align: left; font: inherit; color: inherit; cursor: pointer;
+}
+.cab-more-row-icon { flex: 0 0 auto; width: 36px; height: 36px; display: grid; place-items: center; border-radius: 10px; background: var(--bg, #f7f8fb); color: var(--ink, #111); }
+.cab-more-row-icon svg { width: 19px; height: 19px; display: block; }
+.cab-more-row-text { flex: 1 1 auto; min-width: 0; }
+.cab-more-row-title { display: block; font-size: 13.5px; font-weight: 700; }
+.cab-more-row-desc { display: block; margin-top: 2px; font-size: 11.5px; color: var(--muted, #7b8190); }
+.cab-more-row-chevron { flex: 0 0 auto; color: #9aa2b4; font-size: 18px; }
+
+.cab-profile-card {
+  display: flex; align-items: center; gap: 12px; padding: 14px; margin-bottom: 14px;
+  border-radius: 16px; background: var(--card, #fff); border: 1px solid var(--line, #edf0f5); box-shadow: var(--shadow, 0 8px 24px rgba(0,0,0,.06));
+}
+.cab-profile-name { margin: 0; font-weight: 750; font-size: 14px; }
+.cab-profile-meta { margin: 2px 0 0; font-size: 12px; color: var(--muted, #7b8190); }
+
+/* ---- Notifications list ---- */
+.cab-notif-list { display: flex; flex-direction: column; gap: 8px; }
+.cab-notif-row {
+  position: relative; display: flex; width: 100%; gap: 8px; padding: 12px; overflow: hidden;
+  border: 1px solid var(--line, #edf0f5); border-radius: 14px; background: var(--card, #fff);
+  text-align: left; font: inherit; color: inherit; cursor: pointer;
+}
+.cab-notif-row.is-unread { background: #fff8cf; border-color: transparent; }
+.cab-notif-row-stripe { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: #d84c4c; }
+.cab-notif-row-main { flex: 1 1 auto; min-width: 0; }
+.cab-notif-row-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.cab-notif-row-title { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; font-weight: 750; }
+.cab-notif-row-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: #d84c4c; }
+.cab-notif-row-date { flex: 0 0 auto; color: #9aa2b4; font-size: 11px; }
+.cab-notif-row-snippet {
+  margin: 4px 0 0; font-size: 12.5px; color: var(--muted, #7b8190); line-height: 1.4;
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.cab-notif-row-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 6px; color: #9aa2b4; font-size: 11px; }
+.cab-notif-row-important { color: #d84c4c; font-weight: 700; }
+
+.cab-notif-detail-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.cab-notif-detail-body { font-size: 14px; line-height: 1.55; white-space: pre-line; }
+.cab-notif-detail-read { margin-top: 14px; color: #9aa2b4; font-size: 11.5px; }
+
+/* ---- Availability modal: day-chips / preference buttons / summary / success ---- */
+.oc-day-chip-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 8px; }
+.oc-day-chip {
+  height: 32px; border: 1px solid #e0e4ef; border-radius: 8px; background: #f6f7fb;
+  color: var(--muted, #7b8190); font-size: 11px; font-weight: 750; cursor: pointer;
+}
+.oc-day-chip.active { border-color: transparent; background: var(--ink, #111); color: #fff; }
+
+.oc-interval-row-v2 { padding: 10px; border: 1px solid #e0e4ef; border-radius: 12px; background: #f6f7fb; margin-bottom: 8px; }
+.oc-interval-time-row { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.oc-interval-time-row input[type="time"] { flex: 1 1 0; min-width: 0; font-size: 13px; padding: 7px 8px; border: 1.5px solid #e0e4ef; border-radius: 8px; background: #fff; }
+.oc-interval-remove { flex: 0 0 auto; width: 34px; height: 34px; border: 0; border-radius: 8px; background: #fceeee; color: #b14343; cursor: pointer; }
+
+.oc-pref-row { display: flex; gap: 6px; }
+.oc-pref-btn { flex: 1 1 0; min-height: 34px; padding: 0 6px; border: 1px solid #e0e4ef; border-radius: 8px; background: #fff; color: var(--muted, #7b8190); font-size: 11.5px; font-weight: 750; cursor: pointer; }
+.oc-pref-btn--preferred.active { border-color: transparent; background: var(--yellow, #ffcb1f); color: #6f5200; }
+.oc-pref-btn--possible.active { border-color: transparent; background: #eaf0fd; color: #3457a6; }
+
+.oc-summary-view, .oc-success-view { padding: 2px; }
+.oc-summary-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid #eef0f5; font-size: 13px; }
+.oc-summary-row:last-of-type { border-bottom: 0; }
+.oc-summary-row--wrap { flex-direction: column; align-items: flex-start; gap: 3px; }
+.oc-summary-row span { color: #9aa2b4; }
+.oc-summary-row b { font-weight: 700; }
+.oc-summary-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.oc-summary-chip { padding: 4px 9px; border-radius: 999px; background: #eef0f2; font-size: 11.5px; font-weight: 650; }
+.oc-summary-chip--preferred { background: #fff8cf; color: #6f5200; }
+.oc-summary-chip--possible { background: #eaf0fd; color: #3457a6; }
+
+.oc-success-view { text-align: center; }
+.oc-success-icon {
+  width: 44px; height: 44px; margin: 0 auto 8px; display: grid; place-items: center;
+  border-radius: 50%; background: #e8f8ef; color: #1a7a4c; font-size: 22px; font-weight: 800;
+}
+.oc-success-title { margin: 0 0 4px; font-size: 16px; font-weight: 800; }
+.oc-success-desc { margin: 0 0 12px; font-size: 12.5px; color: var(--muted, #7b8190); }
+.oc-success-view .oc-summary-row { text-align: left; }
+
+/* ---- Long child names: up to 2 lines instead of a mid-word cut ---- */
+.parent-child-name {
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.3;
+}
+
+@media (max-width: 380px) {
+  .oc-day-chip { font-size: 10px; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   v7.1.13 round 2 — full-page cabinet "Возможности для расписания"
+   (#tab-availability). Every text color below is set EXPLICITLY (never
+   left to inherit) specifically to rule out the white-on-white/low-
+   contrast class of bug flagged in visual review — this app has no global
+   dark-mode token swap for --ink/--card/--bg (confirmed: those tokens are
+   only ever defined with their light values, dark handling elsewhere in
+   this file is done per-component), so light-on-light everywhere here is
+   intentional and correct for how this app actually themes today.
+   ══════════════════════════════════════════════════════════════════════ */
+/* v7.1.13 visual polish — the back button and title/subtitle now come
+   from the shared .cab-header--sub / .cab-icon-btn / .cab-header-sub-title /
+   .cab-header-sub-desc classes (see the block near .cab-header above), so
+   this screen's header matches every other cabinet sub-header exactly —
+   no bespoke rule needed here anymore. */
+
+.avail-summary-card {
+  background: var(--card, #fff);
+  border: 1px solid var(--line, #edf0f5);
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: var(--shadow, 0 3px 16px rgba(26,38,66,.05));
+}
+.avail-summary-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line, #edf0f5);
+  font-size: 13px;
+}
+.avail-summary-row:last-child { border-bottom: 0; }
+.avail-summary-row--wrap { flex-direction: column; align-items: flex-start; gap: 3px; }
+.avail-summary-row span { color: var(--muted, #7b8190); }
+.avail-summary-row b { color: var(--ink, #111); font-weight: 700; text-align: right; }
+.avail-summary-row--wrap b { text-align: left; font-weight: 550; }
+.avail-summary-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.avail-full-btn { width: 100%; margin-top: 12px; }
+
+.avail-success-icon {
+  width: 48px; height: 48px; margin: 12px auto 8px; display: grid; place-items: center;
+  border-radius: 50%; background: var(--yc-green-soft, #e8faf1); color: #1a7a4c; font-size: 24px; font-weight: 800;
+}
+.avail-success-title { margin: 0 0 4px; text-align: center; font-size: 17px; font-weight: 800; color: var(--ink, #111); }
+.avail-success-desc { margin: 0 0 14px; text-align: center; font-size: 13px; color: var(--muted, #7b8190); }
+.avail-success-actions { display: flex; gap: 8px; margin-top: 12px; }
+.avail-success-actions > * { flex: 1 1 0; }
+
+.avail-screen-footer {
+  position: fixed;
+  left: 50%;
+  bottom: calc(96px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  width: min(560px, calc(100% - 28px));
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 18px;
+  background: var(--card, #fff);
+  border: 1px solid var(--line, #edf0f5);
+  box-shadow: 0 12px 32px rgba(18, 23, 34, .16);
+  z-index: 5;
+}
+.avail-screen-footer > * { flex: 1 1 0; }
+.avail-screen-footer.hidden { display: none; }
+/* v7.1.13 visual polish — the shared .primary/.secondary button classes
+   have slightly different vertical padding globally (12px vs 10px), which
+   is invisible almost everywhere but reads as a height mismatch in a
+   side-by-side sticky bar; force equal height here without touching the
+   global button system. Disabled Save also gets an explicit readable
+   style instead of the generic global `button:disabled { opacity:.5 }`,
+   which would otherwise wash a yellow button out against the white bar. */
+.avail-screen-footer .primary,
+.avail-screen-footer .secondary {
+  min-height: 46px;
+  padding: 12px 14px;
+}
+.avail-screen-footer .primary:disabled {
+  opacity: 1;
+  background: #f2e9c9;
+  color: #8a7a3a;
+}
+
+/* Room for the fixed footer + fixed bottom nav so the last form element
+   (comment textarea) always scrolls fully clear of both. */
+#tab-availability.tab-panel.active { padding-bottom: 170px; }
+
+#availScreenPicker .yc-list,
+#availScreenPicker .ws-conn-list { margin-top: 4px; }
+.avail-picker-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
+  min-height: 44px; padding: 12px 14px; margin-bottom: 8px; border: 1px solid var(--line, #edf0f5);
+  border-radius: 14px; background: var(--card, #fff); color: var(--ink, #111); text-align: left; cursor: pointer;
+}
+.avail-picker-row-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.avail-picker-row-status { flex: 0 0 auto; font-size: 12px; color: var(--muted, #7b8190); }
+.avail-picker-row-status--filled { color: #1a7a4c; }
+
+/* Explicit contrast for the shared field/branch/day/pref controls when
+   used inside the full-page screen (same classes as the modal — this just
+   guarantees the text color is never left to inherit from an unexpected
+   ancestor). */
+#tab-availability .ws-oc-field { color: var(--ink, #111); }
+#tab-availability .ws-oc-field > span { color: var(--ink, #111); font-weight: 650; }
+#tab-availability .ws-oc-ttl-btn { color: var(--ink, #111); }
+#tab-availability .ws-oc-ttl-btn.active { color: #6f5200; }
+#tab-availability textarea,
+#tab-availability input[type="date"] {
+  width: 100%; min-height: 44px; padding: 8px 12px; border: 1px solid var(--line, #edf0f5);
+  border-radius: 10px; background: #fff; color: var(--ink, #111); font: inherit; font-size: 14px; box-sizing: border-box;
+}
+#tab-availability .oc-day-chip,
+#tab-availability .oc-pref-btn { color: var(--muted, #7b8190); }
+#tab-availability .oc-day-chip.active { color: #fff; }
+#tab-availability .oc-pref-btn--preferred.active { color: #6f5200; }
+#tab-availability .oc-pref-btn--possible.active { color: #3457a6; }
+
+/* Invalid-interval marker — used inside BOTH the modal and the full-page
+   screen (same class names, shared _ocAvailApplyRowValidation). */
+.oc-interval-row-v2--invalid { border-color: #d84c4c; background: #fff3f2; }
+.oc-interval-row-note { margin: 6px 0 0; font-size: 11.5px; font-weight: 650; color: #b14343; }
+
+/* v7.1.13 round 2 — owner-only test notification sender: own layout, not
+   .test-role-controls (see index.html comment for why). Single column,
+   full-width fields — a smoke tool, not a staff page. */
+.otn-controls { display: flex; flex-direction: column; gap: 10px; }
+.otn-controls label { display: block; }
+.otn-controls label span { display: block; margin: 0 0 5px; font-size: 12px; font-weight: 800; color: var(--muted, #7b8190); }
+.otn-controls input[type="text"],
+.otn-controls select,
+.otn-controls textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, #edf0f5);
+  border-radius: 14px;
+  background: #fff;
+  color: var(--ink, #111);
+  font: inherit;
+  font-size: 14px;
+}
+.otn-controls textarea { min-height: 76px; resize: vertical; line-height: 1.4; }
+.otn-controls-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+/* .test-role-status had no styling at all before — success/error read
+   identically as plain text. Used by both the existing test-role panel
+   and the owner test-notification sender. */
+.test-role-status { margin-top: 10px; font-size: 13px; color: var(--muted, #7b8190); }
+.test-role-status.ok { padding: 10px 12px; border-radius: 12px; background: #eafbf3; color: #116643; font-weight: 650; }
+.test-role-status.error { padding: 10px 12px; border-radius: 12px; background: #fceeee; color: #b14343; font-weight: 650; }

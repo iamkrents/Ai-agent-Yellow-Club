@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.1.12.3" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.1.13" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -40,6 +40,73 @@
       </div>
     </section>
 
+    <!-- v7.1.13 §12 — interim owner-only notification smoke-test sender.
+         NOT the staff communications center (separate design, v7.1.13.1):
+         single test client only, no audience/segment/broadcast controls. -->
+    <!-- v7.1.13 round 2 — own layout class (otn-controls), not
+         test-role-controls: that class only styles <select> (the original
+         test-role panel has no text inputs) and its wide-screen breakpoint
+         assumes a fixed 4-column role-picker shape that doesn't fit this
+         7-field form. Still a temporary smoke-test tool, not a staff
+         communications page — one client, one message, nothing else. -->
+    <section class="test-role-panel hidden" id="ownerTestNotificationPanel">
+      <div class="test-role-head">
+        <div><b>Тест уведомлений (только owner/admin)</b></div>
+      </div>
+      <div class="otn-controls">
+        <label>
+          <span>mk_user_id тестового клиента</span>
+          <input type="text" id="otnMkUserId" placeholder="Например: 50001" />
+        </label>
+        <div class="otn-controls-row">
+          <label>
+            <span>Кому</span>
+            <select id="otnScope">
+              <option value="family">Семье (family)</option>
+              <option value="child">Ребёнку (child)</option>
+            </select>
+          </label>
+          <label>
+            <span>Категория</span>
+            <select id="otnCategory">
+              <option value="general">general</option>
+              <option value="food">food</option>
+              <option value="payments">payments</option>
+              <option value="schedule">schedule</option>
+            </select>
+          </label>
+        </div>
+        <div class="otn-controls-row">
+          <label>
+            <span>Приоритет</span>
+            <select id="otnPriority">
+              <option value="normal">normal</option>
+              <option value="important">important</option>
+            </select>
+          </label>
+          <label>
+            <span>Действие</span>
+            <select id="otnActionKey">
+              <option value="none">none</option>
+              <option value="open_payments">open_payments</option>
+              <option value="open_availability">open_availability</option>
+              <option value="open_home">open_home</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          <span>Заголовок</span>
+          <input type="text" id="otnTitle" placeholder="Заголовок" />
+        </label>
+        <label>
+          <span>Текст</span>
+          <textarea id="otnBody" rows="3" placeholder="Текст сообщения"></textarea>
+        </label>
+        <button class="primary" id="otnSend" style="width:100%">Создать тестовое уведомление</button>
+      </div>
+      <div id="otnStatus" class="test-role-status"></div>
+    </section>
+
     <nav class="tabs bottom-tabbar" id="tabs" aria-label="Разделы кабинета">
       <button class="tab role-intern hidden" data-tab="intern" type="button">
         <span class="tab-icon">🎓</span><span class="tab-label">Стажировка</span>
@@ -59,6 +126,13 @@
       <button class="tab" data-tab="tasks" type="button">
         <span class="tab-icon">📌</span><span class="tab-label">Задачи</span>
       </button>
+      <!-- v7.1.13 — client cabinet shell. "home" is the client dashboard,
+           replacing "my-children" as the parent landing tab; my-children
+           stays fully functional (unchanged content) but is reached only
+           via Ещё → Мои дети now, for regular/combined clients. -->
+      <button class="tab parent-only hidden" data-tab="home" type="button">
+        <span class="tab-icon">🏠</span><span class="tab-label">Главная</span>
+      </button>
       <button class="tab parent-only hidden" data-tab="my-children" type="button">
         <span class="tab-icon">👶</span><span class="tab-label">Мои дети</span>
       </button>
@@ -67,6 +141,13 @@
       </button>
       <button class="tab parent-only hidden" data-tab="client-payments" type="button">
         <span class="tab-icon">💳</span><span class="tab-label">Оплаты</span>
+      </button>
+      <button class="tab parent-only hidden" data-tab="notifications" type="button">
+        <span class="tab-icon">🔔</span><span class="tab-label">Уведомления</span>
+        <span class="tab-badge hidden" id="notifNavBadge">0</span>
+      </button>
+      <button class="tab parent-only hidden" data-tab="more" type="button">
+        <span class="tab-icon">⋯</span><span class="tab-label">Ещё</span>
       </button>
       <button class="tab kitchen-only hidden" data-tab="kitchen" type="button">
         <span class="tab-icon">🍳</span><span class="tab-label">Сводка</span>
@@ -82,6 +163,19 @@
       </button>
       <button class="tab" data-tab="help" type="button">
         <span class="tab-icon">❓</span><span class="tab-label">Помощь</span>
+      </button>
+      <!-- v7.1.13 — food-only clients use this as their 4th nav slot
+           directly; regular/combined clients reach it via Ещё → Профиль. -->
+      <button class="tab parent-only hidden" data-tab="profile" type="button">
+        <span class="tab-icon">👤</span><span class="tab-label">Профиль</span>
+      </button>
+      <!-- v7.1.13 round 2 — never a visible nav item (not in any
+           parentAllowed array); exists purely so activateTab("availability")
+           has a matching .tab[data-tab] element to find (it requires both a
+           tab button and a panel — see activateTab in app.js). Reached only
+           via openClientScheduleAvailabilityModal/-Picker. -->
+      <button class="tab parent-only hidden" data-tab="availability" type="button" aria-hidden="true" tabindex="-1">
+        <span class="tab-icon"></span><span class="tab-label">Возможности</span>
       </button>
       <button class="tab" data-tab="ask" type="button">
         <span class="tab-icon">💬</span><span class="tab-label">Чат</span>
@@ -805,24 +899,139 @@
           </article>
         </div>
       </section>
-      <section id="tab-my-children" class="tab-panel">
-        <div class="section-head">
-          <div>
-            <h2>Мои дети</h2>
-            <p>Привяжите ребёнка по коду от Yellow Club.</p>
+      <!-- v7.1.13 — client cabinet dashboard (Главная). Content built by
+           renderClientHome() in app.js. -->
+      <section id="tab-home" class="tab-panel cabinet-panel">
+        <div id="clientHomeContent"></div>
+      </section>
+
+      <section id="tab-my-children" class="tab-panel cabinet-panel">
+        <div class="cab-header cab-header--sub">
+          <div class="cab-header-text">
+            <h2 class="cab-header-sub-title">Мои дети</h2>
+            <p class="cab-header-sub-desc">Привяжите ребёнка по коду от Yellow Club.</p>
           </div>
         </div>
         <div id="myChildrenContent"></div>
       </section>
 
-      <section id="tab-food" class="tab-panel">
-        <div class="section-head">
-          <div>
-            <h2>Питание</h2>
-            <p>Выбор питания для ребёнка в городской программе.</p>
+      <!-- v7.1.13 visual polish — food-only clients land here (their
+           "Питание" nav item is the cabinet home-equivalent), so it gets
+           the same premium greeting header as Главная (JS-rendered by
+           _cabRenderFoodHeader in app.js) instead of a plain section-head. -->
+      <section id="tab-food" class="tab-panel cabinet-panel">
+        <div id="foodHeaderSlot"></div>
+        <div id="foodContent"></div>
+      </section>
+
+      <!-- v7.1.13 — client notification center (not a chat: a flat list). -->
+      <section id="tab-notifications" class="tab-panel cabinet-panel">
+        <div class="cab-header cab-header--sub">
+          <div class="cab-header-text">
+            <h2 class="cab-header-sub-title">Уведомления</h2>
+            <p class="cab-header-sub-desc" id="notifListSubtitle">Важные сообщения от Yellow Club.</p>
           </div>
         </div>
-        <div id="foodContent"></div>
+        <div id="notificationsListContent"></div>
+      </section>
+
+      <!-- v7.1.13 — "Ещё": Мои дети / Возможности / Питание / Помощь / Профиль. -->
+      <section id="tab-more" class="tab-panel cabinet-panel">
+        <div class="cab-header cab-header--sub">
+          <div class="cab-header-text">
+            <h2 class="cab-header-sub-title">Ещё</h2>
+            <p class="cab-header-sub-desc">Профиль и настройки</p>
+          </div>
+        </div>
+        <div id="clientMoreContent"></div>
+      </section>
+
+      <!-- v7.1.13 — minimal profile view, no technical IDs. Shared by
+           regular clients (via Ещё) and food-only clients (direct nav tab). -->
+      <section id="tab-profile" class="tab-panel cabinet-panel">
+        <div class="cab-header cab-header--sub">
+          <div class="cab-header-text">
+            <h2 class="cab-header-sub-title">Профиль</h2>
+          </div>
+        </div>
+        <div id="clientProfileContent"></div>
+      </section>
+
+      <!-- v7.1.13 round 2 — full-page "Возможности для расписания" for the
+           standalone cabinet entry (Главная card / Ещё row / "Изменить").
+           The onboarding-invite flow keeps the existing #ocAvailabilityModal
+           bottom-sheet unchanged ("Пропустить", campaign context). Both
+           surfaces share the same _ocAvailState data model, validation, and
+           API calls (app.js) — this is a second DOM presentation of the
+           same screen, not a second backend or a second data model. -->
+      <section id="tab-availability" class="tab-panel cabinet-panel">
+        <div class="cab-header cab-header--sub avail-screen-head">
+          <button type="button" class="cab-icon-btn cab-header-back" id="availScreenBack" aria-label="Назад"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+          <div class="cab-header-text avail-screen-head-text">
+            <h2 class="cab-header-sub-title">Возможности для расписания</h2>
+            <p class="cab-header-sub-desc" id="availScreenChildName"></p>
+          </div>
+        </div>
+
+        <div id="availScreenLoading" class="hidden"><div class="kpi-loading">Загружаю…</div></div>
+        <div id="availScreenError" class="hidden error-msg"></div>
+
+        <div id="availScreenPicker" class="hidden"></div>
+
+        <div id="availScreenSummary" class="hidden">
+          <div class="avail-summary-card">
+            <div class="avail-summary-row"><span>Филиал</span><b id="availSummaryBranch">—</b></div>
+            <div class="avail-summary-row"><span>Готовы начать с</span><b id="availSummaryFrom">—</b></div>
+            <div class="avail-summary-row avail-summary-row--wrap hidden" id="availSummaryCommentRow"><span>Комментарий</span><b id="availSummaryComment"></b></div>
+            <div class="avail-summary-chips" id="availSummaryIntervals"></div>
+          </div>
+          <button type="button" class="primary avail-full-btn" id="availSummaryEditBtn">Изменить</button>
+        </div>
+
+        <div id="availScreenSuccess" class="hidden">
+          <div class="avail-success-icon">✓</div>
+          <p class="avail-success-title">Сохранено</p>
+          <p class="avail-success-desc">Мы учли удобное время — спасибо! Изменить можно в любой момент.</p>
+          <div class="avail-summary-card">
+            <div class="avail-summary-row"><span>Филиал</span><b id="availSuccessBranch">—</b></div>
+            <div class="avail-summary-row"><span>Дни</span><b id="availSuccessDays">—</b></div>
+            <div class="avail-summary-row"><span>Интервалов</span><b id="availSuccessCount">0</b></div>
+          </div>
+          <div class="avail-success-actions">
+            <button type="button" class="secondary" id="availSuccessEditBtn">Изменить</button>
+            <button type="button" class="primary" id="availSuccessHomeBtn">На главную</button>
+          </div>
+        </div>
+
+        <div id="availScreenEdit" class="hidden">
+          <label class="ws-oc-field">
+            <span>Филиал</span>
+            <div class="ws-oc-ttl-row" id="availBranchRow">
+              <button type="button" class="secondary ws-oc-ttl-btn" data-branch="YC1">Кульман 1/1</button>
+              <button type="button" class="secondary ws-oc-ttl-btn" data-branch="YC2">Мстиславца 6</button>
+              <button type="button" class="secondary ws-oc-ttl-btn active" data-branch="either">Любой</button>
+            </div>
+          </label>
+          <label class="ws-oc-field">
+            <span>Готовы начать с</span>
+            <input type="date" id="availFrom" />
+          </label>
+          <div class="ws-oc-field">
+            <span>Удобное время</span>
+            <div id="availIntervals"></div>
+            <button type="button" class="secondary" id="availAddInterval" style="margin-top:6px">+ Добавить интервал</button>
+          </div>
+          <label class="ws-oc-field">
+            <span>Комментарий (необязательно)</span>
+            <textarea id="availComment" rows="2" placeholder="Например: только по выходным"></textarea>
+          </label>
+          <div id="availFormError" class="pi-form-error hidden"></div>
+        </div>
+
+        <div class="avail-screen-footer hidden" id="availScreenFooter">
+          <button type="button" class="secondary" id="availSecondaryBtn">Отмена</button>
+          <button type="button" class="primary" id="availSaveBtn">Сохранить</button>
+        </div>
       </section>
 
       <section id="tab-my-lunch" class="tab-panel">
@@ -852,13 +1061,11 @@
         <div id="paymentsWorkspaceRoot"></div>
       </section>
 
-      <section id="tab-client-payments" class="tab-panel">
-        <div class="section-head">
-          <div>
-            <h2>Оплаты</h2>
-            <p>Счета на оплату от Yellow Club.</p>
-          </div>
-        </div>
+      <!-- v7.1.13 — same content/logic, just wrapped in the cabinet's shared
+           header/nav shell (cabinet-panel) per approved design §4. No
+           change to payment business logic, statuses, or endpoints. -->
+      <section id="tab-client-payments" class="tab-panel cabinet-panel">
+        <div id="paymentsHeaderSlot"></div>
         <div id="clientPaymentsList"></div>
       </section>
 
@@ -1212,32 +1419,70 @@
         </div>
         <div class="pi-modal-body">
           <p class="ws-conn-note" id="ocAvailabilityChildName"></p>
-          <label class="ws-oc-field">
-            <span>Филиал</span>
-            <div class="ws-oc-ttl-row" id="ocAvailabilityBranchRow">
-              <button type="button" class="secondary ws-oc-ttl-btn" data-branch="YC1">Кульман 1/1</button>
-              <button type="button" class="secondary ws-oc-ttl-btn" data-branch="YC2">Мстиславца 6</button>
-              <button type="button" class="secondary ws-oc-ttl-btn active" data-branch="either">Любой</button>
-            </div>
-          </label>
-          <label class="ws-oc-field">
-            <span>Готовы начать с</span>
-            <input type="date" id="ocAvailabilityFrom" />
-          </label>
-          <div class="ws-oc-field">
-            <span>Удобное время</span>
-            <div id="ocAvailabilityIntervals"></div>
-            <button type="button" class="secondary" id="ocAvailabilityAddInterval" style="margin-top:6px">+ Добавить интервал</button>
+
+          <!-- v7.1.13 — read-only summary shown first when the form was
+               already filled in; "Изменить" switches to the edit view below. -->
+          <div id="ocAvailabilitySummaryView" class="hidden oc-summary-view">
+            <div class="oc-summary-row"><span>Филиал</span><b id="ocSummaryBranch">—</b></div>
+            <div class="oc-summary-row"><span>Готовы начать с</span><b id="ocSummaryFrom">—</b></div>
+            <div class="oc-summary-row oc-summary-row--wrap hidden" id="ocSummaryCommentRow"><span>Комментарий</span><b id="ocSummaryComment"></b></div>
+            <div class="oc-summary-chips" id="ocSummaryIntervals"></div>
+            <button type="button" class="primary" id="ocAvailabilityEditBtn" style="margin-top:12px;width:100%">Изменить</button>
           </div>
-          <label class="ws-oc-field">
-            <span>Комментарий (необязательно)</span>
-            <textarea id="ocAvailabilityComment" rows="2" placeholder="Например: только по выходным"></textarea>
-          </label>
-          <div id="ocAvailabilityError" class="pi-form-error hidden"></div>
+
+          <!-- v7.1.13 — success resume: branch / days / interval count + Изменить. -->
+          <div id="ocAvailabilitySuccessView" class="hidden oc-success-view">
+            <div class="oc-success-icon">✓</div>
+            <p class="oc-success-title">Сохранено</p>
+            <p class="oc-success-desc">Мы учли удобное время — спасибо! Изменить можно в любой момент.</p>
+            <div class="oc-summary-row"><span>Филиал</span><b id="ocSuccessBranch">—</b></div>
+            <div class="oc-summary-row"><span>Дни</span><b id="ocSuccessDays">—</b></div>
+            <div class="oc-summary-row"><span>Интервалов</span><b id="ocSuccessCount">0</b></div>
+            <button type="button" class="secondary" id="ocAvailabilitySuccessEditBtn" style="margin-top:12px;width:100%">Изменить</button>
+          </div>
+
+          <div id="ocAvailabilityEditView">
+            <label class="ws-oc-field">
+              <span>Филиал</span>
+              <div class="ws-oc-ttl-row" id="ocAvailabilityBranchRow">
+                <button type="button" class="secondary ws-oc-ttl-btn" data-branch="YC1">Кульман 1/1</button>
+                <button type="button" class="secondary ws-oc-ttl-btn" data-branch="YC2">Мстиславца 6</button>
+                <button type="button" class="secondary ws-oc-ttl-btn active" data-branch="either">Любой</button>
+              </div>
+            </label>
+            <label class="ws-oc-field">
+              <span>Готовы начать с</span>
+              <input type="date" id="ocAvailabilityFrom" />
+            </label>
+            <div class="ws-oc-field">
+              <span>Удобное время</span>
+              <div id="ocAvailabilityIntervals"></div>
+              <button type="button" class="secondary" id="ocAvailabilityAddInterval" style="margin-top:6px">+ Добавить интервал</button>
+            </div>
+            <label class="ws-oc-field">
+              <span>Комментарий (необязательно)</span>
+              <textarea id="ocAvailabilityComment" rows="2" placeholder="Например: только по выходным"></textarea>
+            </label>
+            <div id="ocAvailabilityError" class="pi-form-error hidden"></div>
+          </div>
         </div>
-        <div class="pi-modal-footer">
+        <div class="pi-modal-footer" id="ocAvailabilityFooter">
           <button class="secondary" id="ocAvailabilitySkip" type="button">Пропустить</button>
           <button class="primary" id="ocAvailabilitySave" type="button">Сохранить</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- v7.1.13 — notification detail overlay (not a chat bubble; a plain
+         message detail). Opened from the notifications list. -->
+    <div id="notificationDetailModal" class="pi-modal hidden">
+      <div class="pi-modal-sheet">
+        <div class="pi-modal-head">
+          <h3>Уведомление</h3>
+          <button class="pi-modal-close" id="notificationDetailClose" type="button">✕</button>
+        </div>
+        <div class="pi-modal-body">
+          <div id="notificationDetailContent"></div>
         </div>
       </div>
     </div>
@@ -1261,6 +1506,6 @@
 
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.1.12.3"></script>
+  <script src="/static/app.js?v=7.1.13"></script>
 </body>
 </html>

@@ -183,19 +183,30 @@ def _js_fn(name, is_async=False, window=6000):
 
 
 class TestSingleVsMultiChildRouting(unittest.TestCase):
+    """v7.1.13 — the availability entry card moved from "Мои дети" onto the
+    new Главная dashboard (renderClientHome). Single-vs-multi-child routing
+    still holds, just via the dashboard's own always-visible child switcher
+    (_cabChildSwitcherHtml) instead of a click-triggered in-place picker —
+    see the client-cabinet-v7113 approved design and the final report for
+    v7.1.13. _wsScheduleAvailCardHtml/_wsScheduleAvailWire (the old
+    picker) were retired, not just renamed."""
+
     def test_5_single_child_opens_form_directly(self):
-        fn = _js_fn("_wsScheduleAvailCardHtml")
-        # Single-child branch renders data-mk directly on the card so the
-        # click handler opens the form with no intermediate picker.
-        self.assertIn("children.length === 1", fn)
-        self.assertIn("data-mk=\"${escapeAttr(mk)}\"", fn)
+        fn = _js_fn("_cabAvailabilityCardHtml")
+        # data-mk is always set directly on the card — clicking it opens the
+        # form for the active child with no intermediate picker, whether
+        # there's 1 child or several (the switcher already picked one).
+        self.assertIn("data-mk=\"${escapeAttr(activeChild.mk_user_id)}\"", fn)
 
     def test_6_multiple_children_show_picker(self):
-        fn = _js_fn("_wsScheduleAvailCardHtml")
-        self.assertIn("_wsScheduleAvailState.picking", fn)
-        self.assertIn("parent-schedule-avail-child-row", fn)
-        wire_fn = _js_fn("_wsScheduleAvailWire")
-        self.assertIn("_wsScheduleAvailState.picking = true", wire_fn)
+        # The "picker" is now the always-visible Home child switcher, not a
+        # secondary in-place list triggered from inside the availability card.
+        switcher_fn = _js_fn("_cabChildSwitcherHtml")
+        self.assertIn("children.length <= 1", switcher_fn)
+        self.assertIn("cab-switch-chip", switcher_fn)
+        home_fn = _js_fn("renderClientHome")
+        self.assertIn("_cabChildSwitcherHtml(children", home_fn)
+        self.assertIn("_cabAvailabilityCardHtml(activeChild)", home_fn)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -404,10 +415,10 @@ class TestErrorDoesNotClearValues(unittest.TestCase):
 
 class TestVersion(unittest.TestCase):
     def test_18_version_and_cache_bust(self):
-        self.assertIn('console.log("MiniApp version: v7.1.12.3");', _js())
+        self.assertIn('console.log("MiniApp version: v7.1.13");', _js())
         html = _html()
-        self.assertIn("styles.css?v=7.1.12.3", html)
-        self.assertIn("app.js?v=7.1.12.3", html)
+        self.assertIn("styles.css?v=7.1.13", html)
+        self.assertIn("app.js?v=7.1.13", html)
 
 
 if __name__ == "__main__":

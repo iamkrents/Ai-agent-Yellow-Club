@@ -49,6 +49,11 @@ from storage import (
     CLIENT_LINK_CODE_TTL_HOURS as _STORAGE_CLIENT_LINK_CODE_TTL_HOURS,
     ONBOARDING_INVITE_TOKEN_PREFIX,
     ONBOARDING_IMPORT_MAX_BATCH_SIZE,
+    NOTIFICATION_CATEGORIES,
+    NOTIFICATION_PRIORITIES,
+    NOTIFICATION_SCOPES,
+    NOTIFICATION_ACTION_KEYS,
+    NOTIFICATION_CATEGORIES_FOOD_ONLY,
 )
 from llm import OllamaClient
 from agent_core import AgentCore, AnswerContext
@@ -2146,6 +2151,31 @@ class MiniAppContext:
         real_role = self._base_role_for_user(user_id)
         return int(user_id or 0) in set(int(x) for x in (self.settings.admin_ids or []) if x) or real_role in FULL_ADMIN_ROLES
 
+    def _client_cabinet_enabled(self, user_id: int) -> bool:
+        """v7.1.13 round 2 — safe rollout gate for the new client cabinet.
+        Server-side only: callers must always pass auth["user_id"] (never a
+        frontend-supplied dev_user_id/query/body value) so this can't be
+        spoofed. Default OFF; global flag or a per-Telegram-id pilot
+        allowlist (same idiom as admin_ids/senior_teacher_ids) opens it."""
+        if bool(getattr(self.settings, "client_cabinet_v7113_enabled", False)):
+            return True
+        pilot_ids = set(
+            int(x) for x in (getattr(self.settings, "client_cabinet_v7113_pilot_telegram_ids", None) or []) if x
+        )
+        return int(user_id or 0) in pilot_ids
+
+    def _client_notifications_enabled(self, user_id: int) -> bool:
+        """v7.1.13 round 2 — independent safe rollout gate for the client
+        notification center, so it can be piloted separately from the rest
+        of the cabinet shell. Same server-side-only contract as
+        _client_cabinet_enabled."""
+        if bool(getattr(self.settings, "client_notifications_enabled", False)):
+            return True
+        pilot_ids = set(
+            int(x) for x in (getattr(self.settings, "client_notifications_pilot_telegram_ids", None) or []) if x
+        )
+        return int(user_id or 0) in pilot_ids
+
     def _test_teacher_options(self) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -2289,6 +2319,27 @@ class MiniAppContext:
         profile = self.storage.get_teacher_profile(user_id) or {}
         role = self._role_for_user(user_id)
         real_role = self._base_role_for_user(user_id)
+        # v7.1.13 — client kind (food_only/regular/combined/none) and the
+        # notification unread badge are computed once here, part of the
+        # existing bootstrap call, so the cabinet shell/nav can render
+        # correctly on first paint without a second round-trip (perf
+        # requirement: no dedicated per-card request).
+        client_kind = ""
+        client_food_entry_visible = False
+        unread_notification_count = 0
+        client_cabinet_v7113_enabled = False
+        client_notifications_enabled = False
+        if role == "parent":
+            client_kind = self.storage.get_client_kind_for_parent(user_id)
+            client_food_entry_visible = bool(
+                getattr(self.settings, "client_food_entry_visible", True)
+            ) and client_kind in ("food_only", "combined")
+            client_cabinet_v7113_enabled = self._client_cabinet_enabled(user_id)
+            client_notifications_enabled = self._client_notifications_enabled(user_id)
+            if client_notifications_enabled:
+                unread_notification_count = self.storage.count_unread_client_notifications(
+                    user_id, allowed_categories=self._notification_allowed_categories(client_kind),
+                )
         can_test = self._can_use_role_test(user_id)
         test_mode = self.storage.get_staff_test_mode(user_id) if can_test else {"enabled": False, "role": "", "mk_teacher_id": ""}
         capabilities = self._capabilities_for_user(user_id)
@@ -2327,6 +2378,18 @@ class MiniAppContext:
             "mvpReleaseMode": bool(getattr(self.settings, "mvp_release_mode", False)),
             "foodModuleEnabled": bool(getattr(self.settings, "food_module_enabled", False)),
             "foodMenuOcrEnabled": capabilities.get("foodMenuOcrEnabled", False),
+            # v7.1.13
+            "clientKind": client_kind,
+            "clientFoodEntryVisible": client_food_entry_visible,
+            "unreadNotificationCount": unread_notification_count,
+            # v7.1.13 round 2 — safe rollout gates, computed server-side from
+            # auth["user_id"] only (see _client_cabinet_enabled /
+            # _client_notifications_enabled). The frontend uses these to
+            # decide whether to show the new cabinet shell at all, and
+            # whether the notifications tab shows real data or a safe
+            # disabled state — never trust a client-supplied override.
+            "clientCabinetV7113Enabled": client_cabinet_v7113_enabled,
+            "clientNotificationsEnabled": client_notifications_enabled,
             "campClassNameFilter": (
                 str(getattr(self.settings, "camp_lesson_name_filter", "") or "").strip()
                 or str(getattr(self.settings, "camp_class_name_filter", "Summer Camp") or "Summer Camp").strip()
@@ -11745,6 +11808,12 @@ class MiniAppContext:
             paid_byn = round(int(paid_minor) / 100.0, 2) if paid_minor is not None else None
             result.append({
                 "public_id": pi["public_id"],
+                # v7.1.13 — additive passthrough only (field already existed on
+                # the row, just wasn't copied into the trimmed client response)
+                # so the new home-dashboard payment card can filter by the
+                # currently-selected child. Does not change any existing
+                # consumer's behavior — they simply ignore the extra field.
+                "mk_user_id": pi.get("mk_user_id"),
                 "student_name": pi.get("student_name"),
                 "amount_byn": amount_byn,
                 "purpose": pi.get("purpose"),
@@ -11870,6 +11939,133 @@ class MiniAppContext:
             "client_count": len(client_children),
             "food_count": len(food_children),
         }
+
+    # ── v7.1.13 — client notification center (parent-facing) ─────────────────
+    # Not a chat: a flat, paginated, read/unread list of discrete messages.
+    # Ownership/scope/category filtering all happens in storage.py's query —
+    # these handlers only resolve identity (auth["user_id"], never a
+    # frontend-supplied telegram_id) and the food-only category restriction.
+
+    def client_notifications_list(self, auth: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        """GET /api/client/notifications?limit=&before_id= — parent-only."""
+        role = self._role_for_user(int(auth["user_id"]))
+        if role != "parent":
+            return {"ok": False, "error": "Доступ только для родителей."}
+        if not self._client_notifications_enabled(int(auth["user_id"])):
+            # v7.1.13 round 2 — safe disabled state: no data leaked, no
+            # error surfaced to the client, table itself untouched.
+            return {"ok": True, "notifications": [], "has_more": False, "disabled": True}
+        user_id = str(auth["user_id"])
+        client_kind = self.storage.get_client_kind_for_parent(user_id)
+        allowed = self._notification_allowed_categories(client_kind)
+        try:
+            limit = int(params.get("limit")) if params.get("limit") else 20
+        except (TypeError, ValueError):
+            limit = 20
+        before_id: Optional[int] = None
+        raw_before = params.get("before_id")
+        if raw_before:
+            try:
+                before_id = int(raw_before)
+            except (TypeError, ValueError):
+                before_id = None
+        items, has_more = self.storage.list_client_notifications_for_recipient(
+            user_id, allowed_categories=allowed, limit=limit, before_id=before_id,
+        )
+        for it in items:
+            if it.get("action_key") not in NOTIFICATION_ACTION_KEYS:
+                it["action_key"] = "none"
+            it["unread"] = it.get("read_at") is None
+        return {"ok": True, "notifications": items, "has_more": has_more}
+
+    def client_notification_get(self, auth: dict[str, Any], notification_id_str: str) -> dict[str, Any]:
+        """GET /api/client/notifications/{id} — parent-only, own notifications only."""
+        role = self._role_for_user(int(auth["user_id"]))
+        if role != "parent":
+            return {"ok": False, "error": "Доступ только для родителей."}
+        if not self._client_notifications_enabled(int(auth["user_id"])):
+            return {"ok": False, "error": "notifications_disabled"}
+        try:
+            notification_id = int(notification_id_str)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid notification id"}
+        user_id = str(auth["user_id"])
+        client_kind = self.storage.get_client_kind_for_parent(user_id)
+        allowed = self._notification_allowed_categories(client_kind)
+        item = self.storage.get_client_notification_for_recipient(notification_id, user_id, allowed_categories=allowed)
+        if not item:
+            return {"ok": False, "error": "Уведомление не найдено."}
+        if item.get("action_key") not in NOTIFICATION_ACTION_KEYS:
+            item["action_key"] = "none"
+        item["unread"] = item.get("read_at") is None
+        return {"ok": True, "notification": item}
+
+    def client_notification_mark_read(self, auth: dict[str, Any], notification_id_str: str) -> dict[str, Any]:
+        """POST /api/client/notifications/{id}/read — idempotent."""
+        role = self._role_for_user(int(auth["user_id"]))
+        if role != "parent":
+            return {"ok": False, "error": "Доступ только для родителей."}
+        if not self._client_notifications_enabled(int(auth["user_id"])):
+            return {"ok": False, "error": "notifications_disabled"}
+        try:
+            notification_id = int(notification_id_str)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid notification id"}
+        user_id = str(auth["user_id"])
+        # Re-verify current visibility (same query as GET) before marking —
+        # an unlinked child's notification can't be touched even by its
+        # original recipient row.
+        client_kind = self.storage.get_client_kind_for_parent(user_id)
+        allowed = self._notification_allowed_categories(client_kind)
+        item = self.storage.get_client_notification_for_recipient(notification_id, user_id, allowed_categories=allowed)
+        if not item:
+            return {"ok": False, "error": "Уведомление не найдено."}
+        self.storage.mark_client_notification_read(notification_id, user_id)
+        return {"ok": True}
+
+    # ── v7.1.13 §12 — TEMPORARY owner-only smoke-test sender ──────────────────
+    # Explicitly NOT the staff communications center (v7.1.13.1, separate
+    # design). Can only target ONE already-linked test client at a time —
+    # there is no audience/segment/broadcast parameter anywhere in this
+    # function, so a mass send is structurally impossible here, not just
+    # policy-denied. Never touches Telegram delivery.
+    def owner_test_notification_create(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/owner/test-notifications"""
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in {"owner", "admin"}:
+            return {"ok": False, "error": "access_denied"}
+
+        mk_user_id = str(body.get("mk_user_id") or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "Укажите mk_user_id тестового клиента."}
+        scope = str(body.get("scope") or "").strip()
+        if scope not in NOTIFICATION_SCOPES:
+            return {"ok": False, "error": f"scope должен быть одним из: {', '.join(NOTIFICATION_SCOPES)}"}
+        category = str(body.get("category") or "general").strip()
+        if category not in NOTIFICATION_CATEGORIES:
+            return {"ok": False, "error": f"category должна быть одной из: {', '.join(NOTIFICATION_CATEGORIES)}"}
+        priority = str(body.get("priority") or "normal").strip()
+        if priority not in NOTIFICATION_PRIORITIES:
+            return {"ok": False, "error": f"priority должен быть одним из: {', '.join(NOTIFICATION_PRIORITIES)}"}
+        action_key = str(body.get("action_key") or "none").strip()
+        if action_key not in NOTIFICATION_ACTION_KEYS:
+            return {"ok": False, "error": f"action_key должен быть одним из: {', '.join(NOTIFICATION_ACTION_KEYS)}"}
+        title = str(body.get("title") or "").strip()
+        text = str(body.get("body") or "").strip()
+        if not title or not text:
+            return {"ok": False, "error": "Заполните заголовок и текст."}
+
+        recipient_ids = self.storage.get_active_parent_telegram_ids_for_mk_user(mk_user_id)
+        if not recipient_ids:
+            return {"ok": False, "error": "Этот mk_user_id не привязан ни к одному родителю (нет активной связи)."}
+
+        return self.storage.create_client_notification(
+            title=title, body=text, category=category, priority=priority, scope=scope,
+            mk_user_id=mk_user_id if scope == "child" else None,
+            action_key=action_key,
+            created_by_telegram_id=str(auth["user_id"]),
+            recipient_telegram_ids=recipient_ids,
+        )
 
     # v7.1.7 — maps storage-layer reason_code → audit event_type for failed
     # code-use attempts. Several distinct reason_codes intentionally collapse
@@ -13019,6 +13215,16 @@ class MiniAppContext:
     # the specific child (role == "parent" AND the recipient's mk_user_id is
     # among that parent's actively-linked children — never trusted from the
     # client, always re-derived from client_parent_child_links here).
+
+    # v7.1.13 addendum — a food-only client must never see tuition-payment
+    # or permanent-schedule notifications (even family-scope ones) unless
+    # they are also a regular/combined client. client_kind is always
+    # recomputed server-side (storage.get_client_kind_for_parent), never
+    # taken from the frontend.
+    def _notification_allowed_categories(self, client_kind: str) -> Optional[tuple[str, ...]]:
+        if client_kind == "food_only":
+            return NOTIFICATION_CATEGORIES_FOOD_ONLY
+        return None
 
     def _require_availability_access(self, auth: dict[str, Any], mk_user_id: Any) -> tuple[Optional[str], Optional[dict[str, Any]]]:
         """v7.1.12.3 — keyed directly on mk_user_id rather than a recipient
@@ -19318,6 +19524,12 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.client_payment_card_token(auth, _cct_pid))
                 if path == "/api/client/children":
                     return self._send_json(CTX.client_children_list(auth))
+                # v7.1.13 — client notification center
+                if path == "/api/client/notifications":
+                    return self._send_json(CTX.client_notifications_list(auth, params))
+                if path.startswith("/api/client/notifications/"):
+                    _cn_id = path[len("/api/client/notifications/"):]
+                    return self._send_json(CTX.client_notification_get(auth, _cn_id))
                 if path == "/api/client/admin/link-status":
                     return self._send_json(CTX.admin_client_link_status(auth, params))
                 if path == "/api/client/admin/search-students":
@@ -19698,6 +19910,14 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/client/schedule-availability/"):
                 _csa_mk = path[len("/api/client/schedule-availability/"):]
                 return self._send_json(CTX.client_schedule_availability_submit(auth, _csa_mk, body))
+            # v7.1.13 — client notification center
+            if path.startswith("/api/client/notifications/") and path.endswith("/read"):
+                _cn_id = path[len("/api/client/notifications/"):-len("/read")]
+                return self._send_json(CTX.client_notification_mark_read(auth, _cn_id))
+            # v7.1.13 §12 — temporary owner-only smoke-test sender (NOT the
+            # staff communications center)
+            if path == "/api/owner/test-notifications":
+                return self._send_json(CTX.owner_test_notification_create(auth, body))
             if path == "/api/food/debug/sync-camp-children":
                 return self._send_json(CTX.food_debug_sync_camp_children(auth, body))
             if path == "/api/food/debug/clear-camp-children":
