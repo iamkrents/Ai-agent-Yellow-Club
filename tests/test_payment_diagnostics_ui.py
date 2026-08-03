@@ -79,7 +79,15 @@ GLOBAL_NAV_TAB_ORDER = [
     # (inserted after "help"). See the v7.1.13 final report.
     "home", "my-children", "food", "client-payments", "notifications", "more",
     "kitchen", "kitchen-editor",
-    "restaurant", "my-lunch", "help", "profile", "ask", "payments-workspace", "admin",
+    "restaurant", "my-lunch", "help", "profile",
+    # v7.1.13 round 2 — never visible nav items, exist only so
+    # activateTab("availability"/"notification-detail") has a matching
+    # .tab[data-tab] element (see index.html comments at those buttons).
+    "availability", "notification-detail",
+    "ask", "payments-workspace",
+    # v7.1.14 — staff "Рассылки" (communications center) bottom-nav tab.
+    "comms",
+    "admin",
 ]
 
 
@@ -98,15 +106,19 @@ class TestGlobalNavRegression(unittest.TestCase):
         found = re.findall(r'data-tab="([a-z0-9-]+)"', self._nav_section())
         self.assertEqual(found, GLOBAL_NAV_TAB_ORDER)
 
-    def test_41_admin_tab_immediately_follows_payments_workspace_unchanged(self):
-        # Pre-existing v7.1.8 adjacency (unrelated to diagnostics): confirms
-        # nothing new was inserted between "Платежи" and "Админ".
+    def test_41_admin_tab_follows_payments_workspace_via_comms_unchanged(self):
+        # Pre-existing v7.1.8 adjacency, updated for the v7.1.14 "Рассылки"
+        # tab (comms) that now sits between them: confirms nothing else new
+        # was inserted between "Платежи" and "Админ".
         nav_section = self._nav_section()
         idx = nav_section.find('data-tab="payments-workspace"')
         self.assertGreater(idx, -1)
         next_tab = re.search(r'data-tab="([a-z0-9-]+)"', nav_section[idx + 1:])
         self.assertIsNotNone(next_tab)
-        self.assertEqual(next_tab.group(1), "admin")
+        self.assertEqual(next_tab.group(1), "comms")
+        after_comms = re.search(r'data-tab="([a-z0-9-]+)"', nav_section[idx + 1 + next_tab.end():])
+        self.assertIsNotNone(after_comms)
+        self.assertEqual(after_comms.group(1), "admin")
 
     def test_42_food_reports_tasks_help_chat_tabs_unchanged(self):
         nav_section = self._nav_section()
@@ -258,7 +270,7 @@ class TestVersionMarker(unittest.TestCase):
     def test_25_cache_bust_is_v7110(self):
         self.assertIn("app.js?v=7.1.14", INDEX_HTML)
         self.assertIn("styles.css?v=7.1.14", INDEX_HTML)
-        self.assertIn('console.log("MiniApp version: v7.1.14.1")', APP_JS)
+        self.assertIn('console.log("MiniApp version: v7.1.14.2")', APP_JS)
 
 
 class TestPreviewRemoved(unittest.TestCase):
@@ -287,7 +299,7 @@ class TestPreviewRemoved(unittest.TestCase):
 
     def test_28_script_tail_is_plain_production_form(self):
         tail = INDEX_HTML[INDEX_HTML.rfind("<script"):]
-        self.assertIn('src="/static/app.js?v=7.1.14"', tail)
+        self.assertIn('src="/static/app.js?v=7.1.14.2"', tail)
         self.assertNotIn("(function ()", tail)
 
     def test_29_production_boot_and_diagnostics_endpoint_still_wired(self):

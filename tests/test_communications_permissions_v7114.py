@@ -95,12 +95,19 @@ class TestSectionVisibility(unittest.TestCase):
 
     def test_2_other_staff_and_client_do_not(self):
         ctx = _make_ctx(self.storage)
-        for uid in (1003, 1004, 1005, 999999):  # teacher, client_manager, operations, unknown/client
+        for uid in (1003, 1005, 999999):  # teacher, operations, unknown/client
             denied = ctx._require_communications_access(_auth(uid))
             self.assertIsNotNone(denied, f"uid={uid} should be denied")
             self.assertFalse(denied.get("ok"))
         self.assertFalse(ctx._capabilities_for_user(1003)["canUseCommunications"])
-        self.assertFalse(ctx._capabilities_for_user(1004)["canUseCommunications"])
+        self.assertFalse(ctx._capabilities_for_user(1005)["canUseCommunications"])
+
+    def test_2b_client_manager_now_allowed_v71142(self):
+        # v7.1.14.2 — client_manager gets a dedicated "Рассылки" tab
+        # (replacing "Обеды"); owner/admin access is unchanged.
+        ctx = _make_ctx(self.storage)
+        self.assertIsNone(ctx._require_communications_access(_auth(1004)))
+        self.assertTrue(ctx._capabilities_for_user(1004)["canUseCommunications"])
 
     def test_3_frontend_supplied_role_cannot_grant_access(self):
         # There is no code path that reads a role from body/params for this

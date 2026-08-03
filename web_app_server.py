@@ -162,7 +162,7 @@ PAYMENT_MK_POST_ROLES = {"owner", "admin"}  # only senior roles may post to MoyK
 PAYMENT_MK_MANUAL_POST_ROLES = PAYMENT_MK_POST_ROLES | {"client_manager"}  # v7.1.11 — manual "Внести в МойКласс" action only; client_manager still acts only on payments they already see via WORKSPACE_VIEW_ROLES
 PAYMENT_ONBOARDING_STAFF_ROLES = {"owner", "admin", "client_manager"}  # v7.1.11 — staff-only Payments onboarding (client_admin_link_and_enroll); deliberately excludes operations
 CLIENT_ONBOARDING_CAMPAIGN_ROLES = {"owner", "admin", "client_manager"}  # v7.1.12 — mass onboarding campaigns: create/manage + continuation status; same set as PAYMENT_ONBOARDING_STAFF_ROLES, deliberately excludes operations
-CLIENT_COMMUNICATIONS_ROLES = {"owner", "admin"}  # v7.1.14 — staff "Рассылки": deliberately narrower than CLIENT_ONBOARDING_CAMPAIGN_ROLES (excludes client_manager/operations too) — checked against the REAL/base role only, never the test-role-substituted one
+CLIENT_COMMUNICATIONS_ROLES = {"owner", "admin", "client_manager"}  # v7.1.14 owner/admin only; v7.1.14.2 added client_manager (gets a dedicated "Рассылки" tab replacing "Обеды" — see MVP_TABS_BY_ROLE/staff-lunch-tab in app.js). Still excludes operations. Checked against the REAL/base role only, never the test-role-substituted one
 CLIENT_LINK_ADMIN_ROLES = {"owner", "admin", "operations", "client_manager"}  # v7.1.7 — client_manager can manage CL- link codes
 CLIENT_LINK_CODE_TTL_HOURS = _STORAGE_CLIENT_LINK_CODE_TTL_HOURS  # v7.1.7 — single source of truth is storage.py
 CLIENT_LINK_MAX_FAILED_ATTEMPTS = 5      # v7.1.7 — brute-force guard on POST /api/client/children/link
@@ -2357,11 +2357,11 @@ class MiniAppContext:
 
     def _require_communications_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
         if getattr(self, "settings", None) is None:
-            return {"ok": False, "error": "Доступно только владельцу и администратору."}
+            return {"ok": False, "error": "Доступно только владельцу, администратору и клиент-менеджеру."}
         user_id = int(auth["user_id"])
         real_role = self._base_role_for_user(user_id)
         if real_role not in CLIENT_COMMUNICATIONS_ROLES:
-            return {"ok": False, "error": "Доступно только владельцу и администратору."}
+            return {"ok": False, "error": "Доступно только владельцу, администратору и клиент-менеджеру."}
         if not self._communications_section_visible(user_id):
             return {"ok": False, "error": "Раздел «Рассылки» пока не включён."}
         return None
@@ -2551,7 +2551,11 @@ class MiniAppContext:
             client_food_entry_visible = bool(
                 getattr(self.settings, "client_food_entry_visible", True)
             ) and client_kind in ("food_only", "combined")
-            client_cabinet_v7113_enabled = self._client_cabinet_enabled(user_id)
+            # v7.1.14.2 — food-only stays on the old cabinet/logic unconditionally:
+            # excluded here regardless of the rollout flag/pilot list, so opening
+            # the new cabinet for everyone else can never also flip food-only
+            # clients onto it.
+            client_cabinet_v7113_enabled = self._client_cabinet_enabled(user_id) and client_kind != "food_only"
             client_notifications_enabled = self._client_notifications_enabled(user_id)
             if client_notifications_enabled:
                 unread_notification_count = self.storage.count_unread_client_notifications(

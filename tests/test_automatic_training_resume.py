@@ -1160,7 +1160,7 @@ class TestPreviewRemoved(unittest.TestCase):
         self.assertEqual(re.findall(r"<script>", INDEX_HTML), [])
 
     def test_production_script_tail_preserved(self):
-        self.assertIn('<script src="/static/app.js?v=7.1.14"></script>', INDEX_HTML)
+        self.assertIn('<script src="/static/app.js?v=7.1.14.2"></script>', INDEX_HTML)
 
     def test_previous_previews_stay_removed(self):
         self.assertNotIn('"payment-diagnostics"', INDEX_HTML)

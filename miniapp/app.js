@@ -72,6 +72,17 @@ function _applySafeArea() {
 }
 _applySafeArea();
 tg?.onEvent?.("safeAreaChanged", _applySafeArea);
+// v7.1.14.2 — root cause of the "header runs under Telegram/iOS chrome"
+// production regression: requestFullscreen() (above) is asynchronous, and
+// Telegram only reports the real post-transition contentSafeAreaInset once
+// it fires contentSafeAreaChanged/fullscreenChanged — neither of which was
+// ever listened for here, only the unrelated safeAreaChanged (device notch
+// changes). Without these, _applySafeArea's first run could apply a
+// too-small value from before fullscreen finished settling, and nothing
+// ever re-ran it afterward, on any role/screen (this shell/layout function
+// is shared app-wide).
+tg?.onEvent?.("contentSafeAreaChanged", _applySafeArea);
+tg?.onEvent?.("fullscreenChanged", _applySafeArea);
 
 // Prevent iOS/Telegram WebView zoom (pinch, gesture, double-tap)
 ["gesturestart", "gesturechange", "gestureend"].forEach(t =>
@@ -97,7 +108,7 @@ const launchTab = urlParams.get("tab") || "";
 // one specific campaign recipient (from the bot's post-activation button).
 const launchAvailabilityRecipientId = urlParams.get("oc_availability_recipient") || "";
 
-console.log("MiniApp version: v7.1.14.1");
+console.log("MiniApp version: v7.1.14.2");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -257,7 +268,7 @@ const MVP_TABS_BY_ROLE = {
   owner:          ["lessons", "tasks", "reports", "help", "ask", "admin", "payments-workspace", "my-lunch"],
   admin:          ["lessons", "tasks", "reports", "help", "ask", "admin", "payments-workspace", "my-lunch"],
   operations:     ["lessons", "tasks", "reports", "help", "ask", "admin", "payments-workspace", "my-lunch"],
-  client_manager: ["payments-workspace", "reports", "my-lunch"],
+  client_manager: ["payments-workspace", "reports", "comms"],
   director:       ["reports", "my-lunch"],
   parent:         ["my-children", "food", "help"],
 };
@@ -1291,8 +1302,11 @@ function setupRoleUi() {
     // to the exact pre-v7.1.13 4-tab set — those panels/handlers were never
     // removed, only demoted from top-level nav once the cabinet shipped, so
     // this is a real working fallback, not a stub.
-    const cabinetEnabled = !!state.me?.clientCabinetV7113Enabled;
     const clientKind = state.me?.clientKind || "none";
+    // v7.1.14.2 — food-only stays on the old cabinet/logic unconditionally,
+    // even if a future change to the server gate ever regressed the same
+    // exclusion there (see me()/_client_cabinet_enabled in web_app_server.py).
+    const cabinetEnabled = !!state.me?.clientCabinetV7113Enabled && clientKind !== "food_only";
     const parentAllowed = !cabinetEnabled
       ? ["my-children", "food", "client-payments", "help"]
       : clientKind === "food_only"
@@ -1341,8 +1355,12 @@ function setupRoleUi() {
     $("roleBadge").textContent = "Кухня";
   }
 
-  // Staff lunch tab: show for ALL staff (not parent/kitchen/restaurant), runs LAST to override intern/MVP hiding
-  if (role && !["parent", "kitchen", "restaurant"].includes(role)) {
+  // Staff lunch tab: show for ALL staff (not parent/kitchen/restaurant/
+  // client_manager), runs LAST to override intern/MVP hiding.
+  // v7.1.14.2 — client_manager's "Обеды" tab was replaced by a dedicated
+  // "Рассылки" tab (.comms-only, see canUseCommunications above); everyone
+  // else keeps "Обед" exactly as before.
+  if (role && !["parent", "kitchen", "restaurant", "client_manager"].includes(role)) {
     document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.remove("hidden"));
   } else {
     document.querySelectorAll(".staff-lunch-tab").forEach(el => el.classList.add("hidden"));
@@ -1413,8 +1431,19 @@ function activateTab(name) {
   if (name === "more") renderClientMore();
   if (name === "profile") renderClientProfile();
   if (name === "my-lunch") { renderStaffFoodLunch($("myLunchContent")); }
-  if (name === "comms") { _commsSectionActive = true; loadCommsHome(); _commsSetBackButton(_commsExitToAdmin); }
-  else if (_commsSectionActive) { _commsSectionActive = false; _commsSetBackButton(null); }
+  if (name === "comms") {
+    _commsSectionActive = true;
+    loadCommsHome();
+    // v7.1.14.2 — client_manager now also reaches "Рассылки", but as a
+    // top-level peer tab (like "Отчёты"/"Платежи"), not nested inside
+    // Admin — that role has no admin-tab access, so there is nowhere for
+    // an "exit to Admin" BackButton to return to. Only wire it when the
+    // real user can actually reach Admin (owner/admin/operations).
+    _commsSetBackButton(canUseAdmin() ? _commsExitToAdmin : null);
+  } else if (_commsSectionActive) {
+    _commsSectionActive = false;
+    _commsSetBackButton(null);
+  }
   if (name === "kitchen-editor") {
     const root = $("kitchenEditorContent");
     if (root && !state.kitchenEditorData) loadKitchenEditor(root);
@@ -8534,7 +8563,14 @@ function renderOwnerTestNotificationPanel() {
   // is never part of that. canUseTestRoles is based on the REAL role (see
   // _can_use_role_test/_base_role_for_user), so without this extra check
   // it would otherwise keep showing throughout the client-context preview.
-  const show = !!state.me?.capabilities?.canUseTestRoles && !state.me?.ownerTestClientMode;
+  // v7.1.14.2 — real "Рассылки" now covers mass/staff notification sending
+  // in production, so this smoke-test sender is dev/debug-only from here on:
+  // gated on state.me.devMode, which the backend only ever sets true for a
+  // request actually authenticated via the local dev_user_id bypass (see
+  // validate_init_data/web_app_dev_mode) — never true for a real Telegram
+  // user in production, regardless of role. canUseTestRoles (the broader
+  // owner/admin test-role preview feature) is untouched/still on in prod.
+  const show = !!state.me?.devMode && !!state.me?.capabilities?.canUseTestRoles && !state.me?.ownerTestClientMode;
   panel.classList.toggle("hidden", !show);
 }
 
@@ -13107,7 +13143,7 @@ function _commsRenderHome(root) {
   root.innerHTML = `
     <div class="section-head">
       <div><h2>Рассылки</h2><p class="comms-page-subtitle">Отправка настоящих уведомлений в личный кабинет сразу многим клиентам.</p></div>
-      <button type="button" onclick="activateTab('admin')">Назад в Админ</button>
+      ${canUseAdmin() ? `<button type="button" onclick="activateTab('admin')">Назад в Админ</button>` : ""}
     </div>
     <button type="button" class="primary wide" onclick="_commsCreateCampaign()">Создать рассылку</button>
     ${!state.me?.communicationsSendEnabled ? `<div class="notice comms-mode-notice">Отправка отключена безопасным режимом. Черновики, расчёт получателей и предпросмотр работают как обычно.</div>` : ""}

@@ -6215,13 +6215,12 @@ select {
 }
 
 /* v6.6.3 — Mobile safe area + modal header fix ──────────────────────── */
-
-/* ─── 1. Telegram fullscreen safe-area (CSS default; JS overrides --tg-safe-top) */
-:root { --tg-safe-top: env(safe-area-inset-top, 0px); }
-
-.app-shell {
-  padding-top: calc(var(--tg-safe-top) + 20px) !important;
-}
+/* v7.1.14.2 — the top-safe-area rule that used to live here (a standalone
+   .app-shell padding-top using a locally-redefined --tg-safe-top) was one
+   of four stacked generations of this same fix (v6.6.3/v6.6.5/v6.6.6/
+   v7.1.13.2), always beaten by the v7.1.13.2 rule below on specificity —
+   dead code, removed rather than left as cascade risk. See the single
+   surviving --app-top-safe-offset chain further down this file. */
 
 /* ─── 2. lm-header: title-only column (badge moved to lm-badge-row) ─── */
 .lm-header {
@@ -6250,37 +6249,13 @@ select {
   z-index: 130 !important;
 }
 
-/* ══════════════════════════════════════════════════════════════════════
-   v6.6.5 — Telegram fullscreen top safe-area offset
-   ══════════════════════════════════════════════════════════════════════ */
-
-/* ─── Top offset tokens ─────────────────────────────────────────────── */
-:root {
-  --tg-top-safe:    env(safe-area-inset-top, 0px);
-  --tg-top-extra:   0px;
-  --app-top-offset: calc(var(--tg-top-safe) + var(--tg-top-extra) + 16px);
-}
-
-/* When running inside Telegram WebApp: add 64px to clear Telegram chrome.
-   JS zeroes this out if Bot API 8.0+ safeAreaInsets.top is available. */
-body.is-telegram-webapp {
-  --tg-top-extra: 64px;
-}
-
-/* ─── Main shell: unified top offset ───────────────────────────────── */
-.app-shell {
-  padding-top: var(--app-top-offset) !important;
-}
-
-/* ─── Fullscreen lesson modal: card + X button aligned to offset ────── */
-@media (max-width: 720px) {
-  body.is-telegram-webapp .modal-card {
-    padding-top: calc(var(--app-top-offset) + 56px) !important;
-  }
-  body.is-telegram-webapp .modal-close {
-    top: calc(var(--app-top-offset) + 8px) !important;
-  }
-}
+/* v7.1.14.2 — the entire v6.6.5 "--app-top-offset" generation (its own
+   .app-shell padding-top, its own body.is-telegram-webapp .modal-card/
+   .modal-close rules, and the hardcoded 64px Telegram-chrome guess) was
+   removed here: same selectors as the v6.6.6/v7.1.13.2 block immediately
+   below, always beaten there by higher specificity (.app-shell) or later
+   source order (identical-selector .modal-card/.modal-close) — confirmed
+   dead code, not a behavior change. One offset chain now, not four. */
 
 /* ══════════════════════════════════════════════════════════════════════
    v6.6.6 — Robust Telegram top overlay fix

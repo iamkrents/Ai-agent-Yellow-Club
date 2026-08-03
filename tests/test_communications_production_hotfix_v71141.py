@@ -113,8 +113,11 @@ class TestRealOwnerPilotAccess(unittest.TestCase):
         self.assertTrue(ctx._capabilities_for_user(2001)["canUseCommunications"])
 
     def test_3_unauthorized_roles_do_not_see_card(self):
+        # v7.1.14.2 — client_manager (uid 2006) is no longer in this list:
+        # it was deliberately added to CLIENT_COMMUNICATIONS_ROLES (see
+        # test_shell_client_cabinet_comms_hotfix_v71142.TestClientManagerCommsSwap).
         ctx = _make_ctx(self.storage, client_communications_enabled=True, client_communications_pilot_telegram_ids=[])
-        for uid in (2002, 2003, 2004, 2005, 2006, 999999):
+        for uid in (2002, 2003, 2004, 2005, 999999):
             self.assertFalse(
                 ctx._capabilities_for_user(uid)["canUseCommunications"],
                 f"uid={uid} must not see the communications card",
@@ -151,8 +154,12 @@ class TestAdminEntryCardStatic(unittest.TestCase):
         self.assertIn("function _commsExitToAdmin() { activateTab(\"admin\"); }", self.js)
         idx = self.js.find('if (name === "comms")')
         self.assertNotEqual(idx, -1)
-        segment = self.js[idx:idx + 200]
-        self.assertIn("_commsSetBackButton(_commsExitToAdmin)", segment)
+        segment = self.js[idx:idx + 500]
+        # v7.1.14.2 — client_manager also reaches "Рассылки" now, but has no
+        # Admin tab to return to, so the handler is only wired when the real
+        # role can actually reach Admin (canUseAdmin()); owner/admin still
+        # get the exact same _commsExitToAdmin behavior as before.
+        self.assertIn("_commsSetBackButton(canUseAdmin() ? _commsExitToAdmin : null)", segment)
 
     def test_7_old_test_sender_stays_separate(self):
         self.assertIn('id="ownerTestNotificationPanel"', self.html)
@@ -224,9 +231,9 @@ class TestAdminEntryCardStatic(unittest.TestCase):
         self.assertNotRegex(block, r"width:\s*\d+px")
 
     def test_15_version_cache_bust_v71141(self):
-        self.assertIn("styles.css?v=7.1.14.1", self.html)
-        self.assertIn("app.js?v=7.1.14.1", self.html)
-        self.assertIn('console.log("MiniApp version: v7.1.14.1");', self.js)
+        self.assertIn("styles.css?v=7.1.14.2", self.html)
+        self.assertIn("app.js?v=7.1.14.2", self.html)
+        self.assertIn('console.log("MiniApp version: v7.1.14.2");', self.js)
 
 
 if __name__ == "__main__":
