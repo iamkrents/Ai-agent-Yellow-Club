@@ -108,6 +108,17 @@ class Settings:
     client_cabinet_v7113_pilot_telegram_ids: List[int]
     client_notifications_enabled: bool
     client_notifications_pilot_telegram_ids: List[int]
+    # v7.1.14 — staff "Рассылки" (communications center): four independent
+    # kill switches, same allowlist idiom as above. All default OFF.
+    # ENABLED/PILOT_TELEGRAM_IDS gate whether owner/admin even sees the
+    # section; SEND_ENABLED gates whether a send-now/schedule mutation can
+    # ever create a real client notification (drafts/preview/snapshot work
+    # regardless); SCHEDULER_ENABLED gates the background worker that turns
+    # a scheduled campaign into an actual send.
+    client_communications_enabled: bool
+    client_communications_pilot_telegram_ids: List[int]
+    client_communications_send_enabled: bool
+    client_communications_scheduler_enabled: bool
     food_location_yc1: str
     food_location_yc2: str
     food_location_yc3: str
@@ -266,6 +277,10 @@ def load_settings() -> Settings:
         client_cabinet_v7113_pilot_telegram_ids=_split_ints(os.getenv("CLIENT_CABINET_V7113_PILOT_TELEGRAM_IDS", "")),
         client_notifications_enabled=_bool(os.getenv("CLIENT_NOTIFICATIONS_ENABLED", "false"), False),
         client_notifications_pilot_telegram_ids=_split_ints(os.getenv("CLIENT_NOTIFICATIONS_PILOT_TELEGRAM_IDS", "")),
+        client_communications_enabled=_bool(os.getenv("CLIENT_COMMUNICATIONS_ENABLED", "false"), False),
+        client_communications_pilot_telegram_ids=_split_ints(os.getenv("CLIENT_COMMUNICATIONS_PILOT_TELEGRAM_IDS", "")),
+        client_communications_send_enabled=_bool(os.getenv("CLIENT_COMMUNICATIONS_SEND_ENABLED", "false"), False),
+        client_communications_scheduler_enabled=_bool(os.getenv("CLIENT_COMMUNICATIONS_SCHEDULER_ENABLED", "false"), False),
         food_location_yc1=os.getenv("FOOD_LOCATION_YC1", "Кульман 1/1").strip(),
         food_location_yc2=os.getenv("FOOD_LOCATION_YC2", "Мстиславца 6").strip(),
         food_location_yc3=os.getenv("FOOD_LOCATION_YC3", "").strip(),

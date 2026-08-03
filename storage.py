@@ -68,6 +68,12 @@ NOTIFICATION_ACTION_KEYS = ("open_payments", "open_availability", "open_home", "
 # regular/combined client. Regular/combined/none clients see every category.
 NOTIFICATION_CATEGORIES_FOOD_ONLY = ("general", "food")
 
+# v7.1.14 — staff "Рассылки" (communications center).
+STAFF_COMMUNICATION_STATUSES = (
+    "draft", "scheduled", "sending", "sent", "partial", "failed", "cancelled",
+)
+STAFF_COMMUNICATION_DELIVERY_STATUSES = ("pending", "created", "skipped", "failed")
+
 # v7.1.12.1 — academic level. Detection is deliberately conservative: no
 # reliable real-world MoyKlass group-naming convention for level/year was
 # found anywhere in this codebase (searched get_classes/search_classes,
@@ -690,6 +696,7 @@ class Storage:
             self._init_client_link_tables(conn)
             self._init_client_notification_tables(conn)
             self._init_client_onboarding_campaign_tables(conn)
+            self._init_staff_communication_tables(conn)
             self._init_automation_tables(conn)
             self._init_withdrawal_tables(conn)
             self._init_pricing_tables(conn)
@@ -1510,6 +1517,336 @@ class Storage:
                 result_json      TEXT NOT NULL DEFAULT ''
             )
         """)
+
+    # ── v7.1.14 — staff "Рассылки" (communications center) tables ───────────
+    # Two entities, same separation-of-concerns as client_notifications /
+    # client_notification_recipients above: the campaign (composer state +
+    # frozen audience snapshot metadata) and one immutable recipient row per
+    # eligible/excluded parent, materialized once at "freeze snapshot" time.
+    # Actual delivery still goes through create_client_notification /
+    # client_notification_recipients unchanged — this table never
+    # duplicates that read/unread model, only tracks "did OUR send step
+    # reach this recipient yet" for idempotent resume.
+    def _init_staff_communication_tables(self, conn: sqlite3.Connection) -> None:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS staff_communication_campaigns (
+                id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name                        TEXT NOT NULL DEFAULT '',
+                status                      TEXT NOT NULL DEFAULT 'draft',
+                audience_type               TEXT NOT NULL DEFAULT '',
+                audience_config_json        TEXT NOT NULL DEFAULT '{}',
+                audience_snapshot_hash      TEXT,
+                audience_snapshot_created_at TEXT,
+                eligible_count              INTEGER,
+                excluded_count              INTEGER,
+                category                    TEXT NOT NULL DEFAULT 'general',
+                priority                    TEXT NOT NULL DEFAULT 'normal',
+                scope                       TEXT NOT NULL DEFAULT 'family',
+                title                       TEXT NOT NULL DEFAULT '',
+                body                        TEXT NOT NULL DEFAULT '',
+                action_key                  TEXT NOT NULL DEFAULT 'none',
+                schedule_mode               TEXT NOT NULL DEFAULT 'now',
+                scheduled_at_utc            TEXT,
+                timezone                    TEXT NOT NULL DEFAULT 'Europe/Minsk',
+                created_by_telegram_id      TEXT NOT NULL DEFAULT '',
+                updated_by_telegram_id      TEXT NOT NULL DEFAULT '',
+                created_at                  TEXT NOT NULL,
+                updated_at                  TEXT NOT NULL,
+                sent_at                     TEXT,
+                cancelled_at                TEXT,
+                client_notification_id      INTEGER,
+                last_error                  TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_scc_status ON staff_communication_campaigns(status, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_scc_due ON staff_communication_campaigns(status, scheduled_at_utc)")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS staff_communication_recipients (
+                id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id                     INTEGER NOT NULL,
+                parent_telegram_id              TEXT NOT NULL,
+                mk_user_id                      TEXT,
+                recipient_key                   TEXT NOT NULL,
+                eligibility_status              TEXT NOT NULL DEFAULT 'eligible',
+                exclusion_reason                TEXT,
+                delivery_status                 TEXT NOT NULL DEFAULT 'pending',
+                client_notification_recipient_id INTEGER,
+                error_code                      TEXT,
+                created_at                      TEXT NOT NULL,
+                delivered_at                    TEXT,
+                UNIQUE(campaign_id, recipient_key)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_scr_campaign_delivery ON staff_communication_recipients(campaign_id, delivery_status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_scr_campaign_elig ON staff_communication_recipients(campaign_id, eligibility_status)")
+
+    # -- CRUD: campaign lifecycle -------------------------------------------
+
+    def create_staff_communication_draft(self, actor_telegram_id: str) -> dict[str, Any]:
+        now = now_iso()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO staff_communication_campaigns
+                   (name, status, audience_type, audience_config_json, category, priority,
+                    scope, title, body, action_key, schedule_mode, timezone,
+                    created_by_telegram_id, updated_by_telegram_id, created_at, updated_at)
+                   VALUES ('Новая рассылка', 'draft', '', '{}', 'general', 'normal',
+                           'family', '', '', 'none', 'now', 'Europe/Minsk', ?, ?, ?, ?)""",
+                (str(actor_telegram_id), str(actor_telegram_id), now, now),
+            )
+            campaign_id = int(cur.lastrowid)
+        return self.get_staff_communication_campaign(campaign_id)
+
+    def get_staff_communication_campaign(self, campaign_id: int) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM staff_communication_campaigns WHERE id=?", (int(campaign_id),)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_staff_communication_campaigns(
+        self, statuses: Optional[tuple[str, ...]] = None, limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if statuses:
+                placeholders = ",".join("?" for _ in statuses)
+                rows = conn.execute(
+                    f"SELECT * FROM staff_communication_campaigns WHERE status IN ({placeholders}) "
+                    f"ORDER BY updated_at DESC LIMIT ?",
+                    (*statuses, int(limit)),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM staff_communication_campaigns ORDER BY updated_at DESC LIMIT ?",
+                    (int(limit),),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_staff_communication_draft(
+        self, campaign_id: int, actor_telegram_id: str, fields: dict[str, Any],
+        *, invalidate_snapshot: bool = False,
+    ) -> dict[str, Any]:
+        """Only mutates rows currently in status='draft' — a stale/duplicate
+        edit request against an already-scheduled/sent campaign is a no-op
+        (rowcount 0), never silently rewrites a frozen/sent campaign."""
+        allowed = {
+            "name", "audience_type", "audience_config_json", "category", "priority",
+            "scope", "title", "body", "action_key", "schedule_mode",
+            "scheduled_at_utc", "timezone",
+        }
+        clean = {k: v for k, v in fields.items() if k in allowed}
+        now = now_iso()
+        with self._connect() as conn:
+            if clean:
+                assignments = ", ".join(f"{k}=?" for k in clean.keys())
+                params: list[Any] = list(clean.values())
+                if invalidate_snapshot:
+                    assignments += (
+                        ", audience_snapshot_hash=NULL, audience_snapshot_created_at=NULL,"
+                        " eligible_count=NULL, excluded_count=NULL"
+                    )
+                params += [str(actor_telegram_id), now, int(campaign_id)]
+                cur = conn.execute(
+                    f"UPDATE staff_communication_campaigns SET {assignments}, "
+                    f"updated_by_telegram_id=?, updated_at=? WHERE id=? AND status='draft'",
+                    params,
+                )
+            elif invalidate_snapshot:
+                cur = conn.execute(
+                    """UPDATE staff_communication_campaigns SET
+                       audience_snapshot_hash=NULL, audience_snapshot_created_at=NULL,
+                       eligible_count=NULL, excluded_count=NULL,
+                       updated_by_telegram_id=?, updated_at=? WHERE id=? AND status='draft'""",
+                    (str(actor_telegram_id), now, int(campaign_id)),
+                )
+            else:
+                return {"ok": True, "campaign": self.get_staff_communication_campaign(campaign_id)}
+            if cur.rowcount == 0:
+                return {"ok": False, "error": "Черновик не найден или уже не редактируется."}
+            if invalidate_snapshot:
+                conn.execute("DELETE FROM staff_communication_recipients WHERE campaign_id=?", (int(campaign_id),))
+        return {"ok": True, "campaign": self.get_staff_communication_campaign(campaign_id)}
+
+    def delete_staff_communication_draft(self, campaign_id: int) -> dict[str, Any]:
+        """Only status='draft' rows can ever be deleted — sent/scheduled
+        history is never physically removed (spec: use cancel, not delete)."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM staff_communication_campaigns WHERE id=? AND status='draft'",
+                (int(campaign_id),),
+            )
+            if cur.rowcount == 0:
+                return {"ok": False, "error": "Черновик не найден или уже не является черновиком."}
+            conn.execute("DELETE FROM staff_communication_recipients WHERE campaign_id=?", (int(campaign_id),))
+        return {"ok": True}
+
+    # -- Audience snapshot ----------------------------------------------------
+
+    def freeze_staff_communication_snapshot(
+        self, campaign_id: int, *, snapshot_hash: str,
+        eligible: list[dict[str, Any]], excluded: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Replace this campaign's recipient snapshot atomically — only
+        while still draft. eligible/excluded rows are keyed by
+        recipient_key (parent Telegram id); duplicates within the same
+        call are collapsed defensively (the resolver is expected to have
+        already deduped, this is a second safety net, never trusts
+        frontend-supplied recipient lists)."""
+        now = now_iso()
+        seen: set[str] = set()
+        rows: list[tuple[Any, ...]] = []
+        for item in eligible:
+            key = str(item["recipient_key"])
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append((
+                int(campaign_id), str(item["parent_telegram_id"]), item.get("mk_user_id"),
+                key, "eligible", None, "pending", now,
+            ))
+        for item in excluded:
+            key = str(item["recipient_key"])
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append((
+                int(campaign_id), str(item["parent_telegram_id"]), item.get("mk_user_id"),
+                key, "excluded", str(item.get("exclusion_reason") or ""), "skipped", now,
+            ))
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT status FROM staff_communication_campaigns WHERE id=?", (int(campaign_id),)
+            ).fetchone()
+            if not existing or existing["status"] != "draft":
+                return {"ok": False, "error": "Снимок аудитории можно обновлять только для черновика."}
+            conn.execute("DELETE FROM staff_communication_recipients WHERE campaign_id=?", (int(campaign_id),))
+            for r in rows:
+                conn.execute(
+                    """INSERT INTO staff_communication_recipients
+                       (campaign_id, parent_telegram_id, mk_user_id, recipient_key,
+                        eligibility_status, exclusion_reason, delivery_status, created_at)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    r,
+                )
+            conn.execute(
+                """UPDATE staff_communication_campaigns SET
+                   audience_snapshot_hash=?, audience_snapshot_created_at=?,
+                   eligible_count=?, excluded_count=?, updated_at=?
+                   WHERE id=?""",
+                (str(snapshot_hash), now, len(eligible), len(excluded), now, int(campaign_id)),
+            )
+        return {"ok": True, "campaign": self.get_staff_communication_campaign(campaign_id)}
+
+    def list_staff_communication_recipients(
+        self, campaign_id: int, *, eligibility_status: Optional[str] = None,
+        delivery_status: Optional[str] = None, limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM staff_communication_recipients WHERE campaign_id=?"
+        params: list[Any] = [int(campaign_id)]
+        if eligibility_status:
+            query += " AND eligibility_status=?"
+            params.append(eligibility_status)
+        if delivery_status:
+            query += " AND delivery_status=?"
+            params.append(delivery_status)
+        query += " ORDER BY id ASC LIMIT ?"
+        params.append(int(limit))
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_staff_communication_recipients_by_delivery(self, campaign_id: int) -> dict[str, int]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT delivery_status, COUNT(*) AS c FROM staff_communication_recipients "
+                "WHERE campaign_id=? GROUP BY delivery_status",
+                (int(campaign_id),),
+            ).fetchall()
+        return {str(r["delivery_status"]): int(r["c"]) for r in rows}
+
+    # -- Send / schedule -------------------------------------------------------
+
+    def claim_staff_communication_campaign(
+        self, campaign_id: int, from_statuses: tuple[str, ...], to_status: str, now: str,
+    ) -> bool:
+        """Atomic status transition — the WHERE clause IS the claim. Only
+        one concurrent caller can ever succeed for a given campaign_id."""
+        placeholders = ",".join("?" for _ in from_statuses)
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"UPDATE staff_communication_campaigns SET status=?, updated_at=? "
+                f"WHERE id=? AND status IN ({placeholders})",
+                (to_status, now, int(campaign_id), *from_statuses),
+            )
+            return cur.rowcount > 0
+
+    def set_staff_communication_client_notification_id(self, campaign_id: int, notification_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE staff_communication_campaigns SET client_notification_id=?, updated_at=? WHERE id=?",
+                (int(notification_id), now_iso(), int(campaign_id)),
+            )
+
+    def mark_staff_communication_recipient_delivery(
+        self, recipient_id: int, delivery_status: str,
+        *, client_notification_recipient_id: Optional[int] = None, error_code: Optional[str] = None,
+    ) -> None:
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE staff_communication_recipients SET
+                   delivery_status=?, client_notification_recipient_id=?, error_code=?, delivered_at=?
+                   WHERE id=?""",
+                (delivery_status, client_notification_recipient_id, error_code, now, int(recipient_id)),
+            )
+
+    def finalize_staff_communication_campaign(
+        self, campaign_id: int, status: str, *, last_error: Optional[str] = None,
+    ) -> None:
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE staff_communication_campaigns SET
+                   status=?, sent_at=?, last_error=?, updated_at=? WHERE id=?""",
+                (status, now, str(last_error)[:500] if last_error else None, now, int(campaign_id)),
+            )
+
+    def cancel_staff_communication_schedule(self, campaign_id: int, actor_telegram_id: str) -> dict[str, Any]:
+        now = now_iso()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """UPDATE staff_communication_campaigns SET
+                   status='cancelled', cancelled_at=?, updated_by_telegram_id=?, updated_at=?
+                   WHERE id=? AND status='scheduled'""",
+                (now, str(actor_telegram_id), now, int(campaign_id)),
+            )
+            if cur.rowcount == 0:
+                return {"ok": False, "error": "Отменить можно только запланированную рассылку."}
+        return {"ok": True, "campaign": self.get_staff_communication_campaign(campaign_id)}
+
+    def list_due_staff_communication_campaigns(self, now: str, limit: int = 20) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM staff_communication_campaigns
+                   WHERE status='scheduled' AND scheduled_at_utc IS NOT NULL AND scheduled_at_utc<=?
+                   ORDER BY scheduled_at_utc ASC LIMIT ?""",
+                (now, int(limit)),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_stuck_sending_staff_communication_campaigns(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Campaigns left in 'sending' by a crashed/interrupted worker — the
+        resume path re-runs the exact same idempotent send step, which only
+        touches recipients still 'pending'; never re-creates already-created
+        ones (unique constraint + delivery_status guard)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM staff_communication_campaigns WHERE status='sending' "
+                "ORDER BY updated_at ASC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     # ── v7.0.94.0 — Invoice Automation tables ────────────────────────────────
 
@@ -7296,6 +7633,44 @@ class Storage:
             ).fetchall()
         return [str(r["parent_telegram_user_id"]) for r in rows if r["parent_telegram_user_id"]]
 
+    # ── v7.1.14 — batch reads for staff communications audience resolution ───
+    # Both are O(1) queries regardless of audience size (hundreds/thousands
+    # of parents) — never one query per parent/child, and never a MoyKlass
+    # call. Used by web_app_server's audience resolvers, never by anything
+    # client-facing.
+    def list_active_client_parent_child_links(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT parent_telegram_user_id, mk_user_id FROM client_parent_child_links "
+                "WHERE status='active'",
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_availability_filled_flags_for_mk_users(self, mk_user_ids: list[str]) -> dict[str, bool]:
+        """{mk_user_id: True/False} — True iff that student's MOST RECENT
+        client_onboarding_recipients row (any campaign, including the
+        standalone one) has availability_updated_at set. Single IN() query,
+        never one query per student."""
+        ids = sorted({str(x) for x in mk_user_ids if str(x or "").strip()})
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""SELECT mk_user_id, availability_updated_at, updated_at
+                    FROM client_onboarding_recipients WHERE mk_user_id IN ({placeholders})
+                    ORDER BY updated_at ASC""",
+                ids,
+            ).fetchall()
+        # Later rows (higher updated_at, thanks to ORDER BY ASC) overwrite
+        # earlier ones per mk_user_id, so the dict ends up holding only the
+        # most-recent row's flag per student — same "latest wins" rule as
+        # get_availability_status_for_mk_user's ORDER BY updated_at DESC LIMIT 1.
+        result: dict[str, bool] = {}
+        for r in rows:
+            result[str(r["mk_user_id"])] = bool(r["availability_updated_at"])
+        return result
+
     # ── v7.1.13 — client notification center ───────────────────────────────
     # recipient_telegram_ids passed into create_client_notification() is
     # ALREADY resolved by the caller (web_app_server) against
@@ -7345,6 +7720,61 @@ class Storage:
                     (notification_id, rid, now),
                 )
         return {"ok": True, "id": notification_id, "recipient_count": len(recipients)}
+
+    # ── v7.1.14 — staff communications send step ─────────────────────────────
+    # Purely additive companions to create_client_notification above (never
+    # modified) so the mass-send path can create the message row once and
+    # fan recipients out one at a time (idempotent resume after a crash),
+    # instead of requiring the full recipient list up front in one call.
+    def create_client_notification_message(
+        self,
+        *,
+        title: str,
+        body: str,
+        category: str,
+        priority: str,
+        scope: str,
+        mk_user_id: Optional[str],
+        action_key: str,
+        created_by_telegram_id: str,
+        expires_at: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> int:
+        now = now_iso()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO client_notifications
+                   (title, body, category, priority, scope, mk_user_id, action_key,
+                    created_by_telegram_id, created_at, expires_at, metadata_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(title), str(body), str(category), str(priority), str(scope),
+                    str(mk_user_id) if mk_user_id else None, str(action_key),
+                    str(created_by_telegram_id), now, expires_at,
+                    json.dumps(metadata) if metadata is not None else None,
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def add_client_notification_recipient(self, notification_id: int, recipient_telegram_id: str) -> int:
+        """INSERT OR IGNORE + read-back — idempotent: calling this again for
+        the same (notification_id, recipient) after a crash never creates a
+        duplicate row (UNIQUE(notification_id, recipient_telegram_id)),
+        and always returns the one true row id either way."""
+        recipient_telegram_id = str(recipient_telegram_id or "").strip()
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO client_notification_recipients
+                   (notification_id, recipient_telegram_id, read_at, in_app_status, created_at)
+                   VALUES (?, ?, NULL, 'active', ?)""",
+                (int(notification_id), recipient_telegram_id, now),
+            )
+            row = conn.execute(
+                "SELECT id FROM client_notification_recipients WHERE notification_id=? AND recipient_telegram_id=?",
+                (int(notification_id), recipient_telegram_id),
+            ).fetchone()
+        return int(row["id"])
 
     @staticmethod
     def _notification_visibility_sql() -> str:

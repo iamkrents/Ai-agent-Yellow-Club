@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.1.13.3" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.1.14" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -227,6 +227,9 @@
       </button>
       <button class="tab payments-workspace-only hidden" data-tab="payments-workspace" type="button">
         <span class="tab-icon">💼</span><span class="tab-label">Платежи</span>
+      </button>
+      <button class="tab comms-only hidden" data-tab="comms" type="button">
+        <span class="tab-icon">📣</span><span class="tab-label">Рассылки</span>
       </button>
       <button class="tab admin-only hidden" data-tab="admin" type="button">
         <span class="tab-icon">🛠</span><span class="tab-label">Админ</span>
@@ -1122,6 +1125,10 @@
         <div id="paymentsWorkspaceRoot"></div>
       </section>
 
+      <section id="tab-comms" class="tab-panel comms-only hidden">
+        <div id="commsRoot"></div>
+      </section>
+
       <!-- v7.1.13 — same content/logic, just wrapped in the cabinet's shared
            header/nav shell (cabinet-panel) per approved design §4. No
            change to payment business logic, statuses, or endpoints. -->
@@ -1326,6 +1333,22 @@
           <button class="secondary" id="pilotRemoveModalBack" type="button">Отмена</button>
           <button class="danger" id="pilotRemoveModalConfirm" type="button">Удалить из пилота</button>
         </div>
+      </div>
+    </div>
+
+    <!-- v7.1.14 — staff "Рассылки" mass-send/schedule confirmation sheet.
+         Full-height, forced-light (like #wsFiltersModal), replaces the old
+         window.confirm()/confirm() this feature used before. Body/footer
+         are filled entirely by JS (_commsRenderConfirmSheet in app.js)
+         since content depends on the current confirm state. -->
+    <div id="commsConfirmModal" class="pi-modal hidden">
+      <div class="pi-modal-sheet comms-confirm-sheet">
+        <div class="pi-modal-head">
+          <h3>Подтвердите рассылку</h3>
+          <button class="pi-modal-close" type="button" onclick="_commsConfirmClose()">✕</button>
+        </div>
+        <div class="pi-modal-body" id="commsConfirmBody"></div>
+        <div class="pi-modal-footer comms-confirm-footer" id="commsConfirmFooter"></div>
       </div>
     </div>
 
@@ -1554,6 +1577,6 @@
 
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.1.13.3"></script>
+  <script src="/static/app.js?v=7.1.14"></script>
 </body>
 </html>

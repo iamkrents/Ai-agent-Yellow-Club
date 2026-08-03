@@ -97,7 +97,7 @@ const launchTab = urlParams.get("tab") || "";
 // one specific campaign recipient (from the bot's post-activation button).
 const launchAvailabilityRecipientId = urlParams.get("oc_availability_recipient") || "";
 
-console.log("MiniApp version: v7.1.13.3");
+console.log("MiniApp version: v7.1.14");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -1238,6 +1238,7 @@ function setupRoleUi() {
 
   document.querySelectorAll(".admin-only").forEach(el => el.classList.toggle("hidden", !canUseAdmin()));
   document.querySelectorAll(".payments-workspace-only").forEach(el => el.classList.toggle("hidden", !roleCaps().canUsePaymentsWorkspace));
+  document.querySelectorAll(".comms-only").forEach(el => el.classList.toggle("hidden", !roleCaps().canUseCommunications));
   document.querySelectorAll(".role-lessons").forEach(el => el.classList.toggle("hidden", !canUseLessons()));
   document.querySelectorAll(".role-schedule").forEach(el => el.classList.toggle("hidden", !canUseSchedule()));
   document.querySelectorAll(".role-open-slots").forEach(el => el.classList.toggle("hidden", !canUseOpenSlots()));
@@ -1412,6 +1413,7 @@ function activateTab(name) {
   if (name === "more") renderClientMore();
   if (name === "profile") renderClientProfile();
   if (name === "my-lunch") { renderStaffFoodLunch($("myLunchContent")); }
+  if (name === "comms") loadCommsHome();
   if (name === "kitchen-editor") {
     const root = $("kitchenEditorContent");
     if (root && !state.kitchenEditorData) loadKitchenEditor(root);
@@ -12954,6 +12956,780 @@ function setupKeyboardDismiss() {
     if (e.target.closest(INTERACTIVE)) return;
     active.blur();
   }, { passive: true });
+}
+
+// ── v7.1.14 — staff "Рассылки" (communications center) ─────────────────────
+// Deliberately a SEPARATE tool from the existing owner-only single-client
+// test sender (#ownerTestNotificationPanel) above — this sends real
+// notifications to many recipients at once, gated by its own rollout flags
+// (state.me.communicationsEnabled/communicationsSendEnabled/
+// communicationsSchedulerEnabled), never mixed into that panel's markup or
+// its onclick handlers.
+
+const COMMS_CATEGORY_LABELS = { general: "Общее", payments: "Оплаты", schedule: "Расписание", food: "Питание" };
+const COMMS_PRIORITY_LABELS = { normal: "Обычное", important: "Важное" };
+const COMMS_ACTION_LABELS = { none: "Без кнопки", open_payments: "Открыть оплаты", open_availability: "Открыть возможности для расписания", open_home: "Открыть главную" };
+const COMMS_SCOPE_LABELS = { family: "Всей семье", child: "Конкретному ребёнку" };
+const COMMS_STATUS_PILL = {
+  draft: { label: "Черновик", cls: "" },
+  scheduled: { label: "Запланировано", cls: "warn" },
+  sending: { label: "Отправляется…", cls: "warn" },
+  sent: { label: "Отправлено", cls: "ok" },
+  partial: { label: "Отправлено с ошибками", cls: "warn" },
+  failed: { label: "Не удалось отправить", cls: "bad" },
+  cancelled: { label: "Отменено", cls: "bad" },
+};
+const COMMS_AUDIENCE_OPTIONS = [
+  { id: "single_client", title: "Один клиент", description: "Выберите конкретного родителя по Telegram ID или ID ученика в МойКласс — уведомление получит только он." },
+  { id: "all_parents", title: "Все родители с активным кабинетом", description: "Уведомление получат родители, которые уже подключили кабинет Yellow Club. Один родитель получит одно уведомление, даже если к нему привязано несколько детей." },
+  { id: "connection_campaign", title: "Кампания подключения", description: "Родители из выбранной кампании подключения, которые уже подключили кабинет." },
+  { id: "availability_filled", title: "Заполнили возможности для расписания", description: "Родители, у которых хотя бы один ребёнок уже указал удобное время." },
+  { id: "availability_missing", title: "Не заполнили возможности для расписания", description: "Родители, у которых ни один ребёнок ещё не указал удобное время." },
+  { id: "branch", title: "Филиал", description: "Пока недоступно.", disabled: true },
+  { id: "payment_status", title: "Статус оплаты", description: "Пока недоступно.", disabled: true },
+];
+const COMMS_STEP_LABELS = ["Получатели", "Канал", "Содержание", "Проверка", "Отправка"];
+
+function _commsPluralRu(n, one, few, many) {
+  const mod10 = n % 10, mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+function _commsRecipientsWord(n) { return _commsPluralRu(n, "получатель", "получателя", "получателей"); }
+function _commsFmtDateTime(iso) {
+  if (!iso) return "";
+  const s = String(iso).replace("Z", "").slice(0, 16).split("T");
+  if (s.length !== 2) return String(iso);
+  const [d, t] = s;
+  const [y, m, day] = d.split("-");
+  return `${day}.${m}.${y} ${t}`;
+}
+
+const _comms = {
+  screen: "home", // home | wizard | result
+  step: 1,
+  campaign: null,
+  preview: null,
+  previewState: "idle", // idle | calculating | calculated | zero | error | disabled | stale
+  home: null,
+  connectionCampaigns: null,
+  lookupResults: [],
+  saveStatus: "idle",
+  scheduleDraft: { date: "", time: "09:00" }, // local-only until schedule() is actually called — never autosaved as a draft field
+  confirm: {
+    open: false,
+    mode: null, // "send" | "schedule"
+    state: "idle", // idle | submitting | success | partial | failed | stale | mismatch | send_disabled | scheduler_disabled
+    error: null,
+    outcome: null, // { createdCount, skippedCount, failedCount } from a completed send
+  },
+};
+
+function _commsResetWizardLocalState() {
+  _comms.preview = null;
+  _comms.previewState = "idle";
+  _comms.scheduleDraft = { date: "", time: "09:00" };
+  _comms.confirm = { open: false, mode: null, state: "idle", error: null, outcome: null };
+}
+
+async function loadCommsHome() {
+  if (!state.me?.communicationsEnabled) { renderCommsDisabled(); return; }
+  _comms.screen = "home";
+  try {
+    const data = await apiGet("/api/staff/communications/campaigns");
+    const all = data.campaigns || [];
+    _comms.home = {
+      draft: all.filter(c => c.status === "draft"),
+      scheduled: all.filter(c => c.status === "scheduled"),
+      sent: all.filter(c => ["sent", "partial", "failed", "cancelled"].includes(c.status)),
+    };
+  } catch (e) {
+    _comms.home = { draft: [], scheduled: [], sent: [], loadError: humanizeError(e) };
+  }
+  _commsRender();
+}
+
+function renderCommsDisabled() {
+  const root = $("commsRoot");
+  if (!root) return;
+  root.innerHTML = `
+    <div class="section-head"><div><h2>Рассылки</h2></div></div>
+    <div class="notice comms-disabled-notice">Раздел «Рассылки» пока не включён для вашей учётной записи.</div>`;
+}
+
+function _commsRender() {
+  const root = $("commsRoot");
+  if (!root) return;
+  if (!state.me?.communicationsEnabled) { renderCommsDisabled(); return; }
+  if (_comms.screen === "home") return _commsRenderHome(root);
+  if (_comms.screen === "wizard") return _commsRenderWizard(root);
+  if (_comms.screen === "result") return _commsRenderResult(root);
+}
+
+function _commsCampaignRowActions(c) {
+  if (c.status === "draft") {
+    return `
+      <button type="button" class="comms-campaign-action" onclick="_commsOpenWizard(${c.id},1)">Продолжить редактирование</button>
+      <button type="button" class="danger comms-campaign-action" onclick="_commsDeleteDraft(${c.id})">Удалить черновик</button>`;
+  }
+  if (c.status === "scheduled") {
+    return `
+      <button type="button" class="comms-campaign-action" onclick="_commsOpenWizard(${c.id},4)">Открыть</button>
+      <button type="button" class="danger comms-campaign-action" onclick="_commsCancelSchedule(${c.id})">Отменить отправку</button>`;
+  }
+  return `<button type="button" class="comms-campaign-action" onclick="_commsOpenResult(${c.id})">Открыть результат</button>`;
+}
+
+function _commsCampaignRow(c) {
+  const pill = COMMS_STATUS_PILL[c.status] || { label: c.status, cls: "" };
+  const count = c.eligibleCount != null ? `${c.eligibleCount} ${_commsRecipientsWord(c.eligibleCount)}` : "— получателей";
+  const when = c.status === "scheduled" && c.scheduledLabel
+    ? `Отправится ${escapeHtml(c.scheduledLabel)}`
+    : c.sentAt ? `Отправлено ${escapeHtml(_commsFmtDateTime(c.sentAt))}` : `Изменено ${escapeHtml(_commsFmtDateTime(c.updatedAt))}`;
+  return `
+    <div class="card comms-campaign-card">
+      <div class="section-head comms-campaign-card-head">
+        <div class="comms-campaign-title-wrap"><strong>${escapeHtml(c.title || c.name || "Без названия")}</strong></div>
+        <span class="pill ${pill.cls}">${escapeHtml(pill.label)}</span>
+      </div>
+      <div class="comms-campaign-meta">${escapeHtml(count)} · В приложении · ${when}</div>
+      <div class="comms-campaign-actions">${_commsCampaignRowActions(c)}</div>
+    </div>`;
+}
+
+function _commsRenderHome(root) {
+  const home = _comms.home || { draft: [], scheduled: [], sent: [] };
+  const section = (title, items, emptyText) => `
+    <div class="section-head comms-section-head"><div><h2 class="comms-section-title">${escapeHtml(title)}</h2></div></div>
+    ${items.length ? items.map(_commsCampaignRow).join("") : `<div class="notice">${escapeHtml(emptyText)}</div>`}`;
+  root.innerHTML = `
+    <div class="section-head">
+      <div><h2>Рассылки</h2><p class="comms-page-subtitle">Отправка настоящих уведомлений в личный кабинет сразу многим клиентам.</p></div>
+    </div>
+    <button type="button" class="primary wide" onclick="_commsCreateCampaign()">Создать рассылку</button>
+    ${!state.me?.communicationsSendEnabled ? `<div class="notice comms-mode-notice">Отправка отключена безопасным режимом. Черновики, расчёт получателей и предпросмотр работают как обычно.</div>` : ""}
+    ${section("Черновики", home.draft, "Черновиков нет.")}
+    ${section("Запланированные", home.scheduled, "Запланированных рассылок нет.")}
+    ${section("Отправленные", home.sent, "Пока ничего не отправлено.")}
+  `;
+}
+
+async function _commsCreateCampaign() {
+  try {
+    const data = await apiPost("/api/staff/communications/campaigns", {});
+    _comms.campaign = data.campaign;
+    _comms.screen = "wizard";
+    _comms.step = 1;
+    _commsResetWizardLocalState();
+    _commsRender();
+  } catch (e) { alert(humanizeError(e)); }
+}
+
+async function _commsOpenWizard(id, step) {
+  try {
+    const data = await apiGet(`/api/staff/communications/campaigns/${id}`);
+    _comms.campaign = data.campaign;
+    _comms.screen = "wizard";
+    _comms.step = step || 1;
+    _commsResetWizardLocalState();
+    _commsRender();
+  } catch (e) { alert(humanizeError(e)); }
+}
+
+async function _commsOpenResult(id) {
+  try {
+    const data = await apiGet(`/api/staff/communications/campaigns/${id}`);
+    _comms.campaign = data.campaign;
+    _comms.screen = "result";
+    _commsRender();
+  } catch (e) { alert(humanizeError(e)); }
+}
+
+async function _commsDeleteDraft(id) {
+  if (!confirm("Удалить черновик? Это действие нельзя отменить.")) return;
+  try { await apiPost(`/api/staff/communications/campaigns/${id}/delete`, {}); loadCommsHome(); }
+  catch (e) { alert(humanizeError(e)); }
+}
+
+async function _commsCancelSchedule(id) {
+  if (!confirm("Отменить запланированную отправку?")) return;
+  try { await apiPost(`/api/staff/communications/campaigns/${id}/cancel`, {}); loadCommsHome(); }
+  catch (e) { alert(humanizeError(e)); }
+}
+
+function _commsBackToHome() { loadCommsHome(); }
+
+async function _commsSaveField(fields) {
+  _comms.saveStatus = "saving";
+  _commsRenderSaveStatus();
+  try {
+    const data = await apiPost(`/api/staff/communications/campaigns/${_comms.campaign.id}`, fields);
+    _comms.campaign = data.campaign;
+    _comms.saveStatus = "saved";
+  } catch (e) {
+    _comms.saveStatus = "error";
+  }
+  _commsRenderSaveStatus();
+}
+
+function _commsRenderSaveStatus() {
+  const el = document.getElementById("commsSaveStatus");
+  if (!el) return;
+  const map = { saving: "Черновик сохраняется…", saved: "Черновик сохранён", error: "Не удалось сохранить" };
+  el.textContent = map[_comms.saveStatus] || "";
+}
+
+function _commsStepper() {
+  const idx = Math.min(_comms.step, 5);
+  return `
+    <div class="comms-stepper-track">
+      ${[1, 2, 3, 4, 5].map(n => `<div class="comms-stepper-seg ${n <= idx ? "is-filled" : ""}"></div>`).join("")}
+    </div>
+    <div class="comms-stepper-label">Шаг ${idx} из 5 · ${escapeHtml(COMMS_STEP_LABELS[idx - 1])}</div>`;
+}
+
+function _commsWizardHeader(title) {
+  return `
+    <div class="section-head">
+      <div><h2 class="comms-wizard-title">${escapeHtml(title)}</h2></div>
+      <button type="button" onclick="_commsBackToHome()">Готово</button>
+    </div>
+    <div id="commsSaveStatus" class="comms-save-status"></div>
+    ${_commsStepper()}`;
+}
+
+function _commsRenderWizard(root) {
+  const c = _comms.campaign;
+  if (!c) return _commsRenderHome(root);
+  if (_comms.step === 1) return _commsRenderStep1(root, c);
+  if (_comms.step === 2) return _commsRenderStep2(root, c);
+  if (_comms.step === 3) return _commsRenderStep3(root, c);
+  return _commsRenderStep4(root, c);
+}
+
+// ── Step 1 — Получатели ──────────────────────────────────────────────────
+function _commsRenderStep1(root, c) {
+  const cfg = c.audienceConfig || {};
+  root.innerHTML = `
+    ${_commsWizardHeader("Кому отправляем")}
+    <div id="commsAudienceOptions" class="comms-audience-list">${COMMS_AUDIENCE_OPTIONS.map(o => `
+      <label class="card comms-audience-option ${o.disabled ? "is-disabled" : ""}">
+        <input type="radio" name="commsAudience" value="${o.id}" ${c.audienceType === o.id ? "checked" : ""} ${o.disabled ? "disabled" : ""} onchange="_commsSelectAudience('${o.id}')" class="comms-audience-option-radio">
+        <span><strong class="comms-audience-option-title">${escapeHtml(o.title)}</strong><span class="comms-audience-option-desc">${escapeHtml(o.description)}</span></span>
+      </label>`).join("")}
+    </div>
+    <div id="commsAudienceDetail">${_commsAudienceDetailHtml(c)}</div>
+    <div id="commsRecipientBanner">${_commsRecipientBannerHtml()}</div>
+    <button type="button" class="primary wide comms-step-cta" onclick="_commsGoStep(2)">Далее: канал</button>
+  `;
+  if ((c.audienceType === "all_parents" || c.audienceType === "availability_filled" || c.audienceType === "availability_missing" || (c.audienceType === "connection_campaign" && cfg.campaign_id)) && !_comms.preview) {
+    _commsRunPreview();
+  }
+  if (c.audienceType === "connection_campaign" && !_comms.connectionCampaigns) _commsLoadConnectionCampaigns();
+}
+
+function _commsAudienceDetailHtml(c) {
+  if (c.audienceType === "single_client") {
+    return `
+      <div class="card comms-audience-detail-card">
+        <label>Telegram ID родителя или ID ученика в МойКласс
+          <input type="text" id="commsClientQuery" placeholder="Например, 123456789" class="comms-field-wide">
+        </label>
+        <button type="button" class="comms-lookup-btn" onclick="_commsLookupClient()">Найти</button>
+        <div id="commsLookupResults" class="comms-lookup-results">${_commsLookupResultsHtml()}</div>
+      </div>`;
+  }
+  if (c.audienceType === "connection_campaign") {
+    const opts = (_comms.connectionCampaigns || []);
+    return `
+      <div class="card comms-audience-detail-card">
+        <label>Кампания подключения
+          <select id="commsCampaignSelect" onchange="_commsSelectConnectionCampaign(this.value)" class="comms-field-wide">
+            <option value="">— выберите —</option>
+            ${opts.map(o => `<option value="${o.id}" ${(c.audienceConfig || {}).campaign_id === o.id ? "selected" : ""}>${escapeHtml(o.name)}</option>`).join("")}
+          </select>
+        </label>
+      </div>`;
+  }
+  return "";
+}
+
+function _commsLookupResultsHtml() {
+  if (!_comms.lookupResults.length) return "";
+  return _comms.lookupResults.map(cand => `
+    <div class="card comms-lookup-card" onclick="_commsSelectClient('${escapeHtml(cand.parent_telegram_id)}')">
+      <strong>Telegram ID ${escapeHtml(cand.parent_telegram_id)}</strong>
+      <div class="comms-lookup-card-sub">${cand.children.map(ch => escapeHtml(ch.display_name)).join(", ") || "Нет привязанных детей"}</div>
+    </div>`).join("");
+}
+
+async function _commsLookupClient() {
+  const q = document.getElementById("commsClientQuery")?.value?.trim();
+  if (!q) return;
+  try {
+    const data = await apiPost("/api/staff/communications/client-lookup", { query: q });
+    _comms.lookupResults = data.candidates || [];
+  } catch (e) {
+    _comms.lookupResults = [];
+    alert(humanizeError(e));
+  }
+  const el = document.getElementById("commsLookupResults");
+  if (el) el.innerHTML = _commsLookupResultsHtml();
+}
+
+async function _commsSelectClient(parentTelegramId) {
+  await _commsSaveField({ audienceType: "single_client", audienceConfig: { parent_telegram_id: parentTelegramId } });
+  _comms.preview = null;
+  _commsRunPreview();
+}
+
+async function _commsLoadConnectionCampaigns() {
+  try {
+    const data = await apiGet("/api/staff/communications/connection-campaigns");
+    _comms.connectionCampaigns = data.campaigns || [];
+  } catch (e) { _comms.connectionCampaigns = []; }
+  const el = document.getElementById("commsAudienceDetail");
+  if (el) el.innerHTML = _commsAudienceDetailHtml(_comms.campaign);
+}
+
+async function _commsSelectConnectionCampaign(campaignId) {
+  await _commsSaveField({ audienceType: "connection_campaign", audienceConfig: { campaign_id: Number(campaignId) } });
+  _comms.preview = null;
+  _commsRunPreview();
+}
+
+async function _commsSelectAudience(audienceType) {
+  await _commsSaveField({ audienceType, audienceConfig: {} });
+  _comms.preview = null;
+  const detail = document.getElementById("commsAudienceDetail");
+  if (detail) detail.innerHTML = _commsAudienceDetailHtml(_comms.campaign);
+  const banner = document.getElementById("commsRecipientBanner");
+  if (banner) banner.innerHTML = _commsRecipientBannerHtml();
+  if (["all_parents", "availability_filled", "availability_missing"].includes(audienceType)) _commsRunPreview();
+}
+
+async function _commsRunPreview() {
+  _comms.previewState = "calculating";
+  const banner = document.getElementById("commsRecipientBanner");
+  if (banner) banner.innerHTML = _commsRecipientBannerHtml();
+  try {
+    const data = await apiPost(`/api/staff/communications/campaigns/${_comms.campaign.id}/preview`, {
+      audienceType: _comms.campaign.audienceType, audienceConfig: _comms.campaign.audienceConfig, scope: _comms.campaign.scope,
+    });
+    _comms.preview = data;
+    _comms.previewState = data.state;
+  } catch (e) {
+    _comms.preview = { error: humanizeError(e) };
+    _comms.previewState = "error";
+  }
+  const el = document.getElementById("commsRecipientBanner");
+  if (el) el.innerHTML = _commsRecipientBannerHtml();
+}
+
+function _commsRecipientBannerHtml() {
+  const st = _comms.previewState;
+  if (st === "idle") return "";
+  if (st === "calculating") return `<div class="notice">Считаем получателей…</div>`;
+  if (st === "error" || st === "disabled") return `<div class="notice">${escapeHtml(_comms.preview?.error || "Не удалось рассчитать получателей.")}</div>`;
+  const p = _comms.preview || {};
+  const n = p.eligibleCount || 0;
+  return `
+    <div class="card comms-recipient-banner">
+      <div class="comms-recipient-count-label">Получателей</div>
+      <div class="comms-recipient-count-value">${n}</div>
+      <div class="comms-recipient-count-note">Количество рассчитано системой</div>
+      ${p.excludedCount ? `<div class="comms-recipient-excluded">Исключено: ${p.excludedCount} (${(p.exclusionReasons || []).map(r => `${escapeHtml(r.reason)} — ${r.count}`).join("; ")})</div>` : ""}
+    </div>`;
+}
+
+function _commsGoStep(step) { _comms.step = step; _commsRender(); }
+
+// ── Step 2 — Канал ────────────────────────────────────────────────────────
+function _commsRenderStep2(root) {
+  root.innerHTML = `
+    ${_commsWizardHeader("Канал")}
+    <div class="card comms-channel-card">
+      <strong>Уведомление в личном кабинете</strong>
+      <p class="comms-channel-desc">В этой версии рассылки доставляются только в личный кабинет клиента. Массовая отправка сообщений в Telegram будет добавлена позже.</p>
+    </div>
+    <div class="comms-step-actions">
+      <button type="button" onclick="_commsGoStep(1)">Назад</button>
+      <button type="button" class="primary wide" onclick="_commsGoStep(3)">Далее: содержание</button>
+    </div>`;
+}
+
+// ── Step 3 — Содержание + Когда отправить ─────────────────────────────────
+function _commsRenderStep3(root, c) {
+  const singleClient = c.audienceType === "single_client";
+  root.innerHTML = `
+    ${_commsWizardHeader("Содержание уведомления")}
+    <div class="card comms-content-card">
+      <label>Категория
+        <select id="commsCategory" onchange="_commsSaveField({category:this.value})" class="comms-field-wide">
+          ${Object.entries(COMMS_CATEGORY_LABELS).map(([v, l]) => `<option value="${v}" ${c.category === v ? "selected" : ""}>${escapeHtml(l)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="comms-field">Важность
+        <select id="commsPriority" onchange="_commsSaveField({priority:this.value})" class="comms-field-wide">
+          ${Object.entries(COMMS_PRIORITY_LABELS).map(([v, l]) => `<option value="${v}" ${c.priority === v ? "selected" : ""}>${escapeHtml(l)}</option>`).join("")}
+        </select>
+      </label>
+      ${singleClient ? `
+      <label class="comms-field">Кому
+        <select id="commsScope" onchange="_commsSaveField({scope:this.value})" class="comms-field-wide">
+          ${Object.entries(COMMS_SCOPE_LABELS).map(([v, l]) => `<option value="${v}" ${c.scope === v ? "selected" : ""}>${escapeHtml(l)}</option>`).join("")}
+        </select>
+      </label>` : ""}
+      <label class="comms-field">Заголовок
+        <input type="text" id="commsTitle" value="${escapeHtml(c.title || "")}" onblur="_commsSaveField({title:this.value})" class="comms-field-wide">
+      </label>
+      <label class="comms-field">Текст
+        <textarea id="commsBody" rows="4" onblur="_commsSaveField({body:this.value})" class="comms-field-wide">${escapeHtml(c.body || "")}</textarea>
+      </label>
+      <label class="comms-field">Кнопка действия
+        <select id="commsAction" onchange="_commsSaveField({actionKey:this.value})" class="comms-field-wide">
+          ${Object.entries(COMMS_ACTION_LABELS).map(([v, l]) => `<option value="${v}" ${c.actionKey === v ? "selected" : ""}>${escapeHtml(l)}</option>`).join("")}
+        </select>
+      </label>
+    </div>
+    <div class="card comms-preview-card">
+      <strong>Предпросмотр</strong>
+      <div class="card comms-preview-bubble">
+        <div class="comms-preview-title">${escapeHtml(c.title || "Без заголовка")}</div>
+        <div class="comms-preview-body">${escapeHtml(c.body || "")}</div>
+      </div>
+    </div>
+    <div class="card comms-schedule-card">
+      <strong>Когда отправить</strong>
+      <div class="comms-schedule-options">
+        <label><input type="radio" name="commsSchedMode" value="now" ${c.scheduleMode !== "scheduled" ? "checked" : ""} onchange="_commsSetScheduleMode('now')"> Отправить сразу</label><br>
+        <label><input type="radio" name="commsSchedMode" value="scheduled" ${c.scheduleMode === "scheduled" ? "checked" : ""} onchange="_commsSetScheduleMode('scheduled')"> Запланировать</label>
+      </div>
+      <div id="commsScheduleFields" class="comms-schedule-fields ${c.scheduleMode === "scheduled" ? "" : "hidden"}">
+        ${!state.me?.communicationsSchedulerEnabled ? `<div class="notice">Планирование отправки отключено безопасным режимом.</div>` : ""}
+        <input type="date" id="commsSchedDate" value="${escapeAttr(_comms.scheduleDraft.date)}" oninput="_commsSetScheduleDraft('date', this.value)" class="comms-schedule-date-input">
+        <input type="time" id="commsSchedTime" value="${escapeAttr(_comms.scheduleDraft.time)}" oninput="_commsSetScheduleDraft('time', this.value)">
+      </div>
+    </div>
+    <div class="comms-step-actions">
+      <button type="button" onclick="_commsGoStep(2)">Назад</button>
+      <button type="button" class="primary wide" onclick="_commsGoStep(4)">Далее: проверка</button>
+    </div>`;
+}
+
+function _commsSetScheduleMode(mode) {
+  _commsSaveField({}); // no-op save to keep status indicator consistent; mode itself is applied at schedule time
+  const el = document.getElementById("commsScheduleFields");
+  if (el) el.classList.toggle("hidden", mode !== "scheduled");
+  _comms.campaign.scheduleMode = mode;
+}
+
+function _commsSetScheduleDraft(field, value) {
+  _comms.scheduleDraft[field] = value;
+}
+
+// ── Step 4 — Проверка + подтверждение ─────────────────────────────────────
+function _commsRenderStep4(root, c) {
+  const p = _comms.preview;
+  const blocked = !p || (p.eligibleCount || 0) === 0;
+  root.innerHTML = `
+    ${_commsWizardHeader("Проверка")}
+    <div class="card comms-review-card">
+      <strong>Получатели</strong>
+      <div class="comms-review-audience">${escapeHtml(p?.resolvedAudience || "Не рассчитано")}</div>
+      ${_commsRecipientBannerHtml()}
+    </div>
+    <div class="card comms-review-card">
+      <strong>Сообщение</strong>
+      <div class="comms-review-message-title">${escapeHtml(c.title || "")}</div>
+      <div class="comms-review-message-body">${escapeHtml(c.body || "")}</div>
+    </div>
+    <div class="notice comms-review-warning">Это массовая операция — уведомление получат сразу ${p?.eligibleCount || 0} ${escapeHtml(_commsRecipientsWord(p?.eligibleCount || 0))}. После подтверждения отменить отправку будет нельзя.</div>
+    <div class="comms-step-actions-column">
+      <button type="button" class="primary wide" ${blocked ? "disabled" : ""} onclick="_commsOpenConfirm()">Перейти к подтверждению</button>
+      <button type="button" onclick="_commsGoStep(1)">Изменить получателей</button>
+    </div>`;
+  if (!p) _commsRunPreview().then(() => _commsRender());
+}
+
+// ── Confirmation sheet ───────────────────────────────────────────────────
+// A real full-height Mini-App sheet (#commsConfirmModal in index.html),
+// built on the existing generic pi-modal open/close/scroll-lock mechanics
+// (piModalOpen/piModalClose — same helpers used by every other bottom
+// sheet in this app). Deliberately NOT window.confirm()/confirm(): a mass
+// send/schedule is exactly the kind of consequential action the rest of
+// this codebase already moved off native confirm() for (see the pilot
+// removal and payment-intent modals above). Never trusts the on-screen
+// recipient count as the source of truth — the backend independently
+// re-checks snapshot hash, exact count, role and both kill switches on
+// every send/schedule call (_communications_send_precheck).
+const COMMS_RU_MONTHS_GENITIVE = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+
+function _commsFormatMinskPreview(dateStr, timeStr) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr || "");
+  if (!m) return "";
+  const [, y, mo, d] = m;
+  const month = COMMS_RU_MONTHS_GENITIVE[parseInt(mo, 10) - 1];
+  if (!month) return "";
+  const timeOk = /^\d{2}:\d{2}$/.test(timeStr || "");
+  return `${parseInt(d, 10)} ${month} ${y}${timeOk ? ` в ${timeStr}` : ""} по времени Минска`;
+}
+
+async function _commsOpenConfirm() {
+  try {
+    const freeze = await apiPost(`/api/staff/communications/campaigns/${_comms.campaign.id}/freeze`, {});
+    _comms.campaign = freeze.campaign;
+  } catch (e) { alert(humanizeError(e)); return; }
+  const cf = _comms.confirm;
+  const scheduled = _comms.campaign.scheduleMode === "scheduled";
+  cf.mode = scheduled ? "schedule" : "send";
+  cf.error = null;
+  cf.outcome = null;
+  cf.canRetry = false;
+  cf.recalcInProgress = false;
+  if (cf.mode === "send" && !state.me?.communicationsSendEnabled) cf.state = "send_disabled";
+  else if (cf.mode === "schedule" && !state.me?.communicationsSchedulerEnabled) cf.state = "scheduler_disabled";
+  else cf.state = "idle";
+  cf.open = true;
+  piModalOpen(document.getElementById("commsConfirmModal"));
+  _commsRenderConfirmSheet();
+  _commsBackButtonShow();
+}
+
+function _commsConfirmClose() {
+  if (_comms.confirm.state === "submitting" || _comms.confirm.recalcInProgress) return; // no closing mid-request
+  _commsBackButtonHide();
+  piModalClose(document.getElementById("commsConfirmModal"), () => { _comms.confirm.open = false; });
+}
+
+function _commsConfirmFinish() {
+  _commsBackButtonHide();
+  piModalClose(document.getElementById("commsConfirmModal"), () => {
+    _comms.confirm.open = false;
+    _comms.screen = "result";
+    _commsRender();
+  });
+}
+
+function _commsBackButtonHandler() { _commsConfirmClose(); }
+
+function _commsBackButtonShow() {
+  if (!tg?.BackButton) return;
+  tg.BackButton.onClick(_commsBackButtonHandler);
+  tg.BackButton.show();
+}
+
+function _commsBackButtonHide() {
+  if (!tg?.BackButton) return;
+  tg.BackButton.offClick(_commsBackButtonHandler);
+  tg.BackButton.hide();
+}
+
+async function _commsConfirmRecalculate() {
+  const cf = _comms.confirm;
+  if (cf.recalcInProgress) return;
+  cf.recalcInProgress = true;
+  _commsRenderConfirmSheet();
+  try {
+    await _commsRunPreview();
+    const freeze = await apiPost(`/api/staff/communications/campaigns/${_comms.campaign.id}/freeze`, {});
+    _comms.campaign = freeze.campaign;
+    cf.state = "idle";
+    cf.error = null;
+  } catch (e) {
+    cf.state = "failed";
+    cf.error = humanizeError(e);
+    cf.canRetry = true;
+  }
+  cf.recalcInProgress = false;
+  _commsRenderConfirmSheet();
+}
+
+async function _commsConfirmSubmit() {
+  const cf = _comms.confirm;
+  if (cf.state === "submitting" || cf.recalcInProgress) return; // blocks double-submit — repeated taps are no-ops
+  if (cf.mode === "send" && !state.me?.communicationsSendEnabled) { cf.state = "send_disabled"; _commsRenderConfirmSheet(); return; }
+  if (cf.mode === "schedule" && !state.me?.communicationsSchedulerEnabled) { cf.state = "scheduler_disabled"; _commsRenderConfirmSheet(); return; }
+  cf.state = "submitting";
+  cf.error = null;
+  cf.canRetry = false;
+  _commsRenderConfirmSheet();
+  const c = _comms.campaign;
+  const n = c.eligibleCount || 0;
+  try {
+    const data = cf.mode === "schedule"
+      ? await apiPost(`/api/staff/communications/campaigns/${c.id}/schedule`, {
+          date: _comms.scheduleDraft.date, time: _comms.scheduleDraft.time,
+          snapshot_hash: c.snapshotHash, recipient_count: n, confirm: true,
+        })
+      : await apiPost(`/api/staff/communications/campaigns/${c.id}/send`, {
+          snapshot_hash: c.snapshotHash, recipient_count: n, confirm: true,
+        });
+    if (!data.ok) { _commsApplyConfirmError(data); _commsRenderConfirmSheet(); return; }
+    _comms.campaign = data.campaign;
+    cf.outcome = { createdCount: data.createdCount, skippedCount: data.skippedCount, failedCount: data.failedCount };
+    if (_comms.campaign.status === "scheduled") cf.state = "success";
+    else if (_comms.campaign.status === "sent") cf.state = "success";
+    else if (_comms.campaign.status === "partial") cf.state = "partial";
+    else { cf.state = "failed"; cf.canRetry = false; }
+  } catch (e) {
+    cf.state = "failed";
+    cf.error = humanizeError(e);
+    cf.canRetry = true;
+  }
+  _commsRenderConfirmSheet();
+}
+
+function _commsApplyConfirmError(data) {
+  const cf = _comms.confirm;
+  const code = data.error_code || data.errorCode;
+  if (code === "stale_snapshot") cf.state = "stale";
+  else if (code === "count_mismatch") cf.state = "mismatch";
+  else if (code === "send_disabled") cf.state = "send_disabled";
+  else if (code === "scheduler_disabled") cf.state = "scheduler_disabled";
+  else { cf.state = "failed"; cf.canRetry = true; }
+  cf.error = data.error || "Не удалось выполнить операцию.";
+}
+
+function _commsConfirmOutcomeHtml() {
+  const cf = _comms.confirm;
+  const c = _comms.campaign;
+  if (cf.mode === "schedule" && cf.state === "success") {
+    return `
+      <div class="comms-confirm-outcome comms-confirm-outcome-success">
+        <div class="comms-confirm-outcome-title">Рассылка запланирована</div>
+        <div class="comms-confirm-outcome-text">Рассылка будет автоматически отправлена по времени Минска${c.scheduledLabel ? `: ${escapeHtml(c.scheduledLabel)}` : ""}.</div>
+      </div>`;
+  }
+  const o = cf.outcome || {};
+  if (cf.state === "success") {
+    const n = o.createdCount ?? c.eligibleCount ?? 0;
+    return `
+      <div class="comms-confirm-outcome comms-confirm-outcome-success">
+        <div class="comms-confirm-outcome-title">Рассылка отправлена</div>
+        <div class="comms-confirm-outcome-text">Получили уведомление: ${n} ${escapeHtml(_commsRecipientsWord(n))}.</div>
+      </div>`;
+  }
+  if (cf.state === "partial") {
+    return `
+      <div class="comms-confirm-outcome comms-confirm-outcome-partial">
+        <div class="comms-confirm-outcome-title">Отправлено с ошибками</div>
+        <div class="comms-confirm-outcome-text">Доставлено: ${o.createdCount ?? 0}. Не удалось: ${o.failedCount ?? 0}.</div>
+      </div>`;
+  }
+  return `
+    <div class="comms-confirm-outcome comms-confirm-outcome-failed">
+      <div class="comms-confirm-outcome-title">Не удалось отправить</div>
+      <div class="comms-confirm-outcome-text">${escapeHtml(c.lastError || "Ни один получатель не получил уведомление.")}</div>
+    </div>`;
+}
+
+function _commsConfirmReviewHtml() {
+  const cf = _comms.confirm;
+  const c = _comms.campaign;
+  const p = _comms.preview || {};
+  const n = c.eligibleCount || 0;
+  const scheduled = cf.mode === "schedule";
+  const timeLabel = scheduled ? _commsFormatMinskPreview(_comms.scheduleDraft.date, _comms.scheduleDraft.time) : "";
+  return `
+    <div class="comms-confirm-warning">Это массовая операция. После отправки отменить уведомления нельзя.</div>
+    <div class="comms-confirm-section">
+      <div class="comms-confirm-label">Канал</div>
+      <div class="comms-confirm-value">Уведомление в приложении</div>
+    </div>
+    <div class="comms-confirm-section">
+      <div class="comms-confirm-label">Получатели</div>
+      <div class="comms-confirm-value">${escapeHtml(p.resolvedAudience || "")}</div>
+      <div class="comms-confirm-count">${n} ${escapeHtml(_commsRecipientsWord(n))}</div>
+      ${p.excludedCount ? `<div class="comms-confirm-excluded">Исключено: ${p.excludedCount}</div>` : ""}
+      <div class="comms-confirm-calculated">Количество рассчитано системой${p.calculatedAt ? ` · ${escapeHtml(_commsFmtDateTime(p.calculatedAt))}` : ""}</div>
+    </div>
+    <div class="comms-confirm-section">
+      <div class="comms-confirm-label">Содержание</div>
+      <div class="comms-confirm-value">${escapeHtml(COMMS_CATEGORY_LABELS[c.category] || c.category || "")} · ${escapeHtml(COMMS_PRIORITY_LABELS[c.priority] || c.priority || "")}</div>
+      <div class="comms-confirm-title-line">${escapeHtml(c.title || "")}</div>
+      <div class="comms-confirm-body-line">${escapeHtml(c.body || "")}</div>
+      <div class="comms-confirm-action-line">${escapeHtml(COMMS_ACTION_LABELS[c.actionKey] || c.actionKey || "")}</div>
+    </div>
+    <div class="comms-confirm-section">
+      <div class="comms-confirm-label">Время</div>
+      <div class="comms-confirm-value">${scheduled ? escapeHtml(timeLabel || "Не указано") : "Отправить сейчас"}</div>
+      ${scheduled ? `<div class="comms-confirm-note">Рассылка будет автоматически отправлена по времени Минска.</div>` : ""}
+    </div>
+    ${cf.state === "send_disabled" ? `<div class="notice">Отправка отключена безопасным режимом.</div>` : ""}
+    ${cf.state === "scheduler_disabled" ? `<div class="notice">Планирование отправки отключено безопасным режимом.</div>` : ""}
+    ${(cf.state === "stale" || cf.state === "mismatch") ? `<div class="notice">Аудитория изменилась. Пересчитайте получателей перед отправкой.</div>` : ""}
+    ${(cf.state === "failed" && cf.canRetry) ? `<div class="notice">${escapeHtml(cf.error || "Не удалось выполнить операцию.")}</div>` : ""}
+  `;
+}
+
+function _commsConfirmFooterHtml() {
+  const cf = _comms.confirm;
+  const c = _comms.campaign;
+  const n = c.eligibleCount || 0;
+  const scheduled = cf.mode === "schedule";
+  if (cf.recalcInProgress) {
+    return `<button type="button" class="primary wide" disabled>Пересчитываем…</button>`;
+  }
+  if (cf.state === "success" || cf.state === "partial" || (cf.state === "failed" && !cf.canRetry)) {
+    return `<button type="button" class="primary wide" onclick="_commsConfirmFinish()">Готово</button>`;
+  }
+  if (cf.state === "failed" && cf.canRetry) {
+    return `
+      <button type="button" class="primary wide" onclick="_commsConfirmSubmit()">Повторить</button>
+      <button type="button" class="wide" onclick="_commsConfirmClose()">Закрыть</button>`;
+  }
+  if (cf.state === "stale" || cf.state === "mismatch") {
+    return `
+      <button type="button" class="primary wide" onclick="_commsConfirmRecalculate()">Пересчитать аудиторию</button>
+      <button type="button" class="wide" onclick="_commsConfirmClose()">Вернуться к проверке</button>`;
+  }
+  if (cf.state === "send_disabled") {
+    return `
+      <button type="button" class="primary wide" disabled>Отправка отключена безопасным режимом.</button>
+      <button type="button" class="wide" onclick="_commsConfirmClose()">Вернуться к проверке</button>`;
+  }
+  if (cf.state === "scheduler_disabled") {
+    return `
+      <button type="button" class="primary wide" disabled>Планирование отключено безопасным режимом.</button>
+      <button type="button" class="wide" onclick="_commsConfirmClose()">Вернуться к проверке</button>`;
+  }
+  const submitting = cf.state === "submitting";
+  const primaryLabel = submitting
+    ? (scheduled ? "Планируем…" : "Отправляем…")
+    : (scheduled ? `Запланировать для ${n} ${_commsRecipientsWord(n)}` : `Отправить ${n} ${_commsRecipientsWord(n)}`);
+  return `
+    <button type="button" class="primary wide" ${submitting ? "disabled" : ""} onclick="_commsConfirmSubmit()">${escapeHtml(primaryLabel)}</button>
+    <button type="button" class="wide" ${submitting ? "disabled" : ""} onclick="_commsConfirmClose()">Вернуться к проверке</button>`;
+}
+
+function _commsRenderConfirmSheet() {
+  const bodyEl = document.getElementById("commsConfirmBody");
+  const footEl = document.getElementById("commsConfirmFooter");
+  if (!bodyEl || !footEl) return;
+  const cf = _comms.confirm;
+  const showOutcome = cf.state === "success" || cf.state === "partial" || (cf.state === "failed" && !cf.canRetry);
+  bodyEl.innerHTML = showOutcome ? _commsConfirmOutcomeHtml() : _commsConfirmReviewHtml();
+  footEl.innerHTML = _commsConfirmFooterHtml();
+}
+
+// ── Result screen ─────────────────────────────────────────────────────────
+function _commsRenderResult(root) {
+  const c = _comms.campaign;
+  const pill = COMMS_STATUS_PILL[c.status] || { label: c.status, cls: "" };
+  root.innerHTML = `
+    <div class="section-head">
+      <div><h2 class="comms-wizard-title">${escapeHtml(c.title || c.name || "Рассылка")}</h2></div>
+      <button type="button" onclick="_commsBackToHome()">К списку</button>
+    </div>
+    <div class="card comms-result-card">
+      <span class="pill ${pill.cls}">${escapeHtml(pill.label)}</span>
+      <div class="comms-result-line">Получателей: ${c.eligibleCount ?? "—"}</div>
+      ${c.status === "scheduled" ? `<div class="comms-result-line">Отправится: ${escapeHtml(c.scheduledLabel || "")}</div>` : ""}
+      ${c.sentAt ? `<div class="comms-result-line">Отправлено: ${escapeHtml(_commsFmtDateTime(c.sentAt))}</div>` : ""}
+      ${c.lastError ? `<div class="comms-result-error">${escapeHtml(c.lastError)}</div>` : ""}
+    </div>`;
 }
 
 async function boot() {

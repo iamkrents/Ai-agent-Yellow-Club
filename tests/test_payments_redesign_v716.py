@@ -159,9 +159,9 @@ class TestVersion(unittest.TestCase):
     def test_01_cache_bust_and_version_are_v716(self):
         html = _html()
         js = _js()
-        self.assertIn("styles.css?v=7.1.13", html)
-        self.assertIn("app.js?v=7.1.13", html)
-        self.assertIn('console.log("MiniApp version: v7.1.13.3")', js)
+        self.assertIn("styles.css?v=7.1.14", html)
+        self.assertIn("app.js?v=7.1.14", html)
+        self.assertIn('console.log("MiniApp version: v7.1.14")', js)
 
 
 # ---------------------------------------------------------------------------

@@ -10193,3 +10193,123 @@ body.role-parent-cabinet .tabs.bottom-tabbar .tab:active {
 .test-role-status { margin-top: 10px; font-size: 13px; color: var(--muted, #7b8190); }
 .test-role-status.ok { padding: 10px 12px; border-radius: 12px; background: #eafbf3; color: #116643; font-weight: 650; }
 .test-role-status.error { padding: 10px 12px; border-radius: 12px; background: #fceeee; color: #b14343; font-weight: 650; }
+
+/* ── v7.1.14 — staff "Рассылки" (communications center). Scoped entirely
+   under .comms-* / #commsConfirmModal; reuses generic .card/.notice/.pill
+   as the base building blocks (same design language as the rest of the
+   staff app) but every layout/structural rule below is specific to this
+   module and lives here rather than as inline style="" in app.js. ────── */
+
+.comms-page-subtitle { color: var(--muted); font-size: 13px; margin: 4px 0 0; }
+.comms-mode-notice { margin-top: 10px; }
+.comms-section-head { margin-top: 18px; }
+.comms-section-title { font-size: 16px; margin: 0; }
+
+.comms-campaign-card { margin-bottom: 10px; }
+.comms-campaign-card-head { margin-bottom: 6px; }
+.comms-campaign-title-wrap { min-width: 0; }
+.comms-campaign-meta { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+.comms-campaign-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.comms-campaign-action { min-height: 40px; }
+
+.comms-wizard-title { font-size: 18px; margin: 0; }
+.comms-save-status { font-size: 12px; color: var(--muted); min-height: 16px; }
+
+/* compact 5-segment stepper, "Шаг N из 5" — see COMMS_STEP_LABELS in app.js */
+.comms-stepper-track { display: flex; gap: 5px; margin: 10px 0 4px; }
+.comms-stepper-seg { height: 4px; flex: 1; border-radius: 2px; background: #eee; }
+.comms-stepper-seg.is-filled { background: #ffd84d; }
+.comms-stepper-label { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+
+.comms-audience-list { display: flex; flex-direction: column; }
+.comms-audience-option { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 8px; cursor: pointer; }
+.comms-audience-option.is-disabled { opacity: .5; cursor: default; }
+.comms-audience-option-radio { margin-top: 3px; }
+.comms-audience-option-title { display: block; }
+.comms-audience-option-desc { font-size: 12.5px; color: var(--muted); }
+.comms-step-cta { margin-top: 14px; }
+.comms-audience-detail-card { margin-top: 6px; }
+.comms-field-wide { width: 100%; box-sizing: border-box; }
+.comms-lookup-btn { margin-top: 8px; }
+.comms-lookup-results { margin-top: 8px; }
+.comms-lookup-card { margin-top: 6px; cursor: pointer; }
+.comms-lookup-card-sub { font-size: 12px; color: var(--muted); }
+
+/* server-computed recipient-count block — never a frontend guess */
+.comms-recipient-banner { margin-top: 8px; background: #fff7d1; }
+.comms-recipient-count-label { font-size: 12px; color: var(--muted); }
+.comms-recipient-count-value { font-size: 28px; font-weight: 800; }
+.comms-recipient-count-note { font-size: 12px; color: var(--muted); }
+.comms-recipient-excluded { font-size: 12px; margin-top: 6px; }
+
+.comms-channel-card { }
+.comms-channel-desc { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
+.comms-step-actions { display: flex; gap: 10px; margin-top: 14px; }
+.comms-step-actions-column { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; padding-bottom: 16px; }
+.comms-step-actions button, .comms-step-actions-column button { min-height: 44px; }
+
+.comms-field { display: block; margin-top: 10px; }
+.comms-preview-card { margin-top: 10px; }
+.comms-preview-bubble { margin-top: 8px; background: #f6f7fb; }
+.comms-preview-title { font-weight: 700; }
+.comms-preview-body { font-size: 13px; margin-top: 4px; white-space: pre-wrap; }
+.comms-schedule-card { margin-top: 10px; }
+.comms-schedule-options { margin-top: 8px; }
+.comms-schedule-fields { margin-top: 8px; }
+.comms-schedule-date-input { margin-right: 8px; }
+
+.comms-review-card + .comms-review-card { margin-top: 10px; }
+.comms-review-audience { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.comms-review-message-title { margin-top: 6px; font-weight: 700; }
+.comms-review-message-body { font-size: 13px; margin-top: 2px; white-space: pre-wrap; }
+.comms-review-warning { margin-top: 10px; }
+
+.comms-result-line { margin-top: 8px; }
+.comms-result-error { color: #a72b2b; margin-top: 6px; }
+
+/* ── confirmation sheet — full-height, forced-light (same technique as
+   #wsFiltersModal above), never a native confirm()/window.confirm(). ── */
+.comms-confirm-sheet {
+  height: calc(100dvh - env(safe-area-inset-top, 0px) - 8px);
+}
+@media (min-width: 600px) {
+  .comms-confirm-sheet { height: min(90vh, 760px); }
+}
+#commsConfirmModal .pi-modal-sheet { background: #fff; color: #172033; }
+#commsConfirmModal .pi-modal-head { border-bottom-color: #e8ecf4; }
+#commsConfirmModal .pi-modal-head h3 { color: #172033; }
+#commsConfirmModal .pi-modal-close { color: #657089; }
+#commsConfirmModal .pi-modal-close:hover { background: rgba(0, 0, 0, .06); }
+#commsConfirmModal .pi-modal-footer { border-top-color: #e8ecf4; }
+
+.comms-confirm-footer { flex-direction: column; }
+.comms-confirm-footer button { flex: 0 0 auto; width: 100%; }
+
+.comms-confirm-warning {
+  background: rgba(230, 126, 34, .12); color: #a04000; border-radius: 10px;
+  padding: 10px 12px; font-size: 13px; font-weight: 600;
+}
+.comms-confirm-section { margin-top: 14px; padding-top: 12px; border-top: 1px solid #e8ecf4; }
+.comms-confirm-label {
+  font-size: 11.5px; font-weight: 700; color: #657089; text-transform: uppercase;
+  letter-spacing: .02em; margin-bottom: 4px;
+}
+.comms-confirm-value { font-size: 14px; color: #172033; }
+.comms-confirm-count { font-size: 24px; font-weight: 800; color: #172033; margin-top: 4px; }
+.comms-confirm-excluded { font-size: 12px; color: #657089; margin-top: 4px; }
+.comms-confirm-calculated { font-size: 11.5px; color: #8892a6; margin-top: 4px; }
+.comms-confirm-title-line { font-weight: 700; color: #172033; margin-top: 4px; }
+.comms-confirm-body-line { font-size: 13px; color: #172033; margin-top: 2px; white-space: pre-wrap; }
+.comms-confirm-action-line { font-size: 12px; color: #657089; margin-top: 4px; }
+.comms-confirm-note { font-size: 12px; color: #657089; margin-top: 6px; }
+
+.comms-confirm-outcome { text-align: center; padding: 32px 12px; }
+.comms-confirm-outcome-title { font-size: 18px; font-weight: 800; margin-bottom: 8px; color: #172033; }
+.comms-confirm-outcome-text { font-size: 14px; color: #657089; }
+.comms-confirm-outcome-success .comms-confirm-outcome-title { color: #116643; }
+.comms-confirm-outcome-partial .comms-confirm-outcome-title { color: #a04000; }
+.comms-confirm-outcome-failed .comms-confirm-outcome-title { color: #a72b2b; }
+/* the #commsConfirmModal .pi-modal-sheet rule above already outranks the
+   generic dark-theme .pi-modal-sheet overrides by specificity (id + class
+   beats class + attribute-selector) regardless of stylesheet order, so no
+   separate dark/light media-query duplicate is needed here. */

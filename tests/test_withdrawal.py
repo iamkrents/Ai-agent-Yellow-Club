@@ -1886,8 +1886,8 @@ class TestRemoteCancelV714(unittest.TestCase):
         """index.html has v=7.1.12 and app.js has MiniApp version: v7.1.8."""
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v=7.1.13", html, "index.html cache-bust must be v=7.1.13")
-        self.assertIn("v7.1.13", js, "app.js version marker must contain v7.1.13")
+        self.assertIn("v=7.1.14", html, "index.html cache-bust must be v=7.1.14")
+        self.assertIn("v7.1.14", js, "app.js version marker must contain v7.1.14")
 
 
 # ---------------------------------------------------------------------------
@@ -2298,8 +2298,8 @@ class TestRemoteCancelRetryV7141(unittest.TestCase):
         """index.html has v=7.1.12 and app.js has MiniApp version: v7.1.8."""
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v=7.1.13", html, "index.html cache-bust must be v=7.1.13")
-        self.assertIn("v7.1.13", js, "app.js version marker must contain v7.1.13")
+        self.assertIn("v=7.1.14", html, "index.html cache-bust must be v=7.1.14")
+        self.assertIn("v7.1.14", js, "app.js version marker must contain v7.1.14")
 
 
 # ---------------------------------------------------------------------------
@@ -2676,8 +2676,8 @@ class TestEripClientWiringV7142(unittest.TestCase):
         """index.html has v=7.1.12 and app.js has MiniApp version: v7.1.8."""
         html = (ROOT / "miniapp" / "index.html").read_text(encoding="utf-8")
         js = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("v=7.1.13", html, "index.html cache-bust must be v=7.1.13")
-        self.assertIn("v7.1.13", js, "app.js version marker must contain v7.1.13")
+        self.assertIn("v=7.1.14", html, "index.html cache-bust must be v=7.1.14")
+        self.assertIn("v7.1.14", js, "app.js version marker must contain v7.1.14")
 
 
 if __name__ == "__main__":

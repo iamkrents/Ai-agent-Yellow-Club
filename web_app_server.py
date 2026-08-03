@@ -54,6 +54,7 @@ from storage import (
     NOTIFICATION_SCOPES,
     NOTIFICATION_ACTION_KEYS,
     NOTIFICATION_CATEGORIES_FOOD_ONLY,
+    STAFF_COMMUNICATION_STATUSES,
 )
 from llm import OllamaClient
 from agent_core import AgentCore, AnswerContext
@@ -161,6 +162,7 @@ PAYMENT_MK_POST_ROLES = {"owner", "admin"}  # only senior roles may post to MoyK
 PAYMENT_MK_MANUAL_POST_ROLES = PAYMENT_MK_POST_ROLES | {"client_manager"}  # v7.1.11 — manual "Внести в МойКласс" action only; client_manager still acts only on payments they already see via WORKSPACE_VIEW_ROLES
 PAYMENT_ONBOARDING_STAFF_ROLES = {"owner", "admin", "client_manager"}  # v7.1.11 — staff-only Payments onboarding (client_admin_link_and_enroll); deliberately excludes operations
 CLIENT_ONBOARDING_CAMPAIGN_ROLES = {"owner", "admin", "client_manager"}  # v7.1.12 — mass onboarding campaigns: create/manage + continuation status; same set as PAYMENT_ONBOARDING_STAFF_ROLES, deliberately excludes operations
+CLIENT_COMMUNICATIONS_ROLES = {"owner", "admin"}  # v7.1.14 — staff "Рассылки": deliberately narrower than CLIENT_ONBOARDING_CAMPAIGN_ROLES (excludes client_manager/operations too) — checked against the REAL/base role only, never the test-role-substituted one
 CLIENT_LINK_ADMIN_ROLES = {"owner", "admin", "operations", "client_manager"}  # v7.1.7 — client_manager can manage CL- link codes
 CLIENT_LINK_CODE_TTL_HOURS = _STORAGE_CLIENT_LINK_CODE_TTL_HOURS  # v7.1.7 — single source of truth is storage.py
 CLIENT_LINK_MAX_FAILED_ATTEMPTS = 5      # v7.1.7 — brute-force guard on POST /api/client/children/link
@@ -1788,6 +1790,72 @@ _INTEGRITY_CODE_TO_REASON = {
 }
 
 
+class StaffCommunicationsScheduler:
+    """v7.1.14 — background worker for scheduled "Рассылки" campaigns.
+
+    Same always-starts/internally-gated pattern as InvoiceAutomationScheduler:
+    the thread runs unconditionally, but every cycle no-ops unless
+    CLIENT_COMMUNICATIONS_SCHEDULER_ENABLED is true — so flipping the env
+    var takes effect without a restart, and a disabled deployment never
+    spins up extra load.
+
+    Restart safety: on EVERY cycle (not just once at startup) it first
+    resumes any campaign left in 'sending' by a previous crash — this reuses
+    _communications_execute_send unchanged, which only ever touches
+    recipients still delivery_status='pending', so a resume can never
+    duplicate a notification that was already created. Only after resuming
+    stuck campaigns does it claim newly-due 'scheduled' ones.
+    """
+
+    CYCLE_INTERVAL_SECONDS = 60
+    STARTUP_DELAY_SECONDS = 30
+
+    def __init__(self, ctx: "MiniAppContext") -> None:
+        self._ctx = ctx
+        self._thread = threading.Thread(
+            target=self._loop, name="staff-communications-scheduler", daemon=True
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _loop(self) -> None:
+        time.sleep(self.STARTUP_DELAY_SECONDS)
+        while True:
+            try:
+                if getattr(self._ctx.settings, "client_communications_scheduler_enabled", False):
+                    self._run_cycle()
+            except Exception:
+                log.exception("StaffCommunicationsScheduler: cycle error")
+            time.sleep(self.CYCLE_INTERVAL_SECONDS)
+
+    def _run_cycle(self) -> None:
+        ctx = self._ctx
+        # Resume anything a previous crash left mid-send before claiming
+        # new work — never let a stuck 'sending' campaign sit forever.
+        for campaign in ctx.storage.list_stuck_sending_staff_communication_campaigns():
+            try:
+                ctx._communications_execute_send(campaign["id"])
+            except Exception:
+                log.exception(
+                    "StaffCommunicationsScheduler: resume error campaign_id=%s", campaign.get("id"),
+                )
+        now = now_iso()
+        due = ctx.storage.list_due_staff_communication_campaigns(now)
+        for campaign in due:
+            claimed = ctx.storage.claim_staff_communication_campaign(
+                campaign["id"], ("scheduled",), "sending", now,
+            )
+            if not claimed:
+                continue  # lost the race (shouldn't happen with a single worker, but never double-send)
+            try:
+                ctx._communications_execute_send(campaign["id"])
+            except Exception:
+                log.exception(
+                    "StaffCommunicationsScheduler: send error campaign_id=%s", campaign.get("id"),
+                )
+
+
 class PaymentAutomationGuardian:
     """v7.1.9 — Payment Automation Guardian: a dedicated background thread
     that re-checks training state for every relevant automation item at a
@@ -2258,6 +2326,56 @@ class MiniAppContext:
         )
         return int(user_id or 0) in pilot_ids
 
+    # ── v7.1.14 — staff "Рассылки" (communications center) ────────────────────
+    def _communications_section_visible(self, user_id: int) -> bool:
+        """Same allowlist idiom as _client_cabinet_enabled/_client_notifications_
+        enabled: global flag or a per-Telegram-id pilot list, always keyed on
+        the real caller id — never a frontend-supplied override."""
+        if getattr(self, "settings", None) is None:
+            return False
+        if bool(getattr(self.settings, "client_communications_enabled", False)):
+            return True
+        pilot_ids = set(
+            int(x) for x in (getattr(self.settings, "client_communications_pilot_telegram_ids", None) or []) if x
+        )
+        return int(user_id or 0) in pilot_ids
+
+    def _communications_access_allowed(self, user_id: int) -> bool:
+        """Role + rollout gate combined. Deliberately checks the REAL/base
+        role (_base_role_for_user), never _role_for_user — per spec, an
+        owner/admin using the test-role preview must not lose real backend
+        access to this feature just because their EFFECTIVE role is
+        currently something else, and (the actual security requirement) no
+        test-role substitution can ever grant it to someone who isn't
+        really owner/admin."""
+        if getattr(self, "settings", None) is None:
+            return False
+        real_role = self._base_role_for_user(int(user_id))
+        if real_role not in CLIENT_COMMUNICATIONS_ROLES:
+            return False
+        return self._communications_section_visible(int(user_id))
+
+    def _require_communications_access(self, auth: dict[str, Any]) -> dict[str, Any] | None:
+        if getattr(self, "settings", None) is None:
+            return {"ok": False, "error": "Доступно только владельцу и администратору."}
+        user_id = int(auth["user_id"])
+        real_role = self._base_role_for_user(user_id)
+        if real_role not in CLIENT_COMMUNICATIONS_ROLES:
+            return {"ok": False, "error": "Доступно только владельцу и администратору."}
+        if not self._communications_section_visible(user_id):
+            return {"ok": False, "error": "Раздел «Рассылки» пока не включён."}
+        return None
+
+    def _communications_send_enabled(self) -> bool:
+        if getattr(self, "settings", None) is None:
+            return False
+        return bool(getattr(self.settings, "client_communications_send_enabled", False))
+
+    def _communications_scheduler_enabled(self) -> bool:
+        if getattr(self, "settings", None) is None:
+            return False
+        return bool(getattr(self.settings, "client_communications_scheduler_enabled", False))
+
     def _test_teacher_options(self) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -2380,6 +2498,14 @@ class MiniAppContext:
             "canManageClientLinks": role in CLIENT_LINK_ADMIN_ROLES,  # v7.1.7
             "canViewPaymentDiagnostics": role in PAYMENT_DIAGNOSTICS_VIEW_ROLES,  # v7.1.9
             "canManagePaymentDiagnostics": role in PAYMENT_DIAGNOSTICS_MANAGE_ROLES,  # v7.1.9
+            # v7.1.14 — deliberately keyed on the REAL/base role, not the
+            # test-role-substituted `role` used everywhere else in this
+            # dict, so an owner/admin previewing a lower-privilege test role
+            # never keeps this tab, AND (mostly theoretical, since test mode
+            # itself requires being real owner/admin/operations already) no
+            # test-role path can ever grant it to someone without the real
+            # role. Also requires the section rollout gate itself.
+            "canUseCommunications": self._communications_access_allowed(user_id),
         }
 
     def me(self, auth: dict[str, Any]) -> dict[str, Any]:
@@ -2497,6 +2623,13 @@ class MiniAppContext:
             # the real owner/admin Telegram id, see _owner_test_client_mode_active).
             "ownerTestClientMode": owner_test_client_mode,
             "ownerTestClientContext": owner_test_client_context,
+            # v7.1.14 — staff "Рассылки": section visibility only (nav tab).
+            # Every mutation endpoint independently re-checks
+            # _require_communications_access server-side; this flag is never
+            # itself treated as authorization.
+            "communicationsEnabled": self._communications_access_allowed(user_id),
+            "communicationsSendEnabled": self._communications_send_enabled(),
+            "communicationsSchedulerEnabled": self._communications_scheduler_enabled(),
             "campClassNameFilter": (
                 str(getattr(self.settings, "camp_lesson_name_filter", "") or "").strip()
                 or str(getattr(self.settings, "camp_class_name_filter", "Summer Camp") or "Summer Camp").strip()
@@ -12600,6 +12733,614 @@ class MiniAppContext:
 
         return {"ok": True, "students": students, "total": len(students), "query": q}
 
+    # ── v7.1.14 — staff "Рассылки" (communications center) ─────────────────
+    # MVP scope: real in-app client notifications only (see storage's
+    # staff_communication_campaigns/staff_communication_recipients). Every
+    # mutation below re-checks _require_communications_access itself —
+    # never assume a caller already checked it.
+
+    def _communications_load_campaign(self, campaign_id_str: str) -> Optional[dict[str, Any]]:
+        try:
+            campaign_id = int(campaign_id_str)
+        except (TypeError, ValueError):
+            return None
+        return self.storage.get_staff_communication_campaign(campaign_id)
+
+    def _communications_format_minsk_label(self, scheduled_at_utc: Optional[str]) -> Optional[str]:
+        if not scheduled_at_utc:
+            return None
+        import zoneinfo
+        try:
+            dt_utc = datetime.strptime(scheduled_at_utc, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+        minsk = dt_utc.astimezone(zoneinfo.ZoneInfo("Europe/Minsk"))
+        months = ["января", "февраля", "марта", "апреля", "мая", "июня",
+                  "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+        return f"{minsk.day} {months[minsk.month - 1]} {minsk.year} в {minsk.strftime('%H:%M')} по времени Минска"
+
+    def _communications_minsk_to_utc(self, date_str: str, time_str: str) -> tuple[Optional[str], Optional[str]]:
+        import zoneinfo
+        date_str = str(date_str or "").strip()
+        time_str = str(time_str or "").strip()
+        if not date_str:
+            return None, "Укажите дату отправки."
+        if not time_str:
+            return None, "Укажите время отправки."
+        try:
+            naive = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+        except ValueError:
+            return None, "Некорректная дата или время."
+        minsk_dt = naive.replace(tzinfo=zoneinfo.ZoneInfo("Europe/Minsk"))
+        utc_dt = minsk_dt.astimezone(timezone.utc)
+        if utc_dt <= datetime.now(timezone.utc):
+            return None, "Нельзя запланировать отправку на прошедшее время."
+        return utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), None
+
+    def _communications_campaign_public(self, campaign: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": campaign["id"],
+            "name": campaign.get("name") or "",
+            "status": campaign.get("status"),
+            "audienceType": campaign.get("audience_type") or "",
+            "audienceConfig": (lambda: (lambda s: s if isinstance(s, dict) else {})(
+                self._safe_json_loads(campaign.get("audience_config_json"))))(),
+            "eligibleCount": campaign.get("eligible_count"),
+            "excludedCount": campaign.get("excluded_count"),
+            "snapshotHash": campaign.get("audience_snapshot_hash"),
+            "snapshotCreatedAt": campaign.get("audience_snapshot_created_at"),
+            "category": campaign.get("category"),
+            "priority": campaign.get("priority"),
+            "scope": campaign.get("scope"),
+            "title": campaign.get("title") or "",
+            "body": campaign.get("body") or "",
+            "actionKey": campaign.get("action_key"),
+            "scheduleMode": campaign.get("schedule_mode"),
+            "scheduledAtUtc": campaign.get("scheduled_at_utc"),
+            "scheduledLabel": self._communications_format_minsk_label(campaign.get("scheduled_at_utc")),
+            "timezone": campaign.get("timezone"),
+            "createdAt": campaign.get("created_at"),
+            "updatedAt": campaign.get("updated_at"),
+            "sentAt": campaign.get("sent_at"),
+            "cancelledAt": campaign.get("cancelled_at"),
+            "lastError": campaign.get("last_error"),
+        }
+
+    @staticmethod
+    def _safe_json_loads(raw: Any) -> Any:
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+
+    def _communications_split_by_notification_gate(
+        self, pairs: list[tuple[str, Optional[str]]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """pairs: [(parent_telegram_id, mk_user_id_or_None), ...], already
+        deduped by caller. Splits into eligible/excluded based on the
+        EXISTING CLIENT_NOTIFICATIONS_ENABLED/pilot gate — a parent whose
+        notification center isn't open yet is excluded, never silently
+        counted as reachable."""
+        eligible: list[dict[str, Any]] = []
+        excluded: list[dict[str, Any]] = []
+        for pid, mk in pairs:
+            entry = {"parent_telegram_id": pid, "mk_user_id": mk, "recipient_key": pid}
+            try:
+                user_id = int(pid)
+            except (TypeError, ValueError):
+                gate_open = False
+            else:
+                gate_open = self._client_notifications_enabled(user_id)
+            if gate_open:
+                eligible.append(entry)
+            else:
+                excluded.append({**entry, "exclusion_reason": "Уведомления в приложении пока не включены для этого родителя."})
+        return eligible, excluded
+
+    def _resolve_audience_single_client(self, config: dict[str, Any]) -> dict[str, Any]:
+        parent_telegram_id = str(config.get("parent_telegram_id") or "").strip()
+        if not parent_telegram_id:
+            return {"ok": False, "error": "Не выбран клиент."}
+        candidates = self.storage.find_trusted_client_context_candidates(parent_telegram_id)
+        match = next((c for c in candidates if c["parent_telegram_id"] == parent_telegram_id), None)
+        if not match:
+            return {"ok": False, "error": "Клиент не найден среди активных связей."}
+        scope_mk_user_id = str(config.get("scope_mk_user_id") or "").strip() or None
+        if scope_mk_user_id and not any(str(ch["mk_user_id"]) == scope_mk_user_id for ch in match["children"]):
+            return {"ok": False, "error": "Указанный ребёнок не связан с этим родителем."}
+        eligible, excluded = self._communications_split_by_notification_gate([(parent_telegram_id, scope_mk_user_id)])
+        label = f"Родитель Telegram ID {parent_telegram_id}"
+        label += f" · ребёнок {scope_mk_user_id}" if scope_mk_user_id else " · вся семья"
+        return {
+            "ok": True, "eligible": eligible, "excluded": excluded,
+            "distinct_parents": 1, "matched_children": 1 if scope_mk_user_id else max(1, len(match["children"])),
+            "resolved_audience_label": label, "diagnostics": {"client_kind": match["client_kind"]},
+        }
+
+    def _resolve_audience_all_parents(self) -> dict[str, Any]:
+        links = self.storage.list_active_client_parent_child_links()
+        parents: dict[str, str] = {}
+        for row in links:
+            pid = str(row["parent_telegram_user_id"])
+            parents.setdefault(pid, str(row["mk_user_id"]))
+        pairs = list(parents.items())
+        eligible, excluded = self._communications_split_by_notification_gate(pairs)
+        return {
+            "ok": True, "eligible": eligible, "excluded": excluded,
+            "distinct_parents": len(parents), "matched_children": len(links),
+            "resolved_audience_label": "Все родители с активным кабинетом Yellow Club",
+            "diagnostics": {"matched_children": len(links), "distinct_parents": len(parents)},
+        }
+
+    def _resolve_audience_connection_campaign(self, config: dict[str, Any]) -> dict[str, Any]:
+        try:
+            campaign_id = int(config.get("campaign_id"))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Не выбрана кампания подключения."}
+        campaign = self.storage.get_onboarding_campaign(campaign_id)
+        if not campaign:
+            return {"ok": False, "error": "Кампания не найдена."}
+        if campaign.get("is_system"):
+            return {"ok": False, "error": "Системные кампании нельзя выбрать для рассылки."}
+        mk_ids = sorted(self.storage.get_onboarding_campaign_recipient_mk_ids(campaign_id))
+        parents: dict[str, str] = {}
+        not_connected: list[dict[str, Any]] = []
+        for mk in mk_ids:
+            active_parents = self.storage.get_active_parent_telegram_ids_for_mk_user(mk)
+            if not active_parents:
+                not_connected.append({
+                    "parent_telegram_id": f"unconnected:{mk}", "mk_user_id": mk,
+                    "recipient_key": f"unconnected:{mk}", "exclusion_reason": "Кабинет ещё не подключён.",
+                })
+                continue
+            for pid in active_parents:
+                parents.setdefault(pid, mk)
+        eligible, excl_gate = self._communications_split_by_notification_gate(list(parents.items()))
+        return {
+            "ok": True, "eligible": eligible, "excluded": excl_gate + not_connected,
+            "distinct_parents": len(parents), "matched_children": len(mk_ids),
+            "resolved_audience_label": f"Родители из кампании «{campaign.get('name')}»",
+            "diagnostics": {"campaign_name": campaign.get("name"), "not_connected_count": len(not_connected)},
+        }
+
+    def _resolve_audience_availability(self, want_filled: bool) -> dict[str, Any]:
+        links = self.storage.list_active_client_parent_child_links()
+        by_parent: dict[str, list[str]] = {}
+        for row in links:
+            by_parent.setdefault(str(row["parent_telegram_user_id"]), []).append(str(row["mk_user_id"]))
+        all_mk_ids = [mk for mks in by_parent.values() for mk in mks]
+        flags = self.storage.get_availability_filled_flags_for_mk_users(all_mk_ids)
+        selected_pairs: list[tuple[str, Optional[str]]] = []
+        for pid, mks in by_parent.items():
+            any_filled = any(flags.get(mk, False) for mk in mks)
+            if any_filled == want_filled:
+                selected_pairs.append((pid, mks[0]))
+        eligible, excluded = self._communications_split_by_notification_gate(selected_pairs)
+        label = (
+            "Родители, заполнившие возможности для расписания" if want_filled
+            else "Родители, не заполнившие возможности для расписания"
+        )
+        return {
+            "ok": True, "eligible": eligible, "excluded": excluded,
+            "distinct_parents": len(selected_pairs),
+            "matched_children": sum(len(by_parent[p]) for p, _ in selected_pairs),
+            "resolved_audience_label": label,
+            "diagnostics": {
+                "total_active_parents": len(by_parent), "total_active_children": len(all_mk_ids),
+            },
+        }
+
+    _COMMUNICATIONS_DISABLED_AUDIENCE_REASONS = {
+        "branch": (
+            "Сегмент «Филиал» пока недоступен: в локальных данных нет единого "
+            "надёжного признака филиала для всех подключённых клиентов без "
+            "дополнительных обращений к МойКласс по каждому клиенту."
+        ),
+        "payment_status": (
+            "Сегмент «Статус оплаты» пока недоступен: массовая классификация "
+            "потребовала бы либо новой независимой логики статусов оплаты, "
+            "либо обращения к МойКласс по каждому клиенту — в этом релизе "
+            "решили не делать ни то, ни другое."
+        ),
+    }
+
+    def _resolve_audience_disabled(self, audience_type: str) -> dict[str, Any]:
+        reason = self._COMMUNICATIONS_DISABLED_AUDIENCE_REASONS.get(
+            audience_type, "Этот сегмент пока недоступен."
+        )
+        return {"ok": False, "disabled": True, "error": reason, "disabled_reason": reason}
+
+    def _resolve_communications_audience(self, audience_type: str, audience_config: dict[str, Any]) -> dict[str, Any]:
+        audience_type = str(audience_type or "")
+        if audience_type == "single_client":
+            return self._resolve_audience_single_client(audience_config)
+        if audience_type == "all_parents":
+            return self._resolve_audience_all_parents()
+        if audience_type == "connection_campaign":
+            return self._resolve_audience_connection_campaign(audience_config)
+        if audience_type == "availability_filled":
+            return self._resolve_audience_availability(True)
+        if audience_type == "availability_missing":
+            return self._resolve_audience_availability(False)
+        if audience_type in self._COMMUNICATIONS_DISABLED_AUDIENCE_REASONS:
+            return self._resolve_audience_disabled(audience_type)
+        return {"ok": False, "error": "Не выбраны получатели."}
+
+    @staticmethod
+    def _communications_snapshot_hash(
+        audience_type: str, audience_config: dict[str, Any], scope: str, recipient_keys: list[str],
+    ) -> str:
+        payload = json.dumps(
+            {
+                "audience_type": str(audience_type or ""),
+                "audience_config": audience_config or {},
+                "scope": str(scope or ""),
+                "recipients": sorted(str(k) for k in recipient_keys),
+            },
+            sort_keys=True, ensure_ascii=False,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+    @staticmethod
+    def _communications_summarize_exclusions(excluded: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        counts: dict[str, int] = {}
+        for item in excluded:
+            reason = str(item.get("exclusion_reason") or "Не указана причина.")
+            counts[reason] = counts.get(reason, 0) + 1
+        return [{"reason": reason, "count": count} for reason, count in sorted(counts.items(), key=lambda x: -x[1])]
+
+    def communications_campaigns_list(self, auth: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        """GET /api/staff/communications/campaigns?status=draft,scheduled"""
+        denied = self._require_communications_access(auth)
+        if denied:
+            return denied
+        raw_status = str(params.get("status") or "").strip()
+        statuses = None
+        if raw_status:
+            statuses = tuple(s for s in raw_status.split(",") if s in STAFF_COMMUNICATION_STATUSES)
+        campaigns = self.storage.list_staff_communication_campaigns(statuses)
+        return {"ok": True, "campaigns": [self._communications_campaign_public(c) for c in campaigns]}
+
+    def communications_connection_campaigns_list(self, auth: dict[str, Any]) -> dict[str, Any]:
+        """GET /api/staff/communications/connection-campaigns — non-system
+        onboarding campaigns only, for the audience picker."""
+        denied = self._require_communications_access(auth)
+        if denied:
+            return denied
+        campaigns = self.storage.list_onboarding_campaigns()
+        return {"ok": True, "campaigns": [{"id": c["id"], "name": c.get("name")} for c in campaigns]}
+
+    def communications_client_lookup(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/staff/communications/client-lookup — read-only, reuses
+        the same trusted-candidate search as the owner test-client tool,
+        under the communications access gate instead. Never creates,
+        modifies, or unlinks anything."""
+        denied = self._require_communications_access(auth)
+        if denied:
+            return denied
+        query = str(body.get("query") or "").strip()
+        if not query:
+            return {"ok": False, "error": "Укажите ID ученика или Telegram ID родителя."}
+        candidates = self.storage.find_trusted_client_context_candidates(query)
+        return {"ok": True, "candidates": candidates}
+
+    def communications_campaign_create(self, auth: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/staff/communications/campaigns"""
+        denied = self._require_communications_access(auth)
+        if denied:
+            return denied
+        actor = str(auth.get("user_id") or "")
+        campaign = self.storage.create_staff_communication_draft(actor)
+        return {"ok": True, "campaign": self._communications_campaign_public(campaign)}
+
+    def communications_campaign_get(self, auth: dict[str, Any], campaign_id_str: str) -> dict[str, Any]:
+        """GET /api/staff/communications/campaigns/{id}"""
+        denied = self._require_communications_access(auth)
+        if denied:
+            return denied
+        campaign = self._communications_load_campaign(campaign_id_str)
+        if not campaign:
+            return {"ok": False, "error": "Рассылка не найдена."}
+        result = self._communications_campaign_public(campaign)
+        result["deliveryCounts"] = self.storage.count_staff_communication_recipients_by_delivery(campaign["id"])
+        return {"ok": True, "campaign": result}
+
+    _COMMUNICATIONS_DRAFT_FIELD_MAP = {
+        "name": "name", "audienceType": "audience_type", "category": "category",
+        "priority": "priority", "scope": "scope", "title": "title", "body": "body",
+        "actionKey": "action_key",
+    }
+    _COMMUNICATIONS_TITLE_MAX_LEN = 200
+    _COMMUNICATIONS_BODY_MAX_LEN = 4000
+
+    def _communications_validate_draft_fields(self, body: dict[str, Any]) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:
+        fields: dict[str, Any] = {}
+        for js_key, col in self._COMMUNICATIONS_DRAFT_FIELD_MAP.items():
+            if js_key not in body:
+                continue
+            value = body.get(js_key)
+            if col == "title":
+                value = str(value or "").strip()
+                if len(value) > self._COMMUNICATIONS_TITLE_MAX_LEN:
+                    return {}, {"ok": False, "error": f"Заголовок не должен превышать {self._COMMUNICATIONS_TITLE_MAX_LEN} символов."}
+            elif col == "body":
+                value = str(value or "").strip()
+                if len(value) > self._COMMUNICATIONS_BODY_MAX_LEN:
+                    return {}, {"ok": False, "error": f"Текст не должен превышать {self._COMMUNICATIONS_BODY_MAX_LEN} символов."}
+            elif col == "category":
+                value = str(value or "").strip()
+                if value and value not in NOTIFICATION_CATEGORIES:
+                    return {}, {"ok": False, "error": "Недопустимая категория."}
+            elif col == "priority":
+                value = str(value or "").strip()
+                if value and value not in NOTIFICATION_PRIORITIES:
+                    return {}, {"ok": False, "error": "Недопустимая важность."}
+            elif col == "scope":
+                value = str(value or "").strip()
+                if value and value not in NOTIFICATION_SCOPES:
+                    return {}, {"ok": False, "error": "Недопустимый охват."}
+            elif col == "action_key":
+                value = str(value or "").strip()
+                if value and value not in NOTIFICATION_ACTION_KEYS:
+                    return {}, {"ok": False, "error": "Недопустимая кнопка действия."}
+            else:
+                value = str(value or "").strip()
+            fields[col] = value
+        if "audienceConfig" in body:
+            cfg = body.get("audienceConfig")
+            if not isinstance(cfg, dict):
+                cfg = {}
+            fields["audience_config_json"] = json.dumps(cfg, ensure_ascii=False)
+        return fields, None
+
+    def communications_campaign_update(self, auth: dict[str, Any], campaign_id_str: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/staff/communications/campaigns/{id}"""
+        denied = self._require_communications_access(auth)
+        if denied:
+            return denied
+        campaign = self._communications_load_campaign(campaign_id_str)
+        if not campaign:
+            return {"ok": False, "error": "Рассылка не найдена."}
+        if campaign["status"] != "draft":
+            return {"ok": False, "error": "Редактировать можно только черновик."}
+        fields, err = self._communications_validate_draft_fields(body)
+        if err:
+            return err
+        invalidate = bool({"audience_type", "audience_config_json", "scope"} & set(fields.keys()))
+        actor = str(auth.get("user_id") or "")
+        result = self.storage.update_staff_communication_draft(
+            campaign["id"], actor, fields, invalidate_snapshot=invalidate,
+        )
+        if not result.get("ok"):
+            return result
+        return {"ok": True, "campaign": self._communications_campaign_public(result["campaign"])}
+
+    def communications_campaign_delete(self, auth: dict[str, Any], campaign_id_str: str) -> dict[str, Any]:
+        """POST /api/staff/communications/campaigns/{id}/delete"""
+        denied = self._require_communications_access(auth)
+        if denied:
+            return denied
+        campaign = self._communications_load_campaign(campaign_id_str)
+        if not campaign:
+            return {"ok": False, "error": "Рассылка не найдена."}
+        return self.storage.delete_staff_communication_draft(campaign["id"])
+
+    def communications_campaign_preview(self, auth: dict[str, Any], campaign_id_str: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/staff/communications/campaigns/{id}/preview — dry run,
+        never writes recipient rows or touches the campaign's own snapshot
+        fields. Frontend calls this on every Step 1 change; only "freeze"
+        below actually commits a snapshot."""
+        denied = self._require_communications_access(auth)
+        if denied:
+            return denied
+        campaign = self._communications_load_campaign(campaign_id_str)
+        if not campaign:
+            return {"ok": False, "error": "Рассылка не найдена."}
+        audience_type = str(body.get("audienceType") or campaign.get("audience_type") or "")
+        audience_config = body.get("audienceConfig")
+        if not isinstance(audience_config, dict):
+            audience_config = self._safe_json_loads(campaign.get("audience_config_json"))
+        calculated_at = now_iso()
+        result = self._resolve_communications_audience(audience_type, audience_config)
+        if not result.get("ok"):
+            return {
+                "ok": True, "state": "disabled" if result.get("disabled") else "error",
+                "eligibleCount": 0, "excludedCount": 0, "error": result.get("error"),
+                "disabled": bool(result.get("disabled")), "calculatedAt": calculated_at,
+                "source": "trusted_local_db",
+            }
+        eligible_keys = [e["recipient_key"] for e in result["eligible"]]
+        scope = str(body.get("scope") or campaign.get("scope") or "family")
+        snapshot_hash = self._communications_snapshot_hash(audience_type, audience_config, scope, eligible_keys)
+        state = "zero" if len(result["eligible"]) == 0 else "calculated"
+        return {
+            "ok": True, "state": state,
+            "eligibleCount": len(result["eligible"]), "excludedCount": len(result["excluded"]),
+            "exclusionReasons": self._communications_summarize_exclusions(result["excluded"]),
+            "distinctParents": result.get("distinct_parents"), "matchedChildren": result.get("matched_children"),
+            "calculatedAt": calculated_at, "snapshotHash": snapshot_hash,
+            "diagnostics": result.get("diagnostics") or {}, "resolvedAudience": result.get("resolved_audience_label"),
+            "source": "trusted_local_db", "stoppedReason": None,
+        }
+
+    def communications_campaign_freeze(self, auth: dict[str, Any], campaign_id_str: str) -> dict[str, Any]:
+        """POST /api/staff/communications/campaigns/{id}/freeze — commits
+        the audience snapshot (materializes staff_communication_recipients)
+        from whatever audience_type/audience_config/scope is CURRENTLY
+        saved on the draft. Required before send-now/schedule."""
+        denied = self._require_communications_access(auth)
+        if denied:
+            return denied
+        campaign = self._communications_load_campaign(campaign_id_str)
+        if not campaign:
+            return {"ok": False, "error": "Рассылка не найдена."}
+        if campaign["status"] != "draft":
+            return {"ok": False, "error": "Снимок аудитории можно создать только для черновика."}
+        if not str(campaign.get("title") or "").strip() or not str(campaign.get("body") or "").strip():
+            return {"ok": False, "error": "Заполните заголовок и текст уведомления перед расчётом получателей."}
+        audience_type = str(campaign.get("audience_type") or "")
+        if not audience_type:
+            return {"ok": False, "error": "Не выбраны получатели."}
+        if str(campaign.get("scope") or "family") == "child" and audience_type != "single_client":
+            return {"ok": False, "error": "Отправка конкретному ребёнку доступна только для одного клиента."}
+        audience_config = self._safe_json_loads(campaign.get("audience_config_json"))
+        result = self._resolve_communications_audience(audience_type, audience_config)
+        if not result.get("ok"):
+            return {"ok": False, "error": result.get("error") or "Не удалось рассчитать аудиторию.", "disabled": bool(result.get("disabled"))}
+        eligible_keys = [e["recipient_key"] for e in result["eligible"]]
+        scope = str(campaign.get("scope") or "family")
+        snapshot_hash = self._communications_snapshot_hash(audience_type, audience_config, scope, eligible_keys)
+        freeze_result = self.storage.freeze_staff_communication_snapshot(
+            campaign["id"], snapshot_hash=snapshot_hash, eligible=result["eligible"], excluded=result["excluded"],
+        )
+        if not freeze_result.get("ok"):
+            return freeze_result
+        return {
+            "ok": True, "campaign": self._communications_campaign_public(freeze_result["campaign"]),
+            "eligibleCount": len(result["eligible"]), "excludedCount": len(result["excluded"]),
+            "snapshotHash": snapshot_hash, "resolvedAudience": result.get("resolved_audience_label"),
+        }
+
+    def _communications_send_precheck(self, auth: dict[str, Any], campaign: dict[str, Any], body: dict[str, Any]) -> Optional[dict[str, Any]]:
+        denied = self._require_communications_access(auth)
+        if denied:
+            return denied
+        if not self._communications_send_enabled():
+            return {"ok": False, "error_code": "send_disabled", "error": "Отправка отключена безопасным режимом."}
+        if not campaign.get("audience_snapshot_hash"):
+            return {"ok": False, "error_code": "stale_snapshot", "error": "Сначала рассчитайте получателей."}
+        if str(body.get("snapshot_hash") or body.get("snapshotHash") or "") != campaign.get("audience_snapshot_hash"):
+            return {"ok": False, "error_code": "stale_snapshot", "error": "Аудитория изменилась — пересчитайте получателей."}
+        try:
+            provided_count = int(body.get("recipient_count", body.get("recipientCount")))
+        except (TypeError, ValueError):
+            return {"ok": False, "error_code": "count_mismatch", "error": "Не указано количество получателей для подтверждения."}
+        if provided_count != int(campaign.get("eligible_count") or 0):
+            return {"ok": False, "error_code": "count_mismatch", "error": "Количество получателей изменилось — пересчитайте."}
+        if not bool(body.get("confirm")):
+            return {"ok": False, "error_code": "confirm_required", "error": "Требуется подтверждение."}
+        return None
+
+    def _communications_execute_send(self, campaign_id: int) -> dict[str, Any]:
+        """The one idempotent send step — used by send-now, and reused
+        unchanged by the scheduler worker (both for the initial run and any
+        crash-resume). Only ever touches recipients still delivery_status=
+        'pending'; the client_notification row is created once and reused
+        on every subsequent call for the same campaign."""
+        campaign = self.storage.get_staff_communication_campaign(campaign_id)
+        notification_id = campaign.get("client_notification_id")
+        if not notification_id:
+            notification_id = self.storage.create_client_notification_message(
+                title=campaign["title"], body=campaign["body"], category=campaign["category"],
+                priority=campaign["priority"], scope=campaign["scope"],
+                mk_user_id=None,  # family-wide fan-out for every MVP audience; single-client/child-scope still fans out by parent id below
+                action_key=campaign["action_key"], created_by_telegram_id=campaign["created_by_telegram_id"],
+            )
+            self.storage.set_staff_communication_client_notification_id(campaign_id, notification_id)
+        pending = self.storage.list_staff_communication_recipients(campaign_id, delivery_status="pending")
+        created = 0
+        failed = 0
+        for recipient in pending:
+            try:
+                recipient_row_id = self.storage.add_client_notification_recipient(
+                    notification_id, recipient["parent_telegram_id"],
+                )
+                self.storage.mark_staff_communication_recipient_delivery(
+                    recipient["id"], "created", client_notification_recipient_id=recipient_row_id,
+                )
+                created += 1
+            except Exception as exc:
+                log.exception("communications_send_recipient_error campaign_id=%s recipient_id=%s", campaign_id, recipient["id"])
+                self.storage.mark_staff_communication_recipient_delivery(
+                    recipient["id"], "failed", error_code="write_error",
+                )
+                failed += 1
+        counts = self.storage.count_staff_communication_recipients_by_delivery(campaign_id)
+        total_eligible = counts.get("pending", 0) + counts.get("created", 0) + counts.get("failed", 0)
+        failed_total = counts.get("failed", 0)
+        if failed_total == 0:
+            final_status = "sent"
+        elif counts.get("created", 0) > 0:
+            final_status = "partial"
+        else:
+            final_status = "failed"
+        self.storage.finalize_staff_communication_campaign(
+            campaign_id, final_status,
+            last_error=(f"{failed_total} получателей не удалось обработать" if failed_total else None),
+        )
+        log.info(
+            "communications_campaign_send campaign_id=%s created=%d skipped=%s failed=%d status=%s",
+            campaign_id, created, counts.get("skipped", 0), failed, final_status,
+        )
+        return {
+            "campaign": self.storage.get_staff_communication_campaign(campaign_id),
+            "counts": {
+                "createdCount": counts.get("created", 0), "skippedCount": counts.get("skipped", 0),
+                "failedCount": failed_total, "totalEligible": total_eligible,
+            },
+        }
+
+    def communications_campaign_send_now(self, auth: dict[str, Any], campaign_id_str: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/staff/communications/campaigns/{id}/send"""
+        campaign = self._communications_load_campaign(campaign_id_str)
+        if not campaign:
+            return {"ok": False, "error": "Рассылка не найдена."}
+        denied = self._communications_send_precheck(auth, campaign, body)
+        if denied:
+            return denied
+        if campaign["status"] != "draft":
+            return {"ok": False, "error": "Отправить можно только черновик с рассчитанными получателями."}
+        claimed = self.storage.claim_staff_communication_campaign(campaign["id"], ("draft",), "sending", now_iso())
+        if not claimed:
+            current = self.storage.get_staff_communication_campaign(campaign["id"])
+            return {"ok": True, "campaign": self._communications_campaign_public(current), "alreadyInProgress": True}
+        outcome = self._communications_execute_send(campaign["id"])
+        return {"ok": True, "campaign": self._communications_campaign_public(outcome["campaign"]), **outcome["counts"]}
+
+    def communications_campaign_schedule(self, auth: dict[str, Any], campaign_id_str: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/staff/communications/campaigns/{id}/schedule"""
+        campaign = self._communications_load_campaign(campaign_id_str)
+        if not campaign:
+            return {"ok": False, "error": "Рассылка не найдена."}
+        if not self._communications_scheduler_enabled():
+            denied_role = self._require_communications_access(auth)
+            if denied_role:
+                return denied_role
+            return {"ok": False, "error_code": "scheduler_disabled", "error": "Планирование отправки отключено безопасным режимом."}
+        denied = self._communications_send_precheck(auth, campaign, body)
+        if denied:
+            return denied
+        if campaign["status"] != "draft":
+            return {"ok": False, "error": "Запланировать можно только черновик с рассчитанными получателями."}
+        scheduled_at_utc, err = self._communications_minsk_to_utc(str(body.get("date") or ""), str(body.get("time") or ""))
+        if err:
+            return {"ok": False, "error": err}
+        actor = str(auth.get("user_id") or "")
+        self.storage.update_staff_communication_draft(
+            campaign["id"], actor,
+            {"schedule_mode": "scheduled", "scheduled_at_utc": scheduled_at_utc, "timezone": "Europe/Minsk"},
+        )
+        claimed = self.storage.claim_staff_communication_campaign(campaign["id"], ("draft",), "scheduled", now_iso())
+        if not claimed:
+            return {"ok": False, "error": "Не удалось запланировать — рассылка уже не в статусе черновика."}
+        return {"ok": True, "campaign": self._communications_campaign_public(self.storage.get_staff_communication_campaign(campaign["id"]))}
+
+    def communications_campaign_cancel(self, auth: dict[str, Any], campaign_id_str: str) -> dict[str, Any]:
+        """POST /api/staff/communications/campaigns/{id}/cancel"""
+        denied = self._require_communications_access(auth)
+        if denied:
+            return denied
+        campaign = self._communications_load_campaign(campaign_id_str)
+        if not campaign:
+            return {"ok": False, "error": "Рассылка не найдена."}
+        actor = str(auth.get("user_id") or "")
+        result = self.storage.cancel_staff_communication_schedule(campaign["id"], actor)
+        if not result.get("ok"):
+            return result
+        return {"ok": True, "campaign": self._communications_campaign_public(result["campaign"])}
+
     # ── v7.1.12 — mass client-onboarding campaigns (staff endpoints) ─────────
     # Second, parallel path alongside the point-in-time CL-code flow above —
     # never replaces it. The parent-facing token preview/confirm/activate/
@@ -19700,6 +20441,16 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 if path.startswith("/api/client/schedule-availability/"):
                     _csa_mk = path[len("/api/client/schedule-availability/"):]
                     return self._send_json(CTX.client_schedule_availability_get(auth, _csa_mk))
+                # ── v7.1.14 — staff "Рассылки" (communications center, GET) ──
+                if path == "/api/staff/communications/campaigns":
+                    return self._send_json(CTX.communications_campaigns_list(auth, params))
+                if path == "/api/staff/communications/connection-campaigns":
+                    return self._send_json(CTX.communications_connection_campaigns_list(auth))
+                if path.startswith("/api/staff/communications/campaigns/"):
+                    _scc_rest = path[len("/api/staff/communications/campaigns/"):]
+                    _scc_parts = _scc_rest.split("/")
+                    if len(_scc_parts) == 1 and _scc_parts[0]:
+                        return self._send_json(CTX.communications_campaign_get(auth, _scc_parts[0]))
                 if path == "/api/payments/intents":
                     return self._send_json(CTX.payment_intents_list(auth, params))
                 if path == "/api/payments/moyklass/invoices":
@@ -20049,6 +20800,28 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/client/schedule-availability/"):
                 _csa_mk = path[len("/api/client/schedule-availability/"):]
                 return self._send_json(CTX.client_schedule_availability_submit(auth, _csa_mk, body))
+            # ── v7.1.14 — staff "Рассылки" (communications center, POST) ─────
+            if path == "/api/staff/communications/client-lookup":
+                return self._send_json(CTX.communications_client_lookup(auth, body))
+            if path == "/api/staff/communications/campaigns":
+                return self._send_json(CTX.communications_campaign_create(auth))
+            if path.startswith("/api/staff/communications/campaigns/"):
+                _scc_rest = path[len("/api/staff/communications/campaigns/"):]
+                _scc_parts = _scc_rest.split("/")
+                if len(_scc_parts) == 1 and _scc_parts[0]:
+                    return self._send_json(CTX.communications_campaign_update(auth, _scc_parts[0], body))
+                if len(_scc_parts) == 2 and _scc_parts[1] == "delete":
+                    return self._send_json(CTX.communications_campaign_delete(auth, _scc_parts[0]))
+                if len(_scc_parts) == 2 and _scc_parts[1] == "preview":
+                    return self._send_json(CTX.communications_campaign_preview(auth, _scc_parts[0], body))
+                if len(_scc_parts) == 2 and _scc_parts[1] == "freeze":
+                    return self._send_json(CTX.communications_campaign_freeze(auth, _scc_parts[0]))
+                if len(_scc_parts) == 2 and _scc_parts[1] == "send":
+                    return self._send_json(CTX.communications_campaign_send_now(auth, _scc_parts[0], body))
+                if len(_scc_parts) == 2 and _scc_parts[1] == "schedule":
+                    return self._send_json(CTX.communications_campaign_schedule(auth, _scc_parts[0], body))
+                if len(_scc_parts) == 2 and _scc_parts[1] == "cancel":
+                    return self._send_json(CTX.communications_campaign_cancel(auth, _scc_parts[0]))
             # v7.1.13 — client notification center
             if path.startswith("/api/client/notifications/") and path.endswith("/read"):
                 _cn_id = path[len("/api/client/notifications/"):-len("/read")]
@@ -20204,6 +20977,13 @@ def run_server() -> None:
         "PaymentAutomationGuardian started (quick_cycle_interval=%ss, startup_delay=%ss)",
         PaymentAutomationGuardian.QUICK_CYCLE_INTERVAL_SECONDS,
         PaymentAutomationGuardian.STARTUP_DELAY_SECONDS,
+    )
+    # v7.1.14 — staff communications scheduler: always starts, runs only if
+    # CLIENT_COMMUNICATIONS_SCHEDULER_ENABLED=true (checked every cycle).
+    StaffCommunicationsScheduler(CTX).start()
+    log.info(
+        "StaffCommunicationsScheduler started (kill switch: CLIENT_COMMUNICATIONS_SCHEDULER_ENABLED=%s)",
+        getattr(CTX.settings, "client_communications_scheduler_enabled", False),
     )
     # v7.1.12 — campaign invite links are built from settings.bot_username,
     # which this (HTTP server) process cannot cross-check against the real
