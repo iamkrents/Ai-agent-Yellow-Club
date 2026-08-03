@@ -195,7 +195,7 @@ class TestPreviewRemoved(unittest.TestCase):
 
     def test_cache_bust_is_current_release(self):
         self.assertIn("app.js?v=7.1.13", INDEX_HTML)
-        self.assertIn('console.log("MiniApp version: v7.1.13.2")', APP_JS)
+        self.assertIn('console.log("MiniApp version: v7.1.13.3")', APP_JS)
 
 
 if __name__ == "__main__":

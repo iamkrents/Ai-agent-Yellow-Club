@@ -8410,6 +8410,68 @@ button.danger { background: var(--red, #d84c4c); color: #fff; border: none; padd
 :root[data-theme="light"] .cp-card-paid-block { background: rgba(31,165,107,.08); border-left-color: #1fa56b; }
 :root[data-theme="light"] .cp-methods-divider { background: #f0eee6; }
 
+/* v7.1.13.3 — .cp-due-badge (Просрочено/Срок оплаты сегодня/Оплатить до)
+ * had no CSS at all in any theme — the span just inherited page text
+ * color. Harmless in light mode, but on the (now-fixed) dark .cp-card
+ * background it was nearly invisible. Explicit colors here, independent
+ * of theme, close that gap for good. */
+.cp-due-row { margin-top: 6px; }
+.cp-due-badge { display: inline-flex; align-items: center; border-radius: 8px; padding: 3px 10px; font-size: 12px; font-weight: 700; line-height: 1.4; }
+.cp-due-overdue { background: rgba(216,76,76,.14); color: #a82d2d; }
+.cp-due-today { background: rgba(230,126,34,.16); color: #8b4800; }
+.cp-due-upcoming { background: rgba(101,112,137,.12); color: #4c5568; }
+
+/* v7.1.13.3 — the card-pay CTA gets opacity:1 unconditionally (line ~8384)
+ * to survive the global `button:disabled{opacity:.5}` cascade, but that
+ * rule's specificity (1 class) loses to button:disabled's (1 element + 1
+ * pseudo-class) once the button actually IS disabled (owner test mode) —
+ * the CTA rendered at 50% opacity instead. This beats it correctly. */
+.cp-card-pay-btn:disabled { opacity: 1; cursor: default; }
+
+/* ── v7.1.13.3 — force client cabinet payments to stay light regardless of
+ * Telegram/system dark theme ──────────────────────────────────────────────
+ * Root cause: .cp-* (client payment card) rules got their own dedicated
+ * @media (prefers-color-scheme: dark) and :root[data-theme="dark"] variants
+ * back in v7.0.93.2.5 / v7.0.93.3.0 — added when this was a standalone page
+ * expected to track device theme, before the client cabinet existed. Every
+ * other cabinet screen (Главная/Availability/notifications/nav) never got a
+ * dark variant, so only Оплаты went dark when Telegram reports colorScheme
+ * "dark" (app.js _applyTgTheme sets <html data-theme="dark">) or the OS
+ * matches prefers-color-scheme:dark. v7.1.13.2's `color-scheme: light only`
+ * doesn't help here — it only changes native UA form-control chrome, not
+ * these literal author colors.
+ * Fix: re-assert the light values scoped to body.role-parent-cabinet (set
+ * only for the client cabinet — never staff/admin), with !important — the
+ * dark selectors above are 3 selector classes (:root + [data-theme] + the
+ * .cp-* class); body.role-parent-cabinet .cp-* is only element+2 classes,
+ * so plain specificity cannot win this without it. */
+body.role-parent-cabinet { color-scheme: light; }
+body.role-parent-cabinet .cp-card { background: #fff !important; border-color: #ece9dd !important; box-shadow: 0 4px 18px rgba(26,38,66,.07) !important; }
+body.role-parent-cabinet .cp-card-name,
+body.role-parent-cabinet .cp-card-amount { color: #172033 !important; }
+body.role-parent-cabinet .cp-status-pending { background: rgba(255,216,77,.30) !important; color: #6b4e00 !important; }
+body.role-parent-cabinet .cp-status-paid { background: rgba(31,165,107,.13) !important; color: #116643 !important; }
+body.role-parent-cabinet .cp-period,
+body.role-parent-cabinet .cp-card-comment { color: #657089 !important; }
+body.role-parent-cabinet .cp-card-date { color: #8e9ab3 !important; }
+body.role-parent-cabinet .cp-methods-divider { background: #f0eee6 !important; }
+body.role-parent-cabinet .cp-pay-method { background: #f6f7fb !important; border-color: #e8ecf4 !important; }
+body.role-parent-cabinet .cp-pay-method-title { color: #172033 !important; }
+body.role-parent-cabinet .cp-erip-block { background: rgba(255,248,210,.75) !important; border-color: rgba(255,216,77,.45) !important; }
+body.role-parent-cabinet .cp-erip-label { color: #657089 !important; }
+body.role-parent-cabinet .cp-erip-value { color: #172033 !important; }
+body.role-parent-cabinet .cp-copy-btn { background: #fff !important; border-color: #172033 !important; color: #172033 !important; }
+body.role-parent-cabinet .cp-copy-btn:hover { background: #ffd84d !important; border-color: #c4a200 !important; color: #172033 !important; }
+body.role-parent-cabinet .cp-copy-btn:disabled { background: rgba(31,165,107,.12) !important; border-color: #1fa56b !important; color: #116643 !important; }
+body.role-parent-cabinet .cp-erip-details { border-color: rgba(255,216,77,.40) !important; background: #fff !important; }
+body.role-parent-cabinet .cp-erip-details > summary { color: #172033 !important; background: rgba(255,248,210,.60) !important; }
+body.role-parent-cabinet .cp-erip-steps li { color: #172033 !important; opacity: 1 !important; }
+body.role-parent-cabinet .cp-erip-hint-label { color: #172033 !important; }
+body.role-parent-cabinet .cp-erip-path { background: rgba(255,216,77,.15) !important; color: #4a3900 !important; }
+body.role-parent-cabinet .cp-paid-amt { color: #172033 !important; }
+body.role-parent-cabinet .cp-paid-date { color: #657089 !important; }
+body.role-parent-cabinet .cp-card-paid-block { background: rgba(31,165,107,.08) !important; border-left-color: #1fa56b !important; }
+
 /* v7.0.94.0 — hide empty notice strip */
 .notice:empty { display: none; }
 
