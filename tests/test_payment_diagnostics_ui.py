@@ -258,7 +258,7 @@ class TestVersionMarker(unittest.TestCase):
     def test_25_cache_bust_is_v7110(self):
         self.assertIn("app.js?v=7.1.14", INDEX_HTML)
         self.assertIn("styles.css?v=7.1.14", INDEX_HTML)
-        self.assertIn('console.log("MiniApp version: v7.1.14")', APP_JS)
+        self.assertIn('console.log("MiniApp version: v7.1.14.1")', APP_JS)
 
 
 class TestPreviewRemoved(unittest.TestCase):

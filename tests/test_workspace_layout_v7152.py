@@ -338,9 +338,9 @@ class TestVersionV7152(unittest.TestCase):
         js = _js()
         self.assertIn("v=7.1.14", html, "index.html cache-bust must be v=7.1.14")
         self.assertIn(
-            'console.log("MiniApp version: v7.1.14")',
+            'console.log("MiniApp version: v7.1.14.1")',
             js,
-            "app.js must contain version marker v7.1.14",
+            "app.js must contain version marker v7.1.14.1",
         )
 
 

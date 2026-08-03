@@ -10200,6 +10200,11 @@ body.role-parent-cabinet .tabs.bottom-tabbar .tab:active {
    staff app) but every layout/structural rule below is specific to this
    module and lives here rather than as inline style="" in app.js. ────── */
 
+/* v7.1.14.1 — guaranteed one-tap entry card on the Admin screen */
+.comms-admin-entry-card { margin-bottom: 14px; }
+.comms-admin-entry-head { margin-bottom: 10px; }
+.comms-admin-entry-head h3 { margin: 0; font-size: 16px; }
+
 .comms-page-subtitle { color: var(--muted); font-size: 13px; margin: 4px 0 0; }
 .comms-mode-notice { margin-top: 10px; }
 .comms-section-head { margin-top: 18px; }
@@ -10270,7 +10275,12 @@ body.role-parent-cabinet .tabs.bottom-tabbar .tab:active {
 /* ── confirmation sheet — full-height, forced-light (same technique as
    #wsFiltersModal above), never a native confirm()/window.confirm(). ── */
 .comms-confirm-sheet {
-  height: calc(100dvh - env(safe-area-inset-top, 0px) - 8px);
+  /* v7.1.14.1 — reuse the app's own proven top-safe-area chain
+     (--app-top-safe-offset, set in styles.css :root and refined live by
+     _applySafeArea in app.js) instead of a bare env(), so the sheet never
+     drifts from how every other screen in this app sizes for Telegram's
+     own chrome. */
+  height: calc(100dvh - var(--app-top-safe-offset, env(safe-area-inset-top, 0px)) - 8px);
 }
 @media (min-width: 600px) {
   .comms-confirm-sheet { height: min(90vh, 760px); }

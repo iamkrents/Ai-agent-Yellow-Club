@@ -132,7 +132,7 @@ class TestClientCabinetForcedLight(unittest.TestCase):
             )
 
     def test_11_version_and_cache_bust(self):
-        self.assertIn('console.log("MiniApp version: v7.1.14")', self.js)
+        self.assertIn('console.log("MiniApp version: v7.1.14.1")', self.js)
         self.assertIn('styles.css?v=7.1.14', self.html)
         self.assertIn('app.js?v=7.1.14', self.html)
 

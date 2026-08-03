@@ -97,7 +97,7 @@ const launchTab = urlParams.get("tab") || "";
 // one specific campaign recipient (from the bot's post-activation button).
 const launchAvailabilityRecipientId = urlParams.get("oc_availability_recipient") || "";
 
-console.log("MiniApp version: v7.1.14");
+console.log("MiniApp version: v7.1.14.1");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -1413,7 +1413,8 @@ function activateTab(name) {
   if (name === "more") renderClientMore();
   if (name === "profile") renderClientProfile();
   if (name === "my-lunch") { renderStaffFoodLunch($("myLunchContent")); }
-  if (name === "comms") loadCommsHome();
+  if (name === "comms") { _commsSectionActive = true; loadCommsHome(); _commsSetBackButton(_commsExitToAdmin); }
+  else if (_commsSectionActive) { _commsSectionActive = false; _commsSetBackButton(null); }
   if (name === "kitchen-editor") {
     const root = $("kitchenEditorContent");
     if (root && !state.kitchenEditorData) loadKitchenEditor(root);
@@ -13106,6 +13107,7 @@ function _commsRenderHome(root) {
   root.innerHTML = `
     <div class="section-head">
       <div><h2>Рассылки</h2><p class="comms-page-subtitle">Отправка настоящих уведомлений в личный кабинет сразу многим клиентам.</p></div>
+      <button type="button" onclick="activateTab('admin')">Назад в Админ</button>
     </div>
     <button type="button" class="primary wide" onclick="_commsCreateCampaign()">Создать рассылку</button>
     ${!state.me?.communicationsSendEnabled ? `<div class="notice comms-mode-notice">Отправка отключена безопасным режимом. Черновики, расчёт получателей и предпросмотр работают как обычно.</div>` : ""}
@@ -13512,19 +13514,37 @@ function _commsConfirmFinish() {
   });
 }
 
+// ── Telegram BackButton — shared single-handler stack for the whole
+// "Рассылки" section (v7.1.14.1). While just browsing home/wizard/result,
+// BackButton exits straight back to «Админ» (_commsExitToAdmin) — the
+// section-level entry point added alongside the admin card. While the
+// confirmation sheet is open, BackButton is temporarily swapped to close
+// the sheet first (_commsBackButtonHandler); closing/finishing the sheet
+// restores the section-level handler, since the user is still inside the
+// comms section at that point. Leaving the comms tab entirely (any other
+// activateTab call) fully detaches it — see activateTab().
+let _commsSectionActive = false;
+let _commsCurrentBackHandler = null;
+
+function _commsSetBackButton(handler) {
+  if (!tg?.BackButton) return;
+  if (_commsCurrentBackHandler) tg.BackButton.offClick(_commsCurrentBackHandler);
+  _commsCurrentBackHandler = handler;
+  if (handler) {
+    tg.BackButton.onClick(handler);
+    tg.BackButton.show();
+  } else {
+    tg.BackButton.hide();
+  }
+}
+
+function _commsExitToAdmin() { activateTab("admin"); }
+
 function _commsBackButtonHandler() { _commsConfirmClose(); }
 
-function _commsBackButtonShow() {
-  if (!tg?.BackButton) return;
-  tg.BackButton.onClick(_commsBackButtonHandler);
-  tg.BackButton.show();
-}
+function _commsBackButtonShow() { _commsSetBackButton(_commsBackButtonHandler); }
 
-function _commsBackButtonHide() {
-  if (!tg?.BackButton) return;
-  tg.BackButton.offClick(_commsBackButtonHandler);
-  tg.BackButton.hide();
-}
+function _commsBackButtonHide() { _commsSetBackButton(_commsSectionActive ? _commsExitToAdmin : null); }
 
 async function _commsConfirmRecalculate() {
   const cf = _comms.confirm;
@@ -13753,6 +13773,7 @@ async function boot() {
   $("loadChildrenReport")?.addEventListener("click", loadChildrenReport);
   $("childrenReportMonth")?.addEventListener("change", () => { state.childrenReportMonth = $("childrenReportMonth")?.value || ""; });
   $("goToReportsFromAdmin")?.addEventListener("click", () => activateTab("reports"));
+  $("commsAdminEntryBtn")?.addEventListener("click", () => activateTab("comms"));
   $("syncTasksFromReports")?.addEventListener("click", () => syncTasksFromReports("all"));
   $("syncPaymentTasksFromReports")?.addEventListener("click", () => syncTasksFromReports("payment"));
   $("syncMakeupTasksFromReports")?.addEventListener("click", () => syncTasksFromReports("makeup"));

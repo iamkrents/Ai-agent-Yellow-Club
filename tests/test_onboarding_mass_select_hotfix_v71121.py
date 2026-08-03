@@ -416,7 +416,7 @@ class TestHotfixVersion(unittest.TestCase):
     # assert the CURRENT marker/cache-bust, not the historical v7.1.12.1 this
     # file was originally written against.
     def test_app_js_version_is_current(self):
-        self.assertIn('console.log("MiniApp version: v7.1.14");', _js())
+        self.assertIn('console.log("MiniApp version: v7.1.14.1");', _js())
 
     def test_index_html_cache_bust_is_current(self):
         html = _html()

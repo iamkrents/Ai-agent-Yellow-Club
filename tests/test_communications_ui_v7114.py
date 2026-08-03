@@ -249,17 +249,25 @@ class TestCommsConfirmSheet(unittest.TestCase):
         self.assertIn("return;", lines[1])
 
     def test_70_backbutton_closes_sheet_first(self):
+        # v7.1.14.1 — _commsBackButtonShow/_commsBackButtonHide now delegate
+        # to a shared single-handler stack (_commsSetBackButton) so the same
+        # Telegram BackButton can also exit the whole comms section back to
+        # «Админ» when no sheet is open (see test_6 in
+        # test_communications_production_hotfix_v71141.py) — the actual
+        # onClick/show/offClick/hide calls now live in that shared helper.
         self.assertIn("tg?.BackButton", self.comms_js)
-        show = self._fn_body(r"function _commsBackButtonShow\(\)")
-        self.assertIn("tg.BackButton.onClick(_commsBackButtonHandler)", show)
-        self.assertIn("tg.BackButton.show()", show)
-        hide = self._fn_body(r"function _commsBackButtonHide\(\)")
-        self.assertIn("tg.BackButton.offClick(_commsBackButtonHandler)", hide)
-        self.assertIn("tg.BackButton.hide()", hide)
-        handler = self._fn_body(r"function _commsBackButtonHandler\(\)")
-        self.assertIn("_commsConfirmClose()", handler)
+        setter = self._fn_body(r"function _commsSetBackButton\(handler\)")
+        self.assertIn("tg.BackButton.onClick(handler)", setter)
+        self.assertIn("tg.BackButton.show()", setter)
+        self.assertIn("tg.BackButton.hide()", setter)
+        self.assertIn("function _commsBackButtonHandler() { _commsConfirmClose(); }", self.comms_js)
+        self.assertIn("function _commsBackButtonShow() { _commsSetBackButton(_commsBackButtonHandler); }", self.comms_js)
+        self.assertIn(
+            "function _commsBackButtonHide() { _commsSetBackButton(_commsSectionActive ? _commsExitToAdmin : null); }",
+            self.comms_js,
+        )
         # BackButton is attached only while the sheet is open, and detached
-        # on every close path — never left dangling for other screens.
+        # (back to the section-level handler, or fully off) on every close path.
         open_fn = self._fn_body(r"async function _commsOpenConfirm\(\)")
         self.assertIn("_commsBackButtonShow()", open_fn)
         close_fn = self._fn_body(r"function _commsConfirmClose\(\)")
@@ -274,10 +282,14 @@ class TestCommsConfirmSheet(unittest.TestCase):
 
     def test_72_safe_area_respected(self):
         # Base .pi-modal-footer (design-system-wide) already pads for the
-        # bottom safe area; the sheet itself sizes against the top inset —
-        # neither is duplicated/overridden incorrectly for this module.
+        # bottom safe area; the sheet itself sizes against the top inset,
+        # via the app's own proven --app-top-safe-offset chain (v7.1.14.1 —
+        # see test_communications_production_hotfix_v71141.py test_11),
+        # not a bare env() — neither is duplicated/overridden for this module.
         self.assertIn("env(safe-area-inset-bottom", self.css)
-        self.assertIn(".comms-confirm-sheet {\n  height: calc(100dvh - env(safe-area-inset-top, 0px) - 8px);", self.css)
+        idx = self.css.find(".comms-confirm-sheet {")
+        self.assertNotEqual(idx, -1)
+        self.assertIn("var(--app-top-safe-offset, env(safe-area-inset-top, 0px))", self.css[idx:idx + 700])
 
     def test_73_no_horizontal_overflow_introduced(self):
         idx = self.css.find(".comms-confirm-sheet {")
@@ -316,7 +328,7 @@ class TestCommsConfirmSheet(unittest.TestCase):
     def test_75_version_markers_preserved(self):
         self.assertIn("styles.css?v=7.1.14", self.html)
         self.assertIn("app.js?v=7.1.14", self.html)
-        self.assertIn('console.log("MiniApp version: v7.1.14");', self.js)
+        self.assertIn('console.log("MiniApp version: v7.1.14.1");', self.js)
 
     def test_76_native_confirm_not_used_for_send_nor_schedule(self):
         submit = self._fn_body(r"async function _commsConfirmSubmit\(\)")
