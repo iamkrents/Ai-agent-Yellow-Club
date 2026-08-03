@@ -4,11 +4,21 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.1.14.2" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.1.14.3" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
   <div class="app-shell">
+    <!-- v7.1.14.3 — single, unconditional top safe-area spacer: the literal
+         first element inside .app-shell, before any hero/header/route
+         content on every screen (staff topbar, client-cabinet hero,
+         food-only, communications, availability, ...). Height is driven
+         entirely by --app-top-safe-offset (see styles.css); .app-shell
+         itself no longer varies its own padding-top for Telegram, so there
+         is exactly one place that reserves space for Telegram's chrome —
+         a real DOM node, not a padding value a descendant could silently
+         negate with its own margin/position/transform. -->
+    <div id="appTopSafeSpacer" class="app-top-safe-spacer" aria-hidden="true"></div>
     <header class="topbar">
       <div>
         <div class="eyebrow">Yellow Club</div>
@@ -1592,6 +1602,6 @@
 
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.1.14.2"></script>
+  <script src="/static/app.js?v=7.1.14.3"></script>
 </body>
 </html>

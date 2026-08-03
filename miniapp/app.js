@@ -51,24 +51,47 @@ if (tg) {
   );
 }
 
+// v7.1.14.3 — real-device iPhone reports (and a Playwright render mocking
+// Telegram iOS reporting contentSafeAreaInset.top=0/safeAreaInsets.top=0,
+// which real Telegram iOS sessions are known to do) proved this offset can
+// legitimately compute to 0px even though Telegram's own Close/Menu header
+// row is physically still there covering that space — the previous code
+// trusted a reported 0 completely. iosTelegramMinChromePx is a documented,
+// GUARDED floor: only ever applied on tg.platform === "ios" (never Android/
+// desktop/plain browser), only ever raises the value via Math.max (never
+// added on top of it, so it can't double-stack with a correct larger real
+// value), and only exists because the real WebView on iOS does not always
+// return a usable inset. It is an estimate (iOS status bar up to ~59px on
+// Dynamic Island devices + Telegram's own Close/Menu row ~44px, rounded up
+// for the required 8px breathing room below them) pending confirmation
+// against a real device — not a blind global guess like the old +56px,
+// which applied to every platform unconditionally.
+const IOS_TELEGRAM_MIN_TOP_SAFE_AREA_PX = 100;
+
 // Refine with the WebApp JS API's own reported values when available —
 // still real device/client data, never a fixed guess. Prefers
 // contentSafeAreaInset (already includes Telegram's own header chrome,
 // Bot API 8.0+) over the plainer safeAreaInsets (device notch only).
 function _applySafeArea() {
   const content = tg?.contentSafeAreaInset || tg?.contentSafeAreaInsets;
+  let px = null;
   if (content && typeof content.top === "number" && content.top >= 0) {
-    document.documentElement.style.setProperty("--app-top-safe-offset", content.top + "px");
-    return;
+    px = content.top;
+  } else {
+    const top = tg?.safeAreaInsets?.top;
+    if (typeof top === "number" && top >= 0) {
+      // Device-notch-only value — Telegram's own chrome isn't included here,
+      // so keep a small fixed breathing-room addition (not a guess at the
+      // full chrome height like the old +56px was).
+      document.documentElement.style.setProperty("--tg-safe-top", top + "px");
+      px = top + 8;
+    }
   }
-  const top = tg?.safeAreaInsets?.top;
-  if (typeof top === "number" && top >= 0) {
-    // Device-notch-only value — Telegram's own chrome isn't included here,
-    // so keep a small fixed breathing-room addition (not a guess at the
-    // full chrome height like the old +56px was).
-    document.documentElement.style.setProperty("--tg-safe-top", top + "px");
-    document.documentElement.style.setProperty("--app-top-safe-offset", (top + 8) + "px");
+  if (px === null) return; // no Telegram safe-area signal at all — leave the CSS env() fallback chain in control
+  if (tg?.platform === "ios") {
+    px = Math.max(px, IOS_TELEGRAM_MIN_TOP_SAFE_AREA_PX);
   }
+  document.documentElement.style.setProperty("--app-top-safe-offset", px + "px");
 }
 _applySafeArea();
 tg?.onEvent?.("safeAreaChanged", _applySafeArea);
@@ -108,7 +131,7 @@ const launchTab = urlParams.get("tab") || "";
 // one specific campaign recipient (from the bot's post-activation button).
 const launchAvailabilityRecipientId = urlParams.get("oc_availability_recipient") || "";
 
-console.log("MiniApp version: v7.1.14.2");
+console.log("MiniApp version: v7.1.14.3");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -237,6 +260,21 @@ const ROLE_LABELS = {
 function roleLabel(role) { return ROLE_LABELS[role] || role || "роль"; }
 function roleCaps() { return state.me?.capabilities || {}; }
 function canUseAdmin() { return !!roleCaps().canUseAdmin; }
+// v7.1.14.3 — canUseAdmin() is NOT a reliable proxy for "does this role have
+// real, business-meaningful access to the Admin screen": a real live-server
+// check (GET /api/me for a real client_manager) showed canUseAdmin() is
+// TRUE for client_manager whenever FOOD_MODULE_ENABLED=true, purely because
+// client_manager is also allowed the personal "food-lunch" self-order admin
+// sub-tab (_staff_food_roles in web_app_server.py) — that's real and
+// intentional for food-lunch, but it is not "Admin section" access. Used
+// only for the comms "Назад в Админ" affordance; keyed on the REAL role
+// (me().realRole), never state.me.role (which reflects an active
+// owner/admin test-role preview) — an owner/admin previewing a lower role
+// must not lose it, and no substituted role can grant it.
+function canReturnToAdminFromComms() {
+  const realRole = state.me?.realRole || "";
+  return realRole === "owner" || realRole === "admin";
+}
 function canUseLessons() { return !!roleCaps().canUseLessons; }
 function canUseSchedule() { return !!roleCaps().canUseSchedule; }
 function canUseOpenSlots() { return !!roleCaps().canUseOpenSlots; }
@@ -1436,10 +1474,11 @@ function activateTab(name) {
     loadCommsHome();
     // v7.1.14.2 — client_manager now also reaches "Рассылки", but as a
     // top-level peer tab (like "Отчёты"/"Платежи"), not nested inside
-    // Admin — that role has no admin-tab access, so there is nowhere for
-    // an "exit to Admin" BackButton to return to. Only wire it when the
-    // real user can actually reach Admin (owner/admin/operations).
-    _commsSetBackButton(canUseAdmin() ? _commsExitToAdmin : null);
+    // Admin. v7.1.14.3 — switched the gate from canUseAdmin() (true for
+    // client_manager whenever food-lunch self-order is enabled — see
+    // canReturnToAdminFromComms above) to a direct real-role check: only
+    // owner/admin get the "exit to Admin" BackButton.
+    _commsSetBackButton(canReturnToAdminFromComms() ? _commsExitToAdmin : null);
   } else if (_commsSectionActive) {
     _commsSectionActive = false;
     _commsSetBackButton(null);
@@ -13143,7 +13182,7 @@ function _commsRenderHome(root) {
   root.innerHTML = `
     <div class="section-head">
       <div><h2>Рассылки</h2><p class="comms-page-subtitle">Отправка настоящих уведомлений в личный кабинет сразу многим клиентам.</p></div>
-      ${canUseAdmin() ? `<button type="button" onclick="activateTab('admin')">Назад в Админ</button>` : ""}
+      ${canReturnToAdminFromComms() ? `<button type="button" onclick="activateTab('admin')">Назад в Админ</button>` : ""}
     </div>
     <button type="button" class="primary wide" onclick="_commsCreateCampaign()">Создать рассылку</button>
     ${!state.me?.communicationsSendEnabled ? `<div class="notice comms-mode-notice">Отправка отключена безопасным режимом. Черновики, расчёт получателей и предпросмотр работают как обычно.</div>` : ""}

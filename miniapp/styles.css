@@ -6281,9 +6281,30 @@ select {
   --app-top-safe-offset:   calc(var(--tg-safe-top) + var(--tg-native-top-overlay));
 }
 
-/* Higher specificity (0,2,1) beats the plain .app-shell (0,1,0) rules above */
+/* v7.1.14.3 — replaced the old "give .app-shell itself a variable
+   padding-top" model with a single, real, unconditional spacer element
+   (#appTopSafeSpacer, first child of .app-shell — see index.html). Real
+   browser-render evidence (getComputedStyle, not just source-reading) showed
+   the previous padding-based model DID compute correctly in principle, but
+   left the actual safe reservation entirely dependent on Telegram reporting
+   a non-zero contentSafeAreaInset/safeAreaInsets — which real Telegram iOS
+   sessions are known to under-report (see the guarded iOS floor in
+   _applySafeArea, app.js). A dedicated DOM node keeps the reservation
+   inspectable/robust regardless of that, and .app-shell now only ever
+   carries a small fixed cosmetic padding-top — never a second,
+   Telegram-conditional one — so there is exactly one place adding up to
+   --app-top-safe-offset, never two. */
+.app-top-safe-spacer {
+  display: block;
+  width: 100%;
+  height: 0px;
+  flex: none;
+}
+body.is-telegram-webapp .app-top-safe-spacer {
+  height: var(--app-top-safe-offset);
+}
 body.is-telegram-webapp .app-shell {
-  padding-top: var(--app-top-safe-offset) !important;
+  padding-top: 14px !important;
 }
 
 /* Fullscreen lesson modal: push card and X button below the Telegram chrome */
@@ -9348,7 +9369,17 @@ body.keyboard-open .tabs.bottom-tabbar {
 .ws-oc-checkbox-field { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 13px; color: var(--ink); }
 .ws-oc-ttl-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .ws-oc-ttl-btn { min-height: 34px; padding: 0 12px; font-size: 12px; }
-.ws-oc-ttl-btn.active { background: var(--yc-yellow, #FFCB1F); color: #6f5200; border-color: transparent; }
+/* v7.1.14.3 — real computed-style evidence (Playwright) showed the selected
+   branch button was visually indistinguishable from the unselected ones:
+   these buttons always also carry the generic ".secondary" class (see
+   index.html #availBranchRow), and ".secondary { background/color/border
+   !important }" (added later, for the app-wide secondary-button re-theme)
+   unconditionally wins over this rule's non-!important background/color —
+   the .active class was toggled correctly, it just had zero visual effect.
+   !important here (scoped narrowly to .ws-oc-ttl-btn.active only) restores
+   the intended yellow-bg/dark-text selected state without touching
+   .secondary's normal appearance anywhere else in the app. */
+.ws-oc-ttl-btn.active { background: var(--yc-yellow, #FFCB1F) !important; color: #6f5200 !important; border-color: transparent !important; }
 
 .ws-oc-summary { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0 4px; }
 .ws-oc-summary-stat { font-size: 12px; color: var(--muted); }

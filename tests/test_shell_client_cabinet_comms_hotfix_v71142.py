@@ -207,8 +207,12 @@ class TestStaticFrontendChanges(unittest.TestCase):
 
     def test_single_surviving_safe_area_chain(self):
         self.assertEqual(self.css.count("--app-top-safe-offset:   calc(var(--tg-safe-top) + var(--tg-native-top-overlay));"), 1)
+        # v7.1.14.3 — the app-shell-padding-top model was replaced by a
+        # dedicated spacer element (see test_safe_area_branch_selection_
+        # hotfix_v71143.py); the chain variable itself is unchanged/still
+        # single-sourced, just consumed differently.
         self.assertIn(
-            "body.is-telegram-webapp .app-shell {\n  padding-top: var(--app-top-safe-offset) !important;\n}",
+            "body.is-telegram-webapp .app-top-safe-spacer {\n  height: var(--app-top-safe-offset);\n}",
             self.css,
         )
 
@@ -247,24 +251,28 @@ class TestStaticFrontendChanges(unittest.TestCase):
         segment = self.js[idx:idx + 400]
         self.assertIn('"client_manager"', segment)
 
-    def test_comms_exit_to_admin_gated_on_can_use_admin(self):
+    def test_comms_exit_to_admin_gated_on_real_role(self):
+        # v7.1.14.3 — canUseAdmin() proved TRUE for client_manager whenever
+        # food-lunch self-order is enabled (see test_safe_area_branch_
+        # selection_hotfix_v71143.py); the gate is now canReturnToAdminFromComms(),
+        # keyed on the real role.
         idx = self.js.find('if (name === "comms") {')
         self.assertNotEqual(idx, -1)
-        segment = self.js[idx:idx + 500]
-        self.assertIn("canUseAdmin() ? _commsExitToAdmin : null", segment)
+        segment = self.js[idx:idx + 600]
+        self.assertIn("canReturnToAdminFromComms() ? _commsExitToAdmin : null", segment)
 
-    def test_comms_home_back_button_gated_on_can_use_admin(self):
+    def test_comms_home_back_button_gated_on_real_role(self):
         # Anchored on the subtitle text, unique to the real comms-home
         # render (renderCommsDisabled's header has no subtitle/back button).
         idx = self.js.find("Отправка настоящих уведомлений в личный кабинет")
         self.assertNotEqual(idx, -1)
         segment = self.js[idx:idx + 300]
-        self.assertIn("canUseAdmin() ?", segment)
+        self.assertIn("canReturnToAdminFromComms() ?", segment)
 
     def test_version_cache_bust_v71142(self):
-        self.assertIn("styles.css?v=7.1.14.2", self.html)
-        self.assertIn("app.js?v=7.1.14.2", self.html)
-        self.assertIn('console.log("MiniApp version: v7.1.14.2");', self.js)
+        self.assertIn("styles.css?v=7.1.14.3", self.html)
+        self.assertIn("app.js?v=7.1.14.3", self.html)
+        self.assertIn('console.log("MiniApp version: v7.1.14.3");', self.js)
 
 
 if __name__ == "__main__":

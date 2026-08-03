@@ -154,12 +154,13 @@ class TestAdminEntryCardStatic(unittest.TestCase):
         self.assertIn("function _commsExitToAdmin() { activateTab(\"admin\"); }", self.js)
         idx = self.js.find('if (name === "comms")')
         self.assertNotEqual(idx, -1)
-        segment = self.js[idx:idx + 500]
+        segment = self.js[idx:idx + 700]
         # v7.1.14.2 — client_manager also reaches "Рассылки" now, but has no
-        # Admin tab to return to, so the handler is only wired when the real
-        # role can actually reach Admin (canUseAdmin()); owner/admin still
-        # get the exact same _commsExitToAdmin behavior as before.
-        self.assertIn("_commsSetBackButton(canUseAdmin() ? _commsExitToAdmin : null)", segment)
+        # Admin tab to return to. v7.1.14.3 — canUseAdmin() proved TRUE for
+        # client_manager whenever food-lunch self-order is enabled, so the
+        # gate was switched to canReturnToAdminFromComms() (real-role based);
+        # owner/admin still get the exact same _commsExitToAdmin behavior.
+        self.assertIn("_commsSetBackButton(canReturnToAdminFromComms() ? _commsExitToAdmin : null)", segment)
 
     def test_7_old_test_sender_stays_separate(self):
         self.assertIn('id="ownerTestNotificationPanel"', self.html)
@@ -180,8 +181,10 @@ class TestAdminEntryCardStatic(unittest.TestCase):
         self.assertIn(
             "--app-top-safe-offset:   calc(var(--tg-safe-top) + var(--tg-native-top-overlay));", self.css,
         )
+        # v7.1.14.3 — the app-shell-padding-top consumer was replaced by a
+        # dedicated spacer element; the underlying chain variable is unchanged.
         self.assertIn(
-            "body.is-telegram-webapp .app-shell {\n  padding-top: var(--app-top-safe-offset) !important;\n}",
+            "body.is-telegram-webapp .app-top-safe-spacer {\n  height: var(--app-top-safe-offset);\n}",
             self.css,
         )
 
@@ -231,9 +234,9 @@ class TestAdminEntryCardStatic(unittest.TestCase):
         self.assertNotRegex(block, r"width:\s*\d+px")
 
     def test_15_version_cache_bust_v71141(self):
-        self.assertIn("styles.css?v=7.1.14.2", self.html)
-        self.assertIn("app.js?v=7.1.14.2", self.html)
-        self.assertIn('console.log("MiniApp version: v7.1.14.2");', self.js)
+        self.assertIn("styles.css?v=7.1.14.3", self.html)
+        self.assertIn("app.js?v=7.1.14.3", self.html)
+        self.assertIn('console.log("MiniApp version: v7.1.14.3");', self.js)
 
 
 if __name__ == "__main__":
