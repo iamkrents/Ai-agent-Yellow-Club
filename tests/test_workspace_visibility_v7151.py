@@ -340,8 +340,8 @@ class TestVersionV7151(unittest.TestCase):
         """index.html cache-bust and app.js version marker must be v7.1.8."""
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.14", html, "index.html cache-bust must be v=7.1.14")
-        self.assertIn("v7.1.14", js, "app.js version marker must be v7.1.14")
+        self.assertIn("v=7.1.15", html, "index.html cache-bust must be v=7.1.15")
+        self.assertIn("v7.1.15", js, "app.js version marker must be v7.1.15")
 
 
 if __name__ == "__main__":

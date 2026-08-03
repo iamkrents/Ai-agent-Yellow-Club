@@ -234,9 +234,9 @@ class TestAdminEntryCardStatic(unittest.TestCase):
         self.assertNotRegex(block, r"width:\s*\d+px")
 
     def test_15_version_cache_bust_v71141(self):
-        self.assertIn("styles.css?v=7.1.14.3", self.html)
-        self.assertIn("app.js?v=7.1.14.3", self.html)
-        self.assertIn('console.log("MiniApp version: v7.1.14.3");', self.js)
+        self.assertIn("styles.css?v=7.1.15", self.html)
+        self.assertIn("app.js?v=7.1.15", self.html)
+        self.assertIn('console.log("MiniApp version: v7.1.15");', self.js)
 
 
 if __name__ == "__main__":

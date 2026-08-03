@@ -2376,8 +2376,19 @@ class BotHandlers:
             text = self._ONBOARDING_PREVIEW_ERROR_TEXT.get(
                 preview.get("reason_code"), self._ONBOARDING_PREVIEW_ERROR_TEXT["invite_not_found"]
             )
+            # v7.1.15 — launch-readiness event log. request_key is the
+            # non-secret invite id only, never the signature.
+            self.storage.log_onboarding_event(
+                "onboarding_failed", "invite", "failed",
+                parent_telegram_id=str(user_id), reason_code=preview.get("reason_code"),
+                request_key=invite_id_str,
+            )
             await self._reply(msg, text)
             return
+        self.storage.log_onboarding_event(
+            "invite_opened", "invite", "started",
+            parent_telegram_id=str(user_id), request_key=invite_id_str,
+        )
         # Kept only in memory, associated with this Telegram user_id — never
         # re-derivable from callback_data, never logged.
         self.pending_onboarding_invites[user_id] = {"invite_id": int(invite_id_str), "signature": signature}
@@ -2421,8 +2432,20 @@ class BotHandlers:
             text = self._ONBOARDING_ACTIVATE_ERROR_TEXT.get(
                 result.get("reason_code"), self._ONBOARDING_ACTIVATE_ERROR_TEXT["invite_not_found"]
             )
+            self.storage.log_onboarding_event(
+                "onboarding_failed", "invite", "failed",
+                parent_telegram_id=str(user_id), reason_code=result.get("reason_code"),
+                request_key=str(pending["invite_id"]),
+            )
             await query.edit_message_text(text)
             return
+        self.storage.log_onboarding_event(
+            "link_already_exists" if result.get("already_linked") else "link_created",
+            "invite", "succeeded",
+            parent_telegram_id=str(user_id), mk_user_id=result.get("mk_user_id"),
+            campaign_id=result.get("campaign_id"), recipient_id=result.get("recipient_id"),
+            request_key=str(pending["invite_id"]),
+        )
 
         name = result.get("child_display_name") or "Ученик"
         await query.edit_message_text(f"{name} подключён к Yellow Club Agent.")

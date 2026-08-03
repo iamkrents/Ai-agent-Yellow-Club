@@ -1518,6 +1518,45 @@ class Storage:
             )
         """)
 
+        # v7.1.15 — launch-readiness diagnostics. A single, cross-flow event
+        # log spanning all three connection sources (CL-code, onboarding
+        # invite, food), additive and self-migrating (CREATE TABLE IF NOT
+        # EXISTS only — never replaces client_link_audit_log or
+        # client_onboarding_audit_log, which keep their existing detailed
+        # per-flow event types unchanged; this table exists because neither
+        # of those alone unifies "started/succeeded/failed" with a shared
+        # source_type across CL-code/invite/food, and list_onboarding_audit_
+        # events is campaign-scoped only). Fail-open by design (see
+        # log_onboarding_event below) — a logging failure must never affect
+        # the real linking operation it describes, so this is a best-effort
+        # diagnostic signal, not a source of truth for "is this client
+        # linked" (client_parent_child_links/parent_child_links remain
+        # authoritative for that). Never stores Telegram initData, tokens,
+        # full URLs with secrets, or payment content — request_key is at
+        # most a short non-secret correlation fragment (e.g. an invite id),
+        # never a code/signature/hash.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS client_onboarding_events (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type          TEXT NOT NULL,
+                source_type         TEXT NOT NULL,
+                campaign_id         INTEGER,
+                recipient_id        INTEGER,
+                parent_telegram_id  TEXT,
+                mk_user_id          TEXT,
+                status              TEXT NOT NULL,
+                reason_code         TEXT,
+                request_key         TEXT,
+                created_at          TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_coev_event_created ON client_onboarding_events(event_type, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_coev_source_created ON client_onboarding_events(source_type, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_coev_status_created ON client_onboarding_events(status, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_coev_mk_user ON client_onboarding_events(mk_user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_coev_parent ON client_onboarding_events(parent_telegram_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_coev_campaign ON client_onboarding_events(campaign_id, created_at)")
+
     # ── v7.1.14 — staff "Рассылки" (communications center) tables ───────────
     # Two entities, same separation-of-concerns as client_notifications /
     # client_notification_recipients above: the campaign (composer state +
@@ -8982,6 +9021,322 @@ class Storage:
                 (int(campaign_id), limit),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── v7.1.15 — launch-readiness cross-flow event log ─────────────────────
+    ONBOARDING_EVENT_SOURCE_TYPES = ("cl_code", "invite", "existing_link", "food")
+    ONBOARDING_EVENT_STATUSES = ("started", "succeeded", "failed")
+
+    def log_onboarding_event(
+        self,
+        event_type: str,
+        source_type: str,
+        status: str,
+        *,
+        campaign_id: Optional[int] = None,
+        recipient_id: Optional[int] = None,
+        parent_telegram_id: Optional[str] = None,
+        mk_user_id: Optional[str] = None,
+        reason_code: Optional[str] = None,
+        request_key: Optional[str] = None,
+    ) -> None:
+        """Best-effort diagnostic event for the launch-readiness "Подключения"
+        dashboard/health checks. Fail-open, mirroring log_client_link_audit_
+        event/log_onboarding_audit_event: never raises, and never stores
+        Telegram initData, tokens, full URLs with secrets, or payment
+        content. UTC clock, matching client_parent_child_links.linked_at /
+        client_onboarding_audit_log.created_at / client_child_link_codes
+        timestamps, so "today"/range queries across those tables agree.
+        """
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """INSERT INTO client_onboarding_events
+                        (event_type, source_type, campaign_id, recipient_id, parent_telegram_id,
+                         mk_user_id, status, reason_code, request_key, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        str(event_type or ""), str(source_type or ""),
+                        int(campaign_id) if campaign_id is not None else None,
+                        int(recipient_id) if recipient_id is not None else None,
+                        str(parent_telegram_id) if parent_telegram_id is not None else None,
+                        str(mk_user_id) if mk_user_id is not None else None,
+                        str(status or ""),
+                        str(reason_code) if reason_code is not None else None,
+                        str(request_key) if request_key is not None else None,
+                        datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S"),
+                    ),
+                )
+        except Exception as exc:
+            log.warning("onboarding_event_write_failed event_type=%s source_type=%s error=%s", event_type, source_type, exc)
+
+    def has_onboarding_event(self, event_type: str, *, parent_telegram_id: Optional[str] = None, mk_user_id: Optional[str] = None) -> bool:
+        """Cheap existence check used to log an event at most once per
+        subject (e.g. cabinet_opened per parent) — avoids write amplification
+        on hot read paths like /api/me. Fail-open: a read failure here must
+        never block the caller, so it returns True on error (skip logging
+        rather than risk a write storm)."""
+        if not parent_telegram_id and not mk_user_id:
+            return True
+        try:
+            with self._connect() as conn:
+                if parent_telegram_id:
+                    row = conn.execute(
+                        "SELECT 1 FROM client_onboarding_events WHERE event_type=? AND parent_telegram_id=? LIMIT 1",
+                        (event_type, str(parent_telegram_id)),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT 1 FROM client_onboarding_events WHERE event_type=? AND mk_user_id=? LIMIT 1",
+                        (event_type, str(mk_user_id)),
+                    ).fetchone()
+            return row is not None
+        except Exception as exc:
+            log.warning("onboarding_event_exists_check_failed event_type=%s error=%s", event_type, exc)
+            return True
+
+    def list_recent_onboarding_connection_errors(self, limit: int = 20, source_type: Optional[str] = None) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit or 20), 100))
+        with self._connect() as conn:
+            if source_type:
+                rows = conn.execute(
+                    """SELECT event_type, source_type, reason_code, mk_user_id, campaign_id, created_at
+                       FROM client_onboarding_events WHERE status='failed' AND source_type=?
+                       ORDER BY created_at DESC, id DESC LIMIT ?""",
+                    (source_type, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT event_type, source_type, reason_code, mk_user_id, campaign_id, created_at
+                       FROM client_onboarding_events WHERE status='failed'
+                       ORDER BY created_at DESC, id DESC LIMIT ?""",
+                    (limit,),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_onboarding_connections_summary(self, campaign_id: Optional[int] = None) -> dict[str, Any]:
+        """Launch-readiness "Подключения" dashboard metrics (v7.1.15).
+
+        Connection *counts* (connected/distinct parents/distinct children/
+        multi-child parents) are always computed from client_parent_child_
+        links directly — the authoritative source of truth — never from the
+        best-effort event log. Only "opened but not completed" and error
+        counts come from client_onboarding_events, since no other table
+        records an attempt that never produced a row. Food-only is reported
+        separately (see get_food_onboarding_summary) and never merged into
+        these numbers, matching the required isolation.
+        """
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        with self._connect() as conn:
+            if campaign_id is not None:
+                total_prepared = conn.execute(
+                    "SELECT COUNT(*) FROM client_onboarding_recipients WHERE campaign_id=?", (int(campaign_id),)
+                ).fetchone()[0]
+                mk_ids = [
+                    r["mk_user_id"] for r in conn.execute(
+                        "SELECT DISTINCT mk_user_id FROM client_onboarding_recipients WHERE campaign_id=?",
+                        (int(campaign_id),),
+                    ).fetchall()
+                ]
+            else:
+                total_prepared = conn.execute(
+                    "SELECT COUNT(*) FROM client_child_link_codes"
+                ).fetchone()[0] + conn.execute(
+                    "SELECT COUNT(*) FROM client_onboarding_invites"
+                ).fetchone()[0]
+                mk_ids = None  # None = "no campaign filter", distinct from "[]  = campaign has zero recipients"
+
+            if mk_ids is None:
+                active_rows = conn.execute(
+                    "SELECT parent_telegram_user_id, mk_user_id, linked_at FROM client_parent_child_links WHERE status='active'"
+                ).fetchall()
+            elif mk_ids:
+                placeholders = ",".join("?" for _ in mk_ids)
+                active_rows = conn.execute(
+                    f"""SELECT parent_telegram_user_id, mk_user_id, linked_at FROM client_parent_child_links
+                        WHERE status='active' AND mk_user_id IN ({placeholders})""",
+                    mk_ids,
+                ).fetchall()
+            else:
+                active_rows = []
+
+            connected_mk_ids = {r["mk_user_id"] for r in active_rows}
+            distinct_parents = {r["parent_telegram_user_id"] for r in active_rows}
+            connected = len(connected_mk_ids)
+            distinct_children = len(connected_mk_ids)
+            connected_today = sum(1 for r in active_rows if str(r["linked_at"] or "")[:10] == today)
+
+            from collections import Counter as _Counter
+            per_parent = _Counter(r["parent_telegram_user_id"] for r in active_rows)
+            multi_child_parents = sum(1 for _pid, cnt in per_parent.items() if cnt > 1)
+
+            ev_filter = "AND campaign_id=?" if campaign_id is not None else ""
+            ev_params: list[Any] = [int(campaign_id)] if campaign_id is not None else []
+
+            errors_total = conn.execute(
+                f"SELECT COUNT(*) FROM client_onboarding_events WHERE status='failed' {ev_filter}",
+                ev_params,
+            ).fetchone()[0]
+
+            # "opened, not completed": a started event for a subject with no
+            # later succeeded event for the same mk_user_id/parent.
+            opened_rows = conn.execute(
+                f"""SELECT DISTINCT COALESCE(mk_user_id, parent_telegram_id) AS subject
+                    FROM client_onboarding_events
+                    WHERE status='started' {ev_filter} AND COALESCE(mk_user_id, parent_telegram_id) IS NOT NULL""",
+                ev_params,
+            ).fetchall()
+            succeeded_subjects = {
+                r["subject"] for r in conn.execute(
+                    f"""SELECT DISTINCT COALESCE(mk_user_id, parent_telegram_id) AS subject
+                        FROM client_onboarding_events
+                        WHERE status='succeeded' {ev_filter} AND COALESCE(mk_user_id, parent_telegram_id) IS NOT NULL""",
+                    ev_params,
+                ).fetchall()
+            }
+            opened_not_completed = sum(1 for r in opened_rows if r["subject"] not in succeeded_subjects)
+
+            by_source = {
+                r["source_type"]: r["n"] for r in conn.execute(
+                    f"""SELECT source_type, COUNT(*) AS n FROM client_onboarding_events
+                        WHERE status='succeeded' AND event_type='link_created' {ev_filter}
+                        GROUP BY source_type""",
+                    ev_params,
+                ).fetchall()
+            }
+
+        return {
+            "totalPrepared": total_prepared,
+            "connected": connected,
+            "notConnected": max(0, total_prepared - connected) if campaign_id is not None else None,
+            "connectedToday": connected_today,
+            "openedNotCompleted": opened_not_completed,
+            "errors": errors_total,
+            "distinctParents": len(distinct_parents),
+            "distinctChildren": distinct_children,
+            "multiChildParents": multi_child_parents,
+            "bySource": by_source,
+        }
+
+    def get_food_onboarding_summary(self) -> dict[str, Any]:
+        """Food-only connection metrics — deliberately separate from
+        get_onboarding_connections_summary (never merged into the regular
+        conversion funnel)."""
+        with self._connect() as conn:
+            total = conn.execute("SELECT COUNT(*) FROM parent_child_links").fetchone()[0]
+            confirmed_rows = conn.execute(
+                "SELECT parent_telegram_id FROM parent_child_links WHERE active=1 AND confirmed_at IS NOT NULL AND parent_telegram_id IS NOT NULL"
+            ).fetchall()
+            distinct_parents = {r["parent_telegram_id"] for r in confirmed_rows}
+        return {
+            "totalCodes": total,
+            "confirmed": len(confirmed_rows),
+            "distinctParents": len(distinct_parents),
+        }
+
+    def get_launch_health_snapshot(self, settings: Any) -> dict[str, Any]:
+        """Compact, real (never fictional-green) health status per launch-
+        critical area for owner/admin/client_manager (v7.1.15). Every status
+        is built from a checkable local signal — table row present, a
+        feature flag, a last-success timestamp, an error reason, or a
+        pending/failed count — never a live external MoyKlass call (that
+        would be slow and expensive on every page open for 464 clients).
+        """
+        now = datetime.utcnow()
+        since_24h = (now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
+
+        with self._connect() as conn:
+            # ── registration (CL-code + invite + food) ──────────────────
+            last_success = conn.execute(
+                """SELECT created_at FROM client_onboarding_events
+                   WHERE status='succeeded' AND event_type IN ('link_created','link_already_exists')
+                   ORDER BY created_at DESC LIMIT 1"""
+            ).fetchone()
+            failed_24h = conn.execute(
+                "SELECT COUNT(*) FROM client_onboarding_events WHERE status='failed' AND created_at>=?",
+                (since_24h,),
+            ).fetchone()[0]
+            last_failure = conn.execute(
+                """SELECT reason_code, created_at FROM client_onboarding_events
+                   WHERE status='failed' ORDER BY created_at DESC LIMIT 1"""
+            ).fetchone()
+            has_any_event = conn.execute("SELECT 1 FROM client_onboarding_events LIMIT 1").fetchone() is not None
+            registration = {
+                "status": "warning" if failed_24h > 0 else ("ok" if has_any_event else "no_data"),
+                "lastSuccessAt": last_success["created_at"] if last_success else None,
+                "failedLast24h": failed_24h,
+                "lastErrorReason": last_failure["reason_code"] if last_failure else None,
+            }
+
+            # ── client links (duplicate-link integrity check) ───────────
+            active_count = conn.execute(
+                "SELECT COUNT(*) FROM client_parent_child_links WHERE status='active'"
+            ).fetchone()[0]
+            duplicate_count = conn.execute(
+                """SELECT COUNT(*) FROM (
+                       SELECT mk_user_id FROM client_parent_child_links
+                       WHERE status='active' GROUP BY mk_user_id HAVING COUNT(*) > 1
+                   )"""
+            ).fetchone()[0]
+            client_links = {
+                "status": "warning" if duplicate_count > 0 else ("ok" if active_count > 0 else "no_data"),
+                "activeLinks": active_count,
+                "duplicateMkUserIds": duplicate_count,
+            }
+
+            # ── notifications ────────────────────────────────────────────
+            notif_enabled = bool(getattr(settings, "client_notifications_enabled", False)) or bool(
+                getattr(settings, "client_notifications_pilot_telegram_ids", None)
+            )
+            last_notif = conn.execute(
+                "SELECT created_at FROM client_notifications ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            notifications = {
+                "status": "disabled" if not notif_enabled else ("ok" if last_notif else "no_data"),
+                "enabled": notif_enabled,
+                "lastSentAt": last_notif["created_at"] if last_notif else None,
+            }
+
+            # ── communications ───────────────────────────────────────────
+            comms_enabled = bool(getattr(settings, "client_communications_enabled", False)) or bool(
+                getattr(settings, "client_communications_pilot_telegram_ids", None)
+            )
+            last_comms = conn.execute(
+                "SELECT sent_at, last_error FROM staff_communication_campaigns WHERE status='sent' ORDER BY sent_at DESC LIMIT 1"
+            ).fetchone()
+            communications = {
+                "status": "disabled" if not comms_enabled else ("ok" if last_comms else "no_data"),
+                "enabled": comms_enabled,
+                "lastSentAt": last_comms["sent_at"] if last_comms else None,
+            }
+
+            # ── availability (fill rate) ─────────────────────────────────
+            avail_total = conn.execute("SELECT COUNT(*) FROM client_onboarding_recipients").fetchone()[0]
+            avail_filled = conn.execute(
+                "SELECT COUNT(*) FROM client_onboarding_recipients WHERE availability_updated_at IS NOT NULL"
+            ).fetchone()[0]
+            availability = {
+                "status": "ok" if avail_total > 0 else "no_data",
+                "totalRecipients": avail_total,
+                "filled": avail_filled,
+            }
+
+        # ── payment automation — reuse the existing health-run model ────
+        last_run = self.get_last_health_run("quick_cycle")
+        open_incidents = len(self.list_open_incidents())
+        payment_automation = {
+            "status": (last_run.get("status") if last_run else "no_data") or "no_data",
+            "lastRunFinishedAt": last_run.get("finished_at") if last_run else None,
+            "openIncidents": open_incidents,
+        }
+
+        return {
+            "registration": registration,
+            "clientLinks": client_links,
+            "notifications": notifications,
+            "paymentAutomation": payment_automation,
+            "availability": availability,
+            "communications": communications,
+        }
 
     def create_onboarding_invite(
         self, campaign_id: int, recipient_id: int, created_by: str, signing_secret: str, force_regenerate: bool = False

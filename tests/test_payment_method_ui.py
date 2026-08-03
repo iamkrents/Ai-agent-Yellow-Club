@@ -194,8 +194,8 @@ class TestPreviewRemoved(unittest.TestCase):
         self.assertIn("await loadMe()", m.group(1))
 
     def test_cache_bust_is_current_release(self):
-        self.assertIn("app.js?v=7.1.14", INDEX_HTML)
-        self.assertIn('console.log("MiniApp version: v7.1.14.3")', APP_JS)
+        self.assertIn("app.js?v=7.1.15", INDEX_HTML)
+        self.assertIn('console.log("MiniApp version: v7.1.15")', APP_JS)
 
 
 if __name__ == "__main__":

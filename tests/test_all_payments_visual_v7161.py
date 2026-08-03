@@ -394,8 +394,8 @@ class TestVersionUnchanged(unittest.TestCase):
     def test_27_version_is_v7161(self):
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.14", html)
-        self.assertIn('console.log("MiniApp version: v7.1.14.3")', js)
+        self.assertIn("v=7.1.15", html)
+        self.assertIn('console.log("MiniApp version: v7.1.15")', js)
 
 
 # ---------------------------------------------------------------------------

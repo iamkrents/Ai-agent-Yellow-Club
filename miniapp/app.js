@@ -131,7 +131,7 @@ const launchTab = urlParams.get("tab") || "";
 // one specific campaign recipient (from the bot's post-activation button).
 const launchAvailabilityRecipientId = urlParams.get("oc_availability_recipient") || "";
 
-console.log("MiniApp version: v7.1.14.3");
+console.log("MiniApp version: v7.1.15");
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
 });
@@ -8760,6 +8760,23 @@ async function loadMyChildren() {
   renderMyChildren();
 }
 
+// v7.1.15 — launch-readiness: stable reason_code -> friendly retry-oriented
+// copy, distinct from the raw backend `error` text. The backend already
+// returns a stable reason_code for every failure branch of
+// storage.link_client_child (see web_app_server.py client_link_child) — this
+// mapping just chooses clearer wording for the specific states the launch
+// readiness spec calls out, without changing what the server decided.
+const CLIENT_LINK_REASON_MESSAGES = {
+  code_not_found: "Код не найден. Проверьте правильность ввода.",
+  code_already_used: "Этот код уже использован. Если вы уже подключали кабинет, откройте «Мои дети».",
+  code_invalidated: "Ссылка недействительна. Обратитесь в Yellow Club за новым кодом.",
+  code_expired: "Срок действия кода истёк. Обратитесь в Yellow Club за новым кодом.",
+  telegram_already_linked: "Этот код уже использован другим пользователем. Обратитесь в Yellow Club.",
+  invalid_code_format: "Проверьте формат кода: CL-XXXXXXXX.",
+  rate_limited: "Слишком много попыток. Подождите немного и попробуйте снова.",
+  rate_limit_unavailable: "Временная ошибка сервера. Попробуйте повторить через минуту.",
+};
+
 async function linkClientChild() {
   // v7.1.11: /api/client/children/link is the generic parent self-service
   // flow (role=parent only) — it never touches payment automation. Staff
@@ -8774,24 +8791,38 @@ async function linkClientChild() {
     if (errEl) { errEl.textContent = "Введите код CL-"; errEl.classList.remove("hidden"); }
     return;
   }
-  if (btn) btn.disabled = true;
+  if (btn) { btn.disabled = true; btn.textContent = "Проверяем код…"; }
   if (errEl) errEl.classList.add("hidden");
   try {
     const data = await _apiPostRaw("/api/client/children/link", { code });
     if (data.ok) {
+      if (btn) btn.textContent = "Подключаем кабинет…";
       const name = data.child?.display_name || data.display_name || "Ученик";
-      setNotice(`${name} успешно привязан`, "ok");
+      // v7.1.15 — a repeat submit of an already-used code is not an error
+      // (storage.link_client_child returns already_linked=True): the copy
+      // must say "уже подключён", not "успешно привязан" again, and either
+      // way the reload below opens the same existing cabinet, never a dup.
+      setNotice(
+        data.already_linked ? `${name} уже подключён — кабинет открыт` : `${name}: кабинет подключён`,
+        "ok",
+      );
       state.myChildren = null;
       state.clientChildren = [];
       await loadMyChildren();
+      // v7.1.15 — clearing the input only ever happens on confirmed success
+      // (never on a temporary error — see the catch/else branches below,
+      // which deliberately leave the typed code in place for retry).
+      if (input) input.value = "";
     } else {
-      const msg = data.error || "Ошибка привязки";
+      const msg = CLIENT_LINK_REASON_MESSAGES[data.reason_code] || data.error || "Ошибка привязки. Повторите или обратитесь в Yellow Club.";
       if (errEl) { errEl.textContent = msg; errEl.classList.remove("hidden"); }
     }
   } catch (e) {
-    if (errEl) { errEl.textContent = e.message || "Ошибка сети"; errEl.classList.remove("hidden"); }
+    // Network/temporary failure — code is deliberately NOT cleared so the
+    // parent can just tap "Привязать" again without retyping it.
+    if (errEl) { errEl.textContent = "Временная ошибка сервера. Код сохранён — нажмите «Привязать» ещё раз, или обратитесь в Yellow Club."; errEl.classList.remove("hidden"); }
   } finally {
-    if (btn) btn.disabled = false;
+    if (btn) { btn.disabled = false; btn.textContent = "Привязать"; }
   }
 }
 
@@ -17929,6 +17960,10 @@ function _wsRenderConnection(root) {
     _wsRenderCampaignsRoot(modeRoot);
     return;
   }
+  if (_ocState.mode === "diagnostics") {
+    _wsRenderConnectionsDiagnostics(modeRoot);
+    return;
+  }
   modeRoot.innerHTML = `
     ${_wsConnHeadHtml()}
     <div class="ws-search-row">
@@ -17958,6 +17993,7 @@ function _wsOcModeToggleHtml() {
     <div class="ws-oc-mode-toggle" id="wsOcModeToggle">
       <button type="button" class="ws-oc-mode-btn${_ocState.mode === "single" ? " active" : ""}" data-oc-mode="single">По одному</button>
       <button type="button" class="ws-oc-mode-btn${_ocState.mode === "mass" ? " active" : ""}" data-oc-mode="mass">Массовое подключение</button>
+      <button type="button" class="ws-oc-mode-btn${_ocState.mode === "diagnostics" ? " active" : ""}" data-oc-mode="diagnostics">Подключения</button>
     </div>`;
 }
 function _wsOcWireModeToggle() {
@@ -17967,6 +18003,7 @@ function _wsOcWireModeToggle() {
       if (_ocState.mode === mode) return;
       _ocState.mode = mode;
       if (mode === "mass" && _ocState.campaigns === null) _wsOcLoadCampaigns();
+      if (mode === "diagnostics" && _connDiagState.summary === null) _connDiagLoad();
       _wsRenderCurrentTab();
     });
   });
@@ -18445,6 +18482,132 @@ const ONBOARDING_ACADEMIC_LEVEL_LABELS = {
   year_3: "3-й учебный год", year_4: "4-й учебный год", advanced: "Продвинутый уровень",
 };
 const ONBOARDING_BRANCH_LABELS = { YC1: "Кульман 1/1", YC2: "Мстиславца 6", either: "Любой", unknown: "Не указан" };
+
+// ── v7.1.15 — launch-readiness "Подключения" diagnostics ────────────────
+// Third mode alongside "По одному"/"Массовое подключение" in the same
+// Payments Workspace «Подключение» tab (see _wsOcModeToggleHtml above) —
+// same role gate (canManageOnboardingCampaigns), read-only, no mutations.
+const ONBOARDING_EVENT_SOURCE_LABELS = { cl_code: "CL-код", invite: "Invite-ссылка", existing_link: "Уже подключён", food: "Питание" };
+const HEALTH_STATUS_LABELS = { ok: "Ок", warning: "Внимание", disabled: "Отключено", no_data: "Нет данных" };
+const _connDiagState = {
+  summary: null,     // { totalPrepared, connected, notConnected, connectedToday, openedNotCompleted, errors, distinctParents, distinctChildren, multiChildParents, bySource }
+  food: null,
+  health: null,
+  errors: null,
+  loading: false,
+  error: "",
+};
+
+async function _connDiagLoad() {
+  _connDiagState.loading = true;
+  _connDiagState.error = "";
+  _wsRenderCurrentTab();
+  try {
+    const [summaryData, healthData, errorsData] = await Promise.all([
+      apiGet("/api/client/onboarding/connections/summary"),
+      apiGet("/api/client/onboarding/health"),
+      apiGet("/api/client/onboarding/connections/errors?limit=15"),
+    ]);
+    _connDiagState.summary = summaryData.summary;
+    _connDiagState.food = summaryData.food;
+    _connDiagState.health = healthData.health;
+    _connDiagState.errors = errorsData.errors || [];
+  } catch (e) {
+    _connDiagState.error = safeUserError(e);
+  } finally {
+    _connDiagState.loading = false;
+    _wsRenderCurrentTab();
+  }
+}
+
+function _connDiagHealthRowHtml(label, area) {
+  if (!area) return "";
+  const statusClass = { ok: "conn-health-ok", warning: "conn-health-warning", disabled: "conn-health-disabled", no_data: "conn-health-nodata" }[area.status] || "conn-health-nodata";
+  const detailBits = [];
+  if (area.lastSuccessAt) detailBits.push(`последний успех: ${escapeHtml(String(area.lastSuccessAt).replace("T", " "))}`);
+  if (area.lastSentAt) detailBits.push(`последняя отправка: ${escapeHtml(String(area.lastSentAt).replace("T", " "))}`);
+  if (area.lastRunFinishedAt) detailBits.push(`последний запуск: ${escapeHtml(String(area.lastRunFinishedAt).replace("T", " "))}`);
+  if (typeof area.failedLast24h === "number") detailBits.push(`ошибок за 24ч: ${area.failedLast24h}`);
+  if (typeof area.duplicateMkUserIds === "number" && area.duplicateMkUserIds > 0) detailBits.push(`дублей связей: ${area.duplicateMkUserIds}`);
+  if (typeof area.openIncidents === "number") detailBits.push(`открытых инцидентов: ${area.openIncidents}`);
+  if (typeof area.filled === "number" && typeof area.totalRecipients === "number") detailBits.push(`заполнено: ${area.filled}/${area.totalRecipients}`);
+  if (area.lastErrorReason) detailBits.push(`причина: ${escapeHtml(area.lastErrorReason)}`);
+  return `
+    <div class="conn-health-row ${statusClass}">
+      <span class="conn-health-label">${escapeHtml(label)}</span>
+      <span class="conn-health-badge">${escapeHtml(HEALTH_STATUS_LABELS[area.status] || area.status)}</span>
+      ${detailBits.length ? `<span class="conn-health-detail">${detailBits.join(" · ")}</span>` : ""}
+    </div>`;
+}
+
+function _wsRenderConnectionsDiagnostics(root) {
+  if (!canManageOnboardingCampaigns()) {
+    root.innerHTML = `<div class="notice error">Раздел «Подключения» доступен только owner, admin и client_manager.</div>`;
+    return;
+  }
+  const st = _connDiagState;
+  if (st.loading && !st.summary) {
+    root.innerHTML = `<div class="kpi-loading">Загружаю диагностику подключений…</div>`;
+    return;
+  }
+  if (st.error && !st.summary) {
+    root.innerHTML = `<div class="notice error">${escapeHtml(st.error)}</div><button type="button" class="secondary" onclick="_connDiagLoad()">Повторить</button>`;
+    return;
+  }
+  const s = st.summary || {};
+  const stat = (label, value) => `<div class="conn-stat"><div class="conn-stat-value">${escapeHtml(String(value ?? "—"))}</div><div class="conn-stat-label">${escapeHtml(label)}</div></div>`;
+  const bySourceHtml = Object.entries(s.bySource || {}).map(([src, n]) =>
+    `<div class="conn-source-row"><span>${escapeHtml(ONBOARDING_EVENT_SOURCE_LABELS[src] || src)}</span><b>${escapeHtml(String(n))}</b></div>`
+  ).join("") || `<div class="ws-conn-note">Пока нет успешных подключений.</div>`;
+  const errorsHtml = (st.errors || []).map(e => `
+    <div class="conn-error-row">
+      <span class="conn-error-reason">${escapeHtml(e.reason_code || e.event_type || "ошибка")}</span>
+      <span class="conn-error-source">${escapeHtml(ONBOARDING_EVENT_SOURCE_LABELS[e.source_type] || e.source_type || "")}</span>
+      <span class="conn-error-time">${escapeHtml(String(e.created_at || "").replace("T", " "))}</span>
+    </div>`).join("") || `<div class="ws-conn-note">Ошибок не зафиксировано.</div>`;
+  const health = st.health || {};
+  const healthHtml = [
+    _connDiagHealthRowHtml("Регистрация", health.registration),
+    _connDiagHealthRowHtml("Клиентские связи", health.clientLinks),
+    _connDiagHealthRowHtml("Уведомления", health.notifications),
+    _connDiagHealthRowHtml("Автоматизация оплат", health.paymentAutomation),
+    _connDiagHealthRowHtml("Availability", health.availability),
+    _connDiagHealthRowHtml("Рассылки", health.communications),
+  ].join("");
+  const food = st.food || {};
+
+  root.innerHTML = `
+    <div class="ws-queue-head">
+      <div class="ws-queue-head__copy">
+        <h2 class="ws-queue-head__title">Подключения</h2>
+        <p class="ws-queue-head__subtitle">Готовность к массовому подключению клиентов — не заменяет CL-коды и не показывает секретные ссылки-приглашения.</p>
+      </div>
+      <button type="button" class="secondary" onclick="_connDiagLoad()">Обновить</button>
+    </div>
+    <div class="conn-stats-grid">
+      ${stat("Подготовлено", s.totalPrepared)}
+      ${stat("Подключено", s.connected)}
+      ${stat("Подключено сегодня", s.connectedToday)}
+      ${stat("Открыли, не завершили", s.openedNotCompleted)}
+      ${stat("Ошибки", s.errors)}
+      ${stat("Родителей", s.distinctParents)}
+      ${stat("Детей", s.distinctChildren)}
+      ${stat("Родителей с 2+ детьми", s.multiChildParents)}
+    </div>
+    <div class="conn-section-head">Источник подключения</div>
+    <div class="conn-source-list">${bySourceHtml}</div>
+    <div class="conn-section-head">Питание (отдельно, не входит в показатели выше)</div>
+    <div class="conn-stats-grid conn-stats-grid--food">
+      ${stat("Кодов питания", food.totalCodes)}
+      ${stat("Подтверждено", food.confirmed)}
+      ${stat("Родителей", food.distinctParents)}
+    </div>
+    <div class="conn-section-head">Здоровье системы</div>
+    <div class="conn-health-list">${healthHtml}</div>
+    <div class="conn-section-head">Последние ошибки</div>
+    <div class="conn-error-list">${errorsHtml}</div>
+  `;
+}
 
 function _wsRenderCampaignsRoot(root) {
   if (!canManageOnboardingCampaigns()) {

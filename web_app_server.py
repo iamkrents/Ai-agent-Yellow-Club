@@ -2556,6 +2556,23 @@ class MiniAppContext:
             # the new cabinet for everyone else can never also flip food-only
             # clients onto it.
             client_cabinet_v7113_enabled = self._client_cabinet_enabled(user_id) and client_kind != "food_only"
+            # v7.1.15 — launch-readiness "cabinet_opened" signal: logged at
+            # most once per parent (has_onboarding_event dedup check), not on
+            # every /api/me call — this is the hottest read path in the app,
+            # hit on every screen for every client, so an unconditional write
+            # here would be real added load for 464 clients. Never logged
+            # during an owner test-client preview (that traffic isn't the
+            # real client opening anything). Best-effort: a read/write
+            # failure here must never affect the real me() response.
+            if client_kind in ("regular", "combined") and not owner_test_client_mode:
+                try:
+                    if not self.storage.has_onboarding_event("cabinet_opened", parent_telegram_id=effective_client_id):
+                        self.storage.log_onboarding_event(
+                            "cabinet_opened", "existing_link", "succeeded",
+                            parent_telegram_id=effective_client_id,
+                        )
+                except Exception:
+                    pass
             client_notifications_enabled = self._client_notifications_enabled(user_id)
             if client_notifications_enabled:
                 unread_notification_count = self.storage.count_unread_client_notifications(
@@ -3435,12 +3452,27 @@ class MiniAppContext:
         if not result.get("ok"):
             error = result.get("error", "")
             if "не найден" in error or "использован" in error:
-                return {"ok": False, "error": "invalid_code", "message": "Код не найден. Проверьте правильность или обратитесь к администратору."}
-            if "другому" in error:
-                return {"ok": False, "error": "code_already_used", "message": "Этот код уже использован другим пользователем."}
-            return {"ok": False, "error": error, "message": error}
+                reason_code, out = "code_not_found", {"ok": False, "error": "invalid_code", "message": "Код не найден. Проверьте правильность или обратитесь к администратору."}
+            elif "другому" in error:
+                reason_code, out = "code_already_used_other", {"ok": False, "error": "code_already_used", "message": "Этот код уже использован другим пользователем."}
+            else:
+                reason_code, out = "food_link_error", {"ok": False, "error": error, "message": error}
+            # v7.1.15 — launch-readiness event log, source_type="food", kept
+            # entirely separate from the regular cl_code/invite funnel. This
+            # is instrumentation only — link_parent_to_child itself (the old
+            # food registration logic) is untouched.
+            self.storage.log_onboarding_event(
+                "onboarding_failed", "food", "failed",
+                parent_telegram_id=parent_telegram_id, reason_code=reason_code,
+            )
+            return out
         mk_student_id = str(result.get("mk_student_id") or "").strip()
         child = self.storage.get_camp_child_by_mk_student_id(mk_student_id) if mk_student_id else {}
+        self.storage.log_onboarding_event(
+            "link_already_exists" if result.get("already_linked") else "link_created",
+            "food", "succeeded",
+            parent_telegram_id=parent_telegram_id, mk_user_id=mk_student_id or None,
+        )
         return {
             "ok": True,
             "already_linked": bool(result.get("already_linked")),
@@ -12444,9 +12476,18 @@ class MiniAppContext:
                 parent_telegram_user_id=parent_tid, actor_telegram_user_id=parent_tid,
                 actor_role=role, result="failed", reason_code="invalid_code_format",
             )
+            self.storage.log_onboarding_event(
+                "code_invalid", "cl_code", "failed",
+                parent_telegram_id=parent_tid, reason_code="invalid_code_format",
+            )
             self._maybe_cleanup_client_link_rate_limit(now_dt)
             msg = "Введите код привязки." if not code else "Неверный формат кода. Ожидается CL-XXXXXXXX."
             return {"ok": False, "error": msg, "reason_code": "invalid_code_format"}
+
+        # v7.1.15 — launch-readiness "started" marker, logged once the code
+        # has passed basic format validation (garbage input already counted
+        # as code_invalid above, not as a started attempt).
+        self.storage.log_onboarding_event("code_submitted", "cl_code", "started", parent_telegram_id=parent_tid)
 
         # Step 2: check/consume the code (unrelated storage — client_child_link_codes).
         now = now_dt.strftime("%Y-%m-%dT%H:%M:%S")
@@ -12481,6 +12522,17 @@ class MiniAppContext:
             # Payment automation pilot enrollment must NEVER trigger from here;
             # it only happens from the staff-gated
             # client_admin_link_and_enroll() below (owner/admin/client_manager).
+            # v7.1.15 — launch-readiness event log (separate from the audit
+            # log above; see storage.log_onboarding_event). Called after
+            # storage.link_client_child has already returned/committed, never
+            # from inside its own transaction. "already_linked" (idempotent
+            # replay of an already-used code by the same parent) is reported
+            # as link_already_exists, distinct from a genuinely new link.
+            self.storage.log_onboarding_event(
+                "link_already_exists" if result.get("already_linked") else "link_created",
+                "cl_code", "succeeded",
+                parent_telegram_id=parent_tid, mk_user_id=mk_user_id,
+            )
         else:
             reason_code = result.get("reason_code") or "code_not_found"
             # Step 3: record the failed attempt — fatal on write failure (see above).
@@ -12494,6 +12546,11 @@ class MiniAppContext:
                 event_type=event_type, mk_user_id=mk_user_id, code_id=code_id,
                 parent_telegram_user_id=parent_tid, actor_telegram_user_id=parent_tid,
                 actor_role=role, result="failed", reason_code=reason_code,
+            )
+            self.storage.log_onboarding_event(
+                "code_invalid" if reason_code in ("code_not_found", "invalid_code_format") else "onboarding_failed",
+                "cl_code", "failed",
+                parent_telegram_id=parent_tid, mk_user_id=mk_user_id, reason_code=reason_code,
             )
 
         self._maybe_cleanup_client_link_rate_limit(now_dt)
@@ -12542,6 +12599,10 @@ class MiniAppContext:
         if not result.get("ok"):
             # Never leak the plaintext code or which mk_user_id a wrong/used
             # code belongs to — same discipline as the parent-facing endpoint.
+            self.storage.log_onboarding_event(
+                "onboarding_failed", "cl_code", "failed",
+                parent_telegram_id=parent_tid, reason_code=result.get("reason_code"),
+            )
             return result
 
         result["mk_user_id"] = mk_user_id
@@ -12550,6 +12611,11 @@ class MiniAppContext:
             parent_telegram_user_id=parent_tid, actor_telegram_user_id=actor_tid,
             actor_role=role, result="success",
             note="staff_onboarding" + ("_already_linked" if result.get("already_linked") else ""),
+        )
+        self.storage.log_onboarding_event(
+            "link_already_exists" if result.get("already_linked") else "link_created",
+            "cl_code", "succeeded",
+            parent_telegram_id=parent_tid, mk_user_id=mk_user_id,
         )
 
         automation: dict[str, Any] = {
@@ -13361,6 +13427,52 @@ class MiniAppContext:
         if role not in CLIENT_ONBOARDING_CAMPAIGN_ROLES:
             return {"ok": False, "error": "Доступно только owner, admin и client_manager."}
         return None
+
+    # ── v7.1.15 — launch-readiness "Подключения" (Connections) diagnostics ──
+    # Same role gate as onboarding campaigns (owner/admin/client_manager) —
+    # deliberately placed right next to it since this dashboard is reached
+    # from that same screen. Read-only: no mutation endpoints here.
+    def onboarding_connections_summary(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        """GET /api/client/onboarding/connections/summary[?campaign_id=N]"""
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        campaign_id: Optional[int] = None
+        raw_campaign_id = str(params.get("campaign_id") or "").strip()
+        if raw_campaign_id:
+            try:
+                campaign_id = int(raw_campaign_id)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "invalid campaign_id"}
+            if not self.storage.get_onboarding_campaign(campaign_id):
+                return {"ok": False, "error": "Кампания не найдена"}
+        summary = self.storage.get_onboarding_connections_summary(campaign_id)
+        # Food-only is reported separately and only for the "all campaigns"
+        # view — it has no per-campaign concept in this dashboard.
+        food = self.storage.get_food_onboarding_summary() if campaign_id is None else None
+        return {"ok": True, "summary": summary, "food": food, "campaignId": campaign_id}
+
+    def onboarding_connections_errors(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        """GET /api/client/onboarding/connections/errors[?limit=20&source_type=cl_code]"""
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        try:
+            limit = int(params.get("limit") or 20)
+        except (TypeError, ValueError):
+            limit = 20
+        source_type = str(params.get("source_type") or "").strip() or None
+        errors = self.storage.list_recent_onboarding_connection_errors(limit=limit, source_type=source_type)
+        return {"ok": True, "errors": errors}
+
+    def onboarding_launch_health(self, auth: dict[str, Any]) -> dict[str, Any]:
+        """GET /api/client/onboarding/health — compact status per area, built
+        only from local, cheap signals (feature flags, last event timestamps,
+        pending/failed counts) — never an external MoyKlass call."""
+        denied = self._require_onboarding_campaign_access(auth)
+        if denied:
+            return denied
+        return {"ok": True, "health": self.storage.get_launch_health_snapshot(self.settings)}
 
     def onboarding_campaigns_list(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
         """GET /api/client/onboarding/campaigns"""
@@ -20425,6 +20537,12 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.onboarding_campaign_bulk_candidates(auth, params))
                 if path == "/api/client/onboarding/candidates/from-schedule":
                     return self._send_json(CTX.onboarding_campaign_candidates_from_schedule(auth, params))
+                if path == "/api/client/onboarding/connections/summary":
+                    return self._send_json(CTX.onboarding_connections_summary(auth, params))
+                if path == "/api/client/onboarding/connections/errors":
+                    return self._send_json(CTX.onboarding_connections_errors(auth, params))
+                if path == "/api/client/onboarding/health":
+                    return self._send_json(CTX.onboarding_launch_health(auth))
                 if path == "/api/client/onboarding/campaigns":
                     return self._send_json(CTX.onboarding_campaigns_list(auth, params))
                 if path.startswith("/api/client/onboarding/campaigns/"):

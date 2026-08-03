@@ -415,10 +415,10 @@ class TestErrorDoesNotClearValues(unittest.TestCase):
 
 class TestVersion(unittest.TestCase):
     def test_18_version_and_cache_bust(self):
-        self.assertIn('console.log("MiniApp version: v7.1.14.3");', _js())
+        self.assertIn('console.log("MiniApp version: v7.1.15");', _js())
         html = _html()
-        self.assertIn("styles.css?v=7.1.14", html)
-        self.assertIn("app.js?v=7.1.14", html)
+        self.assertIn("styles.css?v=7.1.15", html)
+        self.assertIn("app.js?v=7.1.15", html)
 
 
 if __name__ == "__main__":

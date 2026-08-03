@@ -9300,6 +9300,35 @@ body.keyboard-open .tabs.bottom-tabbar {
 .ws-conn-info-row b { font-weight: 700; }
 .ws-conn-note { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.45; }
 
+/* v7.1.15 — launch-readiness "Подключения" diagnostics (third mode of the
+   Payments Workspace «Подключение» tab, alongside «По одному»/«Массовое
+   подключение»). Scoped entirely under .conn-*, no fixed pixel widths —
+   grid/flex only, same 360/375px-safe discipline as the rest of the app. */
+.conn-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 10px; margin: 14px 0; }
+.conn-stats-grid--food { margin-top: 6px; }
+.conn-stat { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 10px 8px; text-align: center; }
+.conn-stat-value { font-size: 20px; font-weight: 800; color: var(--ink); line-height: 1.15; }
+.conn-stat-label { font-size: 11px; color: var(--muted); margin-top: 2px; line-height: 1.3; }
+.conn-section-head { font-size: 13px; font-weight: 800; color: var(--ink); margin: 18px 0 8px; }
+.conn-source-list, .conn-health-list, .conn-error-list { display: flex; flex-direction: column; gap: 6px; }
+.conn-source-row { display: flex; justify-content: space-between; align-items: center; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font-size: 13px; }
+.conn-health-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; background: #fff; border: 1px solid var(--line); border-left: 4px solid var(--line); border-radius: 10px; padding: 8px 12px; font-size: 13px; }
+.conn-health-label { font-weight: 700; min-width: 120px; }
+.conn-health-badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: #eee; }
+.conn-health-detail { flex-basis: 100%; font-size: 11px; color: var(--muted); }
+.conn-health-ok { border-left-color: #1fa56b; }
+.conn-health-ok .conn-health-badge { background: rgba(31,165,107,.15); color: #0b7548; }
+.conn-health-warning { border-left-color: #e0a800; }
+.conn-health-warning .conn-health-badge { background: rgba(224,168,0,.18); color: #6b4e00; }
+.conn-health-disabled { border-left-color: #9aa4b5; }
+.conn-health-disabled .conn-health-badge { background: #eee; color: #667; }
+.conn-health-nodata { border-left-color: #9aa4b5; }
+.conn-health-nodata .conn-health-badge { background: #eee; color: #667; }
+.conn-error-row { display: flex; flex-wrap: wrap; gap: 6px 10px; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font-size: 12px; }
+.conn-error-reason { font-weight: 700; color: #a82d2d; }
+.conn-error-source { color: var(--muted); }
+.conn-error-time { color: var(--muted); margin-left: auto; }
+
 .ws-conn-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .ws-conn-action-btn {
   min-height: 44px;
