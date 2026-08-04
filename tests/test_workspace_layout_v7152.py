@@ -253,8 +253,11 @@ class TestTopbarH1Mobile(unittest.TestCase):
 
 class TestAllPaymentsImpl(unittest.TestCase):
 
-    def test_17_load_workspace_all_payments_calls_intents_api(self):
-        """_loadWorkspaceAllPayments must call /api/payments/intents."""
+    def test_17_load_workspace_all_payments_calls_workspace_list_api(self):
+        """_loadWorkspaceAllPayments must call /api/payments/workspace/list
+        (v7.1.16.1 — replaced the unfiltered/≤200-row-truncated
+        /api/payments/intents with the period-filtered, paginated
+        workspace-specific endpoint)."""
         js = _js()
         fn_start = js.find("async function _loadWorkspaceAllPayments(")
         self.assertNotEqual(fn_start, -1, "_loadWorkspaceAllPayments not found in app.js")
@@ -263,8 +266,8 @@ class TestAllPaymentsImpl(unittest.TestCase):
             fn_end = js.find("\nfunction ", fn_start + 1)
         fn_body = js[fn_start : fn_end if fn_end != -1 else fn_start + 600]
         self.assertIn(
-            "/api/payments/intents", fn_body,
-            "_loadWorkspaceAllPayments must call /api/payments/intents",
+            "/api/payments/workspace/list", fn_body,
+            "_loadWorkspaceAllPayments must call /api/payments/workspace/list",
         )
 
     def test_18_ws_render_all_payments_uses_render_payment_intent_list(self):
@@ -336,11 +339,11 @@ class TestVersionV7152(unittest.TestCase):
         """index.html cache-bust and app.js version marker must be v7.1.8."""
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.16", html, "index.html cache-bust must be v=7.1.16")
+        self.assertIn("v=7.1.16.1", html, "index.html cache-bust must be v=7.1.16.1")
         self.assertIn(
-            'console.log("MiniApp version: v7.1.16")',
+            'console.log("MiniApp version: v7.1.16.1")',
             js,
-            "app.js must contain version marker v7.1.16",
+            "app.js must contain version marker v7.1.16.1",
         )
 
 

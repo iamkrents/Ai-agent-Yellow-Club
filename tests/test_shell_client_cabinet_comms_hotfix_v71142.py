@@ -270,9 +270,9 @@ class TestStaticFrontendChanges(unittest.TestCase):
         self.assertIn("canReturnToAdminFromComms() ?", segment)
 
     def test_version_cache_bust_v71142(self):
-        self.assertIn("styles.css?v=7.1.16", self.html)
-        self.assertIn("app.js?v=7.1.16", self.html)
-        self.assertIn('console.log("MiniApp version: v7.1.16");', self.js)
+        self.assertIn("styles.css?v=7.1.16.1", self.html)
+        self.assertIn("app.js?v=7.1.16.1", self.html)
+        self.assertIn('console.log("MiniApp version: v7.1.16.1");', self.js)
 
 
 if __name__ == "__main__":

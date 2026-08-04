@@ -887,6 +887,21 @@ class Storage:
         # v7.0.99.0 — renewal count on options (tracks how many times a link was renewed)
         self._ensure_column(conn, "payment_intent_options", "renewal_count", "renewal_count INTEGER DEFAULT 0")
         self._ensure_column(conn, "payment_intent_options", "renewal_locked_until", "renewal_locked_until TEXT")
+        # v7.1.16.1 — Payments Workspace period filtering. Additive
+        # expression index over the same canonical-period COALESCE used by
+        # every period-aware query below (see _PI_PERIOD_START_SQL) — no
+        # new column, no business-data migration, purely a query-plan aid
+        # for existing period_month/created_at data.
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pi_period_start ON payment_intents(
+                COALESCE(
+                    CASE WHEN period_month GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'
+                         THEN period_month || '-01' END,
+                    CASE WHEN created_at IS NOT NULL AND length(created_at) >= 7
+                         THEN substr(created_at, 1, 7) || '-01' END
+                )
+            )
+        """)
         # v7.0.99.0 — checkout attempts audit table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS payment_checkout_attempts (
@@ -2060,6 +2075,14 @@ class Storage:
         """)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_iai_stage ON invoice_automation_items(current_stage, id)"
+        )
+        # v7.1.16.1 — supports the LEFT JOIN payment_intents used by every
+        # period-aware attention/stats query (get_payments_workspace_stats/
+        # get_payments_attention_queue/get_payments_attention_outside_
+        # period_count) — additive, over the existing intent_public_id
+        # column, previously unindexed.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_iai_intent_public_id ON invoice_automation_items(intent_public_id)"
         )
 
         conn.execute("""
@@ -12411,28 +12434,99 @@ class Storage:
             ).fetchone()
         return dict(row) if row else None
 
-    def get_payments_workspace_stats(self) -> dict:
+    # v7.1.16.1 — canonical billing-period expression, shared by every
+    # period-aware Payments Workspace query. Priority order per the launch
+    # spec: (1) the explicit period_month billing label set at invoice
+    # creation, (2) the month of created_at (issue/creation date — always
+    # NOT NULL, so this is the documented safe fallback) — never updated_at,
+    # never paid_at (see the v7.1.16.1 audit: due_at is NULL-for-legacy and
+    # would silently misclassify old terminal invoices). Yields the first
+    # calendar day of the invoice's billing month as 'YYYY-MM-DD', or NULL
+    # if truly nothing usable exists (defensive only — created_at is NOT
+    # NULL in the schema, so this should never actually happen).
+    _PI_PERIOD_START_SQL = """COALESCE(
+        CASE WHEN period_month GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'
+             THEN period_month || '-01' END,
+        CASE WHEN created_at IS NOT NULL AND length(created_at) >= 7
+             THEN substr(created_at, 1, 7) || '-01' END
+    )"""
+    # Same idea for invoice_automation_items, which has no period_month of
+    # its own: prefer the linked intent's canonical period (COALESCE above,
+    # via LEFT JOIN alias "p"), else fall back to the automation item's own
+    # created_at (the item is discovered near-real-time from MoyKlass, so
+    # its created_at is a reasonable proxy for "when this invoice appeared"
+    # — same priority-4 documented-fallback reasoning as above).
+    _IAI_PERIOD_START_SQL = """COALESCE(
+        CASE WHEN p.period_month GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'
+             THEN p.period_month || '-01' END,
+        CASE WHEN p.created_at IS NOT NULL AND length(p.created_at) >= 7
+             THEN substr(p.created_at, 1, 7) || '-01' END,
+        CASE WHEN a.created_at IS NOT NULL AND length(a.created_at) >= 7
+             THEN substr(a.created_at, 1, 7) || '-01' END
+    )"""
+
+    @staticmethod
+    def _period_overlap_clause(period_start_expr: str, start: Optional[str], end_exclusive: Optional[str]) -> tuple[str, list]:
+        """Builds a "this invoice's billing month overlaps [start, end)"
+        predicate. start/end_exclusive are 'YYYY-MM-DD' strings (already
+        validated/normalized by the caller) or None for "all time" (no
+        filter at all — mode='all'). Billing period is month-granularity
+        (see _PI_PERIOD_START_SQL), so a sub-month custom range still
+        matches the whole month it falls inside — deliberately not
+        fabricating day-level billing precision the data doesn't have.
+        """
+        if not start or not end_exclusive:
+            return "1=1", []
+        return (
+            f"({period_start_expr} < ? AND date({period_start_expr}, '+1 month') > ?)",
+            [end_exclusive, start],
+        )
+
+    def get_payments_workspace_stats(
+        self, period_start: Optional[str] = None, period_end_exclusive: Optional[str] = None
+    ) -> dict:
+        pi_clause, pi_params = self._period_overlap_clause(self._PI_PERIOD_START_SQL, period_start, period_end_exclusive)
+        iai_clause, iai_params = self._period_overlap_clause(self._IAI_PERIOD_START_SQL, period_start, period_end_exclusive)
         with self._connect() as conn:
             awaiting = conn.execute(
-                "SELECT COUNT(*) FROM payment_intents WHERE status IN ('ready','bepaid_created')"
+                f"SELECT COUNT(*) FROM payment_intents WHERE status IN ('ready','bepaid_created') AND {pi_clause}",
+                pi_params,
             ).fetchone()[0]
             draft = conn.execute(
-                "SELECT COUNT(*) FROM payment_intents WHERE status='draft'"
+                f"SELECT COUNT(*) FROM payment_intents WHERE status='draft' AND {pi_clause}",
+                pi_params,
             ).fetchone()[0]
             paid = conn.execute(
-                "SELECT COUNT(*) FROM payment_intents WHERE status='paid'"
+                f"SELECT COUNT(*) FROM payment_intents WHERE status='paid' AND {pi_clause}",
+                pi_params,
             ).fetchone()[0]
             posted = conn.execute(
-                "SELECT COUNT(*) FROM payment_intents WHERE status='posted_to_moyklass'"
+                f"SELECT COUNT(*) FROM payment_intents WHERE status='posted_to_moyklass' AND {pi_clause}",
+                pi_params,
             ).fetchone()[0]
             pending_review = conn.execute(
-                "SELECT COUNT(*) FROM invoice_automation_items WHERE current_stage='pending_review'"
+                f"""SELECT COUNT(*) FROM invoice_automation_items a
+                    LEFT JOIN payment_intents p ON p.public_id = a.intent_public_id
+                    WHERE a.current_stage='pending_review' AND {iai_clause}""",
+                iai_params,
             ).fetchone()[0]
             requires_check = conn.execute(
-                "SELECT COUNT(*) FROM invoice_automation_items WHERE current_stage='requires_check'"
+                f"""SELECT COUNT(*) FROM invoice_automation_items a
+                    LEFT JOIN payment_intents p ON p.public_id = a.intent_public_id
+                    WHERE a.current_stage='requires_check' AND {iai_clause}""",
+                iai_params,
             ).fetchone()[0]
+            # period-independent — "Сейчас в пилоте" (v7.1.16.1 rename from
+            # "Клиентов в пилоте"), never filtered by billing period.
             pilot_count = conn.execute(
                 "SELECT COUNT(*) FROM payment_automation_pilot_clients WHERE enabled=1"
+            ).fetchone()[0]
+            # legacy rows with no determinable period at all (see
+            # _PI_PERIOD_START_SQL docstring — expected to be ~0 in
+            # practice since created_at is NOT NULL, but counted for real
+            # rather than assumed).
+            undated = conn.execute(
+                f"SELECT COUNT(*) FROM payment_intents WHERE ({self._PI_PERIOD_START_SQL}) IS NULL"
             ).fetchone()[0]
         return {
             "ok": True,
@@ -12443,17 +12537,21 @@ class Storage:
             "pending_review": pending_review,
             "requires_check": requires_check,
             "pilot_clients_count": pilot_count,
+            "undated_count": undated,
         }
 
-    def get_payments_attention_queue(self, limit: int = 50) -> list:
+    def get_payments_attention_queue(
+        self, limit: int = 50, period_start: Optional[str] = None, period_end_exclusive: Optional[str] = None
+    ) -> list:
         limit = max(1, min(int(limit), 200))
+        period_clause, period_params = self._period_overlap_clause(self._IAI_PERIOD_START_SQL, period_start, period_end_exclusive)
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT a.*, p.status AS intent_status, p.client_visibility AS intent_visibility,
+                f"""SELECT a.*, p.status AS intent_status, p.client_visibility AS intent_visibility,
                           p.amount_byn, p.student_name AS pi_student_name
                    FROM invoice_automation_items a
                    LEFT JOIN payment_intents p ON p.public_id = a.intent_public_id
-                   WHERE a.current_stage IN (
+                   WHERE (a.current_stage IN (
                        'pending_review', 'requires_check', 'error',
                        'missing_parent_link', 'ambiguous_parent_link'
                    )
@@ -12471,9 +12569,72 @@ class Storage:
                    OR (
                        a.current_stage IN ('payment_options_created', 'published')
                        AND a.reason_code IS NOT NULL
-                   )
+                   )) AND {period_clause}
                    ORDER BY a.updated_at DESC
                    LIMIT ?""",
-                (limit,),
+                (*period_params, limit),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def get_payments_attention_outside_period_count(self, period_start: Optional[str], period_end_exclusive: Optional[str]) -> int:
+        """Count of attention-queue items whose billing period falls
+        OUTSIDE the given [period_start, period_end_exclusive) window — 0
+        when no period is selected (mode='all', nothing is "outside" all
+        time). Same current_stage predicate as get_payments_attention_queue,
+        just negated on the period clause."""
+        if not period_start or not period_end_exclusive:
+            return 0
+        inside_clause, inside_params = self._period_overlap_clause(self._IAI_PERIOD_START_SQL, period_start, period_end_exclusive)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""SELECT COUNT(*) FROM invoice_automation_items a
+                    LEFT JOIN payment_intents p ON p.public_id = a.intent_public_id
+                    WHERE (a.current_stage IN (
+                        'pending_review', 'requires_check', 'error',
+                        'missing_parent_link', 'ambiguous_parent_link'
+                    )
+                    OR (
+                        a.current_stage IN ('payment_options_created', 'published')
+                        AND a.reason_code IS NOT NULL
+                    )) AND NOT {inside_clause}""",
+                inside_params,
+            ).fetchone()
+        return row[0] if row else 0
+
+    def list_payment_intents_by_period(
+        self,
+        period_start: Optional[str] = None,
+        period_end_exclusive: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 200,
+        offset: int = 0,
+        *,
+        exclude_cancelled: bool = False,
+    ) -> tuple[list[dict], int]:
+        """Server-side period-filtered "Все платежи" list — distinct from
+        list_payment_intents(month=...) (exact period_month string match,
+        used by other pre-existing callers, left untouched) since this one
+        uses the canonical COALESCE period and supports arbitrary date
+        ranges, not just a single YYYY-MM. Returns (rows, total_count) so
+        the caller can page instead of silently truncating at `limit`."""
+        clause, params = self._period_overlap_clause(self._PI_PERIOD_START_SQL, period_start, period_end_exclusive)
+        extra = []
+        extra_params: list = []
+        if status and status != "all":
+            extra.append("status=?")
+            extra_params.append(status)
+        elif exclude_cancelled:
+            extra.append("status != 'cancelled'")
+        where_parts = [clause] + extra
+        where = "WHERE " + " AND ".join(where_parts)
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        with self._connect() as conn:
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM payment_intents {where}", params + extra_params
+            ).fetchone()[0]
+            rows = conn.execute(
+                f"SELECT * FROM payment_intents {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+                params + extra_params + [limit, offset],
+            ).fetchall()
+        return [dict(r) for r in rows], total

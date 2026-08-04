@@ -407,7 +407,7 @@ class TestWorkspaceStats(unittest.TestCase):
     def test_21_workspace_stats_endpoint_requires_workspace_role(self):
         """Teacher role should be denied workspace stats."""
         with patch.object(self.ctx, "_role_for_user", return_value="teacher"):
-            result = self.ctx.payments_workspace_stats(self._auth("teacher"))
+            result = self.ctx.payments_workspace_stats(self._auth("teacher"), {})
         self.assertFalse(result.get("ok"))
 
     def test_22_attention_queue_includes_pending_review(self):

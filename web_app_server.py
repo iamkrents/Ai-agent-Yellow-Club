@@ -17138,19 +17138,157 @@ class MiniAppContext:
             return {"ok": False, "error": "Нет доступа к рабочему пространству платежей."}
         return None
 
-    def payments_workspace_stats(self, auth: dict[str, Any]) -> dict[str, Any]:
+    # ── v7.1.16.1 — Payments Workspace period filtering ──────────────────────
+    # Same "app timezone" convention as _communications_minsk_to_utc (v7.1.14):
+    # zoneinfo.ZoneInfo("Europe/Minsk"), DST-safe, imported locally per the
+    # established pattern in this file. period_start/period_end_exclusive are
+    # plain 'YYYY-MM-DD' calendar-date strings — never a datetime/UTC
+    # instant — so there is no cross-timezone ambiguity when they're compared
+    # against the canonical period_start expression in storage.py.
+    _PAYMENTS_PERIOD_MONTHS_NOMINATIVE = [
+        "январь", "февраль", "март", "апрель", "май", "июнь",
+        "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
+    ]
+    _PAYMENTS_PERIOD_MONTHS_GENITIVE = [
+        "января", "февраля", "марта", "апреля", "мая", "июня",
+        "июля", "августа", "сентября", "октября", "ноября", "декабря",
+    ]
+
+    def _payments_period_fmt_date(self, d) -> str:
+        return f"{d.day} {self._PAYMENTS_PERIOD_MONTHS_GENITIVE[d.month - 1]} {d.year}"
+
+    def _parse_payments_period(self, params: dict[str, str]) -> dict[str, Any]:
+        """Normalizes period_mode/period_start/period_end query params into
+        {"ok": True, "mode", "start", "end_exclusive", "label"} — start/
+        end_exclusive are None for mode="all" (no filter). Defaults to the
+        current billing month in Europe/Minsk when mode="month" and no
+        period_start is given. Never trusts client-computed "today"."""
+        import zoneinfo
+        mode = str(params.get("period_mode") or "month").strip()
+        if mode not in ("month", "custom", "all"):
+            return {"ok": False, "error": "Некорректный режим периода."}
+        if mode == "all":
+            return {"ok": True, "mode": "all", "start": None, "end_exclusive": None, "label": "Всё время"}
+
+        today_minsk = datetime.now(zoneinfo.ZoneInfo("Europe/Minsk")).date()
+
+        if mode == "month":
+            raw_month = str(params.get("period_start") or "").strip()
+            if re.match(r"^\d{4}-\d{2}$", raw_month):
+                year, mon = int(raw_month[:4]), int(raw_month[5:7])
+            else:
+                year, mon = today_minsk.year, today_minsk.month
+            try:
+                start = date(year, mon, 1)
+            except ValueError:
+                return {"ok": False, "error": "Некорректный месяц."}
+            end_exclusive = date(year + 1, 1, 1) if mon == 12 else date(year, mon + 1, 1)
+            label = f"Расчётный период: {self._PAYMENTS_PERIOD_MONTHS_NOMINATIVE[mon - 1]} {year}"
+            return {"ok": True, "mode": "month", "start": start.isoformat(), "end_exclusive": end_exclusive.isoformat(), "label": label}
+
+        # mode == "custom"
+        raw_start = str(params.get("period_start") or "").strip()
+        raw_end = str(params.get("period_end") or "").strip()
+        try:
+            start = date.fromisoformat(raw_start)
+            end_inclusive = date.fromisoformat(raw_end)
+        except ValueError:
+            return {"ok": False, "error": "Укажите обе даты в формате ГГГГ-ММ-ДД."}
+        if end_inclusive < start:
+            return {"ok": False, "error": "Дата окончания не может быть раньше даты начала."}
+        end_exclusive = end_inclusive + timedelta(days=1)
+        label = f"Период: {self._payments_period_fmt_date(start)} – {self._payments_period_fmt_date(end_inclusive)}"
+        return {"ok": True, "mode": "custom", "start": start.isoformat(), "end_exclusive": end_exclusive.isoformat(), "label": label}
+
+    def payments_workspace_stats(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
         denied = self._require_workspace_access(auth)
         if denied:
             return denied
-        return self.storage.get_payments_workspace_stats()
+        period = self._parse_payments_period(params)
+        if not period.get("ok"):
+            return period
+        stats = self.storage.get_payments_workspace_stats(period.get("start"), period.get("end_exclusive"))
+        stats["period"] = {"mode": period["mode"], "start": period.get("start"), "endExclusive": period.get("end_exclusive"), "label": period["label"]}
+        stats["attentionOutsidePeriodCount"] = self.storage.get_payments_attention_outside_period_count(period.get("start"), period.get("end_exclusive"))
+        return stats
 
     def payments_workspace_attention(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
         denied = self._require_workspace_access(auth)
         if denied:
             return denied
+        period = self._parse_payments_period(params)
+        if not period.get("ok"):
+            return period
         limit = max(1, min(int(params.get("limit", 50)), 200))
-        items = self.storage.get_payments_attention_queue(limit=limit)
-        return {"ok": True, "items": items, "count": len(items)}
+        items = self.storage.get_payments_attention_queue(limit=limit, period_start=period.get("start"), period_end_exclusive=period.get("end_exclusive"))
+        return {"ok": True, "items": items, "count": len(items), "period": {"mode": period["mode"], "label": period["label"]}}
+
+    def payments_workspace_list(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        """GET /api/payments/workspace/list — server-side period-filtered
+        "Все платежи", distinct from the pre-existing /api/payments/intents
+        (which stays exact-month/unfiltered-by-default for its other
+        callers, untouched). Paginated (limit/offset) instead of the old
+        client-side-filtered ≤200-row cap."""
+        denied = self._require_workspace_access(auth)
+        if denied:
+            return denied
+        period = self._parse_payments_period(params)
+        if not period.get("ok"):
+            return period
+        raw_status = str(params.get("status") or "all").strip()
+        status = raw_status if raw_status in self._PI_VALID_STATUS_VALUES else "all"
+        try:
+            limit = max(1, min(int(params.get("limit") or 50), 200))
+        except (TypeError, ValueError):
+            limit = 50
+        try:
+            offset = max(0, int(params.get("offset") or 0))
+        except (TypeError, ValueError):
+            offset = 0
+        intents, total = self.storage.list_payment_intents_by_period(
+            period_start=period.get("start"),
+            period_end_exclusive=period.get("end_exclusive"),
+            status=status if status != "all" else None,
+            exclude_cancelled=(status == "all"),
+            limit=limit,
+            offset=offset,
+        )
+        intents = [self._normalize_payment_intent(pi) for pi in intents]
+        for pi in intents:
+            opts = self.storage.get_options_for_intent(pi["public_id"])
+            pi["payment_options"] = [
+                {
+                    "channel": o.get("channel"),
+                    "status": o.get("status"),
+                    "account_number": o.get("bepaid_account_number"),
+                    "uid": o.get("bepaid_uid"),
+                    "payment_url": o.get("payment_url"),
+                    "has_checkout": bool(o.get("checkout_token")),
+                }
+                for o in opts
+            ]
+        withdrawn_ids = [pi["public_id"] for pi in intents if pi.get("client_visibility") == "withdrawn"]
+        if withdrawn_ids:
+            withdrawals = self.storage.get_withdrawals_for_intents(withdrawn_ids)
+            for pi in intents:
+                if pi.get("client_visibility") == "withdrawn":
+                    wr = withdrawals.get(pi["public_id"])
+                    if wr:
+                        pi["withdrawal"] = {
+                            "status": wr.get("status"),
+                            "reason": wr.get("reason"),
+                            "requested_at": wr.get("requested_at"),
+                            "completed_at": wr.get("completed_at"),
+                        }
+        return {
+            "ok": True,
+            "intents": intents,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "status_filter": status,
+            "period": {"mode": period["mode"], "start": period.get("start"), "endExclusive": period.get("end_exclusive"), "label": period["label"]},
+        }
 
     # ── v7.1.9 — Payment Automation Guardian diagnostics ─────────────────────
 
@@ -20662,9 +20800,11 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                         return self._send_json(CTX.get_intent_withdrawal_info(auth, _pi_parts[0]))
                 # v7.1.5 — Payments workspace
                 if path == "/api/payments/workspace/stats":
-                    return self._send_json(CTX.payments_workspace_stats(auth))
+                    return self._send_json(CTX.payments_workspace_stats(auth, params))
                 if path == "/api/payments/workspace/attention":
                     return self._send_json(CTX.payments_workspace_attention(auth, params))
+                if path == "/api/payments/workspace/list":
+                    return self._send_json(CTX.payments_workspace_list(auth, params))
                 if path == "/api/payments/diagnostics":
                     return self._send_json(CTX.payments_diagnostics(auth))
                 if path == "/api/pilot/clients":

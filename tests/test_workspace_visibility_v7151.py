@@ -251,9 +251,13 @@ class TestErrorHandling(unittest.TestCase):
             "Error must not be silently discarded",
         )
         self.assertIn("Ошибка", fn_body, "Error message must be shown to user")
+        # v7.1.16.1 — retry now re-enters _loadWorkspaceStats() itself
+        # (period-aware, token-fenced) rather than the blanket
+        # loadPaymentsWorkspace() reset, so a retry after an error
+        # preserves the selected period instead of discarding it.
         self.assertIn(
-            "loadPaymentsWorkspace()", fn_body,
-            "Retry button must call loadPaymentsWorkspace()",
+            "_loadWorkspaceStats()", fn_body,
+            "Retry button must call _loadWorkspaceStats()",
         )
 
 

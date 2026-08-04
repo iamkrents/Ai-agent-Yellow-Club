@@ -131,8 +131,8 @@ const launchTab = urlParams.get("tab") || "";
 // one specific campaign recipient (from the bot's post-activation button).
 const launchAvailabilityRecipientId = urlParams.get("oc_availability_recipient") || "";
 
-console.log("MiniApp version: v7.1.16");
-const APP_VERSION = "7.1.16";
+console.log("MiniApp version: v7.1.16.1");
+const APP_VERSION = "7.1.16.1";
 
 // v7.1.16 — minimal frontend incident reporting. Before this, these two
 // handlers only ever did console.error(...) — nothing was ever sent to the
@@ -16710,7 +16710,80 @@ window.automationItemAction = async function(itemId, action, evOrBtn) {
 
 // ── v7.1.5 — Payments workspace ───────────────────────────────────────────
 
-const _wsState = { tab: "overview", stats: null, attention: null, pilotClients: null, allPayments: null, statsLoading: false, diagnostics: null };
+const _wsState = { tab: "overview", stats: null, attention: null, pilotClients: null, allPayments: null, allPaymentsTotal: 0, statsLoading: false, diagnostics: null };
+
+// v7.1.16.1 — Payments Workspace period filter. Persists across Обзор/
+// Требуют внимания/Все платежи (not Клиенты пилота — that's a config list,
+// not period-scoped data, see the launch spec). "month" is stored as the
+// server-confirmed 'YYYY-MM' (never guessed from the browser clock) — the
+// very first load omits period_start entirely and lets the backend resolve
+// "current billing month" in the configured app timezone, then we sync
+// _wsPeriodState.month from the response so prev/next nav has a real base.
+const _wsPeriodState = {
+  mode: "month",        // "month" | "custom" | "all"
+  month: null,           // "YYYY-MM", null until the server has resolved a default
+  defaultMonth: null,     // the first server-resolved "current billing month" — base for "Этот месяц"/"Прошлый месяц"
+  customStart: "",
+  customEnd: "",
+  customError: "",
+  reqToken: 0,            // race-fencing: bumped once per period change; loaders capture-and-compare, never increment
+};
+
+function _wsPeriodMonthAdd(monthStr, delta) {
+  let [y, m] = monthStr.split("-").map(Number);
+  m += delta;
+  while (m < 1) { m += 12; y -= 1; }
+  while (m > 12) { m -= 12; y += 1; }
+  return `${y}-${String(m).padStart(2, "0")}`;
+}
+
+// Returns the query string for the current period, or null if the UI is in
+// "custom" mode but the range isn't valid/complete yet — callers must skip
+// the fetch entirely in that case (never send a request for an invalid range).
+function _wsPeriodQueryParams() {
+  if (_wsPeriodState.mode === "all") return "period_mode=all";
+  if (_wsPeriodState.mode === "custom") {
+    const { customStart, customEnd } = _wsPeriodState;
+    if (!customStart || !customEnd) return null;
+    if (customEnd < customStart) return null;
+    return `period_mode=custom&period_start=${encodeURIComponent(customStart)}&period_end=${encodeURIComponent(customEnd)}`;
+  }
+  return `period_mode=month${_wsPeriodState.month ? `&period_start=${encodeURIComponent(_wsPeriodState.month)}` : ""}`;
+}
+
+// Syncs client state from a server response's `period` metadata — the
+// server is always the source of truth for "what month is this" (see
+// _parse_payments_period, Europe/Minsk-resolved), never the browser clock.
+// defaultMonth is captured once (first resolution only) as the anchor for
+// the "Этот месяц"/"Прошлый месяц" quick presets.
+function _wsPeriodSyncFromResponse(period) {
+  if (!period || period.mode !== "month" || !period.start) return;
+  const month = period.start.slice(0, 7);
+  _wsPeriodState.month = month;
+  if (!_wsPeriodState.defaultMonth) _wsPeriodState.defaultMonth = month;
+}
+
+function _wsPeriodValidateCustomRange() {
+  const { customStart, customEnd } = _wsPeriodState;
+  if (!customStart || !customEnd) { _wsPeriodState.customError = "Укажите обе даты."; return false; }
+  if (customEnd < customStart) { _wsPeriodState.customError = "Дата окончания не может быть раньше даты начала."; return false; }
+  _wsPeriodState.customError = "";
+  return true;
+}
+
+// Central "period changed" entry point — the ONLY place that bumps
+// reqToken, so every in-flight load captured under the old token (stats,
+// attention preview, attention tab, all-payments) is fenced out together,
+// regardless of which endpoint each one hit.
+function _wsPeriodChanged() {
+  _wsPeriodState.reqToken++;
+  _wsState.stats = null;
+  _wsState.attention = null;
+  _wsState.allPayments = null;
+  loadPaymentsWorkspace();
+  if (_wsState.tab === "attention") _loadWorkspaceAttention();
+  if (_wsState.tab === "all-payments") _loadWorkspaceAllPayments();
+}
 
 function loadPaymentsWorkspace() {
   const root = $("paymentsWorkspaceRoot");
@@ -16725,8 +16798,12 @@ function loadPaymentsWorkspace() {
 // duplicate data source. Silently ignored on failure: the Attention tab has
 // its own dedicated error handling when the user actually opens it.
 async function _loadWorkspaceAttentionPreview() {
+  const qp = _wsPeriodQueryParams();
+  if (qp === null) return;
+  const myToken = _wsPeriodState.reqToken;
   try {
-    const d = await apiGet("/api/payments/workspace/attention?limit=100");
+    const d = await apiGet(`/api/payments/workspace/attention?limit=100&${qp}`);
+    if (myToken !== _wsPeriodState.reqToken) return;
     _wsState.attention = d.items || [];
     if (_wsState.tab === "overview") _wsRenderCurrentTab();
   } catch (e) { /* best-effort preview only */ }
@@ -16807,14 +16884,27 @@ function _wsRenderCurrentTab() {
 }
 
 async function _loadWorkspaceStats() {
+  const qp = _wsPeriodQueryParams();
+  if (qp === null) { _wsRenderCurrentTab(); return; }  // incomplete custom range — do not fetch
+  const myToken = _wsPeriodState.reqToken;
   _wsState.statsLoading = true;
   try {
-    const d = await apiGet("/api/payments/workspace/stats");
-    _wsState.stats = d; _wsRenderCurrentTab();
+    const d = await apiGet(`/api/payments/workspace/stats?${qp}`);
+    if (myToken !== _wsPeriodState.reqToken) return;  // a newer period was selected while this was in flight
+    if (!d.ok) {
+      _wsState.statsLoading = false;
+      const root = $("wsTabContent");
+      if (root) root.innerHTML = _wsErrorState(d.error || "Ошибка загрузки данных.", "_loadWorkspaceStats()");
+      return;
+    }
+    _wsState.stats = d;
+    _wsPeriodSyncFromResponse(d.period);
+    _wsRenderCurrentTab();
   } catch (e) {
+    if (myToken !== _wsPeriodState.reqToken) return;
     _wsState.statsLoading = false;
     const root = $("wsTabContent");
-    if (root) root.innerHTML = `<div class="notice notice-error">Ошибка загрузки данных. <button class="secondary" style="font-size:12px;padding:4px 10px;margin-left:8px" onclick="loadPaymentsWorkspace()">Повторить</button></div>`;
+    if (root) root.innerHTML = _wsErrorState(safeUserError(e), "_loadWorkspaceStats()");
     return;
   }
   _wsState.statsLoading = false;
@@ -16822,10 +16912,17 @@ async function _loadWorkspaceStats() {
 
 async function _loadWorkspaceAttention() {
   const root = $("wsTabContent");
+  const qp = _wsPeriodQueryParams();
+  if (qp === null) return;
+  const myToken = _wsPeriodState.reqToken;
   try {
-    const d = await apiGet("/api/payments/workspace/attention?limit=100");
+    const d = await apiGet(`/api/payments/workspace/attention?limit=100&${qp}`);
+    if (myToken !== _wsPeriodState.reqToken) return;
     _wsState.attention = d.items || []; _wsRenderAttention(root);
-  } catch (e) { if (root) root.innerHTML = _wsErrorState("Не удалось загрузить список.", "_loadWorkspaceAttention()"); }
+  } catch (e) {
+    if (myToken !== _wsPeriodState.reqToken) return;
+    if (root) root.innerHTML = _wsErrorState("Не удалось загрузить список.", "_loadWorkspaceAttention()");
+  }
 }
 
 async function _loadPilotClients() {
@@ -16838,11 +16935,22 @@ async function _loadPilotClients() {
 
 async function _loadWorkspaceAllPayments() {
   const root = $("wsTabContent");
+  const qp = _wsPeriodQueryParams();
+  if (qp === null) return;
+  const myToken = _wsPeriodState.reqToken;
   try {
-    const d = await apiGet("/api/payments/intents");
+    // v7.1.16.1 — server-side period-filtered + paginated endpoint,
+    // replaces the old unfiltered/≤200-row-truncated /api/payments/intents
+    // call this tab used to make (see the v7.1.16.1 audit).
+    const d = await apiGet(`/api/payments/workspace/list?limit=200&${qp}`);
+    if (myToken !== _wsPeriodState.reqToken) return;
+    if (!d.ok) { if (root) root.innerHTML = _wsErrorState(d.error || "Ошибка загрузки данных.", "_loadWorkspaceAllPayments()"); return; }
     _wsState.allPayments = d.intents || [];
+    _wsState.allPaymentsTotal = d.total || 0;
+    _wsPeriodSyncFromResponse(d.period);
     _wsRenderAllPayments(root);
   } catch (e) {
+    if (myToken !== _wsPeriodState.reqToken) return;
     if (root) root.innerHTML = _wsErrorState("Сервер платежей не ответил.", "_loadWorkspaceAllPayments()");
   }
 }
@@ -16947,14 +17055,119 @@ const WS_OVERVIEW_STAT_META = [
   { field: "awaiting_payment",    label: "Ожидают оплаты",        tone: "pending", icon: WS_ICON_WALLET },
   { field: "paid",                label: "Оплачено",              tone: "success", icon: WS_ICON_CHECK_CIRCLE },
   { field: "posted_to_moyklass",  label: "Внесено в МойКласс",    tone: "success", icon: WS_ICON_FILE_CHECK },
-  { field: "pilot_clients_count", label: "Клиентов в пилоте",     tone: "info",    icon: WS_ICON_USERS },
+  { field: "pilot_clients_count", label: "Сейчас в пилоте",       tone: "info",    icon: WS_ICON_USERS },
 ];
+
+// v7.1.16.1 — Payments Workspace period filter bar (Обзор/Требуют
+// внимания/Все платежи only — "Клиенты пилота" is a config list, not
+// period-scoped data, per the launch spec).
+const WS_PERIOD_MONTHS_NOMINATIVE = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"];
+
+function _wsPeriodMonthLabel(monthStr) {
+  if (!monthStr) return "…";
+  const [y, m] = monthStr.split("-").map(Number);
+  return `${WS_PERIOD_MONTHS_NOMINATIVE[m - 1]} ${y}`;
+}
+
+function _wsPeriodQuickActive(key) {
+  const st = _wsPeriodState;
+  if (key === "all") return st.mode === "all";
+  if (key === "custom") return st.mode === "custom";
+  if (!st.defaultMonth) return false;
+  if (key === "this-month") return st.mode === "month" && st.month === st.defaultMonth;
+  if (key === "last-month") return st.mode === "month" && st.month === _wsPeriodMonthAdd(st.defaultMonth, -1);
+  return false;
+}
+
+function _wsPeriodBarHtml() {
+  const st = _wsPeriodState;
+  const monthNavHtml = st.mode === "month" ? `
+    <div class="ws-period-nav">
+      <button type="button" class="ws-period-nav-btn" id="wsPeriodPrev" aria-label="Предыдущий месяц">‹</button>
+      <span class="ws-period-nav-label">${escapeHtml(_wsPeriodMonthLabel(st.month))}</span>
+      <button type="button" class="ws-period-nav-btn" id="wsPeriodNext" aria-label="Следующий месяц">›</button>
+    </div>` : "";
+  const customHtml = st.mode === "custom" ? `
+    <div class="ws-period-custom">
+      <label class="ws-period-custom-field">С<input type="date" id="wsPeriodCustomStart" value="${escapeAttr(st.customStart)}"></label>
+      <label class="ws-period-custom-field">По<input type="date" id="wsPeriodCustomEnd" value="${escapeAttr(st.customEnd)}"></label>
+      <button type="button" class="primary ws-period-custom-apply" id="wsPeriodCustomApply">Применить</button>
+      ${st.customError ? `<div class="ws-period-custom-error">${escapeHtml(st.customError)}</div>` : ""}
+    </div>` : "";
+  return `
+    <div class="ws-period-bar" id="wsPeriodBar">
+      ${monthNavHtml}
+      <div class="ws-oc-mode-toggle ws-period-quick-toggle" id="wsPeriodQuickToggle">
+        <button type="button" class="ws-oc-mode-btn ws-oc-mode-btn--lg${_wsPeriodQuickActive("this-month") ? " active" : ""}" data-ws-period-quick="this-month">Этот месяц</button>
+        <button type="button" class="ws-oc-mode-btn ws-oc-mode-btn--lg${_wsPeriodQuickActive("last-month") ? " active" : ""}" data-ws-period-quick="last-month">Прошлый месяц</button>
+        <button type="button" class="ws-oc-mode-btn ws-oc-mode-btn--lg${_wsPeriodQuickActive("custom") ? " active" : ""}" data-ws-period-quick="custom">Выбрать даты</button>
+        <button type="button" class="ws-oc-mode-btn ws-oc-mode-btn--lg${_wsPeriodQuickActive("all") ? " active" : ""}" data-ws-period-quick="all">Всё время</button>
+      </div>
+      ${customHtml}
+    </div>`;
+}
+
+function _wsWirePeriodBar() {
+  $("wsPeriodPrev")?.addEventListener("click", () => {
+    if (!_wsPeriodState.month) return;
+    _wsPeriodState.mode = "month";
+    _wsPeriodState.month = _wsPeriodMonthAdd(_wsPeriodState.month, -1);
+    _wsPeriodChanged();
+  });
+  $("wsPeriodNext")?.addEventListener("click", () => {
+    if (!_wsPeriodState.month) return;
+    _wsPeriodState.mode = "month";
+    _wsPeriodState.month = _wsPeriodMonthAdd(_wsPeriodState.month, 1);
+    _wsPeriodChanged();
+  });
+  document.querySelectorAll("#wsPeriodQuickToggle [data-ws-period-quick]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.wsPeriodQuick;
+      if (key === "custom") {
+        // Just reveal the date inputs — never fetch on an incomplete/
+        // unconfirmed range; only the explicit "Применить" tap fetches.
+        if (_wsPeriodState.mode === "custom") return;
+        _wsPeriodState.mode = "custom";
+        _wsRenderCurrentTab();
+        return;
+      }
+      let nextMonth = _wsPeriodState.month;
+      let nextMode = _wsPeriodState.mode;
+      if (key === "this-month") { nextMode = "month"; nextMonth = _wsPeriodState.defaultMonth || _wsPeriodState.month; }
+      else if (key === "last-month") { nextMode = "month"; nextMonth = _wsPeriodMonthAdd(_wsPeriodState.defaultMonth || _wsPeriodState.month, -1); }
+      else if (key === "all") { nextMode = "all"; }
+      // Repeat-tap guard: an already-active preset is a no-op, not a
+      // duplicate fetch.
+      if (nextMode === _wsPeriodState.mode && (nextMode !== "month" || nextMonth === _wsPeriodState.month)) return;
+      _wsPeriodState.mode = nextMode;
+      _wsPeriodState.month = nextMonth;
+      _wsPeriodChanged();
+    });
+  });
+  $("wsPeriodCustomApply")?.addEventListener("click", () => {
+    _wsPeriodState.customStart = $("wsPeriodCustomStart")?.value || "";
+    _wsPeriodState.customEnd = $("wsPeriodCustomEnd")?.value || "";
+    if (!_wsPeriodValidateCustomRange()) { _wsRenderCurrentTab(); return; }
+    _wsPeriodChanged();
+  });
+}
 
 function _wsRenderOverview(root) {
   const s = _wsState.stats;
-  if (!s) { root.innerHTML = _wsStatsSkeleton(); return; }
+  const periodBarHtml = _wsPeriodBarHtml();
+  if (!s) {
+    root.innerHTML = periodBarHtml + _wsStatsSkeleton();
+    _wsWirePeriodBar();
+    return;
+  }
   const fmtNum = _wsFmtNum;
-  let html = `
+  let html = periodBarHtml;
+  const periodLabel = s.period ? s.period.label : "";
+  const undatedNote = (s.period && s.period.mode === "all" && (s.undated_count || 0) > 0)
+    ? ` · без даты: ${fmtNum(s.undated_count)}`
+    : "";
+  html += `<p class="ws-period-summary-label">${escapeHtml(periodLabel)}${escapeHtml(undatedNote)}</p>`;
+  html += `
     <div class="ws-stats-grid">
       ${WS_OVERVIEW_STAT_META.map(m => `
         <div class="ws-stat-card ws-stat-card--${m.tone}">
@@ -16967,6 +17180,15 @@ function _wsRenderOverview(root) {
       `).join("")}
     </div>
   `;
+  // v7.1.16.1 — global (not period-scoped) critical items surfaced without
+  // fully leaving the selected period: a compact notice, never merged into
+  // the period stats above.
+  if ((s.attentionOutsidePeriodCount || 0) > 0) {
+    html += `
+      <button type="button" class="ws-period-outside-notice" id="wsPeriodOutsideNotice">
+        За пределами выбранного периода есть ${fmtNum(s.attentionOutsidePeriodCount)} ${_wsPluralPayments(s.attentionOutsidePeriodCount)}, требующих внимания
+      </button>`;
+  }
 
   // Preview blocks only render once the underlying data is actually available
   // (loaded via the same real endpoints the Attention / All Payments tabs use)
@@ -17010,6 +17232,19 @@ function _wsRenderOverview(root) {
   }
 
   root.innerHTML = html;
+  _wsWirePeriodBar();
+  $("wsPeriodOutsideNotice")?.addEventListener("click", () => {
+    _wsPeriodState.mode = "all";
+    _wsPeriodChanged();
+    _wsActivateTab("attention");
+  });
+}
+
+function _wsPluralPayments(n) {
+  const mod10 = n % 10, mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return "платёж";
+  if ([2, 3, 4].includes(mod10) && ![12, 13, 14].includes(mod100)) return "платежа";
+  return "платежей";
 }
 
 // Fallback sentences — used ONLY when the backend hasn't sent a readable_reason
@@ -17209,19 +17444,23 @@ function _wsAttentionSkeletonCard() {
 
 function _wsRenderAttention(root) {
   const items = _wsState.attention;
+  const periodBarHtml = _wsPeriodBarHtml();
   if (items === null) {
-    root.innerHTML = _wsQueueHead() + `<div class="ws-attention-list">${Array.from({ length: 3 }).map(_wsAttentionSkeletonCard).join("")}</div>`;
+    root.innerHTML = periodBarHtml + _wsQueueHead() + `<div class="ws-attention-list">${Array.from({ length: 3 }).map(_wsAttentionSkeletonCard).join("")}</div>`;
+    _wsWirePeriodBar();
     return;
   }
   if (!items.length) {
-    root.innerHTML = _wsQueueHead(0) + `<div class="ws-empty-state">
+    root.innerHTML = periodBarHtml + _wsQueueHead(0) + `<div class="ws-empty-state">
       <div class="ws-empty-state-icon ws-empty-state-icon--success">${WS_ICON_CHECK_BIG}</div>
       <div class="ws-empty-state-title">Нет элементов, требующих внимания</div>
       <div class="ws-empty-state-desc">Все счета в порядке.</div>
     </div>`;
+    _wsWirePeriodBar();
     return;
   }
-  root.innerHTML = _wsQueueHead(items.length) + `<div class="ws-attention-list ws-bottom-safe-pad">${items.map(_wsRenderAttentionItem).join("")}</div>`;
+  root.innerHTML = periodBarHtml + _wsQueueHead(items.length) + `<div class="ws-attention-list ws-bottom-safe-pad">${items.map(_wsRenderAttentionItem).join("")}</div>`;
+  _wsWirePeriodBar();
 }
 
 // Frontend-only search/filter state for the All Payments tab — kept separate
@@ -17497,22 +17736,25 @@ function _wsAllPaymentsFilterBtnHtml(filterCount) {
 // node itself via root.innerHTML — destroying its focus/selection and, on
 // iOS Safari/WebView, closing the on-screen keyboard after a single character.
 function _wsRenderAllPayments(root) {
+  const periodBarHtml = _wsPeriodBarHtml();
   if (_wsState.allPayments === null) {
-    root.innerHTML = _wsSearchSkeleton()
+    root.innerHTML = periodBarHtml + _wsSearchSkeleton()
       + `<div class="ws-pi-list">${Array.from({ length: 3 }).map(_wsAllPaymentsSkeletonCard).join("")}</div>`;
+    _wsWirePeriodBar();
     return;
   }
   if (!_wsState.allPayments.length) {
-    root.innerHTML = `<div class="ws-empty-state">
+    root.innerHTML = periodBarHtml + `<div class="ws-empty-state">
       <div class="ws-empty-state-icon ws-empty-state-icon--neutral">${WS_ICON_INBOX}</div>
       <div class="ws-empty-state-title">Платёжных счетов пока нет</div>
       <div class="ws-empty-state-desc">Как только появится первый платёжный счёт, он отобразится здесь.</div>
     </div>`;
+    _wsWirePeriodBar();
     return;
   }
 
   const searchVal = escapeAttr(_wsAllPaymentsUI.search);
-  root.innerHTML = `
+  root.innerHTML = periodBarHtml + `
     <div class="ws-search-row">
       <label class="ws-search-bar">
         ${WS_ICON_SEARCH}
@@ -17523,6 +17765,7 @@ function _wsRenderAllPayments(root) {
     </div>
     <div id="wsAllPaymentsResults"></div>
   `;
+  _wsWirePeriodBar();
   _wsRenderAllPaymentsResults();
 }
 
@@ -17551,7 +17794,16 @@ function _wsRenderAllPaymentsResults() {
       </div>`;
     return;
   }
-  resultsRoot.innerHTML = `<div class="ws-results-count">Найдено: ${filtered.length}</div>
+  // v7.1.16.1 — the server now reports the true period total (see
+  // payments_workspace_list); when it exceeds what was actually loaded
+  // (still capped at 200 rows per request, same limit as before — full
+  // pagination UI is out of scope for this release), say so explicitly
+  // instead of silently implying the list is complete.
+  const total = _wsState.allPaymentsTotal || 0;
+  const countLabel = total > (_wsState.allPayments || []).length
+    ? `Показано: ${filtered.length} из ${total}`
+    : `Найдено: ${filtered.length}`;
+  resultsRoot.innerHTML = `<div class="ws-results-count">${countLabel}</div>
     <div class="ws-pi-list ws-bottom-safe-pad">${filtered.map(_wsRenderPaymentCard).join("")}</div>`;
 }
 
@@ -17901,7 +18153,7 @@ async function _pilotAddClient() {
     if (d.ok) {
       _wsPilotAddResetForm();
       await _loadPilotClients();
-      _loadWorkspaceStats(); // Overview "Клиентов в пилоте" count must reflect the addition
+      _loadWorkspaceStats(); // Overview "Сейчас в пилоте" count must reflect the addition
       setNotice("Клиент добавлен в пилот.", "success");
     } else {
       _wsPilotAddResult(d.error || "Не удалось добавить клиента.", "error");
@@ -17967,7 +18219,7 @@ async function confirmPilotRemove() {
     if (d.ok) {
       closePilotRemoveModal();
       _loadPilotClients();
-      _loadWorkspaceStats(); // Overview "Клиентов в пилоте" count must reflect the removal
+      _loadWorkspaceStats(); // Overview "Сейчас в пилоте" count must reflect the removal
     } else if (errEl) {
       errEl.textContent = d.error || "Ошибка удаления"; errEl.classList.remove("hidden");
     }
@@ -20576,7 +20828,7 @@ const WS_HELP_METRICS = [
   { icon: WS_ICON_FILE_CHECK, tone: "green", label: "Внесено в МойКласс",
     what: "Оплаты, которые уже отражены в МойКласс.",
     todo: "Обычно действие не требуется. При расхождении откройте карточку." },
-  { icon: WS_ICON_USERS, tone: "blue", label: "Клиентов в пилоте",
+  { icon: WS_ICON_USERS, tone: "blue", label: "Сейчас в пилоте",
     what: "Клиенты, для которых включён один из режимов автоматизации.",
     todo: "Проверьте режим во вкладке «Клиенты пилота»." },
 ];

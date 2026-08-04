@@ -333,9 +333,9 @@ class TestCommsConfirmSheet(unittest.TestCase):
                 )
 
     def test_75_version_markers_preserved(self):
-        self.assertIn("styles.css?v=7.1.16", self.html)
-        self.assertIn("app.js?v=7.1.16", self.html)
-        self.assertIn('console.log("MiniApp version: v7.1.16");', self.js)
+        self.assertIn("styles.css?v=7.1.16.1", self.html)
+        self.assertIn("app.js?v=7.1.16.1", self.html)
+        self.assertIn('console.log("MiniApp version: v7.1.16.1");', self.js)
 
     def test_76_native_confirm_not_used_for_send_nor_schedule(self):
         submit = self._fn_body(r"async function _commsConfirmSubmit\(\)")

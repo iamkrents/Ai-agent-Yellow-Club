@@ -140,7 +140,7 @@ class TestStatCards(unittest.TestCase):
 
     def test_03_six_cards_with_correct_labels(self):
         block = self._meta_block()
-        for label in ("На проверке", "Требуют внимания", "Ожидают оплаты", "Оплачено", "Внесено в МойКласс", "Клиентов в пилоте"):
+        for label in ("На проверке", "Требуют внимания", "Ожидают оплаты", "Оплачено", "Внесено в МойКласс", "Сейчас в пилоте"):
             self.assertIn(label, block, f"missing stat card label: {label}")
 
     def test_04_icons_are_svg_not_emoji(self):
@@ -295,8 +295,8 @@ class TestVersionUnchanged(unittest.TestCase):
     def test_19_version_is_v7161(self):
         html = _html()
         js = _js()
-        self.assertIn("v=7.1.16", html)
-        self.assertIn('console.log("MiniApp version: v7.1.16")', js)
+        self.assertIn("v=7.1.16.1", html)
+        self.assertIn('console.log("MiniApp version: v7.1.16.1")', js)
 
 
 # ---------------------------------------------------------------------------

@@ -159,9 +159,9 @@ class TestVersion(unittest.TestCase):
     def test_01_cache_bust_and_version_are_v716(self):
         html = _html()
         js = _js()
-        self.assertIn("styles.css?v=7.1.16", html)
-        self.assertIn("app.js?v=7.1.16", html)
-        self.assertIn('console.log("MiniApp version: v7.1.16")', js)
+        self.assertIn("styles.css?v=7.1.16.1", html)
+        self.assertIn("app.js?v=7.1.16.1", html)
+        self.assertIn('console.log("MiniApp version: v7.1.16.1")', js)
 
 
 # ---------------------------------------------------------------------------
@@ -228,14 +228,19 @@ class TestRealApiUsage(unittest.TestCase):
         fn = _js_fn("_wsRenderAttentionItem")
         self.assertIn("canApprovePilotIntents", fn)
 
-    def test_11_all_payments_uses_existing_intents_endpoint(self):
+    def test_11_all_payments_uses_workspace_list_endpoint(self):
+        # v7.1.16.1 — switched from the unfiltered/≤200-row-truncated
+        # /api/payments/intents to the new period-filtered, server-side-
+        # paginated /api/payments/workspace/list (see the v7.1.16.1 audit:
+        # the old endpoint silently truncated at 200 rows with no way to
+        # see the true total).
         fn = _js_fn("_loadWorkspaceAllPayments", is_async=True)
-        self.assertIn("/api/payments/intents", fn)
+        self.assertIn("/api/payments/workspace/list", fn)
         # v7.1.6.1 step 3: All Payments now renders via its own dedicated
         # _wsRenderPaymentCard() (compact card + collapsible details) rather
-        # than the shared renderPaymentIntentList() — the endpoint above is
-        # unchanged, only the rendering delegate changed. v7.1.6.2 moved the
-        # call site into _wsRenderAllPaymentsResults() (results-only updater).
+        # than the shared renderPaymentIntentList() — only the rendering
+        # delegate changed. v7.1.6.2 moved the call site into
+        # _wsRenderAllPaymentsResults() (results-only updater).
         self.assertIn("_wsRenderPaymentCard", _js_fn("_wsRenderAllPaymentsResults"))
 
 

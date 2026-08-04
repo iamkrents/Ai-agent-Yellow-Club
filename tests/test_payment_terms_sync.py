@@ -38,7 +38,7 @@ APP_JS = ROOT / "miniapp" / "app.js"
 INDEX_HTML = ROOT / "miniapp" / "index.html"
 SERVER_PY = ROOT / "web_app_server.py"
 
-VERSION = "7.1.16"
+VERSION = "7.1.16.1"
 NOW = "2026-07-23T10:00:00"
 
 
@@ -1114,10 +1114,10 @@ class Test16V7121Static(unittest.TestCase):
 
     def test_70_cache_bust_v714(self):
         """Cache-bust strings must be v7.1.8 in index.html and app.js."""
-        self.assertIn("v=7.1.16", self.html,
-                      "index.html cache-bust must be v=7.1.16")
-        self.assertIn("v7.1.16", self.js,
-                      "app.js version marker must contain v7.1.16")
+        self.assertIn("v=7.1.16.1", self.html,
+                      "index.html cache-bust must be v=7.1.16.1")
+        self.assertIn("v7.1.16.1", self.js,
+                      "app.js version marker must contain v7.1.16.1")
 
     # --- test 71: auto flag source stays False ---
 
@@ -1456,8 +1456,8 @@ class Test17PilotAllowlist(unittest.TestCase):
 
     def test_95_cache_bust_v714(self):
         """Cache-bust strings must be v7.1.8."""
-        self.assertIn("v=7.1.16", self.html, "index.html cache-bust must be v=7.1.16")
-        self.assertIn("v7.1.16", self.js, "app.js version must be v7.1.16")
+        self.assertIn("v=7.1.16.1", self.html, "index.html cache-bust must be v=7.1.16.1")
+        self.assertIn("v7.1.16.1", self.js, "app.js version must be v7.1.16.1")
 
     # --- test 96: food module not changed ---
 
