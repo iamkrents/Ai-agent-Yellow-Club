@@ -9056,6 +9056,27 @@ body.keyboard-open .tabs.bottom-tabbar {
 .ws-skeleton-stat { height: 70px; }
 .ws-skeleton-row { height: 64px; margin-bottom: 10px; }
 
+/* ── v7.1.16 shared patterns: usable outside the workspace ── */
+.ui-skeleton-list { display: flex; flex-direction: column; }
+.ui-inline-notice {
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: 8px;
+}
+.ui-inline-notice--info    { background: #eaf0fd; color: #3457a6; }
+.ui-inline-notice--warning { background: #fef0e4; color: #c2570d; }
+.ui-inline-notice--danger  { background: #fceeee; color: #b14343; }
+.ui-inline-notice--success { background: #eaf6ef; color: #267b4e; }
+.form-actions-bar {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+.form-actions-bar button { flex: 1; min-height: 44px; }
+#uiConfirmFooter button { min-height: 44px; }
+
 /* ── Pilot add-client form: vertical, one field per row ────────────────── */
 .ws-pilot-form {
   display: flex;

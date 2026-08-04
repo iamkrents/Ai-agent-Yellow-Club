@@ -205,9 +205,9 @@ class TestVersionAndOverflow(unittest.TestCase):
         self.css = STYLES_CSS.read_text(encoding="utf-8")
 
     def test_20_version_cache_bust_v71143(self):
-        self.assertIn("styles.css?v=7.1.15", self.html)
-        self.assertIn("app.js?v=7.1.15", self.html)
-        self.assertIn('console.log("MiniApp version: v7.1.15");', self.js)
+        self.assertIn("styles.css?v=7.1.16", self.html)
+        self.assertIn("app.js?v=7.1.16", self.html)
+        self.assertIn('console.log("MiniApp version: v7.1.16");', self.js)
 
     def test_21_no_fixed_pixel_width_in_new_css(self):
         for block_start in (".app-top-safe-spacer {", ".ws-oc-ttl-btn.active {"):

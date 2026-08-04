@@ -131,12 +131,36 @@ const launchTab = urlParams.get("tab") || "";
 // one specific campaign recipient (from the bot's post-activation button).
 const launchAvailabilityRecipientId = urlParams.get("oc_availability_recipient") || "";
 
-console.log("MiniApp version: v7.1.15");
+console.log("MiniApp version: v7.1.16");
+const APP_VERSION = "7.1.16";
+
+// v7.1.16 — minimal frontend incident reporting. Before this, these two
+// handlers only ever did console.error(...) — nothing was ever sent to the
+// backend, so a JS crash on a real client's phone left no server-side
+// trace at all. Fail-open and deliberately quiet: never throws, never
+// blocks the app, never retries, and only ever sends a fixed error_code +
+// current tab name — no message text, no stack, no PII. Deduped per
+// session (one report per code+screen combo) on top of the server's own
+// dedupe window, so a tight error loop can't spam the endpoint either.
+const _reportedFrontendIncidents = new Set();
+function _reportFrontendIncident(errorCode, action) {
+  try {
+    const screen = document.querySelector(".tab.active")?.dataset.tab || "unknown";
+    const key = errorCode + "|" + screen;
+    if (_reportedFrontendIncidents.has(key)) return;
+    _reportedFrontendIncidents.add(key);
+    apiPost("/api/client/frontend-incident", {
+      screen, action: action || "", error_code: errorCode, app_version: APP_VERSION,
+    }).catch(() => {});
+  } catch (e) { /* diagnostic reporting must never itself throw */ }
+}
 window.addEventListener("error", (ev) => {
   console.error("[uncaught]", ev.message, (ev.filename || "") + ":" + ev.lineno, ev.error);
+  _reportFrontendIncident("js_exception");
 });
 window.addEventListener("unhandledrejection", (ev) => {
   console.error("[unhandled rejection]", ev.reason);
+  _reportFrontendIncident("unhandled_rejection");
 });
 
 const state = {
@@ -233,6 +257,11 @@ const state = {
   clientPayments: [],
   clientPaymentsBusy: false,
   clientPaymentsPollTimer: null,
+  // v7.1.16 — client-side-only filter (no API change): null means "все
+  // дети", matching the pre-existing flat-list behavior exactly so nothing
+  // is hidden by default; picking a child chip narrows the same already-
+  // fetched list.
+  clientPaymentsFilterChildId: null,
   // v7.1.13 — client cabinet
   clientHomeBooted: false,
   clientHomeActiveChildId: null,
@@ -1270,6 +1299,86 @@ function _cabHeaderHtml(opts) {
     </div>`;
 }
 
+// ── v7.1.16 — shared UI pattern helpers ──────────────────────────────────
+// EmptyState/ErrorState/skeleton already existed as _wsEmptyState/
+// _wsErrorState/.ws-skeleton (Payments Workspace only) with a good, tested
+// visual design and no ws-specific coupling in their markup or CSS — so
+// instead of inventing a parallel "ui-*" family, these thin wrappers make
+// the same look callable from any screen (client cabinet, reports, comms),
+// and StatusBadge/InlineNotice/FormActions/ConfirmSheet fill genuine gaps
+// (no shared version of those existed before this release).
+
+function uiEmptyState(icon, title, desc) {
+  return _wsEmptyState(icon, title, desc);
+}
+
+function uiErrorState(message, retryOnclick) {
+  return _wsErrorState(message, retryOnclick);
+}
+
+function uiLoadingRows(count) {
+  const n = count || 3;
+  return `<div class="ui-skeleton-list">${Array.from({ length: n }).map(() =>
+    `<div class="ws-skeleton ws-skeleton-row"></div>`
+  ).join("")}</div>`;
+}
+
+// tone: muted|info|pending|warning|success|danger — same palette as the
+// existing ws-status-badge, just usable outside the workspace.
+function uiStatusBadge(label, tone) {
+  return `<span class="ws-status-badge ws-status-badge--${tone || "muted"}">${escapeHtml(label)}</span>`;
+}
+
+// Small per-card notice (distinct from the single global setNotice() top
+// banner) — for inline "this is stale/cached" or "action needed" hints
+// attached to one card/section rather than the whole page.
+function uiInlineNotice(text, tone) {
+  return `<div class="ui-inline-notice ui-inline-notice--${tone || "info"}">${escapeHtml(text)}</div>`;
+}
+
+// Generic confirm sheet — fills the #uiConfirmModal shell (index.html) and
+// reuses the existing piModalOpen/piModalClose animation/scroll-lock logic,
+// so callers never hand-build modal markup. onConfirm may return a Promise;
+// while it's pending the confirm button shows a busy label and both buttons
+// are disabled (guards against double-tap on destructive actions).
+function uiConfirmSheet(opts) {
+  const o = opts || {};
+  const modal = $("uiConfirmModal");
+  if (!modal) return;
+  $("uiConfirmTitle").textContent = o.title || "Подтвердите действие";
+  $("uiConfirmBody").innerHTML = `<p style="margin:0">${escapeHtml(o.message || "")}</p>`;
+  const footer = $("uiConfirmFooter");
+  footer.innerHTML = `
+    <button class="secondary" id="uiConfirmCancelBtn" type="button">${escapeHtml(o.cancelLabel || "Отмена")}</button>
+    <button class="${o.danger ? "danger" : "primary"}" id="uiConfirmOkBtn" type="button">${escapeHtml(o.confirmLabel || "Подтвердить")}</button>
+  `;
+  const close = () => piModalClose(modal);
+  const cancelBtn = $("uiConfirmCancelBtn");
+  const okBtn = $("uiConfirmOkBtn");
+  const closeBtn = $("uiConfirmModalClose");
+  const onCancel = () => { close(); if (o.onCancel) o.onCancel(); };
+  cancelBtn.onclick = onCancel;
+  closeBtn.onclick = onCancel;
+  const busyLabel = o.confirmBusyLabel || "Подождите…";
+  const okLabel = o.confirmLabel || "Подтвердить";
+  okBtn.onclick = async () => {
+    if (okBtn.disabled) return;
+    okBtn.disabled = true;
+    cancelBtn.disabled = true;
+    okBtn.textContent = busyLabel;
+    try {
+      if (o.onConfirm) await o.onConfirm();
+      close();
+    } catch (e) {
+      okBtn.disabled = false;
+      cancelBtn.disabled = false;
+      okBtn.textContent = okLabel;
+      throw e;
+    }
+  };
+  piModalOpen(modal);
+}
+
 function setupRoleUi() {
   const role = state.me?.role || "";
   const testMode = state.me?.testMode || {};
@@ -1435,6 +1544,16 @@ function activateTab(name) {
     setChatInputFocused(false);
   }
 
+  // v7.1.16 — the client-payments 30s self-poll (_scheduleClientPaymentsPoll)
+  // used to keep firing in the background after the parent navigated away,
+  // re-rendering a tab nobody is looking at. Stop it the moment any other
+  // tab becomes active; loadClientPayments() re-schedules it on return.
+  const _prevActiveTab = document.querySelector(".tab.active")?.dataset.tab;
+  if (_prevActiveTab === "client-payments" && name !== "client-payments" && state.clientPaymentsPollTimer) {
+    clearTimeout(state.clientPaymentsPollTimer);
+    state.clientPaymentsPollTimer = null;
+  }
+
   document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
   document.querySelectorAll(".tab-panel").forEach(x => x.classList.remove("active"));
   const tab = document.querySelector(`.tab[data-tab="${cssEscapeValue(name)}"]`);
@@ -1486,6 +1605,21 @@ function activateTab(name) {
   if (name === "kitchen-editor") {
     const root = $("kitchenEditorContent");
     if (root && !state.kitchenEditorData) loadKitchenEditor(root);
+  }
+
+  // v7.1.16 — client-cabinet subscreens previously only had an in-page
+  // "Back" button; Telegram's hardware/gesture BackButton did nothing on
+  // them. Give Availability and notification-detail the same single-
+  // handler-slot treatment "Рассылки" already had. Any tab not handled
+  // here (and not the comms section, which manages its own slot above)
+  // hides the BackButton — screens are mutually exclusive, so this is safe
+  // to evaluate unconditionally on every activateTab call.
+  if (name === "availability") {
+    _appSetBackButton(_availScreenLeave);
+  } else if (name === "notification-detail") {
+    _appSetBackButton(() => activateTab("notifications"));
+  } else if (name !== "comms" && !_commsSectionActive) {
+    _appSetBackButton(null);
   }
 }
 
@@ -2786,7 +2920,9 @@ function renderReports() {
   if (!report) {
     summary.innerHTML = "";
     if (details) details.innerHTML = "";
-    sections.innerHTML = `<div class="empty">Выберите месяц и нажмите «Сформировать отчёт».</div>`;
+    sections.innerHTML = state.reportsError
+      ? uiErrorState(state.reportsError, "loadReports()")
+      : `<div class="empty">Выберите месяц и нажмите «Сформировать отчёт».</div>`;
     if (textCard) textCard.classList.add("hidden");
     return;
   }
@@ -3900,6 +4036,7 @@ async function loadReports() {
   state.reportsMonth = month;
   if (monthInput) { monthInput.value = month; syncMonthPicker(monthInput); }
   state.reportsBusy = true;
+  state.reportsError = "";
   renderReports();
   try {
     const data = await apiGet(`/api/reports/monthly?month=${encodeURIComponent(month)}`);
@@ -3910,6 +4047,7 @@ async function loadReports() {
   } catch (e) {
     console.error("[loadReports]", e);
     state.reportsData = null;
+    state.reportsError = safeUserError(e);
   } finally {
     state.reportsBusy = false;
     renderReports();
@@ -8289,15 +8427,20 @@ function _cabHeadline(activeChild) {
   return `Есть ${openItems} вопроса, требующих внимания.`;
 }
 
+let _clientHomeLoadBusy = false;
+
 async function loadClientHomeData() {
+  if (_clientHomeLoadBusy) return;
+  _clientHomeLoadBusy = true;
   const root = $("clientHomeContent");
-  if (root) root.innerHTML = `<div class="kpi-loading">Загружаю…</div>`;
+  if (root) root.innerHTML = uiLoadingRows(3);
   try {
     if (state.myChildren === null) await loadMyChildren();
     await loadClientPayments();
     await _wsScheduleAvailLoadStatuses();
   } catch (e) { /* individual loaders already surface their own errors */ }
   state.clientHomeBooted = true;
+  _clientHomeLoadBusy = false;
   renderClientHome();
 }
 
@@ -8456,7 +8599,7 @@ async function loadClientNotifications(loadMore) {
   }
   const root = $("notificationsListContent");
   if (!loadMore) {
-    if (root) root.innerHTML = `<div class="kpi-loading">Загружаю…</div>`;
+    if (root) root.innerHTML = uiLoadingRows(4);
   }
   state.notificationsBusy = true;
   try {
@@ -8467,11 +8610,11 @@ async function loadClientNotifications(loadMore) {
       state.notifications = loadMore ? [...(state.notifications || []), ...data.notifications] : data.notifications;
       state.notificationsHasMore = !!data.has_more;
       renderClientNotifications();
-    } else if (root) {
-      root.innerHTML = `<div class="error-msg">${escapeHtml(data.error || "Ошибка загрузки")}</div>`;
+    } else if (root && !loadMore) {
+      root.innerHTML = uiErrorState(data.error || "Ошибка загрузки", "loadClientNotifications(false)");
     }
   } catch (e) {
-    if (root) root.innerHTML = `<div class="error-msg">${escapeHtml(safeUserError(e))}</div>`;
+    if (root && !loadMore) root.innerHTML = uiErrorState(safeUserError(e), "loadClientNotifications(false)");
   } finally {
     state.notificationsBusy = false;
   }
@@ -8532,16 +8675,29 @@ const NOTIF_ACTION_LABELS = {
 // standalone page here, same pattern as the availability screen). Only the
 // DOM presentation changed — storage, ownership, read_at, the action
 // whitelist and the API calls below are byte-for-byte the same as before.
+// v7.1.16 — request-fencing via a monotonic token: a fast double-tap or a
+// second open before the first response lands used to be able to render in
+// either resolution order, letting a stale response overwrite the newer
+// one. The token is bumped on every call; a response is only applied if it
+// is still the most recent request in flight.
+let _notifDetailReqToken = 0;
+
 async function openNotificationDetail(id) {
   activateTab("notification-detail");
+  const myToken = ++_notifDetailReqToken;
   const root = $("notificationDetailContent");
-  if (root) root.innerHTML = `<div class="kpi-loading">Загружаю…</div>`;
+  if (root) root.innerHTML = uiLoadingRows(3);
   try {
     const data = await apiGet(`/api/client/notifications/${encodeURIComponent(id)}`);
-    if (!data.ok) { if (root) root.innerHTML = `<div class="error-msg">${escapeHtml(data.error || "Ошибка загрузки")}</div>`; return; }
+    if (myToken !== _notifDetailReqToken) return;
+    if (!data.ok) {
+      if (root) root.innerHTML = uiErrorState(data.error || "Ошибка загрузки", `openNotificationDetail(${JSON.stringify(id)})`);
+      return;
+    }
     renderNotificationDetail(data.notification);
     if (data.notification.unread) {
       await apiPost(`/api/client/notifications/${encodeURIComponent(id)}/read`, {});
+      if (myToken !== _notifDetailReqToken) return;
       const item = (state.notifications || []).find(n => n.id === id);
       if (item) item.unread = false;
       const newUnread = Math.max(0, (state.me?.unreadNotificationCount || 0) - 1);
@@ -8555,7 +8711,8 @@ async function openNotificationDetail(id) {
       if (document.getElementById("tab-home")?.classList.contains("active")) renderClientHome();
     }
   } catch (e) {
-    if (root) root.innerHTML = `<div class="error-msg">${escapeHtml(safeUserError(e))}</div>`;
+    if (myToken !== _notifDetailReqToken) return;
+    if (root) root.innerHTML = uiErrorState(safeUserError(e), `openNotificationDetail(${JSON.stringify(id)})`);
   }
 }
 
@@ -12988,6 +13145,20 @@ async function reloadCabinetAfterRoleChange() {
   state.activeMenus = null;
   state.myOrders = null;
   state.selectedChildId = null;
+  // v7.1.16 — these were never reset on role/test-client switch, so the
+  // client Home tab (guarded by clientHomeBooted, see activateTab) could
+  // keep showing the PREVIOUS client's cached payments/notifications/
+  // active-child selection after switching test role/client.
+  state.clientHomeBooted = false;
+  state.clientHomeActiveChildId = null;
+  state.clientPaymentsFilterChildId = null;
+  state.clientPayments = [];
+  state.notifications = null;
+  state.notificationsHasMore = false;
+  if (state.clientPaymentsPollTimer) {
+    clearTimeout(state.clientPaymentsPollTimer);
+    state.clientPaymentsPollTimer = null;
+  }
   state.foodOrderExpanded = {};
   state.foodMenuData = null;
   state.foodMenuSelected = null;
@@ -13215,11 +13386,13 @@ function _commsRenderHome(root) {
       <div><h2>Рассылки</h2><p class="comms-page-subtitle">Отправка настоящих уведомлений в личный кабинет сразу многим клиентам.</p></div>
       ${canReturnToAdminFromComms() ? `<button type="button" onclick="activateTab('admin')">Назад в Админ</button>` : ""}
     </div>
+    ${home.loadError ? uiErrorState(home.loadError, "loadCommsHome()") : `
     <button type="button" class="primary wide" onclick="_commsCreateCampaign()">Создать рассылку</button>
     ${!state.me?.communicationsSendEnabled ? `<div class="notice comms-mode-notice">Отправка отключена безопасным режимом. Черновики, расчёт получателей и предпросмотр работают как обычно.</div>` : ""}
     ${section("Черновики", home.draft, "Черновиков нет.")}
     ${section("Запланированные", home.scheduled, "Запланированных рассылок нет.")}
     ${section("Отправленные", home.sent, "Пока ничего не отправлено.")}
+    `}
   `;
 }
 
@@ -13630,18 +13803,29 @@ function _commsConfirmFinish() {
 // comms section at that point. Leaving the comms tab entirely (any other
 // activateTab call) fully detaches it — see activateTab().
 let _commsSectionActive = false;
-let _commsCurrentBackHandler = null;
 
-function _commsSetBackButton(handler) {
+// v7.1.16 — generalized from what used to be a comms-only single-handler
+// slot (_commsCurrentBackHandler) so any client-cabinet subscreen can also
+// wire Telegram's hardware/gesture BackButton the same way. Only one
+// handler can be attached to tg.BackButton at a time, so every screen that
+// shows it must swap it back out (to null or to whatever the parent screen
+// wants) on leave — activateTab() is where that handoff happens.
+let _appCurrentBackHandler = null;
+
+function _appSetBackButton(handler) {
   if (!tg?.BackButton) return;
-  if (_commsCurrentBackHandler) tg.BackButton.offClick(_commsCurrentBackHandler);
-  _commsCurrentBackHandler = handler;
+  if (_appCurrentBackHandler) tg.BackButton.offClick(_appCurrentBackHandler);
+  _appCurrentBackHandler = handler;
   if (handler) {
     tg.BackButton.onClick(handler);
     tg.BackButton.show();
   } else {
     tg.BackButton.hide();
   }
+}
+
+function _commsSetBackButton(handler) {
+  _appSetBackButton(handler);
 }
 
 function _commsExitToAdmin() { activateTab("admin"); }
@@ -15865,25 +16049,60 @@ async function loadClientPayments() {
   if (state.myChildren === null) { loadMyChildren().then(_cabRenderPaymentsHeader); }
   if (state.clientPaymentsBusy) return;
   state.clientPaymentsBusy = true;
-  listEl.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:16px">Загрузка...</div>`;
+  listEl.innerHTML = uiLoadingRows(3);
   try {
     const data = await apiGet("/api/client/payments");
     if (!data.ok) {
-      listEl.innerHTML = `<div class="error-msg">${escapeHtml(data.error || "Ошибка загрузки")}</div>`;
+      listEl.innerHTML = uiErrorState(data.error || "Ошибка загрузки", "loadClientPayments()");
       return;
     }
     state.clientPayments = data.payments || [];
-    if (state.clientPayments.length === 0) {
-      listEl.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:16px">Нет активных счетов на оплату.</div>`;
-    } else {
-      listEl.innerHTML = `<div class="cp-list">${state.clientPayments.map(renderClientPaymentCard).join("")}</div>`;
+    if (state.clientPaymentsFilterChildId !== null &&
+        !state.clientPayments.some(p => String(p.mk_user_id) === String(state.clientPaymentsFilterChildId))) {
+      state.clientPaymentsFilterChildId = null; // selected child has no invoices left / was removed — fall back to "all"
     }
+    _renderClientPaymentsList();
     _scheduleClientPaymentsPoll();
   } catch (err) {
-    listEl.innerHTML = `<div class="error-msg">Ошибка: ${escapeHtml(String(err))}</div>`;
+    listEl.innerHTML = uiErrorState(safeUserError(err), "loadClientPayments()");
   } finally {
     state.clientPaymentsBusy = false;
   }
+}
+
+// v7.1.16 — родитель с 2+ детьми (section 4 of the launch-readiness spec):
+// invoices are still fetched and shown as one flat list by default (byte-
+// for-byte the same behavior as before — see the v7.1.13 note above about
+// deliberately NOT implying a filter that doesn't exist), but a chip row
+// now lets the parent narrow it to one child, reusing the exact same
+// selected-child concept the Home tab uses. Purely a client-side filter
+// over the already-fetched list — no new request, no API change.
+function _renderClientPaymentsList() {
+  const listEl = $("clientPaymentsList");
+  if (!listEl) return;
+  const all = state.clientPayments || [];
+  const children = state.clientChildren || [];
+  const filterId = state.clientPaymentsFilterChildId;
+  const shown = filterId ? all.filter(p => String(p.mk_user_id) === String(filterId)) : all;
+
+  const chipsHtml = children.length > 1 ? `
+    <div class="cab-switcher" role="tablist" aria-label="Фильтр по ребёнку">
+      <button type="button" class="cab-switch-chip${!filterId ? " active" : ""}" data-cp-filter="">Все дети</button>
+      ${children.map(c => `<button type="button" class="cab-switch-chip${String(filterId) === String(c.mk_user_id) ? " active" : ""}" data-cp-filter="${escapeAttr(c.mk_user_id)}" title="${escapeAttr(c.display_name || "")}">${escapeHtml(_cabShortChildName(c.display_name || "Ученик"))}</button>`).join("")}
+    </div>` : "";
+
+  const bodyHtml = shown.length === 0
+    ? uiEmptyState("💳", filterId ? "Нет счетов у этого ребёнка" : "Нет активных счетов",
+        filterId ? "Попробуйте выбрать «Все дети»." : "Здесь появятся счета на оплату, когда они будут выставлены.")
+    : `<div class="cp-list">${shown.map(renderClientPaymentCard).join("")}</div>`;
+
+  listEl.innerHTML = chipsHtml + bodyHtml;
+  listEl.querySelectorAll("[data-cp-filter]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      state.clientPaymentsFilterChildId = btn.dataset.cpFilter || null;
+      _renderClientPaymentsList();
+    });
+  });
 }
 
 function _scheduleClientPaymentsPoll() {
@@ -18494,8 +18713,15 @@ const _connDiagState = {
   food: null,
   health: null,
   errors: null,
+  frontendIncidents: null,  // { summary: {total, byErrorCode, byScreen}, recent?: [...] } — recent only for owner/admin
   loading: false,
   error: "",
+};
+
+const FRONTEND_INCIDENT_CODE_LABELS = {
+  js_exception: "JS-ошибка", unhandled_rejection: "Необработанный reject",
+  api_request_failed: "Ошибка запроса", api_timeout: "Таймаут запроса",
+  render_failed: "Ошибка отрисовки", stale_cache_detected: "Устаревший кэш",
 };
 
 async function _connDiagLoad() {
@@ -18503,15 +18729,17 @@ async function _connDiagLoad() {
   _connDiagState.error = "";
   _wsRenderCurrentTab();
   try {
-    const [summaryData, healthData, errorsData] = await Promise.all([
+    const [summaryData, healthData, errorsData, feiData] = await Promise.all([
       apiGet("/api/client/onboarding/connections/summary"),
       apiGet("/api/client/onboarding/health"),
       apiGet("/api/client/onboarding/connections/errors?limit=15"),
+      apiGet("/api/client/frontend-incidents/summary?hours=24"),
     ]);
     _connDiagState.summary = summaryData.summary;
     _connDiagState.food = summaryData.food;
     _connDiagState.health = healthData.health;
     _connDiagState.errors = errorsData.errors || [];
+    _connDiagState.frontendIncidents = feiData;
   } catch (e) {
     _connDiagState.error = safeUserError(e);
   } finally {
@@ -18606,6 +18834,33 @@ function _wsRenderConnectionsDiagnostics(root) {
     <div class="conn-health-list">${healthHtml}</div>
     <div class="conn-section-head">Последние ошибки</div>
     <div class="conn-error-list">${errorsHtml}</div>
+    ${_connDiagFrontendIncidentsHtml(st.frontendIncidents)}
+  `;
+}
+
+// v7.1.16 — technical frontend (browser/JS) incidents, за последние 24ч.
+// Aggregated for everyone with access to this screen; the raw "recent"
+// list only exists in the API response for owner/admin (client_manager's
+// response never includes it — see frontend_incidents_summary), so this
+// simply renders whatever the backend chose to send.
+function _connDiagFrontendIncidentsHtml(fei) {
+  if (!fei || !fei.summary) return "";
+  const s = fei.summary;
+  const byCodeHtml = Object.entries(s.byErrorCode || {}).map(([code, n]) =>
+    `<div class="conn-source-row"><span>${escapeHtml(FRONTEND_INCIDENT_CODE_LABELS[code] || code)}</span><b>${escapeHtml(String(n))}</b></div>`
+  ).join("") || `<div class="ws-conn-note">За последние ${escapeHtml(String(s.windowHours))}ч ошибок не зафиксировано.</div>`;
+  const recentHtml = Array.isArray(fei.recent) ? `
+    <div class="conn-section-head">Последние технические ошибки (сырые записи)</div>
+    <div class="conn-error-list">${(fei.recent || []).map(r => `
+      <div class="conn-error-row">
+        <span class="conn-error-reason">${escapeHtml(FRONTEND_INCIDENT_CODE_LABELS[r.error_code] || r.error_code)}</span>
+        <span class="conn-error-source">${escapeHtml(r.screen || "")}${r.role ? " · " + escapeHtml(r.role) : ""}</span>
+        <span class="conn-error-time">${escapeHtml(String(r.created_at || "").replace("T", " "))}</span>
+      </div>`).join("") || `<div class="ws-conn-note">Записей нет.</div>`}</div>` : "";
+  return `
+    <div class="conn-section-head">Технические ошибки приложения (за ${escapeHtml(String(s.windowHours))}ч, всего ${escapeHtml(String(s.total))})</div>
+    <div class="conn-source-list">${byCodeHtml}</div>
+    ${recentHtml}
   `;
 }
 
@@ -19557,7 +19812,27 @@ const _ocAvailState = {
   intervals: [],   // [{weekday, start_time, end_time, preference}]
   busy: false,
   mode: "edit",
+  _dirtyBaseline: null,  // v7.1.16 — JSON snapshot taken on load/save; compared on leave to warn about unsaved edits
 };
+
+// v7.1.16 — unsaved-changes guard for the full-page Availability screen
+// (section 5 of the launch-readiness spec). Snapshot-diff rather than
+// per-field dirty flags: touches only the load/save/leave call sites below
+// instead of every interval/day-chip/branch mutator, so it can't miss an
+// edit path and doesn't risk destabilizing the (already tested) editing
+// logic itself.
+function _ocAvailSnapshot() {
+  return JSON.stringify({
+    branch: _ocAvailState.branch,
+    availableFrom: _ocAvailState.availableFrom,
+    comment: _ocAvailState.comment,
+    intervals: _ocAvailState.intervals,
+  });
+}
+function _ocAvailMarkClean() { _ocAvailState._dirtyBaseline = _ocAvailSnapshot(); }
+function _ocAvailIsDirty() {
+  return _ocAvailState._dirtyBaseline !== null && _ocAvailState._dirtyBaseline !== _ocAvailSnapshot();
+}
 const OC_AVAILABILITY_WEEKDAY_LABELS = { 1: "Пн", 2: "Вт", 3: "Ср", 4: "Чт", 5: "Пт", 6: "Сб", 7: "Вс" };
 
 function _ocAvailIntervalDaysLabel(intervals) {
@@ -19823,6 +20098,7 @@ async function _ocAvailSave() {
     });
     if (data.ok) {
       setNotice("Возможности для расписания сохранены", "ok");
+      _ocAvailMarkClean();
       // v7.1.12.3 — refresh local fill-status so the Home card reflects the
       // save immediately, no Mini App restart needed.
       if (_ocAvailState.mkUserId) await _wsScheduleAvailRefreshStatus(_ocAvailState.mkUserId);
@@ -19862,9 +20138,28 @@ function _availScreenSetMode(mode) {
   if (mode === "edit") _ocAvailApplyRowValidation("availIntervals", "availSaveBtn");
 }
 
+// v7.1.16 — shared exit point for the Availability screen (in-page back
+// icon, "Отмена", and the Telegram hardware BackButton all funnel through
+// here) so unsaved edits get exactly one confirm path instead of three.
+function _availScreenLeave() {
+  if (_ocAvailIsDirty()) {
+    uiConfirmSheet({
+      title: "Несохранённые изменения",
+      message: "Возможности по расписанию не сохранены. Уйти без сохранения?",
+      confirmLabel: "Уйти без сохранения",
+      cancelLabel: "Остаться",
+      danger: true,
+      onConfirm: () => { _ocAvailState._dirtyBaseline = null; activateTab("home"); },
+    });
+    return;
+  }
+  activateTab("home");
+}
+
 function _availScreenShowPicker(children) {
   _ocAvailState.mkUserId = null;
   _ocAvailState.recipientId = null;
+  _ocAvailState._dirtyBaseline = null;
   $("availScreenChildName").textContent = "Выберите ребёнка";
   const root = $("availScreenPicker");
   if (root) {
@@ -19891,6 +20186,7 @@ async function _availScreenOpenFor(mkUserId) {
   _ocAvailState.intervals = [];
   _ocAvailState.availableFrom = "";
   _ocAvailState.comment = "";
+  _ocAvailState._dirtyBaseline = null;
   const knownName = cabChildNameForMk(mkUserId);
   $("availScreenChildName").textContent = knownName ? `Ребёнок: ${knownName}` : "Загружаю…";
   $("availFrom").value = "";
@@ -19908,6 +20204,7 @@ async function _availScreenOpenFor(mkUserId) {
       $("availComment").value = _ocAvailState.comment;
       _ocAvailRenderBranchButtons("#availBranchRow");
       _availScreenRenderIntervals();
+      _ocAvailMarkClean();
       // Already-filled data opens to the read-only summary first —
       // "Изменить" switches to the edit form.
       _availScreenSetMode(data.filled ? "summary" : "edit");
@@ -19984,6 +20281,7 @@ async function _availScreenSave() {
     });
     if (data.ok) {
       setNotice("Возможности для расписания сохранены", "ok");
+      _ocAvailMarkClean();
       await _wsScheduleAvailRefreshStatus(_ocAvailState.mkUserId);
       _availScreenSetMode("success");
     } else if (errEl) {
@@ -20855,8 +21153,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("ocAvailabilityComment")?.addEventListener("input", e => { _ocAvailState.comment = e.target.value; });
 
   // v7.1.13 round 2 — full-page cabinet availability screen (#tab-availability)
-  $("availScreenBack")?.addEventListener("click", () => activateTab("home"));
-  $("availSecondaryBtn")?.addEventListener("click", () => activateTab("home"));
+  $("availScreenBack")?.addEventListener("click", _availScreenLeave);
+  $("availSecondaryBtn")?.addEventListener("click", _availScreenLeave);
   $("availSaveBtn")?.addEventListener("click", _availScreenSave);
   $("availAddInterval")?.addEventListener("click", _availScreenAddInterval);
   $("availSummaryEditBtn")?.addEventListener("click", () => _availScreenSetMode("edit"));

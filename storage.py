@@ -697,6 +697,7 @@ class Storage:
             self._init_client_notification_tables(conn)
             self._init_client_onboarding_campaign_tables(conn)
             self._init_staff_communication_tables(conn)
+            self._init_frontend_incident_tables(conn)
             self._init_automation_tables(conn)
             self._init_withdrawal_tables(conn)
             self._init_pricing_tables(conn)
@@ -1408,6 +1409,25 @@ class Storage:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ocrec_campaign ON client_onboarding_recipients(campaign_id, continuation_status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ocrec_mk_user ON client_onboarding_recipients(mk_user_id)")
+        # v7.1.16 — found during launch-readiness UX-stabilization testing:
+        # these columns were added to the CREATE TABLE statement above by
+        # v7.1.12.1 but, unlike every other column added after this table's
+        # original creation, never got a companion _ensure_column() call —
+        # so any DB whose client_onboarding_recipients table predates
+        # v7.1.12.1 is silently missing them, and get_availability_status_
+        # for_mk_user()/the client Availability screen 500s outright for
+        # every such client. Purely additive/self-migrating, same as every
+        # other _ensure_column() in this file — safe to run against a DB
+        # that already has these columns (no-op) or one that doesn't.
+        self._ensure_column(conn, "client_onboarding_recipients", "preferred_branch", "preferred_branch TEXT NOT NULL DEFAULT 'unknown'")
+        self._ensure_column(conn, "client_onboarding_recipients", "available_from", "available_from TEXT")
+        self._ensure_column(conn, "client_onboarding_recipients", "schedule_comment", "schedule_comment TEXT NOT NULL DEFAULT ''")
+        self._ensure_column(conn, "client_onboarding_recipients", "availability_updated_at", "availability_updated_at TEXT")
+        self._ensure_column(conn, "client_onboarding_recipients", "availability_source", "availability_source TEXT")
+        self._ensure_column(conn, "client_onboarding_recipients", "academic_level", "academic_level TEXT NOT NULL DEFAULT 'unknown'")
+        self._ensure_column(conn, "client_onboarding_recipients", "academic_level_source", "academic_level_source TEXT")
+        self._ensure_column(conn, "client_onboarding_recipients", "academic_level_confidence", "academic_level_confidence TEXT NOT NULL DEFAULT 'unknown'")
+        self._ensure_column(conn, "client_onboarding_recipients", "academic_level_raw_group_name", "academic_level_raw_group_name TEXT NOT NULL DEFAULT ''")
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS client_onboarding_invites (
@@ -1619,6 +1639,116 @@ class Storage:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_scr_campaign_delivery ON staff_communication_recipients(campaign_id, delivery_status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_scr_campaign_elig ON staff_communication_recipients(campaign_id, eligibility_status)")
+
+    # v7.1.16 — minimal frontend (browser/JS) incident diagnostics. No safe
+    # mechanism existed before this: app.js's window.onerror/unhandledrejection
+    # handlers only ever did console.error(...), nothing was ever sent to the
+    # backend (confirmed by grep — see the v7.1.16 audit). Deliberately tiny:
+    # a stable, whitelisted error_code plus screen/action/role/app_version —
+    # never initData, tokens, message text, names, phones, payment details,
+    # or full URLs.
+    FRONTEND_INCIDENT_ERROR_CODES = frozenset({
+        "js_exception", "unhandled_rejection", "api_request_failed",
+        "api_timeout", "render_failed", "stale_cache_detected",
+    })
+
+    def _init_frontend_incident_tables(self, conn: sqlite3.Connection) -> None:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS frontend_incidents (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                screen       TEXT NOT NULL DEFAULT '',
+                action       TEXT NOT NULL DEFAULT '',
+                error_code   TEXT NOT NULL,
+                app_version  TEXT NOT NULL DEFAULT '',
+                role         TEXT NOT NULL DEFAULT '',
+                created_at   TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fei_created ON frontend_incidents(created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fei_code_created ON frontend_incidents(error_code, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fei_screen_created ON frontend_incidents(screen, created_at)")
+
+    def log_frontend_incident(
+        self,
+        screen: str,
+        action: str,
+        error_code: str,
+        *,
+        app_version: str = "",
+        role: str = "",
+        dedupe_window_seconds: int = 60,
+    ) -> bool:
+        """Fail-open, best-effort. Rejects any error_code outside the fixed
+        whitelist (never lets a caller turn this into free-text logging).
+        Rate-limits/dedupes: an identical (screen, action, error_code) within
+        the last `dedupe_window_seconds` is dropped rather than inserted, so
+        a tight client-side error loop can't flood the table. Returns False
+        (not written) on validation failure, dedupe, or any storage error —
+        callers should treat this as advisory only, never surface it to the
+        end user.
+        """
+        code = str(error_code or "")
+        if code not in self.FRONTEND_INCIDENT_ERROR_CODES:
+            return False
+        screen = str(screen or "")[:64]
+        action = str(action or "")[:64]
+        try:
+            with self._connect() as conn:
+                cutoff = (datetime.utcnow() - timedelta(seconds=max(1, int(dedupe_window_seconds)))).strftime("%Y-%m-%dT%H:%M:%S")
+                dup = conn.execute(
+                    """SELECT 1 FROM frontend_incidents
+                       WHERE screen=? AND action=? AND error_code=? AND created_at >= ? LIMIT 1""",
+                    (screen, action, code, cutoff),
+                ).fetchone()
+                if dup:
+                    return False
+                conn.execute(
+                    """INSERT INTO frontend_incidents (screen, action, error_code, app_version, role, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (screen, action, code, str(app_version or "")[:32], str(role or "")[:32],
+                     datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")),
+                )
+            return True
+        except Exception as exc:
+            log.warning("frontend_incident_write_failed error_code=%s error=%s", error_code, exc)
+            return False
+
+    def list_frontend_incidents(self, limit: int = 30) -> list[dict[str, Any]]:
+        """Raw recent rows — owner/admin only (no PII/secrets in the rows
+        themselves, but this is still the more detailed view)."""
+        limit = max(1, min(int(limit or 30), 100))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT screen, action, error_code, app_version, role, created_at
+                   FROM frontend_incidents ORDER BY created_at DESC, id DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_frontend_incident_summary(self, hours: int = 24) -> dict[str, Any]:
+        """Aggregated counts only — safe for client_manager as well as
+        owner/admin (no per-incident timestamps/rows, just totals)."""
+        since = (datetime.utcnow() - timedelta(hours=max(1, int(hours or 24)))).strftime("%Y-%m-%dT%H:%M:%S")
+        with self._connect() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) AS c FROM frontend_incidents WHERE created_at >= ?", (since,)
+            ).fetchone()["c"]
+            by_code_rows = conn.execute(
+                """SELECT error_code, COUNT(*) AS c FROM frontend_incidents
+                   WHERE created_at >= ? GROUP BY error_code ORDER BY c DESC""",
+                (since,),
+            ).fetchall()
+            by_screen_rows = conn.execute(
+                """SELECT screen, COUNT(*) AS c FROM frontend_incidents
+                   WHERE created_at >= ? GROUP BY screen ORDER BY c DESC LIMIT 10""",
+                (since,),
+            ).fetchall()
+        return {
+            "windowHours": max(1, int(hours or 24)),
+            "total": total,
+            "byErrorCode": {r["error_code"]: r["c"] for r in by_code_rows},
+            "byScreen": {r["screen"]: r["c"] for r in by_screen_rows},
+        }
 
     # -- CRUD: campaign lifecycle -------------------------------------------
 

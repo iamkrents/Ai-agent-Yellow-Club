@@ -13428,6 +13428,46 @@ class MiniAppContext:
             return {"ok": False, "error": "Доступно только owner, admin и client_manager."}
         return None
 
+    # ── v7.1.16 — minimal frontend (browser/JS) incident diagnostics ──
+    # Open to any authenticated session (client or staff) — errors can
+    # happen to anyone, and the write itself never stores anything role- or
+    # identity-sensitive beyond the coarse role tag. Viewing is restricted:
+    # owner/admin get the raw recent list + aggregates, client_manager gets
+    # aggregates only (no per-incident rows), matching the spec's "no
+    # technical secrets" requirement — moot here since rows never held any,
+    # but the split is kept anyway so this stays true if the schema grows.
+    FRONTEND_INCIDENT_VIEW_ROLES = {"owner", "admin", "client_manager"}
+    FRONTEND_INCIDENT_RAW_ROLES = {"owner", "admin"}
+
+    def frontend_incident_report(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/client/frontend-incident"""
+        role = self._role_for_user(int(auth["user_id"]))
+        written = self.storage.log_frontend_incident(
+            screen=str(body.get("screen") or ""),
+            action=str(body.get("action") or ""),
+            error_code=str(body.get("error_code") or ""),
+            app_version=str(body.get("app_version") or ""),
+            role=role,
+        )
+        # Always ok:true (fail-open, diagnostic-only) — a rejected/deduped
+        # write must never surface as an error to whatever screen the user
+        # was already having trouble with.
+        return {"ok": True, "recorded": written}
+
+    def frontend_incidents_summary(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        """GET /api/client/frontend-incidents/summary[?hours=24]"""
+        role = self._role_for_user(int(auth["user_id"]))
+        if role not in self.FRONTEND_INCIDENT_VIEW_ROLES:
+            return {"ok": False, "error": "Доступно только owner, admin и client_manager."}
+        try:
+            hours = int(params.get("hours") or 24)
+        except (TypeError, ValueError):
+            hours = 24
+        result: dict[str, Any] = {"ok": True, "summary": self.storage.get_frontend_incident_summary(hours=hours)}
+        if role in self.FRONTEND_INCIDENT_RAW_ROLES:
+            result["recent"] = self.storage.list_frontend_incidents(limit=30)
+        return result
+
     # ── v7.1.15 — launch-readiness "Подключения" (Connections) diagnostics ──
     # Same role gate as onboarding campaigns (owner/admin/client_manager) —
     # deliberately placed right next to it since this dashboard is reached
@@ -20543,6 +20583,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.onboarding_connections_errors(auth, params))
                 if path == "/api/client/onboarding/health":
                     return self._send_json(CTX.onboarding_launch_health(auth))
+                if path == "/api/client/frontend-incidents/summary":
+                    return self._send_json(CTX.frontend_incidents_summary(auth, params))
                 if path == "/api/client/onboarding/campaigns":
                     return self._send_json(CTX.onboarding_campaigns_list(auth, params))
                 if path.startswith("/api/client/onboarding/campaigns/"):
@@ -20713,6 +20755,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             )
             if not auth.get("ok"):
                 return self._send_json(auth, status=401)
+            if path == "/api/client/frontend-incident":
+                return self._send_json(CTX.frontend_incident_report(auth, body))
             if path == "/api/payments/intents":
                 return self._send_json(CTX.payment_intent_create(auth, body))
             if path == "/api/payments/intents/from-moyklass-invoice":

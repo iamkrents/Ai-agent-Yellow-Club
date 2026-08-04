@@ -255,8 +255,15 @@ class TestCommsConfirmSheet(unittest.TestCase):
         # «Админ» when no sheet is open (see test_6 in
         # test_communications_production_hotfix_v71141.py) — the actual
         # onClick/show/offClick/hide calls now live in that shared helper.
+        # v7.1.16 — _commsSetBackButton itself was further generalized into
+        # a single app-wide slot (_appSetBackButton) so client-cabinet
+        # subscreens (Availability, notification detail) could reuse the
+        # exact same mechanism; the onClick/show/hide calls now live there,
+        # with _commsSetBackButton reduced to a thin delegating alias.
         self.assertIn("tg?.BackButton", self.comms_js)
-        setter = self._fn_body(r"function _commsSetBackButton\(handler\)")
+        delegator = self._fn_body(r"function _commsSetBackButton\(handler\)")
+        self.assertIn("_appSetBackButton(handler);", delegator)
+        setter = self._fn_body(r"function _appSetBackButton\(handler\)")
         self.assertIn("tg.BackButton.onClick(handler)", setter)
         self.assertIn("tg.BackButton.show()", setter)
         self.assertIn("tg.BackButton.hide()", setter)
@@ -326,9 +333,9 @@ class TestCommsConfirmSheet(unittest.TestCase):
                 )
 
     def test_75_version_markers_preserved(self):
-        self.assertIn("styles.css?v=7.1.15", self.html)
-        self.assertIn("app.js?v=7.1.15", self.html)
-        self.assertIn('console.log("MiniApp version: v7.1.15");', self.js)
+        self.assertIn("styles.css?v=7.1.16", self.html)
+        self.assertIn("app.js?v=7.1.16", self.html)
+        self.assertIn('console.log("MiniApp version: v7.1.16");', self.js)
 
     def test_76_native_confirm_not_used_for_send_nor_schedule(self):
         submit = self._fn_body(r"async function _commsConfirmSubmit\(\)")

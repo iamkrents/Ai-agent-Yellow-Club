@@ -132,9 +132,9 @@ class TestClientCabinetForcedLight(unittest.TestCase):
             )
 
     def test_11_version_and_cache_bust(self):
-        self.assertIn('console.log("MiniApp version: v7.1.15")', self.js)
-        self.assertIn('styles.css?v=7.1.15', self.html)
-        self.assertIn('app.js?v=7.1.15', self.html)
+        self.assertIn('console.log("MiniApp version: v7.1.16")', self.js)
+        self.assertIn('styles.css?v=7.1.16', self.html)
+        self.assertIn('app.js?v=7.1.16', self.html)
 
     def test_12_no_stray_horizontal_scroll_selectors_introduced(self):
         block = self._override_block()
