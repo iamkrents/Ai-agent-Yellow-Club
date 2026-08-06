@@ -104,12 +104,33 @@ class BotHandlers:
         log.info("Bot started as @%s", self.bot_username)
         await self._setup_miniapp_menu_button(app.bot)
         if self.settings.mk_auto_watch_enabled and self.settings.moyklass_enabled:
-            self._schedule_watcher_task = asyncio.create_task(self._auto_schedule_watch_loop(app))
-            log.info(
-                "MoyKlass auto watcher enabled: interval=%s min, days=%s",
-                self.settings.mk_watch_interval_minutes,
-                self.settings.mk_watch_days,
-            )
+            if self._schedule_watcher_task is not None and not self._schedule_watcher_task.done():
+                log.warning("MoyKlass auto watcher already running, skipping duplicate start")
+            else:
+                self._schedule_watcher_task = asyncio.create_task(self._auto_schedule_watch_loop(app))
+                log.info(
+                    "MoyKlass auto watcher enabled: interval=%s min, days=%s",
+                    self.settings.mk_watch_interval_minutes,
+                    self.settings.mk_watch_days,
+                )
+
+    async def post_shutdown(self, app) -> None:
+        """Cancel and await the background schedule watcher so the event loop can
+        close cleanly, instead of leaving 'Task was destroyed but it is pending!'.
+
+        Registered as ApplicationBuilder().post_shutdown(...) in bot.py; python-telegram-bot
+        calls this during run_polling() teardown regardless of stop reason (signal/KeyboardInterrupt).
+        """
+        task = self._schedule_watcher_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.exception("MoyKlass auto watcher raised while shutting down")
+        self._schedule_watcher_task = None
 
     async def _setup_miniapp_menu_button(self, bot) -> None:
         """Set the persistent bottom-left Telegram chat menu button to open the Mini App.
