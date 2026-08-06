@@ -44,7 +44,13 @@ def main() -> None:
     admin = AdminPanel(settings, kb, storage, llm)
     handlers = BotHandlers(settings, storage, core, admin)
 
-    app = ApplicationBuilder().token(settings.telegram_bot_token).post_init(handlers.post_init).build()
+    app = (
+        ApplicationBuilder()
+        .token(settings.telegram_bot_token)
+        .post_init(handlers.post_init)
+        .post_shutdown(handlers.post_shutdown)
+        .build()
+    )
     app.add_handler(MessageHandler(filters.TEXT | filters.Caption(), handlers.handle_message))
     # v7.1.12 — mass onboarding campaigns: confirm/cancel + continuation survey buttons.
     app.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
