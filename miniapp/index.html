@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Yellow Club OPS</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7.1.16.1" />
+  <link rel="stylesheet" href="/static/styles.css?v=7.1.17" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -240,6 +240,12 @@
       </button>
       <button class="tab comms-only hidden" data-tab="comms" type="button">
         <span class="tab-icon">📣</span><span class="tab-label">Рассылки</span>
+      </button>
+      <!-- v7.1.17 — "Расписание" (continuing-students schedule foundation).
+           Deliberately a different data-tab value from the pre-existing
+           data-tab="schedule" (teacher work-hours feature) above. -->
+      <button class="tab schedule-foundation-only hidden" data-tab="schedule-foundation" type="button">
+        <span class="tab-icon">🗓</span><span class="tab-label">Расписание</span>
       </button>
       <button class="tab admin-only hidden" data-tab="admin" type="button">
         <span class="tab-icon">🛠</span><span class="tab-label">Админ</span>
@@ -1154,6 +1160,11 @@
         <div id="commsRoot"></div>
       </section>
 
+      <!-- v7.1.17 — "Расписание" (continuing-students schedule foundation) -->
+      <section id="tab-schedule-foundation" class="tab-panel schedule-foundation-only hidden">
+        <div id="scheduleFoundationRoot"></div>
+      </section>
+
       <!-- v7.1.13 — same content/logic, just wrapped in the cabinet's shared
            header/nav shell (cabinet-panel) per approved design §4. No
            change to payment business logic, statuses, or endpoints. -->
@@ -1616,6 +1627,6 @@
 
   </div><!-- /piModalRoot -->
 
-  <script src="/static/app.js?v=7.1.16.1"></script>
+  <script src="/static/app.js?v=7.1.17"></script>
 </body>
 </html>

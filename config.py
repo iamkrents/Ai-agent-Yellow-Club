@@ -119,6 +119,15 @@ class Settings:
     client_communications_pilot_telegram_ids: List[int]
     client_communications_send_enabled: bool
     client_communications_scheduler_enabled: bool
+    # v7.1.17 — "Расписание" (continuing-students schedule foundation).
+    # Same allowlist idiom as client_cabinet_v7113_*/client_communications_*
+    # above. All default OFF: first deploy is owner-pilot-only per the
+    # release brief. SYNC and DRAFT_MUTATIONS are separate switches so a
+    # snapshot can be reviewed before any editing is allowed.
+    schedule_foundation_enabled: bool
+    schedule_foundation_pilot_telegram_ids: List[int]
+    schedule_moyklass_sync_enabled: bool
+    schedule_draft_mutations_enabled: bool
     food_location_yc1: str
     food_location_yc2: str
     food_location_yc3: str
@@ -281,6 +290,10 @@ def load_settings() -> Settings:
         client_communications_pilot_telegram_ids=_split_ints(os.getenv("CLIENT_COMMUNICATIONS_PILOT_TELEGRAM_IDS", "")),
         client_communications_send_enabled=_bool(os.getenv("CLIENT_COMMUNICATIONS_SEND_ENABLED", "false"), False),
         client_communications_scheduler_enabled=_bool(os.getenv("CLIENT_COMMUNICATIONS_SCHEDULER_ENABLED", "false"), False),
+        schedule_foundation_enabled=_bool(os.getenv("SCHEDULE_FOUNDATION_ENABLED", "false"), False),
+        schedule_foundation_pilot_telegram_ids=_split_ints(os.getenv("SCHEDULE_FOUNDATION_PILOT_TELEGRAM_IDS", "")),
+        schedule_moyklass_sync_enabled=_bool(os.getenv("SCHEDULE_MOYKLASS_SYNC_ENABLED", "false"), False),
+        schedule_draft_mutations_enabled=_bool(os.getenv("SCHEDULE_DRAFT_MUTATIONS_ENABLED", "false"), False),
         food_location_yc1=os.getenv("FOOD_LOCATION_YC1", "Кульман 1/1").strip(),
         food_location_yc2=os.getenv("FOOD_LOCATION_YC2", "Мстиславца 6").strip(),
         food_location_yc3=os.getenv("FOOD_LOCATION_YC3", "").strip(),

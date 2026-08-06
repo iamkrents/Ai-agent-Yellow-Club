@@ -55,7 +55,13 @@ from storage import (
     NOTIFICATION_ACTION_KEYS,
     NOTIFICATION_CATEGORIES_FOOD_ONLY,
     STAFF_COMMUNICATION_STATUSES,
+    # v7.1.17 — schedule module
+    SCHEDULE_SOURCE_PERIOD_START,
+    SCHEDULE_SOURCE_PERIOD_END,
+    SCHEDULE_DRAFT_STATUSES,
 )
+import schedule_domain
+import schedule_sync
 from llm import OllamaClient
 from agent_core import AgentCore, AnswerContext
 from query_tools import build_query_profile
@@ -174,6 +180,12 @@ PAYMENT_TERMS_ROLES = {"owner", "admin", "operations"}  # v7.1.0 — pricing/ter
 PILOT_ADMIN_ROLES = {"owner", "admin"}                 # v7.1.5 — global pilot/automation admin
 PILOT_MANAGE_ROLES = {"owner", "admin", "operations", "client_manager"}  # v7.1.5.3 — pilot client CRUD
 PAYMENT_APPROVAL_ROLES = {"owner", "admin", "operations", "client_manager"}  # v7.1.5 — review approve
+# v7.1.17 — "Расписание" (continuing-students schedule foundation). Note:
+# this is a DELIBERATELY different capability/tab name from the pre-
+# existing "canUseSchedule"/SCHEDULE_ROLES/data-tab="schedule", which is
+# the unrelated staff work-hours schedule feature (teacher_work_schedule
+# table) — never conflate the two.
+SCHEDULE_MODULE_ROLES = {"owner", "admin", "client_manager"}
 WORKSPACE_VIEW_ROLES = {"owner", "admin", "operations", "client_manager"}    # v7.1.5 — workspace read
 PAYMENT_DIAGNOSTICS_VIEW_ROLES = WORKSPACE_VIEW_ROLES     # v7.1.9 — client_manager sees read-only, scoped
 PAYMENT_DIAGNOSTICS_MANAGE_ROLES = {"owner", "admin", "operations"}  # v7.1.9 — manual run/recheck
@@ -2314,6 +2326,34 @@ class MiniAppContext:
         )
         return int(user_id or 0) in pilot_ids
 
+    def _schedule_module_enabled(self, user_id: int) -> bool:
+        """v7.1.17 — same allowlist idiom as _client_cabinet_enabled: global
+        flag or a per-Telegram-id pilot list, always keyed on the real
+        caller id from auth["user_id"], never a frontend-supplied value."""
+        if bool(getattr(self.settings, "schedule_foundation_enabled", False)):
+            return True
+        pilot_ids = set(
+            int(x) for x in (getattr(self.settings, "schedule_foundation_pilot_telegram_ids", None) or []) if x
+        )
+        return int(user_id or 0) in pilot_ids
+
+    def _require_schedule_module_access(self, auth: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """First line of every schedule-module endpoint. Checks the real
+        role (via _role_for_user, same convention as _require_workspace_
+        access — internal/system callers bypass) AND the feature flag /
+        pilot allowlist, independent of whatever the frontend currently
+        shows, so a disabled flag can never be bypassed by calling the API
+        directly."""
+        if auth.get("_internal") is True:
+            return None
+        user_id = int(auth.get("user_id") or 0)
+        role = self._role_for_user(user_id)
+        if role not in SCHEDULE_MODULE_ROLES:
+            return {"ok": False, "error": "Раздел «Расписание» недоступен для данной роли.", "reason_code": "forbidden"}
+        if not self._schedule_module_enabled(user_id):
+            return {"ok": False, "error": "Раздел «Расписание» пока недоступен.", "reason_code": "feature_disabled"}
+        return None
+
     def _client_notifications_enabled(self, user_id: int) -> bool:
         """v7.1.13 round 2 — independent safe rollout gate for the client
         notification center, so it can be piloted separately from the rest
@@ -2506,6 +2546,14 @@ class MiniAppContext:
             # test-role path can ever grant it to someone without the real
             # role. Also requires the section rollout gate itself.
             "canUseCommunications": self._communications_access_allowed(user_id),
+            # v7.1.17 — "Расписание" (continuing-students schedule
+            # foundation). Deliberately a distinct key from canUseSchedule
+            # above (unrelated staff work-hours feature). Sync/mutations
+            # flags are informational for the UI; every mutating schedule
+            # endpoint independently re-checks its own flag server-side.
+            "canUseScheduleFoundation": role in SCHEDULE_MODULE_ROLES and self._schedule_module_enabled(user_id),
+            "scheduleSyncEnabled": bool(getattr(self.settings, "schedule_moyklass_sync_enabled", False)),
+            "scheduleDraftMutationsEnabled": bool(getattr(self.settings, "schedule_draft_mutations_enabled", False)),
         }
 
     def me(self, auth: dict[str, Any]) -> dict[str, Any]:
@@ -17697,6 +17745,281 @@ class MiniAppContext:
             })
         return {"ok": removed, "removed": removed}
 
+    # ═══════════════════════════════════════════════════════════════════
+    # v7.1.17 — "Расписание" (continuing-students schedule foundation).
+    # Every method starts with _require_schedule_module_access; mutating
+    # methods additionally re-check their own feature flag server-side
+    # (schedule_moyklass_sync_enabled / schedule_draft_mutations_enabled)
+    # regardless of what the frontend currently shows.
+    # ═══════════════════════════════════════════════════════════════════
+    def _schedule_branch_hints(self) -> tuple[str, str]:
+        return (
+            str(getattr(self.settings, "food_location_yc1", "") or ""),
+            str(getattr(self.settings, "food_location_yc2", "") or ""),
+        )
+
+    def _schedule_actor(self, auth: dict[str, Any]) -> tuple[Optional[int], str]:
+        uid = int(auth.get("user_id") or 0) or None
+        name = str(auth.get("full_name") or "").strip() or "Сотрудник"
+        return uid, name
+
+    def schedule_status(self, auth: dict[str, Any]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        return {
+            "ok": True,
+            "moyklassConfigured": bool(self.moyklass.is_configured),
+            "syncEnabled": bool(getattr(self.settings, "schedule_moyklass_sync_enabled", False)),
+            "mutationsEnabled": bool(getattr(self.settings, "schedule_draft_mutations_enabled", False)),
+            "syncRunning": schedule_sync.is_sync_running(),
+            "activeSnapshot": self.storage.get_active_schedule_snapshot(),
+            "runningSnapshot": self.storage.get_running_schedule_snapshot(),
+            "recentSnapshots": self.storage.list_schedule_snapshots(limit=5),
+            "periodStart": SCHEDULE_SOURCE_PERIOD_START,
+            "periodEnd": SCHEDULE_SOURCE_PERIOD_END,
+        }
+
+    def schedule_sync_start(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        if not bool(getattr(self.settings, "schedule_moyklass_sync_enabled", False)):
+            return {"ok": False, "error": "Синхронизация с МойКласс выключена.", "reason_code": "sync_disabled"}
+        actor_id, actor_name = self._schedule_actor(auth)
+        resume_raw = body.get("resume_snapshot_id")
+        resume_id = _safe_int(resume_raw, 0) or None
+        return schedule_sync.start_schedule_sync(self.storage, self.moyklass, actor_id, actor_name, resume_snapshot_id=resume_id)
+
+    def schedule_sync_progress(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        snapshot_id = _safe_int(params.get("snapshot_id"), 0)
+        snapshot = self.storage.get_schedule_snapshot(snapshot_id) if snapshot_id else self.storage.get_running_schedule_snapshot()
+        if not snapshot:
+            return {"ok": False, "error": "Snapshot не найден", "reason_code": "not_found"}
+        errors = self.storage.list_schedule_sync_errors(snapshot["id"], limit=50) if snapshot.get("errors_count") else []
+        return {
+            "ok": True, "snapshot": snapshot,
+            "stageLabel": schedule_sync.STAGE_LABELS_RU.get(snapshot.get("stage") or "", snapshot.get("stage") or ""),
+            "errors": errors,
+        }
+
+    def schedule_stats(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        snapshot_id = _safe_int(params.get("snapshot_id"), 0) or None
+        snapshot = self.storage.get_schedule_snapshot(snapshot_id) if snapshot_id else self.storage.get_active_schedule_snapshot()
+        if not snapshot:
+            return {"ok": True, "stats": None, "snapshot": None}
+        yc1, yc2 = self._schedule_branch_hints()
+        return {"ok": True, "stats": self.storage.get_schedule_overview_stats(snapshot["id"], yc1, yc2), "snapshot": snapshot}
+
+    def schedule_groups_list(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        snapshot_id = _safe_int(params.get("snapshot_id"), 0) or None
+        snapshot = self.storage.get_schedule_snapshot(snapshot_id) if snapshot_id else self.storage.get_active_schedule_snapshot()
+        if not snapshot:
+            return {"ok": True, "groups": [], "total": 0, "snapshot": None}
+        limit = max(1, min(_safe_int(params.get("limit"), 50), 200))
+        offset = max(0, _safe_int(params.get("offset"), 0))
+        weekday = _safe_int(params.get("weekday"), 0) or None
+        groups, total = self.storage.list_schedule_source_groups(
+            snapshot["id"], branch=params.get("branch") or None, course=params.get("course") or None,
+            teacher=params.get("teacher") or None, weekday=weekday, confidence=params.get("confidence") or None,
+            search=params.get("search") or None, limit=limit, offset=offset,
+        )
+        return {"ok": True, "groups": groups, "total": total, "limit": limit, "offset": offset, "snapshot": snapshot}
+
+    def schedule_group_detail(self, auth: dict[str, Any], group_id: str, params: dict[str, str]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        gid = _safe_int(group_id, 0)
+        group = self.storage.get_schedule_source_group(gid) if gid else None
+        if not group:
+            return {"ok": False, "error": "Группа не найдена", "reason_code": "not_found"}
+        yc1, yc2 = self._schedule_branch_hints()
+        group_branch_code = schedule_domain.branch_code_from_name(group.get("branch_name"), yc1, yc2)
+        filter_continuation = params.get("continuation") or None
+        filter_availability = params.get("availability") or None
+        search = str(params.get("search") or "").strip().lower()
+        enriched = []
+        for s in self.storage.list_schedule_source_group_students(gid):
+            status = self.storage.resolve_schedule_student_status(
+                s["mk_user_id"], weekday=group.get("weekday"), start_time=group.get("start_time"),
+                duration_minutes=group.get("duration_minutes"), group_branch_code=group_branch_code,
+            )
+            row = {**s, **status}
+            if filter_continuation and row["continuation_status"] != filter_continuation:
+                continue
+            if filter_availability and row["availability_match"] != filter_availability:
+                continue
+            if search and search not in str(s.get("child_display_name") or "").lower():
+                continue
+            enriched.append(row)
+        draft_rows, _dtotal = self.storage.list_schedule_drafts(source_snapshot_id=group["snapshot_id"], limit=200)
+        linked_draft = next((d for d in draft_rows if d["source_group_id"] == gid), None)
+        return {
+            "ok": True, "group": group, "students": enriched, "studentsTotal": len(enriched),
+            "lessons": self.storage.list_schedule_source_lessons_for_group(gid), "linkedDraft": linked_draft,
+        }
+
+    def schedule_foundation_generate(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        if not bool(getattr(self.settings, "schedule_draft_mutations_enabled", False)):
+            return {"ok": False, "error": "Редактирование черновиков выключено.", "reason_code": "mutations_disabled"}
+        active = self.storage.get_active_schedule_snapshot()
+        if not active:
+            return {"ok": False, "error": "Нет активного snapshot — сначала выполните синхронизацию.", "reason_code": "no_active_snapshot"}
+        actor_id, actor_name = self._schedule_actor(auth)
+        yc1, yc2 = self._schedule_branch_hints()
+        return self.storage.generate_schedule_draft_foundation(active["id"], actor_id, actor_name, yc1, yc2)
+
+    def schedule_drafts_list(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        limit = max(1, min(_safe_int(params.get("limit"), 50), 200))
+        offset = max(0, _safe_int(params.get("offset"), 0))
+        weekday = _safe_int(params.get("weekday"), 0) or None
+        drafts, total = self.storage.list_schedule_drafts(
+            status=params.get("status") or None, branch=params.get("branch") or None,
+            teacher=params.get("teacher") or None, weekday=weekday, search=params.get("search") or None,
+            limit=limit, offset=offset,
+        )
+        return {"ok": True, "drafts": drafts, "total": total, "limit": limit, "offset": offset}
+
+    def schedule_members_list(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        limit = max(1, min(_safe_int(params.get("limit"), 50), 200))
+        offset = max(0, _safe_int(params.get("offset"), 0))
+        members, total = self.storage.list_schedule_draft_members_global(
+            availability=params.get("availability") or None, continuation=params.get("continuation") or None,
+            limit=limit, offset=offset,
+        )
+        return {"ok": True, "members": members, "total": total, "limit": limit, "offset": offset}
+
+    def schedule_draft_detail(self, auth: dict[str, Any], draft_id: str) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        did = _safe_int(draft_id, 0)
+        draft = self.storage.get_schedule_draft(did) if did else None
+        if not draft:
+            return {"ok": False, "error": "Черновик не найден", "reason_code": "not_found"}
+        return {
+            "ok": True, "draft": draft, "members": self.storage.list_schedule_draft_members(did),
+            "conflicts": self.storage.get_schedule_draft_conflicts(did),
+            "audit": self.storage.list_schedule_draft_audit_log(did, limit=50),
+            "sourceGroup": self.storage.get_schedule_source_group(draft["source_group_id"]),
+        }
+
+    def _schedule_require_mutable_draft(self, draft_id: int) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+        """Returns (draft, error). error is set if the draft is missing or
+        archived — archived drafts are never editable, even with a correct
+        version, per the spec's explicit archive-confirmation requirement."""
+        draft = self.storage.get_schedule_draft(draft_id)
+        if not draft:
+            return None, {"ok": False, "error": "Черновик не найден", "reason_code": "not_found"}
+        if draft["status"] == "archived":
+            return None, {"ok": False, "error": "Черновик в архиве — редактирование недоступно", "reason_code": "archived"}
+        return draft, None
+
+    def schedule_draft_update(self, auth: dict[str, Any], draft_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        if not bool(getattr(self.settings, "schedule_draft_mutations_enabled", False)):
+            return {"ok": False, "error": "Редактирование черновиков выключено.", "reason_code": "mutations_disabled"}
+        did = _safe_int(draft_id, 0)
+        expected_version = body.get("expected_version")
+        if expected_version is None:
+            return {"ok": False, "error": "expected_version обязателен", "reason_code": "missing_version"}
+        changes = body.get("changes") if isinstance(body.get("changes"), dict) else {}
+        if "weekday" in changes and changes["weekday"] is not None:
+            if _safe_int(changes["weekday"], 0) not in range(1, 8):
+                return {"ok": False, "error": "Некорректный день недели", "reason_code": "invalid_weekday"}
+        if "start_time" in changes and changes["start_time"]:
+            if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", str(changes["start_time"])):
+                return {"ok": False, "error": "Некорректное время (формат ЧЧ:ММ)", "reason_code": "invalid_time"}
+        if "duration_minutes" in changes and changes["duration_minutes"] is not None:
+            if _safe_int(changes["duration_minutes"], 0) <= 0:
+                return {"ok": False, "error": "Некорректная длительность", "reason_code": "invalid_duration"}
+        yc1, yc2 = self._schedule_branch_hints()
+        return self.storage.update_schedule_draft_fields(did, *self._schedule_actor(auth), int(expected_version), changes, yc1, yc2)
+
+    def schedule_draft_set_status(self, auth: dict[str, Any], draft_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        if not bool(getattr(self.settings, "schedule_draft_mutations_enabled", False)):
+            return {"ok": False, "error": "Редактирование черновиков выключено.", "reason_code": "mutations_disabled"}
+        did = _safe_int(draft_id, 0)
+        expected_version = body.get("expected_version")
+        if expected_version is None:
+            return {"ok": False, "error": "expected_version обязателен", "reason_code": "missing_version"}
+        new_status = str(body.get("status") or "").strip()
+        if new_status not in SCHEDULE_DRAFT_STATUSES:
+            return {"ok": False, "error": "Некорректный статус", "reason_code": "invalid_status"}
+        return self.storage.set_schedule_draft_status(did, *self._schedule_actor(auth), int(expected_version), new_status)
+
+    def schedule_draft_member_exclude(self, auth: dict[str, Any], draft_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        if not bool(getattr(self.settings, "schedule_draft_mutations_enabled", False)):
+            return {"ok": False, "error": "Редактирование черновиков выключено.", "reason_code": "mutations_disabled"}
+        did = _safe_int(draft_id, 0)
+        _draft, err = self._schedule_require_mutable_draft(did)
+        if err:
+            return err
+        mk_user_id = str(body.get("mk_user_id") or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "mk_user_id обязателен", "reason_code": "missing_mk_user_id"}
+        return self.storage.exclude_schedule_draft_member(did, mk_user_id, *self._schedule_actor(auth))
+
+    def schedule_draft_member_include(self, auth: dict[str, Any], draft_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        if not bool(getattr(self.settings, "schedule_draft_mutations_enabled", False)):
+            return {"ok": False, "error": "Редактирование черновиков выключено.", "reason_code": "mutations_disabled"}
+        did = _safe_int(draft_id, 0)
+        _draft, err = self._schedule_require_mutable_draft(did)
+        if err:
+            return err
+        mk_user_id = str(body.get("mk_user_id") or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "mk_user_id обязателен", "reason_code": "missing_mk_user_id"}
+        child_name = str(body.get("child_display_name") or "").strip()
+        source_group_id = _safe_int(body.get("source_group_id"), 0) or None
+        yc1, yc2 = self._schedule_branch_hints()
+        return self.storage.include_schedule_draft_member(did, mk_user_id, child_name, source_group_id, *self._schedule_actor(auth), yc1, yc2)
+
+    def schedule_draft_member_note(self, auth: dict[str, Any], draft_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        if not bool(getattr(self.settings, "schedule_draft_mutations_enabled", False)):
+            return {"ok": False, "error": "Редактирование черновиков выключено.", "reason_code": "mutations_disabled"}
+        did = _safe_int(draft_id, 0)
+        _draft, err = self._schedule_require_mutable_draft(did)
+        if err:
+            return err
+        mk_user_id = str(body.get("mk_user_id") or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "mk_user_id обязателен", "reason_code": "missing_mk_user_id"}
+        return self.storage.update_schedule_draft_member_note(did, mk_user_id, str(body.get("note") or ""), *self._schedule_actor(auth))
+
     # ── v7.1.5 — Review approval ──────────────────────────────────────────────
 
     def approve_payment_intent(self, auth: dict[str, Any], public_id: str) -> dict[str, Any]:
@@ -20825,6 +21148,27 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                         return self._send_json(CTX.food_summary_audit(auth, _menu_parts[0]))
                     if len(_menu_parts) == 2 and _menu_parts[1] == "admin-persons":
                         return self._send_json(CTX.food_admin_persons_for_menu(auth, _menu_parts[0]))
+                # ── v7.1.17 — Расписание (schedule foundation) ───────────
+                if path == "/api/schedule/status":
+                    return self._send_json(CTX.schedule_status(auth))
+                if path == "/api/schedule/sync/progress":
+                    return self._send_json(CTX.schedule_sync_progress(auth, params))
+                if path == "/api/schedule/stats":
+                    return self._send_json(CTX.schedule_stats(auth, params))
+                if path == "/api/schedule/groups":
+                    return self._send_json(CTX.schedule_groups_list(auth, params))
+                if path.startswith("/api/schedule/groups/"):
+                    _sgid = path[len("/api/schedule/groups/"):]
+                    if _sgid and "/" not in _sgid:
+                        return self._send_json(CTX.schedule_group_detail(auth, _sgid, params))
+                if path == "/api/schedule/members":
+                    return self._send_json(CTX.schedule_members_list(auth, params))
+                if path == "/api/schedule/drafts":
+                    return self._send_json(CTX.schedule_drafts_list(auth, params))
+                if path.startswith("/api/schedule/drafts/"):
+                    _sdid = path[len("/api/schedule/drafts/"):]
+                    if _sdid and "/" not in _sdid:
+                        return self._send_json(CTX.schedule_draft_detail(auth, _sdid))
                 return self._send_json({"ok": False, "error": "Unknown API route"}, status=404)
             self.send_error(404, "Not found")
         except (BrokenPipeError, ConnectionResetError):
@@ -21213,6 +21557,24 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.food_hide_item(auth, _iparts[0]))
                 if len(_iparts) == 2 and _iparts[1] == "restore":
                     return self._send_json(CTX.food_restore_item(auth, _iparts[0]))
+            # ── v7.1.17 — Расписание (schedule foundation) ───────────────
+            if path == "/api/schedule/sync/start":
+                return self._send_json(CTX.schedule_sync_start(auth, body))
+            if path == "/api/schedule/foundation/generate":
+                return self._send_json(CTX.schedule_foundation_generate(auth, body))
+            if path.startswith("/api/schedule/drafts/"):
+                _sd_rest = path[len("/api/schedule/drafts/"):]
+                _sd_parts = _sd_rest.split("/")
+                if len(_sd_parts) == 2 and _sd_parts[0] and _sd_parts[1] == "update":
+                    return self._send_json(CTX.schedule_draft_update(auth, _sd_parts[0], body))
+                if len(_sd_parts) == 2 and _sd_parts[0] and _sd_parts[1] == "status":
+                    return self._send_json(CTX.schedule_draft_set_status(auth, _sd_parts[0], body))
+                if len(_sd_parts) == 3 and _sd_parts[0] and _sd_parts[1] == "members" and _sd_parts[2] == "exclude":
+                    return self._send_json(CTX.schedule_draft_member_exclude(auth, _sd_parts[0], body))
+                if len(_sd_parts) == 3 and _sd_parts[0] and _sd_parts[1] == "members" and _sd_parts[2] == "include":
+                    return self._send_json(CTX.schedule_draft_member_include(auth, _sd_parts[0], body))
+                if len(_sd_parts) == 3 and _sd_parts[0] and _sd_parts[1] == "members" and _sd_parts[2] == "note":
+                    return self._send_json(CTX.schedule_draft_member_note(auth, _sd_parts[0], body))
             return self._send_json({"ok": False, "error": "Unknown API route"}, status=404)
         except (BrokenPipeError, ConnectionResetError):
             log.info("Client disconnected: path=%s", self.path.split("?", 1)[0])

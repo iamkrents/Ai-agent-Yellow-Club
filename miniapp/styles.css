@@ -10415,3 +10415,147 @@ body.role-parent-cabinet .tabs.bottom-tabbar .tab:active {
    generic dark-theme .pi-modal-sheet overrides by specificity (id + class
    beats class + attribute-selector) regardless of stylesheet order, so no
    separate dark/light media-query duplicate is needed here. */
+
+/* ═══════════════════════════════════════════════════════════════════════
+   v7.1.17 — "Расписание" (continuing-students schedule foundation).
+   Fully scoped under .sched-* (plus reuse of the existing shared
+   .ws-help-btn/.ws-refresh-btn/.ws-status-badge/.ws-skeleton primitives,
+   already used the same way by other staff-workspace-style screens).
+   No selector here touches anything outside .sched-*, so this whole block
+   can be deleted along with the module's JS/HTML without side effects.
+   ═══════════════════════════════════════════════════════════════════════ */
+.sched-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin: 2px 0 10px; }
+.sched-header__eyebrow { margin: 0 0 2px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: #9a7d00; }
+.sched-header__title { margin: 0; font-size: 21px; font-weight: 800; color: var(--ink); line-height: 1.15; }
+.sched-header__subtitle { margin: 3px 0 0; font-size: 12px; color: var(--muted); line-height: 1.3; }
+.sched-header__period { margin: 2px 0 0; font-size: 11px; color: var(--muted); }
+.sched-header__actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+@media (max-width: 390px) {
+  .sched-header__title { font-size: 19px; }
+  .sched-header__actions { gap: 6px; }
+}
+@media (max-width: 360px) {
+  .sched-header__title { font-size: 16px; }
+  .sched-header__eyebrow { font-size: 9px; }
+}
+
+.sched-sync-status { margin-bottom: 10px; }
+.sched-sync-badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 20px; background: #eaf6ef; color: #267b4e; }
+.sched-sync-badge--running { background: #fff7df; color: #9b6b05; }
+.sched-sync-badge--muted { background: var(--line); color: var(--muted); }
+
+.sched-subtabs {
+  display: flex; gap: 4px; overflow-x: auto; flex-wrap: nowrap;
+  -webkit-overflow-scrolling: touch; scrollbar-width: none; margin-bottom: 14px; padding-bottom: 2px;
+}
+.sched-subtabs::-webkit-scrollbar { display: none; }
+.sched-subtab {
+  flex: 0 0 auto; white-space: nowrap; min-height: 44px; display: inline-flex; align-items: center;
+  padding: 0 14px; border-radius: 14px; background: var(--line); color: var(--muted);
+  font-size: 12.5px; font-weight: 700; border: none; cursor: pointer;
+}
+.sched-subtab.active { background: var(--yellow, #ffcb1f); color: var(--ink); }
+
+.sched-cta-row { margin: 14px 0; display: flex; justify-content: center; }
+.sched-cta-row button { min-height: 44px; padding: 0 20px; border-radius: 14px; font-weight: 700; }
+
+.sched-warning-banner {
+  background: #fff7df; color: #7c5a00; border: 1px solid rgba(155,107,5,.25);
+  border-radius: 14px; padding: 10px 14px; font-size: 12.5px; margin-bottom: 12px; line-height: 1.4;
+}
+.sched-warning-banner .sched-linklike { margin-left: 6px; }
+
+.sched-linklike {
+  background: none; border: none; padding: 0; color: #3457a6; font-size: 12.5px;
+  font-weight: 700; cursor: pointer; min-height: 32px; text-decoration: underline;
+}
+
+.sched-stat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin: 4px 0 14px; }
+@media (min-width: 480px) { .sched-stat-grid { grid-template-columns: repeat(3, 1fr); } }
+.sched-stat-card {
+  background: var(--card, #fff); border: 1px solid var(--line); border-radius: 16px;
+  padding: 12px 10px; text-align: left; min-width: 0;
+}
+.sched-stat-card__value { margin: 0; font-size: 22px; font-weight: 800; color: var(--ink); line-height: 1.1; }
+.sched-stat-card__label { margin: 4px 0 0; font-size: 11px; color: var(--muted); line-height: 1.3; }
+
+.sched-sync-progress { background: var(--card, #fff); border: 1px solid var(--line); border-radius: 16px; padding: 18px; }
+.sched-sync-progress__stage { margin: 0 0 12px; font-size: 15px; font-weight: 700; color: var(--ink); }
+.sched-sync-counters { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+@media (min-width: 420px) { .sched-sync-counters { grid-template-columns: repeat(3, 1fr); } }
+.sched-sync-counters > div { text-align: center; padding: 10px 4px; background: var(--bg, #f7f8fb); border-radius: 12px; }
+.sched-sync-counters span { display: block; font-size: 19px; font-weight: 800; color: var(--ink); }
+.sched-sync-counters label { display: block; font-size: 10.5px; color: var(--muted); margin-top: 2px; }
+.sched-sync-progress__meta { margin: 12px 0 0; font-size: 11px; color: var(--muted); }
+.sched-sync-errors { margin-top: 10px; padding: 8px 10px; background: #fceeee; border-radius: 10px; }
+.sched-sync-errors p { margin: 2px 0; font-size: 11.5px; color: #a82d2d; }
+
+.sched-filter-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.sched-filter-bar select, .sched-search-input {
+  min-height: 40px; border-radius: 12px; border: 1px solid var(--line); background: var(--card, #fff);
+  color: var(--ink); font-size: 12.5px; padding: 0 10px;
+}
+.sched-search-input { flex: 1 1 160px; min-width: 0; }
+
+.sched-list-title { font-size: 13px; font-weight: 700; color: var(--ink); margin: 16px 0 8px; }
+
+.sched-group-list { display: flex; flex-direction: column; gap: 10px; }
+.sched-group-card { background: var(--card, #fff); border: 1px solid var(--line); border-radius: 16px; padding: 14px; }
+.sched-group-card__header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sched-group-card__header h3 { margin: 0; font-size: 14.5px; font-weight: 700; color: var(--ink); }
+.sched-group-card__meta { margin: 4px 0 0; font-size: 11.5px; color: var(--muted); }
+.sched-group-card__slot { margin: 6px 0 0; font-size: 13px; font-weight: 600; color: var(--ink); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sched-group-card__reason { margin: 4px 0 0; font-size: 11px; color: var(--muted); font-style: italic; }
+.sched-group-card__stats { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0 0; font-size: 11px; color: var(--muted); }
+.sched-group-card__actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+.sched-group-card__actions button { min-height: 44px; padding: 0 16px; border-radius: 12px; font-weight: 700; font-size: 12.5px; }
+.sched-group-card__tech { margin: 8px 0 0; font-size: 10px; color: #99a1b3; }
+
+.sched-detail-header { margin-bottom: 12px; }
+.sched-detail-header h2 { margin: 6px 0 0; font-size: 19px; font-weight: 800; color: var(--ink); }
+
+.sched-student-list, .sched-audit-list { display: flex; flex-direction: column; gap: 8px; }
+.sched-member-row {
+  background: var(--card, #fff); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;
+}
+.sched-member-row--excluded { opacity: .55; }
+.sched-member-row__name { margin: 0; font-size: 13px; font-weight: 700; color: var(--ink); }
+.sched-member-row__tech { margin: 2px 0 0; font-size: 10.5px; color: var(--muted); }
+.sched-member-row__badges { display: flex; flex-wrap: wrap; gap: 6px; }
+.sched-member-row__actions { display: flex; gap: 8px; width: 100%; margin-top: 4px; }
+.sched-member-row__actions button { min-height: 40px; padding: 0 14px; border-radius: 10px; font-size: 12px; }
+
+.sched-conflict-banner {
+  background: #fceeee; border: 1px solid rgba(216,76,76,.3); border-radius: 14px;
+  padding: 10px 14px; margin-bottom: 12px;
+}
+.sched-conflict-banner p { margin: 3px 0; font-size: 12px; color: #a82d2d; }
+
+.sched-editor { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
+.sched-editor-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 700; color: var(--muted); }
+.sched-editor-field input, .sched-editor-field select {
+  min-height: 44px; border-radius: 12px; border: 1px solid var(--line); background: var(--card, #fff);
+  color: var(--ink); font-size: 14px; font-weight: 500; padding: 0 12px;
+}
+.sched-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.sched-editor-actions button { min-height: 44px; padding: 0 16px; border-radius: 12px; font-weight: 700; font-size: 12.5px; }
+
+.sched-audit-row { margin: 0; font-size: 11px; color: var(--muted); padding: 6px 0; border-bottom: 1px solid var(--line); }
+.sched-audit-row:last-child { border-bottom: none; }
+
+/* uiConfirmSheet's body is a single escaped <p> — the "Создать основу"
+   confirm message uses literal \n separators for its bullet-style summary,
+   so this one shared rule renders them as line breaks. Harmless for every
+   other existing confirm sheet caller, none of which include \n. */
+#uiConfirmBody p { white-space: pre-line; }
+
+@media (prefers-color-scheme: dark) {
+  .sched-stat-card, .sched-group-card, .sched-member-row, .sched-sync-progress { background: #1a1e28; border-color: #2e3447; }
+  .sched-sync-counters > div { background: #20253a; }
+  .sched-filter-bar select, .sched-search-input, .sched-editor-field input, .sched-editor-field select { background: #1a1e28; border-color: #2e3447; color: #e8ecf4; }
+}
+:root[data-theme="dark"] .sched-stat-card, :root[data-theme="dark"] .sched-group-card, :root[data-theme="dark"] .sched-member-row, :root[data-theme="dark"] .sched-sync-progress { background: #1a1e28; border-color: #2e3447; }
+:root[data-theme="dark"] .sched-sync-counters > div { background: #20253a; }
+:root[data-theme="dark"] .sched-filter-bar select, :root[data-theme="dark"] .sched-search-input, :root[data-theme="dark"] .sched-editor-field input, :root[data-theme="dark"] .sched-editor-field select { background: #1a1e28; border-color: #2e3447; color: #e8ecf4; }
+:root[data-theme="light"] .sched-stat-card, :root[data-theme="light"] .sched-group-card, :root[data-theme="light"] .sched-member-row, :root[data-theme="light"] .sched-sync-progress { background: #fff; border-color: var(--line); }

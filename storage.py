@@ -4,11 +4,13 @@ import json
 import logging
 import re
 import sqlite3
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
 from utils import now_iso
+import schedule_domain
 from payment_domain import (
     PAYMENT_INTENT_ACTIVE_STATUSES as _DOMAIN_ACTIVE_STATUSES,
     MOYKLASS_INVOICE_INTENT_SOURCES,
@@ -87,6 +89,26 @@ STAFF_COMMUNICATION_DELIVERY_STATUSES = ("pending", "created", "skipped", "faile
 ACADEMIC_LEVELS = ("unknown", "year_1", "year_2", "year_3", "year_4", "advanced")
 ACADEMIC_LEVEL_SOURCES = ("moyklass_group_name", "staff", "previous_campaign")
 ACADEMIC_LEVEL_CONFIDENCES = ("high", "manual", "unknown")
+
+# v7.1.17 — "Расписание" (continuing-students schedule foundation). Source
+# academic year window is fixed by the business, not configurable per run.
+SCHEDULE_SOURCE_PERIOD_START = "2025-09-01"
+SCHEDULE_SOURCE_PERIOD_END = "2026-05-31"
+SCHEDULE_SNAPSHOT_STATUSES = ("running", "completed", "partial", "failed")
+SCHEDULE_GROUP_CONFIDENCES = ("high", "medium", "low", "ambiguous")
+SCHEDULE_CONTINUATION_STATUSES = ("continues", "unconfirmed", "discontinued", "ambiguous")
+SCHEDULE_AVAILABILITY_MATCHES = (
+    "preferred_match", "possible_match", "branch_conflict", "time_conflict",
+    "start_date_conflict", "no_availability", "ambiguous_availability",
+    "continuation_unconfirmed", "discontinued",
+)
+SCHEDULE_DRAFT_STATUSES = ("draft", "needs_review", "ready", "archived")
+SCHEDULE_DRAFT_TRANSITIONS = {
+    "draft": {"needs_review", "ready", "archived"},
+    "needs_review": {"draft", "ready", "archived"},
+    "ready": {"needs_review", "draft", "archived"},
+    "archived": set(),
+}
 
 
 _ONLINE_INDICATORS = frozenset(("онлайн", "online", "yc0", "remote", "дистанционно", "дистанц"))
@@ -703,6 +725,210 @@ class Storage:
             self._init_pricing_tables(conn)
             self._init_pilot_tables(conn)
             self._init_payment_automation_guardian_tables(conn)
+            self._init_schedule_module_tables(conn)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # v7.1.17 — "Расписание" (continuing-students schedule foundation).
+    # Deliberately isolated from every other module: no FK to
+    # payment_intents/onboarding/food tables, own table prefix
+    # (schedule_source_* / schedule_draft_*), own storage methods further
+    # below (grep "SCHEDULE MODULE"). Feature-flagged end to end
+    # (SCHEDULE_FOUNDATION_ENABLED) — if the flag stays off forever, these
+    # tables simply stay empty; nothing else in the app reads them.
+    # ═══════════════════════════════════════════════════════════════════
+    def _init_schedule_module_tables(self, conn: sqlite3.Connection) -> None:
+        # One row per MoyKlass read-only sync run. A snapshot only becomes
+        # is_active=1 after a fully successful run — a partial/failed run
+        # is retained (for the error log / retry UI) but never activated,
+        # so the workspace keeps showing the last good snapshot.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schedule_source_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'running',
+                stage TEXT,
+                is_active INTEGER NOT NULL DEFAULT 0,
+                started_by INTEGER,
+                started_by_name TEXT,
+                groups_found INTEGER NOT NULL DEFAULT 0,
+                groups_processed INTEGER NOT NULL DEFAULT 0,
+                lessons_fetched INTEGER NOT NULL DEFAULT 0,
+                students_found INTEGER NOT NULL DEFAULT 0,
+                errors_count INTEGER NOT NULL DEFAULT 0,
+                error_summary TEXT,
+                resumable INTEGER NOT NULL DEFAULT 0,
+                resume_cursor TEXT,
+                started_at TEXT NOT NULL,
+                last_activity_at TEXT NOT NULL,
+                completed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sss_active ON schedule_source_snapshots(is_active, id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sss_status ON schedule_source_snapshots(status, id)")
+
+        # One row per reconstructed last-year MoyKlass class/group.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schedule_source_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL,
+                mk_class_id TEXT NOT NULL,
+                name TEXT,
+                branch_name TEXT,
+                course_name TEXT,
+                teacher_mk_id TEXT,
+                teacher_name TEXT,
+                weekday INTEGER,
+                start_time TEXT,
+                duration_minutes INTEGER,
+                lessons_count INTEGER NOT NULL DEFAULT 0,
+                lessons_considered INTEGER NOT NULL DEFAULT 0,
+                first_lesson_date TEXT,
+                last_lesson_date TEXT,
+                confidence TEXT NOT NULL DEFAULT 'ambiguous',
+                confidence_reason TEXT,
+                students_count INTEGER NOT NULL DEFAULT 0,
+                is_closed INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                UNIQUE(snapshot_id, mk_class_id)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ssg_snapshot ON schedule_source_groups(snapshot_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ssg_confidence ON schedule_source_groups(snapshot_id, confidence)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ssg_branch ON schedule_source_groups(snapshot_id, branch_name)")
+
+        # One row per (group, student) membership found in last year's data.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schedule_source_group_students (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL,
+                group_id INTEGER NOT NULL,
+                mk_user_id TEXT NOT NULL,
+                child_display_name TEXT,
+                lessons_attended INTEGER NOT NULL DEFAULT 0,
+                first_seen_date TEXT,
+                last_seen_date TEXT,
+                evidence_source TEXT NOT NULL DEFAULT 'membership',
+                confidence TEXT NOT NULL DEFAULT 'low',
+                created_at TEXT NOT NULL,
+                UNIQUE(snapshot_id, group_id, mk_user_id)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ssgs_group ON schedule_source_group_students(group_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ssgs_snapshot_user ON schedule_source_group_students(snapshot_id, mk_user_id)")
+
+        # Raw-enough lesson rows to justify the dominant-slot computation and
+        # to show evidence in the UI — not a full copy of the MoyKlass payload.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schedule_source_lessons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL,
+                group_id INTEGER NOT NULL,
+                mk_lesson_id TEXT NOT NULL,
+                lesson_date TEXT NOT NULL,
+                weekday INTEGER,
+                start_time TEXT,
+                duration_minutes INTEGER,
+                status TEXT NOT NULL DEFAULT 'unknown',
+                teacher_mk_id TEXT,
+                branch_name TEXT,
+                used_for_slot INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                UNIQUE(snapshot_id, mk_lesson_id)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ssl_group ON schedule_source_lessons(group_id, lesson_date)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ssl_snapshot ON schedule_source_lessons(snapshot_id)")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schedule_source_sync_errors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL,
+                occurred_at TEXT NOT NULL,
+                stage TEXT,
+                entity_type TEXT,
+                entity_id TEXT,
+                error_code TEXT,
+                message TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sse_snapshot ON schedule_source_sync_errors(snapshot_id)")
+
+        # Local, editable drafts of next year's schedule. Exactly one draft
+        # per (snapshot, source group) — regeneration is idempotent by this
+        # UNIQUE constraint, never a blind INSERT.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schedule_drafts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_snapshot_id INTEGER NOT NULL,
+                source_group_id INTEGER NOT NULL,
+                name TEXT,
+                course_name TEXT,
+                branch_name TEXT,
+                teacher_mk_id TEXT,
+                teacher_name TEXT,
+                weekday INTEGER,
+                start_time TEXT,
+                duration_minutes INTEGER,
+                planned_start_date TEXT,
+                status TEXT NOT NULL DEFAULT 'draft',
+                version INTEGER NOT NULL DEFAULT 1,
+                created_by INTEGER,
+                created_by_name TEXT,
+                updated_by INTEGER,
+                updated_by_name TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(source_snapshot_id, source_group_id)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sd_snapshot ON schedule_drafts(source_snapshot_id, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sd_status ON schedule_drafts(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sd_teacher_slot ON schedule_drafts(teacher_mk_id, weekday, start_time)")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schedule_draft_members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                draft_id INTEGER NOT NULL,
+                mk_user_id TEXT NOT NULL,
+                child_display_name TEXT,
+                source_group_id INTEGER,
+                continuation_status TEXT NOT NULL DEFAULT 'unconfirmed',
+                availability_match TEXT NOT NULL DEFAULT 'ambiguous_availability',
+                conflict_reason TEXT,
+                manually_included INTEGER NOT NULL DEFAULT 0,
+                manually_excluded INTEGER NOT NULL DEFAULT 0,
+                internal_note TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(draft_id, mk_user_id)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sdm_draft ON schedule_draft_members(draft_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sdm_mkuser ON schedule_draft_members(mk_user_id, manually_excluded)")
+        # Backs the cross-draft "Без возможностей" / "Не подтверждены"
+        # workspace subtabs (list_schedule_draft_members_global), which
+        # filter by these columns directly rather than by draft_id/mk_user_id.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sdm_availability ON schedule_draft_members(availability_match, manually_excluded)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sdm_continuation ON schedule_draft_members(continuation_status, manually_excluded)")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schedule_draft_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                draft_id INTEGER NOT NULL,
+                occurred_at TEXT NOT NULL,
+                actor_user_id INTEGER,
+                actor_name TEXT,
+                action TEXT NOT NULL,
+                field TEXT,
+                old_value TEXT,
+                new_value TEXT,
+                details TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sdal_draft ON schedule_draft_audit_log(draft_id, id)")
 
     def _init_payment_intent_tables(self, conn: sqlite3.Connection) -> None:
         conn.execute("""
@@ -12638,3 +12864,787 @@ class Storage:
                 params + extra_params + [limit, offset],
             ).fetchall()
         return [dict(r) for r in rows], total
+
+    # ═══════════════════════════════════════════════════════════════════
+    # v7.1.17 — SCHEDULE MODULE storage methods ("Расписание"). Grouped
+    # here, all schedule_source_*/schedule_draft_* tables only. Nothing
+    # here is called from any non-schedule code path; nothing outside this
+    # section writes to these tables. See schedule_domain.py for the pure
+    # slot/continuation/availability decision logic these methods call.
+    # ═══════════════════════════════════════════════════════════════════
+
+    # ── Snapshot lifecycle ────────────────────────────────────────────
+    def create_schedule_sync_snapshot(
+        self, period_start: str, period_end: str, started_by: Optional[int], started_by_name: str
+    ) -> dict[str, Any]:
+        now = now_iso()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO schedule_source_snapshots "
+                "(period_start, period_end, status, stage, is_active, started_by, started_by_name, "
+                " started_at, last_activity_at, created_at, updated_at) "
+                "VALUES (?, ?, 'running', 'classes', 0, ?, ?, ?, ?, ?, ?)",
+                (period_start, period_end, started_by, started_by_name, now, now, now, now),
+            )
+            snapshot_id = cur.lastrowid
+        return self.get_schedule_snapshot(snapshot_id)
+
+    def get_schedule_snapshot(self, snapshot_id: int) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM schedule_source_snapshots WHERE id=?", (int(snapshot_id),)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_active_schedule_snapshot(self) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM schedule_source_snapshots WHERE is_active=1 ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_running_schedule_snapshot(self) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM schedule_source_snapshots WHERE status='running' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return dict(row) if row else None
+
+    def resume_schedule_sync_snapshot(self, snapshot_id: int) -> None:
+        """Resets errors_count for a fresh activation decision on the
+        resumed run — old error rows stay in schedule_source_sync_errors
+        for history, but a resumed run that completes cleanly must be able
+        to activate even though the earlier failed attempt logged errors."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE schedule_source_snapshots SET status='running', resumable=0, stage='classes', errors_count=0 WHERE id=?",
+                (int(snapshot_id),),
+            )
+
+    def list_schedule_snapshots(self, limit: int = 10) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 50))
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM schedule_source_snapshots ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_schedule_sync_progress(
+        self, snapshot_id: int, *, stage: Optional[str] = None,
+        groups_found: Optional[int] = None, groups_processed: Optional[int] = None,
+        lessons_fetched: Optional[int] = None, students_found: Optional[int] = None,
+        resume_cursor: Optional[str] = None,
+    ) -> None:
+        now = now_iso()
+        fields = ["last_activity_at=?", "updated_at=?"]
+        params: list[Any] = [now, now]
+        for col, val in (
+            ("stage", stage), ("groups_found", groups_found), ("groups_processed", groups_processed),
+            ("lessons_fetched", lessons_fetched), ("students_found", students_found),
+            ("resume_cursor", resume_cursor),
+        ):
+            if val is not None:
+                fields.append(f"{col}=?")
+                params.append(val)
+        params.append(int(snapshot_id))
+        with self._connect() as conn:
+            conn.execute(f"UPDATE schedule_source_snapshots SET {', '.join(fields)} WHERE id=?", params)
+
+    def log_schedule_sync_error(
+        self, snapshot_id: int, stage: str, entity_type: str, entity_id: str, error_code: str, message: str
+    ) -> None:
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO schedule_source_sync_errors "
+                "(snapshot_id, occurred_at, stage, entity_type, entity_id, error_code, message) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (int(snapshot_id), now, stage, entity_type, str(entity_id or ""), error_code, str(message or "")[:500]),
+            )
+            conn.execute(
+                "UPDATE schedule_source_snapshots SET errors_count = errors_count + 1, "
+                "updated_at=?, last_activity_at=? WHERE id=?",
+                (now, now, int(snapshot_id)),
+            )
+
+    def list_schedule_sync_errors(self, snapshot_id: int, limit: int = 200) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 500))
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM schedule_source_sync_errors WHERE snapshot_id=? ORDER BY id ASC LIMIT ?",
+                (int(snapshot_id), limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def finish_schedule_sync_snapshot(self, snapshot_id: int, status: str, *, activate: bool) -> dict[str, Any]:
+        if status not in SCHEDULE_SNAPSHOT_STATUSES:
+            raise ValueError(f"invalid schedule snapshot status: {status}")
+        now = now_iso()
+        with self._connect() as conn:
+            if activate and status == "completed":
+                conn.execute("UPDATE schedule_source_snapshots SET is_active=0 WHERE is_active=1")
+                conn.execute(
+                    "UPDATE schedule_source_snapshots SET status=?, is_active=1, resumable=0, "
+                    "completed_at=?, updated_at=?, last_activity_at=? WHERE id=?",
+                    (status, now, now, now, int(snapshot_id)),
+                )
+            else:
+                resumable = 1 if status in ("failed", "partial") else 0
+                conn.execute(
+                    "UPDATE schedule_source_snapshots SET status=?, resumable=?, "
+                    "completed_at=?, updated_at=?, last_activity_at=? WHERE id=?",
+                    (status, resumable, now, now, now, int(snapshot_id)),
+                )
+        return self.get_schedule_snapshot(snapshot_id)
+
+    # ── Source group / lesson / student writers (idempotent upserts —
+    # safe to call again for the same snapshot_id on resume) ───────────
+    _SSG_FIELDS = frozenset({"name", "branch_name", "course_name", "teacher_mk_id", "teacher_name", "is_closed"})
+
+    def upsert_schedule_source_group(self, snapshot_id: int, mk_class_id: str, **fields: Any) -> int:
+        now = now_iso()
+        mk_class_id = str(mk_class_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM schedule_source_groups WHERE snapshot_id=? AND mk_class_id=?",
+                (int(snapshot_id), mk_class_id),
+            ).fetchone()
+            clean = {k: v for k, v in fields.items() if k in self._SSG_FIELDS}
+            if row:
+                group_id = int(row["id"])
+                if clean:
+                    set_sql = ", ".join(f"{k}=?" for k in clean)
+                    conn.execute(
+                        f"UPDATE schedule_source_groups SET {set_sql} WHERE id=?",
+                        [*clean.values(), group_id],
+                    )
+                return group_id
+            cols = ["snapshot_id", "mk_class_id", "created_at", *clean.keys()]
+            vals = [int(snapshot_id), mk_class_id, now, *clean.values()]
+            cur = conn.execute(
+                f"INSERT INTO schedule_source_groups ({', '.join(cols)}) VALUES ({', '.join('?' for _ in vals)})",
+                vals,
+            )
+            return int(cur.lastrowid)
+
+    _SSL_FIELDS = frozenset({"lesson_date", "weekday", "start_time", "duration_minutes", "status", "teacher_mk_id", "branch_name", "used_for_slot"})
+
+    def upsert_schedule_source_lesson(self, snapshot_id: int, group_id: int, mk_lesson_id: str, **fields: Any) -> int:
+        now = now_iso()
+        mk_lesson_id = str(mk_lesson_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM schedule_source_lessons WHERE snapshot_id=? AND mk_lesson_id=?",
+                (int(snapshot_id), mk_lesson_id),
+            ).fetchone()
+            clean = {k: v for k, v in fields.items() if k in self._SSL_FIELDS}
+            if row:
+                lesson_id = int(row["id"])
+                if clean:
+                    set_sql = ", ".join(f"{k}=?" for k in clean)
+                    conn.execute(f"UPDATE schedule_source_lessons SET {set_sql} WHERE id=?", [*clean.values(), lesson_id])
+                return lesson_id
+            cols = ["snapshot_id", "group_id", "mk_lesson_id", "created_at", *clean.keys()]
+            vals = [int(snapshot_id), int(group_id), mk_lesson_id, now, *clean.values()]
+            cur = conn.execute(
+                f"INSERT INTO schedule_source_lessons ({', '.join(cols)}) VALUES ({', '.join('?' for _ in vals)})",
+                vals,
+            )
+            return int(cur.lastrowid)
+
+    _SSGS_FIELDS = frozenset({"child_display_name", "lessons_attended", "first_seen_date", "last_seen_date", "evidence_source", "confidence"})
+
+    def upsert_schedule_source_group_student(self, snapshot_id: int, group_id: int, mk_user_id: str, **fields: Any) -> int:
+        now = now_iso()
+        mk_user_id = str(mk_user_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM schedule_source_group_students WHERE snapshot_id=? AND group_id=? AND mk_user_id=?",
+                (int(snapshot_id), int(group_id), mk_user_id),
+            ).fetchone()
+            clean = {k: v for k, v in fields.items() if k in self._SSGS_FIELDS}
+            if row:
+                student_row_id = int(row["id"])
+                if clean:
+                    set_sql = ", ".join(f"{k}=?" for k in clean)
+                    conn.execute(f"UPDATE schedule_source_group_students SET {set_sql} WHERE id=?", [*clean.values(), student_row_id])
+                return student_row_id
+            cols = ["snapshot_id", "group_id", "mk_user_id", "created_at", *clean.keys()]
+            vals = [int(snapshot_id), int(group_id), mk_user_id, now, *clean.values()]
+            cur = conn.execute(
+                f"INSERT INTO schedule_source_group_students ({', '.join(cols)}) VALUES ({', '.join('?' for _ in vals)})",
+                vals,
+            )
+            return int(cur.lastrowid)
+
+    def finalize_schedule_source_group_slot(
+        self, group_id: int, *, weekday: Optional[int], start_time: Optional[str],
+        duration_minutes: Optional[int], confidence: str, confidence_reason: str,
+        lessons_count: int, lessons_considered: int, first_lesson_date: Optional[str],
+        last_lesson_date: Optional[str], students_count: int,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE schedule_source_groups SET weekday=?, start_time=?, duration_minutes=?, "
+                "confidence=?, confidence_reason=?, lessons_count=?, lessons_considered=?, "
+                "first_lesson_date=?, last_lesson_date=?, students_count=? WHERE id=?",
+                (weekday, start_time, duration_minutes, confidence, confidence_reason,
+                 int(lessons_count), int(lessons_considered), first_lesson_date, last_lesson_date,
+                 int(students_count), int(group_id)),
+            )
+
+    def list_schedule_source_lessons_for_group(self, group_id: int) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM schedule_source_lessons WHERE group_id=? ORDER BY lesson_date ASC",
+                (int(group_id),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Source group / student readers for the UI ──────────────────────
+    def list_schedule_source_groups(
+        self, snapshot_id: int, *, branch: Optional[str] = None, course: Optional[str] = None,
+        teacher: Optional[str] = None, weekday: Optional[int] = None, confidence: Optional[str] = None,
+        search: Optional[str] = None, limit: int = 50, offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        clauses = ["snapshot_id=?"]
+        params: list[Any] = [int(snapshot_id)]
+        if branch:
+            clauses.append("branch_name=?"); params.append(branch)
+        if course:
+            clauses.append("course_name=?"); params.append(course)
+        if teacher:
+            clauses.append("teacher_mk_id=?"); params.append(teacher)
+        if weekday:
+            clauses.append("weekday=?"); params.append(int(weekday))
+        if confidence:
+            clauses.append("confidence=?"); params.append(confidence)
+        if search:
+            clauses.append("name LIKE ?"); params.append(f"%{search}%")
+        where = "WHERE " + " AND ".join(clauses)
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        with self._connect() as conn:
+            total = conn.execute(f"SELECT COUNT(*) FROM schedule_source_groups {where}", params).fetchone()[0]
+            rows = conn.execute(
+                f"SELECT * FROM schedule_source_groups {where} ORDER BY name ASC, id ASC LIMIT ? OFFSET ?",
+                [*params, limit, offset],
+            ).fetchall()
+        return [dict(r) for r in rows], int(total)
+
+    def get_schedule_source_group(self, group_id: int) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM schedule_source_groups WHERE id=?", (int(group_id),)).fetchone()
+        return dict(row) if row else None
+
+    def list_schedule_source_group_students(self, group_id: int) -> list[dict[str, Any]]:
+        """All raw membership rows for one source group (bounded — one
+        class group, never thousands of rows). Continuation/availability
+        are resolved separately (resolve_schedule_student_status) since
+        they reflect live data, not something safe to freeze at sync time."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM schedule_source_group_students WHERE group_id=? ORDER BY child_display_name ASC",
+                (int(group_id),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Read-only lookups into the existing onboarding/availability data
+    # model (client_onboarding_recipients / client_schedule_availability),
+    # never mutating anything — a schedule-module read must never create a
+    # recipient row as a side effect of merely viewing a group. ──────────
+    def find_onboarding_recipients_by_mk_user(self, mk_user_id: str) -> list[dict[str, Any]]:
+        mk_user_id = str(mk_user_id or "").strip()
+        if not mk_user_id:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM client_onboarding_recipients WHERE mk_user_id=? ORDER BY updated_at DESC",
+                (mk_user_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def resolve_schedule_student_status(
+        self, mk_user_id: str, *, weekday: Optional[int], start_time: Optional[str],
+        duration_minutes: Optional[int], group_branch_code: str,
+        planned_start_date: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Single entry point used by both the group-detail view and draft
+        generation — guarantees identical continuation/availability logic
+        in both places. Read-only against client_onboarding_recipients /
+        client_schedule_availability; never writes."""
+        recipients = self.find_onboarding_recipients_by_mk_user(mk_user_id)
+        continuation = schedule_domain.resolve_continuation([r["continuation_status"] for r in recipients])
+        latest = recipients[0] if recipients else None
+        intervals: list[dict[str, Any]] = []
+        preferred_branch = "unknown"
+        available_from = None
+        if latest:
+            avail = self.get_schedule_availability(int(latest["id"]))
+            if avail.get("ok"):
+                intervals = avail.get("intervals") or []
+                preferred_branch = latest.get("preferred_branch") or "unknown"
+                available_from = latest.get("available_from")
+        match = schedule_domain.match_availability(
+            continuation["status"], weekday, start_time, duration_minutes, group_branch_code,
+            intervals, preferred_branch, available_from, planned_start_date,
+        )
+        return {
+            "mk_user_id": str(mk_user_id),
+            "continuation_status": continuation["status"],
+            "continuation_reason": continuation["reason"],
+            "availability_match": match["match"],
+            "availability_reason": match["reason"],
+            "recipient_id": int(latest["id"]) if latest else None,
+            "preferred_branch": preferred_branch,
+            "available_from": available_from,
+        }
+
+    # ── Drafts: generation ──────────────────────────────────────────────
+    def generate_schedule_draft_foundation(
+        self, snapshot_id: int, actor_user_id: Optional[int], actor_name: str,
+        yc1_hint: str, yc2_hint: str,
+    ) -> dict[str, Any]:
+        """One draft per source group, idempotent by UNIQUE(source_snapshot_id,
+        source_group_id) — re-running never creates a duplicate draft for a
+        group that already has one (existing drafts are left completely
+        untouched, including any manual edits already made). Discontinued
+        students are never inserted as members. Nothing is written to
+        MoyKlass; no notification is sent."""
+        groups, _total = self.list_schedule_source_groups(snapshot_id, limit=1000)
+        now = now_iso()
+        created, existing, members_added, members_skipped_discontinued = 0, 0, 0, 0
+        with self._connect() as conn:
+            for group in groups:
+                row = conn.execute(
+                    "SELECT id, version FROM schedule_drafts WHERE source_snapshot_id=? AND source_group_id=?",
+                    (int(snapshot_id), int(group["id"])),
+                ).fetchone()
+                if row:
+                    existing += 1
+                    continue
+                cur = conn.execute(
+                    "INSERT INTO schedule_drafts (source_snapshot_id, source_group_id, name, course_name, "
+                    "branch_name, teacher_mk_id, teacher_name, weekday, start_time, duration_minutes, "
+                    "status, version, created_by, created_by_name, updated_by, updated_by_name, "
+                    "created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?, ?, ?, ?)",
+                    (
+                        int(snapshot_id), int(group["id"]), group["name"], group["course_name"],
+                        group["branch_name"], group["teacher_mk_id"], group["teacher_name"],
+                        group["weekday"], group["start_time"], group["duration_minutes"],
+                        actor_user_id, actor_name, actor_user_id, actor_name, now, now,
+                    ),
+                )
+                draft_id = int(cur.lastrowid)
+                created += 1
+                self._write_schedule_draft_audit(
+                    conn, draft_id, actor_user_id, actor_name, "created",
+                    details=f"Из группы источника #{group['id']} ({group['name'] or group['mk_class_id']})",
+                )
+                group_branch_code = schedule_domain.branch_code_from_name(group["branch_name"], yc1_hint, yc2_hint)
+                for student in self.list_schedule_source_group_students(int(group["id"])):
+                    status = self.resolve_schedule_student_status(
+                        student["mk_user_id"], weekday=group["weekday"], start_time=group["start_time"],
+                        duration_minutes=group["duration_minutes"], group_branch_code=group_branch_code,
+                        planned_start_date=None,
+                    )
+                    if status["continuation_status"] == "discontinued":
+                        members_skipped_discontinued += 1
+                        continue
+                    conn.execute(
+                        "INSERT OR IGNORE INTO schedule_draft_members "
+                        "(draft_id, mk_user_id, child_display_name, source_group_id, continuation_status, "
+                        " availability_match, conflict_reason, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            draft_id, student["mk_user_id"], student["child_display_name"], int(group["id"]),
+                            status["continuation_status"], status["availability_match"], status["availability_reason"],
+                            now, now,
+                        ),
+                    )
+                    members_added += 1
+        return {
+            "ok": True, "drafts_created": created, "drafts_already_existed": existing,
+            "members_added": members_added, "members_skipped_discontinued": members_skipped_discontinued,
+        }
+
+    # ── Drafts: reading ─────────────────────────────────────────────────
+    def get_schedule_draft(self, draft_id: int) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM schedule_drafts WHERE id=?", (int(draft_id),)).fetchone()
+        return dict(row) if row else None
+
+    def list_schedule_drafts(
+        self, *, source_snapshot_id: Optional[int] = None, status: Optional[str] = None,
+        branch: Optional[str] = None, teacher: Optional[str] = None, weekday: Optional[int] = None,
+        search: Optional[str] = None, limit: int = 50, offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if source_snapshot_id:
+            clauses.append("source_snapshot_id=?"); params.append(int(source_snapshot_id))
+        if status:
+            clauses.append("status=?"); params.append(status)
+        if branch:
+            clauses.append("branch_name=?"); params.append(branch)
+        if teacher:
+            clauses.append("teacher_mk_id=?"); params.append(teacher)
+        if weekday:
+            clauses.append("weekday=?"); params.append(int(weekday))
+        if search:
+            clauses.append("name LIKE ?"); params.append(f"%{search}%")
+        where = "WHERE " + " AND ".join(clauses)
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        with self._connect() as conn:
+            total = conn.execute(f"SELECT COUNT(*) FROM schedule_drafts {where}", params).fetchone()[0]
+            rows = conn.execute(
+                f"SELECT * FROM schedule_drafts {where} ORDER BY name ASC, id ASC LIMIT ? OFFSET ?",
+                [*params, limit, offset],
+            ).fetchall()
+        return [dict(r) for r in rows], int(total)
+
+    def list_schedule_draft_members(self, draft_id: int) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM schedule_draft_members WHERE draft_id=? ORDER BY child_display_name ASC",
+                (int(draft_id),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_schedule_draft_members_global(
+        self, *, availability: Optional[str] = None, continuation: Optional[str] = None,
+        limit: int = 100, offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Cross-draft member search backing the "Без возможностей" / "Не
+        подтверждены" workspace subtabs — every non-archived draft's
+        members, filtered server-side. Never scans archived drafts (those
+        are out of scope for "needs attention now")."""
+        clauses = ["d.status != 'archived'", "dm.manually_excluded=0"]
+        params: list[Any] = []
+        if availability:
+            clauses.append("dm.availability_match=?"); params.append(availability)
+        if continuation:
+            clauses.append("dm.continuation_status=?"); params.append(continuation)
+        where = "WHERE " + " AND ".join(clauses)
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        with self._connect() as conn:
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM schedule_draft_members dm JOIN schedule_drafts d ON d.id = dm.draft_id {where}",
+                params,
+            ).fetchone()[0]
+            rows = conn.execute(
+                f"SELECT dm.*, d.name AS draft_name, d.status AS draft_status FROM schedule_draft_members dm "
+                f"JOIN schedule_drafts d ON d.id = dm.draft_id {where} ORDER BY dm.child_display_name ASC LIMIT ? OFFSET ?",
+                [*params, limit, offset],
+            ).fetchall()
+        return [dict(r) for r in rows], int(total)
+
+    def list_schedule_draft_audit_log(self, draft_id: int, limit: int = 100) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 300))
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM schedule_draft_audit_log WHERE draft_id=? ORDER BY id DESC LIMIT ?",
+                (int(draft_id), limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def _write_schedule_draft_audit(
+        self, conn: sqlite3.Connection, draft_id: int, actor_user_id: Optional[int], actor_name: str,
+        action: str, field: Optional[str] = None, old_value: Optional[str] = None,
+        new_value: Optional[str] = None, details: Optional[str] = None,
+    ) -> None:
+        conn.execute(
+            "INSERT INTO schedule_draft_audit_log "
+            "(draft_id, occurred_at, actor_user_id, actor_name, action, field, old_value, new_value, details) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (int(draft_id), now_iso(), actor_user_id, actor_name, action, field, old_value, new_value, details),
+        )
+
+    # ── Drafts: editing (optimistic concurrency — every mutation takes
+    # expected_version and rejects with reason_code=version_conflict if the
+    # draft has moved on, never silently overwriting a concurrent edit) ──
+    _SD_EDITABLE_FIELDS = ("name", "course_name", "branch_name", "teacher_mk_id", "teacher_name",
+                           "weekday", "start_time", "duration_minutes", "planned_start_date")
+
+    def update_schedule_draft_fields(
+        self, draft_id: int, actor_user_id: Optional[int], actor_name: str,
+        expected_version: int, changes: dict[str, Any], yc1_hint: str, yc2_hint: str,
+    ) -> dict[str, Any]:
+        draft = self.get_schedule_draft(draft_id)
+        if not draft:
+            return {"ok": False, "error": "Черновик не найден", "reason_code": "not_found"}
+        if draft["status"] == "archived":
+            return {"ok": False, "error": "Черновик в архиве — редактирование недоступно", "reason_code": "archived"}
+        if int(draft["version"]) != int(expected_version):
+            return {
+                "ok": False, "error": "Черновик изменён другим сотрудником — обновите и повторите",
+                "reason_code": "version_conflict", "current_version": draft["version"],
+            }
+        clean = {k: v for k, v in changes.items() if k in self._SD_EDITABLE_FIELDS}
+        if not clean:
+            return {"ok": True, "draft": draft, "recomputed": False}
+        slot_changed = bool({"weekday", "start_time", "duration_minutes", "branch_name"} & clean.keys())
+        now = now_iso()
+        with self._connect() as conn:
+            set_sql = ", ".join(f"{k}=?" for k in clean)
+            conn.execute(
+                f"UPDATE schedule_drafts SET {set_sql}, version=version+1, updated_by=?, updated_by_name=?, updated_at=? WHERE id=?",
+                [*clean.values(), actor_user_id, actor_name, now, int(draft_id)],
+            )
+            for field, new_value in clean.items():
+                self._write_schedule_draft_audit(
+                    conn, draft_id, actor_user_id, actor_name, "field_changed",
+                    field=field, old_value=str(draft.get(field)), new_value=str(new_value),
+                )
+        if slot_changed:
+            self._recompute_schedule_draft_matches(draft_id, yc1_hint, yc2_hint)
+        return {"ok": True, "draft": self.get_schedule_draft(draft_id), "recomputed": slot_changed}
+
+    def _recompute_schedule_draft_matches(self, draft_id: int, yc1_hint: str, yc2_hint: str) -> None:
+        draft = self.get_schedule_draft(draft_id)
+        if not draft:
+            return
+        group_branch_code = schedule_domain.branch_code_from_name(draft["branch_name"], yc1_hint, yc2_hint)
+        now = now_iso()
+        with self._connect() as conn:
+            members = conn.execute("SELECT * FROM schedule_draft_members WHERE draft_id=?", (int(draft_id),)).fetchall()
+            for m in members:
+                status = self.resolve_schedule_student_status(
+                    m["mk_user_id"], weekday=draft["weekday"], start_time=draft["start_time"],
+                    duration_minutes=draft["duration_minutes"], group_branch_code=group_branch_code,
+                    planned_start_date=draft["planned_start_date"],
+                )
+                conn.execute(
+                    "UPDATE schedule_draft_members SET continuation_status=?, availability_match=?, "
+                    "conflict_reason=?, updated_at=? WHERE id=?",
+                    (status["continuation_status"], status["availability_match"], status["availability_reason"], now, m["id"]),
+                )
+
+    def set_schedule_draft_status(
+        self, draft_id: int, actor_user_id: Optional[int], actor_name: str,
+        expected_version: int, new_status: str,
+    ) -> dict[str, Any]:
+        if new_status not in SCHEDULE_DRAFT_STATUSES:
+            return {"ok": False, "error": "Некорректный статус черновика", "reason_code": "invalid_status"}
+        draft = self.get_schedule_draft(draft_id)
+        if not draft:
+            return {"ok": False, "error": "Черновик не найден", "reason_code": "not_found"}
+        if int(draft["version"]) != int(expected_version):
+            return {
+                "ok": False, "error": "Черновик изменён другим сотрудником — обновите и повторите",
+                "reason_code": "version_conflict", "current_version": draft["version"],
+            }
+        if new_status not in SCHEDULE_DRAFT_TRANSITIONS.get(draft["status"], set()) and new_status != draft["status"]:
+            return {"ok": False, "error": "Недопустимый переход статуса", "reason_code": "invalid_transition"}
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE schedule_drafts SET status=?, version=version+1, updated_by=?, updated_by_name=?, updated_at=? WHERE id=?",
+                (new_status, actor_user_id, actor_name, now, int(draft_id)),
+            )
+            self._write_schedule_draft_audit(
+                conn, draft_id, actor_user_id, actor_name, "status_changed",
+                field="status", old_value=draft["status"], new_value=new_status,
+            )
+        return {"ok": True, "draft": self.get_schedule_draft(draft_id)}
+
+    def exclude_schedule_draft_member(
+        self, draft_id: int, mk_user_id: str, actor_user_id: Optional[int], actor_name: str,
+    ) -> dict[str, Any]:
+        mk_user_id = str(mk_user_id)
+        now = now_iso()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM schedule_draft_members WHERE draft_id=? AND mk_user_id=?",
+                (int(draft_id), mk_user_id),
+            ).fetchone()
+            if not row:
+                return {"ok": False, "error": "Участник не найден в черновике", "reason_code": "not_found"}
+            conn.execute(
+                "UPDATE schedule_draft_members SET manually_excluded=1, manually_included=0, updated_at=? WHERE id=?",
+                (now, row["id"]),
+            )
+            self._write_schedule_draft_audit(
+                conn, draft_id, actor_user_id, actor_name, "member_excluded", field="mk_user_id", new_value=mk_user_id,
+            )
+        return {"ok": True}
+
+    def include_schedule_draft_member(
+        self, draft_id: int, mk_user_id: str, child_display_name: str, source_group_id: Optional[int],
+        actor_user_id: Optional[int], actor_name: str, yc1_hint: str, yc2_hint: str,
+    ) -> dict[str, Any]:
+        mk_user_id = str(mk_user_id)
+        draft = self.get_schedule_draft(draft_id)
+        if not draft:
+            return {"ok": False, "error": "Черновик не найден", "reason_code": "not_found"}
+        now = now_iso()
+        group_branch_code = schedule_domain.branch_code_from_name(draft["branch_name"], yc1_hint, yc2_hint)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM schedule_draft_members WHERE draft_id=? AND mk_user_id=?",
+                (int(draft_id), mk_user_id),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE schedule_draft_members SET manually_included=1, manually_excluded=0, updated_at=? WHERE id=?",
+                    (now, row["id"]),
+                )
+            else:
+                status = self.resolve_schedule_student_status(
+                    mk_user_id, weekday=draft["weekday"], start_time=draft["start_time"],
+                    duration_minutes=draft["duration_minutes"], group_branch_code=group_branch_code,
+                    planned_start_date=draft["planned_start_date"],
+                )
+                conn.execute(
+                    "INSERT INTO schedule_draft_members "
+                    "(draft_id, mk_user_id, child_display_name, source_group_id, continuation_status, "
+                    " availability_match, conflict_reason, manually_included, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                    (
+                        int(draft_id), mk_user_id, child_display_name, source_group_id,
+                        status["continuation_status"], status["availability_match"], status["availability_reason"],
+                        now, now,
+                    ),
+                )
+            self._write_schedule_draft_audit(
+                conn, draft_id, actor_user_id, actor_name, "member_included", field="mk_user_id", new_value=mk_user_id,
+            )
+        return {"ok": True}
+
+    def update_schedule_draft_member_note(
+        self, draft_id: int, mk_user_id: str, note: str, actor_user_id: Optional[int], actor_name: str,
+    ) -> dict[str, Any]:
+        now = now_iso()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM schedule_draft_members WHERE draft_id=? AND mk_user_id=?",
+                (int(draft_id), str(mk_user_id)),
+            ).fetchone()
+            if not row:
+                return {"ok": False, "error": "Участник не найден в черновике", "reason_code": "not_found"}
+            conn.execute(
+                "UPDATE schedule_draft_members SET internal_note=?, updated_at=? WHERE id=?",
+                (str(note or "")[:2000], now, row["id"]),
+            )
+            self._write_schedule_draft_audit(
+                conn, draft_id, actor_user_id, actor_name, "note_added", field="mk_user_id", new_value=str(mk_user_id),
+            )
+        return {"ok": True}
+
+    # ── Overview stat grid (section 3B of the release spec) — server-side
+    # aggregation, never shipped as raw rows to the browser. member_rows is
+    # bounded by real club size (a few hundred rows at most), all queries
+    # here are local SQLite, no MoyKlass calls. ──────────────────────────
+    def get_schedule_overview_stats(self, snapshot_id: int, yc1_hint: str, yc2_hint: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            groups_count = conn.execute(
+                "SELECT COUNT(*) FROM schedule_source_groups WHERE snapshot_id=?", (int(snapshot_id),)
+            ).fetchone()[0]
+            confidence_rows = conn.execute(
+                "SELECT confidence, COUNT(*) c FROM schedule_source_groups WHERE snapshot_id=? GROUP BY confidence",
+                (int(snapshot_id),),
+            ).fetchall()
+            students_count = conn.execute(
+                "SELECT COUNT(DISTINCT mk_user_id) FROM schedule_source_group_students WHERE snapshot_id=?",
+                (int(snapshot_id),),
+            ).fetchone()[0]
+            draft_status_rows = conn.execute(
+                "SELECT status, COUNT(*) c FROM schedule_drafts WHERE source_snapshot_id=? GROUP BY status",
+                (int(snapshot_id),),
+            ).fetchall()
+            member_rows = conn.execute(
+                "SELECT g.weekday, g.start_time, g.duration_minutes, g.branch_name, s.mk_user_id "
+                "FROM schedule_source_group_students s JOIN schedule_source_groups g ON g.id = s.group_id "
+                "WHERE s.snapshot_id=?",
+                (int(snapshot_id),),
+            ).fetchall()
+
+        confidence_counts = {row["confidence"]: row["c"] for row in confidence_rows}
+        draft_status_counts = {row["status"]: row["c"] for row in draft_status_rows}
+
+        continuation_by_student: dict[str, str] = {}
+        match_counts: Counter = Counter()
+        for row in member_rows:
+            group_branch_code = schedule_domain.branch_code_from_name(row["branch_name"], yc1_hint, yc2_hint)
+            status = self.resolve_schedule_student_status(
+                row["mk_user_id"], weekday=row["weekday"], start_time=row["start_time"],
+                duration_minutes=row["duration_minutes"], group_branch_code=group_branch_code,
+            )
+            # A student in several groups keeps whichever resolution the loop
+            # visits last — resolve_schedule_student_status is independent of
+            # which group asked, so every visit agrees on continuation anyway.
+            continuation_by_student[row["mk_user_id"]] = status["continuation_status"]
+            match_counts[status["availability_match"]] += 1
+
+        continuation_counts = Counter(continuation_by_student.values())
+        return {
+            "groups_count": groups_count,
+            "students_count": students_count,
+            "continues_count": continuation_counts.get("continues", 0),
+            "unconfirmed_count": continuation_counts.get("unconfirmed", 0) + continuation_counts.get("ambiguous", 0),
+            "discontinued_count": continuation_counts.get("discontinued", 0),
+            "filled_availability_count": sum(
+                v for k, v in match_counts.items() if k not in ("no_availability", "continuation_unconfirmed", "discontinued")
+            ),
+            "not_filled_availability_count": match_counts.get("no_availability", 0),
+            "preferred_or_possible_match_count": match_counts.get("preferred_match", 0) + match_counts.get("possible_match", 0),
+            "possible_with_caveats_count": match_counts.get("possible_match", 0),
+            "conflict_count": (
+                match_counts.get("branch_conflict", 0) + match_counts.get("time_conflict", 0) + match_counts.get("start_date_conflict", 0)
+            ),
+            "ambiguous_confidence_groups_count": confidence_counts.get("ambiguous", 0),
+            "drafts_count": sum(draft_status_counts.values()),
+            "drafts_ready_count": draft_status_counts.get("ready", 0),
+            "confidence_breakdown": confidence_counts,
+            "draft_status_breakdown": draft_status_counts,
+        }
+
+    # ── Conflict detection (live, never persisted — recomputed on read) ─
+    def get_schedule_draft_conflicts(self, draft_id: int) -> dict[str, Any]:
+        draft = self.get_schedule_draft(draft_id)
+        if not draft:
+            return {"child_conflicts": [], "teacher_conflict_drafts": []}
+        with self._connect() as conn:
+            member_ids = [
+                r["mk_user_id"] for r in conn.execute(
+                    "SELECT mk_user_id FROM schedule_draft_members WHERE draft_id=? AND manually_excluded=0",
+                    (int(draft_id),),
+                ).fetchall()
+            ]
+            child_conflicts: list[dict[str, Any]] = []
+            if member_ids and draft["weekday"] and draft["start_time"]:
+                placeholders = ",".join("?" for _ in member_ids)
+                other_rows = conn.execute(
+                    f"SELECT dm.mk_user_id, dm.child_display_name, d.id AS draft_id, d.name AS draft_name, "
+                    f"d.weekday, d.start_time, d.duration_minutes "
+                    f"FROM schedule_draft_members dm JOIN schedule_drafts d ON d.id = dm.draft_id "
+                    f"WHERE dm.mk_user_id IN ({placeholders}) AND dm.manually_excluded=0 "
+                    f"AND d.id != ? AND d.status != 'archived'",
+                    [*member_ids, int(draft_id)],
+                ).fetchall()
+                for r in other_rows:
+                    if schedule_domain.times_overlap(
+                        draft["weekday"], draft["start_time"], draft["duration_minutes"],
+                        r["weekday"], r["start_time"], r["duration_minutes"],
+                    ):
+                        child_conflicts.append({
+                            "mk_user_id": r["mk_user_id"], "child_display_name": r["child_display_name"],
+                            "other_draft_id": r["draft_id"], "other_draft_name": r["draft_name"],
+                        })
+            teacher_conflicts: list[dict[str, Any]] = []
+            if draft["teacher_mk_id"] and draft["weekday"] and draft["start_time"]:
+                other_drafts = conn.execute(
+                    "SELECT id, name, weekday, start_time, duration_minutes FROM schedule_drafts "
+                    "WHERE teacher_mk_id=? AND id != ? AND status != 'archived'",
+                    (draft["teacher_mk_id"], int(draft_id)),
+                ).fetchall()
+                for r in other_drafts:
+                    if schedule_domain.times_overlap(
+                        draft["weekday"], draft["start_time"], draft["duration_minutes"],
+                        r["weekday"], r["start_time"], r["duration_minutes"],
+                    ):
+                        teacher_conflicts.append({"other_draft_id": r["id"], "other_draft_name": r["name"]})
+        return {"child_conflicts": child_conflicts, "teacher_conflict_drafts": teacher_conflicts}

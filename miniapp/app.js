@@ -131,8 +131,8 @@ const launchTab = urlParams.get("tab") || "";
 // one specific campaign recipient (from the bot's post-activation button).
 const launchAvailabilityRecipientId = urlParams.get("oc_availability_recipient") || "";
 
-console.log("MiniApp version: v7.1.16.1");
-const APP_VERSION = "7.1.16.1";
+console.log("MiniApp version: v7.1.17");
+const APP_VERSION = "7.1.17";
 
 // v7.1.16 — minimal frontend incident reporting. Before this, these two
 // handlers only ever did console.error(...) — nothing was ever sent to the
@@ -332,10 +332,10 @@ const MVP_TABS_BY_ROLE = {
   intern:         ["intern", "help", "ask", "my-lunch"],
   teacher:        ["lessons", "tasks", "help", "ask", "my-lunch"],
   methodist:      ["lessons", "tasks", "help", "ask", "admin", "my-lunch"],
-  owner:          ["lessons", "tasks", "reports", "help", "ask", "admin", "payments-workspace", "my-lunch"],
-  admin:          ["lessons", "tasks", "reports", "help", "ask", "admin", "payments-workspace", "my-lunch"],
+  owner:          ["lessons", "tasks", "reports", "help", "ask", "admin", "payments-workspace", "schedule-foundation", "my-lunch"],
+  admin:          ["lessons", "tasks", "reports", "help", "ask", "admin", "payments-workspace", "schedule-foundation", "my-lunch"],
   operations:     ["lessons", "tasks", "reports", "help", "ask", "admin", "payments-workspace", "my-lunch"],
-  client_manager: ["payments-workspace", "reports", "comms"],
+  client_manager: ["payments-workspace", "reports", "comms", "schedule-foundation"],
   director:       ["reports", "my-lunch"],
   parent:         ["my-children", "food", "help"],
 };
@@ -1397,6 +1397,7 @@ function setupRoleUi() {
   document.querySelectorAll(".admin-only").forEach(el => el.classList.toggle("hidden", !canUseAdmin()));
   document.querySelectorAll(".payments-workspace-only").forEach(el => el.classList.toggle("hidden", !roleCaps().canUsePaymentsWorkspace));
   document.querySelectorAll(".comms-only").forEach(el => el.classList.toggle("hidden", !roleCaps().canUseCommunications));
+  document.querySelectorAll(".schedule-foundation-only").forEach(el => el.classList.toggle("hidden", !roleCaps().canUseScheduleFoundation));
   document.querySelectorAll(".role-lessons").forEach(el => el.classList.toggle("hidden", !canUseLessons()));
   document.querySelectorAll(".role-schedule").forEach(el => el.classList.toggle("hidden", !canUseSchedule()));
   document.querySelectorAll(".role-open-slots").forEach(el => el.classList.toggle("hidden", !canUseOpenSlots()));
@@ -1571,6 +1572,8 @@ function activateTab(name) {
   if (name === "intern") loadInternTrack();
   if (name === "admin") loadAdmin();
   if (name === "payments-workspace") loadPaymentsWorkspace();
+  if (name === "schedule-foundation") loadScheduleFoundation();
+  else _schedStopPolling();
   if (name === "schedule") loadWorkSchedule();
   if (name === "windows") loadOpenSlots();
   if (name === "reports") { loadReports(); loadKpi(); renderChildrenReport(); renderBepaid(); loadBepaidStatus(); }
@@ -21239,6 +21242,885 @@ function _wsHelpResetSearch() {
 })();
 
 // ── Wire up event listeners ───────────────────────────────────────────────
+
+// ═══════════════════════════════════════════════════════════════════════
+// v7.1.17 — "Расписание" (continuing-students schedule foundation).
+// Self-contained: own state object, own render/load functions (all
+// prefixed _sched), own scoped CSS classes (.sched-*). Reuses the shared
+// uiEmptyState/uiErrorState/uiConfirmSheet/uiStatusBadge/ws-skeleton
+// primitives already used by other staff-workspace-style screens, but
+// never reaches into Payments Workspace state. Feature-flagged end to
+// end: the tab itself is hidden unless roleCaps().canUseScheduleFoundation
+// (server-computed from SCHEDULE_FOUNDATION_ENABLED / pilot allowlist +
+// real role) — see setupRoleUi(). Deleting this whole block plus its tab
+// button/panel in index.html and its .sched-* CSS block removes the
+// module cleanly; nothing else in the app reads _schedState.
+// ═══════════════════════════════════════════════════════════════════════
+const _schedState = {
+  view: "overview",           // "overview" | "group-detail" | "draft-editor"
+  tab: "overview",            // overview subtab
+  status: null, statusLoading: false, statusError: null,
+  stats: null, statsLoading: false,
+  reqToken: 0,                // race-fencing, same capture-and-compare idiom as _wsPeriodState.reqToken
+  pollTimer: null,
+
+  groupsFilter: { branch: "", confidence: "", weekday: "", search: "" },
+  groups: null, groupsTotal: 0, groupsLoading: false, groupsError: null,
+
+  draftsFilter: { status: "", search: "" },
+  drafts: null, draftsTotal: 0, draftsLoading: false, draftsError: null,
+
+  membersFilter: { availability: "", continuation: "" },
+  members: null, membersTotal: 0, membersLoading: false, membersError: null,
+
+  currentGroupId: null, currentGroup: null, currentGroupLoading: false, currentGroupError: null,
+  groupStudentFilter: { continuation: "", availability: "", search: "" },
+
+  currentDraftId: null, currentDraft: null, currentDraftMembers: [], currentDraftConflicts: null,
+  currentDraftAudit: [], currentDraftSourceGroup: null,
+  currentDraftLoading: false, currentDraftError: null,
+  editorDirty: false, editorPending: {}, editorSaving: false, editorVersionConflict: false,
+
+  foundationGenerating: false,
+};
+
+const SCHED_WEEKDAY_NAMES = { 1: "Пн", 2: "Вт", 3: "Ср", 4: "Чт", 5: "Пт", 6: "Сб", 7: "Вс" };
+const SCHED_WEEKDAY_NAMES_FULL = { 1: "понедельник", 2: "вторник", 3: "среда", 4: "четверг", 5: "пятница", 6: "суббота", 7: "воскресенье" };
+const SCHED_CONFIDENCE_LABELS = { high: "Высокая", medium: "Средняя", low: "Низкая", ambiguous: "Неоднозначно" };
+const SCHED_CONFIDENCE_TONE = { high: "success", medium: "warning", low: "muted", ambiguous: "info" };
+const SCHED_CONTINUATION_LABELS = { continues: "Продолжает", unconfirmed: "Не подтверждено", discontinued: "Прекратил(а)", ambiguous: "Неоднозначно" };
+const SCHED_CONTINUATION_TONE = { continues: "success", unconfirmed: "pending", discontinued: "danger", ambiguous: "warning" };
+const SCHED_MATCH_LABELS = {
+  preferred_match: "Прежний слот подходит", possible_match: "Возможно подходит",
+  branch_conflict: "Конфликт по филиалу", time_conflict: "Конфликт по времени",
+  start_date_conflict: "Конфликт по дате начала", no_availability: "Нет возможностей",
+  ambiguous_availability: "Неоднозначные данные", continuation_unconfirmed: "Ждём подтверждения",
+  discontinued: "Прекратил(а) обучение",
+};
+const SCHED_MATCH_TONE = {
+  preferred_match: "success", possible_match: "info", branch_conflict: "danger", time_conflict: "danger",
+  start_date_conflict: "danger", no_availability: "muted", ambiguous_availability: "warning",
+  continuation_unconfirmed: "pending", discontinued: "muted",
+};
+const SCHED_DRAFT_STATUS_LABELS = { draft: "Черновик", needs_review: "Требует проверки", ready: "Готово к проверке", archived: "Архив" };
+const SCHED_DRAFT_STATUS_TONE = { draft: "muted", needs_review: "warning", ready: "success", archived: "muted" };
+const SCHED_STAGE_LABELS = {
+  classes: "Получение групп", lesson_records: "Получение занятий",
+  grouping: "Восстановление слотов и состава", integrity: "Проверка целостности", done: "Активация",
+};
+
+function _schedFmtSlot(g) {
+  if (!g || !g.weekday || !g.start_time) return "Слот не определён";
+  const day = SCHED_WEEKDAY_NAMES_FULL[g.weekday] || "";
+  const dur = g.duration_minutes ? ` (${g.duration_minutes} мин)` : "";
+  return `${day}, ${g.start_time}${dur}`;
+}
+
+function _schedFmtDate(s) {
+  if (!s) return "—";
+  const [y, m, d] = String(s).slice(0, 10).split("-");
+  return (y && m && d) ? `${d}.${m}.${y}` : s;
+}
+
+// ── Entry point (tab activation) ──────────────────────────────────────
+function loadScheduleFoundation() {
+  const root = $("scheduleFoundationRoot");
+  if (!root) return;
+  _schedState.view = "overview";
+  _schedSetBackButton();
+  _schedRenderSkeleton(root);
+  _schedLoadStatus();
+}
+
+function _schedStopPolling() {
+  if (_schedState.pollTimer) { clearInterval(_schedState.pollTimer); _schedState.pollTimer = null; }
+}
+
+function _schedSetBackButton() {
+  if (_schedState.view === "overview") { _appSetBackButton(null); return; }
+  _appSetBackButton(_schedBackButtonHandler);
+}
+
+function _schedBackButtonHandler() {
+  if (_schedState.view === "draft-editor" && _schedState.editorDirty) {
+    uiConfirmSheet({
+      title: "Есть несохранённые изменения",
+      message: "Выйти без сохранения? Изменения будут потеряны.",
+      confirmLabel: "Выйти без сохранения", danger: true,
+      onConfirm: () => _schedGoToOverview(),
+    });
+    return;
+  }
+  _schedGoToOverview();
+}
+
+function _schedGoToOverview() {
+  _schedState.view = "overview";
+  _schedState.editorDirty = false;
+  _schedState.editorPending = {};
+  _schedSetBackButton();
+  const root = $("scheduleFoundationRoot");
+  if (root) _schedRenderSkeleton(root);
+  _schedLoadStatus();
+}
+
+// ── Top-level skeleton + subtabs ────────────────────────────────────────
+function _schedRenderSkeleton(root) {
+  const tabs = [
+    { id: "overview", label: "Обзор" },
+    { id: "groups", label: "Группы прошлого года" },
+    { id: "foundation", label: "Основа расписания" },
+    { id: "needs-review", label: "Требуют решения" },
+    { id: "no-availability", label: "Без возможностей" },
+    { id: "unconfirmed", label: "Не подтверждены" },
+    { id: "drafts", label: "Черновики" },
+  ];
+  root.innerHTML = `
+    <div class="sched-header">
+      <div>
+        <p class="sched-header__eyebrow">Yellow Club Agent</p>
+        <h2 class="sched-header__title">Расписание</h2>
+        <p class="sched-header__subtitle">Формирование основы нового учебного года</p>
+        <p class="sched-header__period">Период источника: 1 сентября 2025 — 31 мая 2026</p>
+      </div>
+      <div class="sched-header__actions">
+        <button class="ws-help-btn" id="schedHelpBtn" type="button" onclick="_schedOpenHelp()" aria-label="Пояснение">${WS_ICON_HELP}</button>
+        <button class="ws-refresh-btn" id="schedRefreshBtn" type="button" onclick="loadScheduleFoundation()" aria-label="Обновить">${WS_ICON_REFRESH}</button>
+      </div>
+    </div>
+    <div class="sched-sync-status" id="schedSyncStatusLine"></div>
+    <nav class="sched-subtabs" id="schedSubtabs">
+      ${tabs.map(t => `<button class="sched-subtab${_schedState.tab === t.id ? " active" : ""}" data-sched-tab="${t.id}" onclick="_schedActivateTab('${t.id}')">${escapeHtml(t.label)}</button>`).join("")}
+    </nav>
+    <div id="schedTabContent"></div>
+  `;
+}
+
+function _schedActivateTab(tabId) {
+  _schedState.tab = tabId;
+  document.querySelectorAll(".sched-subtab").forEach(b => b.classList.toggle("active", b.dataset.schedTab === tabId));
+  _schedRenderCurrentTab();
+}
+
+function _schedRenderCurrentTab() {
+  const root = $("schedTabContent");
+  if (!root) return;
+  if (_schedState.tab === "overview") _schedRenderOverview(root);
+  else if (_schedState.tab === "groups") { _schedRenderGroupsList(root); _schedLoadGroups(); }
+  else if (_schedState.tab === "foundation") { _schedRenderDraftsList(root, "ready"); _schedLoadDrafts("ready"); }
+  else if (_schedState.tab === "needs-review") { _schedRenderDraftsList(root, "needs-review"); _schedLoadDrafts("needs-review"); }
+  else if (_schedState.tab === "no-availability") { _schedRenderMembersList(root, "no_availability", "availability"); _schedLoadMembers("no_availability", "availability"); }
+  else if (_schedState.tab === "unconfirmed") { _schedRenderMembersList(root, "unconfirmed", "continuation"); _schedLoadMembers("unconfirmed", "continuation"); }
+  else if (_schedState.tab === "drafts") { _schedRenderDraftsList(root, "all"); _schedLoadDrafts("all"); }
+}
+
+function _schedOpenHelp() {
+  uiConfirmSheet({
+    title: "Как читать раздел «Расписание»",
+    message: "Раздел восстанавливает прошлогодние группы и занятия из МойКласс (только чтение), определяет, кто из детей продолжает обучение, сопоставляет прежнее время занятий с возможностями родителей и формирует локальные черновики расписания нового учебного года. В МойКласс ничего не записывается, уведомления клиентам не отправляются.",
+    confirmLabel: "Понятно", cancelLabel: "Закрыть",
+    onConfirm: () => {},
+  });
+}
+
+// ── Status + overview ────────────────────────────────────────────────
+async function _schedLoadStatus() {
+  _schedState.statusLoading = true;
+  _schedState.statusError = null;
+  const myToken = ++_schedState.reqToken;
+  try {
+    const d = await apiGet("/api/schedule/status");
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.status = d;
+    _schedState.statusLoading = false;
+    _schedRenderSyncStatusLine();
+    _schedRenderCurrentTab();
+    if (d.runningSnapshot) _schedStartPolling(d.runningSnapshot.id);
+    else _schedStopPolling();
+    if (d.activeSnapshot) _schedLoadStats();
+  } catch (e) {
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.statusLoading = false;
+    _schedState.statusError = e.message || String(e);
+    _schedRenderCurrentTab();
+  }
+}
+
+async function _schedLoadStats() {
+  const myToken = _schedState.reqToken;
+  _schedState.statsLoading = true;
+  try {
+    const d = await apiGet("/api/schedule/stats");
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.stats = d.stats;
+    _schedState.statsLoading = false;
+    if (_schedState.tab === "overview") _schedRenderCurrentTab();
+  } catch (e) {
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.statsLoading = false;
+  }
+}
+
+function _schedRenderSyncStatusLine() {
+  const el = $("schedSyncStatusLine");
+  if (!el || !_schedState.status) return;
+  const s = _schedState.status;
+  const active = s.activeSnapshot;
+  if (s.runningSnapshot) {
+    el.innerHTML = `<span class="sched-sync-badge sched-sync-badge--running">Синхронизация выполняется…</span>`;
+  } else if (active) {
+    el.innerHTML = `<span class="sched-sync-badge">Последняя синхронизация: ${escapeHtml(_schedFmtDate(active.completed_at))}</span>`;
+  } else {
+    el.innerHTML = `<span class="sched-sync-badge sched-sync-badge--muted">Синхронизация ещё не выполнялась</span>`;
+  }
+}
+
+function _schedStartPolling(snapshotId) {
+  _schedStopPolling();
+  _schedState.pollTimer = setInterval(() => _schedPollProgress(snapshotId), 2500);
+  _schedPollProgress(snapshotId);
+}
+
+async function _schedPollProgress(snapshotId) {
+  if (_schedState.tab !== "overview" && _schedState.view === "overview") { /* still poll, just render on overview */ }
+  try {
+    const d = await apiGet(`/api/schedule/sync/progress?snapshot_id=${encodeURIComponent(snapshotId)}`);
+    _schedState.status = _schedState.status || {};
+    if (d.snapshot.status === "running") {
+      _schedState.status.runningSnapshot = d.snapshot;
+      _schedState.statusStageLabel = d.stageLabel;
+      _schedState.statusErrors = d.errors;
+      if (_schedState.tab === "overview" && _schedState.view === "overview") _schedRenderCurrentTab();
+    } else {
+      _schedStopPolling();
+      _schedState.status.runningSnapshot = null;
+      await _schedLoadStatus();
+    }
+  } catch (e) {
+    _schedStopPolling();
+  }
+}
+
+function _schedRenderOverview(root) {
+  const s = _schedState.status;
+  if (_schedState.statusLoading && !s) { root.innerHTML = uiLoadingRows(4); return; }
+  if (_schedState.statusError) {
+    root.innerHTML = uiErrorState(`Не удалось загрузить раздел: ${escapeHtml(_schedState.statusError)}`, "_schedLoadStatus()");
+    return;
+  }
+  if (!s || !s.ok) {
+    root.innerHTML = uiErrorState((s && s.error) || "Раздел недоступен.", "_schedLoadStatus()");
+    return;
+  }
+
+  // Sync running — progress view
+  if (s.runningSnapshot) {
+    root.innerHTML = _schedSyncProgressHtml(s.runningSnapshot, _schedState.statusStageLabel, _schedState.statusErrors);
+    return;
+  }
+
+  // No snapshot at all yet
+  if (!s.activeSnapshot && (!s.recentSnapshots || !s.recentSnapshots.length)) {
+    const canSync = s.syncEnabled;
+    root.innerHTML = uiEmptyState(
+      "🗓", "Синхронизация ещё не выполнялась",
+      canSync
+        ? "Запустите синхронизацию, чтобы получить прошлогодние группы и занятия из МойКласс (только чтение)."
+        : "Синхронизация с МойКласс сейчас выключена настройками.",
+    ) + (canSync ? `<div class="sched-cta-row"><button class="primary" onclick="_schedStartSync()">Начать синхронизацию</button></div>` : "");
+    return;
+  }
+
+  // Latest attempt failed/partial and there's no usable active snapshot
+  const latest = (s.recentSnapshots && s.recentSnapshots[0]) || null;
+  if (!s.activeSnapshot && latest && (latest.status === "failed" || latest.status === "partial")) {
+    root.innerHTML = uiErrorState(
+      !s.moyklassConfigured
+        ? "МойКласс недоступен: не настроен API-ключ."
+        : "Последняя синхронизация завершилась с ошибкой, годного snapshot ещё нет.",
+      latest.resumable ? `_schedStartSync(${latest.id})` : "_schedStartSync()",
+    );
+    return;
+  }
+
+  const active = s.activeSnapshot;
+  const stats = _schedState.stats;
+  let html = "";
+
+  if (latest && latest.id !== active.id && (latest.status === "failed" || latest.status === "partial")) {
+    html += `<div class="sched-warning-banner">Последняя попытка синхронизации (${escapeHtml(_schedFmtDate(latest.started_at))}) завершилась с ошибками и не была применена — используются данные предыдущей успешной синхронизации.
+      ${latest.resumable ? `<button class="sched-linklike" onclick="_schedStartSync(${latest.id})">Повторить</button>` : ""}</div>`;
+  }
+
+  if (!stats) {
+    html += uiLoadingRows(3);
+  } else if (stats.groups_count === 0) {
+    html += uiEmptyState("📭", "Группы не найдены", "Синхронизация завершилась успешно, но подходящих групп за указанный период не найдено.");
+  } else {
+    html += _schedStatGridHtml(stats);
+    if (stats.drafts_count === 0 && s.mutationsEnabled) {
+      html += `<div class="sched-cta-row"><button class="primary" ${_schedState.foundationGenerating ? "disabled" : ""} onclick="_schedConfirmGenerateFoundation()">${_schedState.foundationGenerating ? "Создаём…" : "Создать основу из прошлого года"}</button></div>`;
+    } else if (stats.drafts_count === 0 && !s.mutationsEnabled) {
+      html += uiInlineNotice("Редактирование черновиков выключено настройками — данные доступны только для просмотра.", "info");
+    }
+  }
+  root.innerHTML = html;
+}
+
+function _schedStatGridHtml(st) {
+  const cards = [
+    ["Групп прошлого года", st.groups_count],
+    ["Детей в источнике", st.students_count],
+    ["Продолжают обучение", st.continues_count],
+    ["Продолжение не подтверждено", st.unconfirmed_count],
+    ["Прекратили обучение", st.discontinued_count],
+    ["Заполнили возможности", st.filled_availability_count],
+    ["Не заполнили возможности", st.not_filled_availability_count],
+    ["Прежний слот подходит", st.preferred_or_possible_match_count],
+    ["Возможны с оговорками", st.possible_with_caveats_count],
+    ["Конфликты", st.conflict_count],
+    ["Неоднозначные данные", st.ambiguous_confidence_groups_count],
+    ["Локальные черновики", st.drafts_count],
+    ["Готовы к проверке", st.drafts_ready_count],
+  ];
+  return `<div class="sched-stat-grid">${cards.map(([label, value]) => `
+    <div class="sched-stat-card">
+      <p class="sched-stat-card__value">${escapeHtml(String(value ?? 0))}</p>
+      <p class="sched-stat-card__label">${escapeHtml(label)}</p>
+    </div>`).join("")}</div>`;
+}
+
+function _schedSyncProgressHtml(snap, stageLabel, errors) {
+  const label = stageLabel || SCHED_STAGE_LABELS[snap.stage] || snap.stage || "Выполняется";
+  return `
+    <div class="sched-sync-progress">
+      <p class="sched-sync-progress__stage">${escapeHtml(label)}…</p>
+      <div class="sched-sync-counters">
+        <div><span>${snap.groups_found || 0}</span><label>групп найдено</label></div>
+        <div><span>${snap.groups_processed || 0}</span><label>групп обработано</label></div>
+        <div><span>${snap.lessons_fetched || 0}</span><label>занятий загружено</label></div>
+        <div><span>${snap.students_found || 0}</span><label>учеников найдено</label></div>
+        <div><span>${snap.errors_count || 0}</span><label>ошибок</label></div>
+      </div>
+      <p class="sched-sync-progress__meta">Начало: ${escapeHtml(_schedFmtDate(snap.started_at))} · последняя активность: ${escapeHtml(_schedFmtDate(snap.last_activity_at))}</p>
+      ${errors && errors.length ? `<div class="sched-sync-errors">${errors.slice(0, 5).map(er => `<p>${escapeHtml(er.message || er.error_code || "")}</p>`).join("")}</div>` : ""}
+    </div>`;
+}
+
+async function _schedStartSync(resumeSnapshotId) {
+  if (_schedState.status && _schedState.status.runningSnapshot) return;
+  try {
+    const d = await apiPost("/api/schedule/sync/start", resumeSnapshotId ? { resume_snapshot_id: resumeSnapshotId } : {});
+    await _schedLoadStatus();
+    if (d.snapshot) _schedStartPolling(d.snapshot.id);
+  } catch (e) {
+    setNotice(`Не удалось запустить синхронизацию: ${e.message}`, "error");
+  }
+}
+
+function _schedConfirmGenerateFoundation() {
+  const stats = _schedState.stats || {};
+  uiConfirmSheet({
+    title: "Создать основу из прошлого года",
+    message: `Будет обработано групп: ${stats.groups_count || 0}, детей: ${stats.students_count || 0}.\nВ МойКласс ничего не будет записано.\nУведомления клиентам не отправляются.\nПовторное нажатие не создаст дубли — уже существующие черновики останутся без изменений.`,
+    confirmLabel: "Создать основу",
+    onConfirm: async () => {
+      _schedState.foundationGenerating = true;
+      try {
+        await apiPost("/api/schedule/foundation/generate", {});
+        _schedState.foundationGenerating = false;
+        await _schedLoadStats();
+        _schedRenderCurrentTab();
+        setNotice("Основа расписания создана.", "success");
+      } catch (e) {
+        _schedState.foundationGenerating = false;
+        setNotice(`Не удалось создать основу: ${e.message}`, "error");
+      }
+    },
+  });
+}
+
+// ── Groups list ──────────────────────────────────────────────────────
+function _schedRenderGroupsList(root) {
+  const f = _schedState.groupsFilter;
+  root.innerHTML = `
+    <div class="sched-filter-bar">
+      <input type="text" class="sched-search-input" placeholder="Поиск по названию группы" value="${escapeHtml(f.search)}" oninput="_schedGroupsFilterChange('search', this.value)" />
+      <select onchange="_schedGroupsFilterChange('confidence', this.value)">
+        <option value="">Уверенность: все</option>
+        <option value="high" ${f.confidence === "high" ? "selected" : ""}>Высокая</option>
+        <option value="medium" ${f.confidence === "medium" ? "selected" : ""}>Средняя</option>
+        <option value="low" ${f.confidence === "low" ? "selected" : ""}>Низкая</option>
+        <option value="ambiguous" ${f.confidence === "ambiguous" ? "selected" : ""}>Неоднозначно</option>
+      </select>
+      <select onchange="_schedGroupsFilterChange('weekday', this.value)">
+        <option value="">День: все</option>
+        ${Object.entries(SCHED_WEEKDAY_NAMES_FULL).map(([n, name]) => `<option value="${n}" ${String(f.weekday) === n ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
+      </select>
+    </div>
+    <div id="schedGroupsListBody"></div>
+  `;
+  _schedRenderGroupsListBody();
+}
+
+function _schedGroupsFilterChange(key, value) {
+  _schedState.groupsFilter[key] = value;
+  _schedLoadGroups();
+}
+
+function _schedRenderGroupsListBody() {
+  const el = $("schedGroupsListBody");
+  if (!el) return;
+  if (_schedState.groupsLoading && !_schedState.groups) { el.innerHTML = uiLoadingRows(4); return; }
+  if (_schedState.groupsError) { el.innerHTML = uiErrorState(_schedState.groupsError, "_schedLoadGroups()"); return; }
+  const groups = _schedState.groups || [];
+  if (!groups.length) { el.innerHTML = uiEmptyState("📭", "Группы не найдены", "Измените фильтры или запустите синхронизацию."); return; }
+  el.innerHTML = `<div class="sched-group-list">${groups.map(_schedGroupCardHtml).join("")}</div>`;
+}
+
+function _schedGroupCardHtml(g) {
+  const tone = SCHED_CONFIDENCE_TONE[g.confidence] || "muted";
+  return `
+    <div class="sched-group-card">
+      <div class="sched-group-card__header">
+        <h3>${escapeHtml(g.name || `Группа ${g.mk_class_id}`)}</h3>
+        ${uiStatusBadge(SCHED_CONFIDENCE_LABELS[g.confidence] || g.confidence, tone)}
+      </div>
+      <p class="sched-group-card__meta">${escapeHtml(g.course_name || "")} ${g.branch_name ? "· " + escapeHtml(g.branch_name) : ""} ${g.teacher_name ? "· " + escapeHtml(g.teacher_name) : ""}</p>
+      <p class="sched-group-card__slot">${escapeHtml(_schedFmtSlot(g))}</p>
+      <p class="sched-group-card__reason">${escapeHtml(g.confidence_reason || "")}</p>
+      <div class="sched-group-card__stats">
+        <span>Занятий: ${g.lessons_count || 0}</span>
+        <span>Детей: ${g.students_count || 0}</span>
+        <span>${escapeHtml(_schedFmtDate(g.first_lesson_date))} — ${escapeHtml(_schedFmtDate(g.last_lesson_date))}</span>
+      </div>
+      <div class="sched-group-card__actions">
+        <button class="secondary" onclick="_schedOpenGroupDetail(${g.id})">Открыть группу</button>
+      </div>
+      <p class="sched-group-card__tech">ID МойКласс: ${escapeHtml(g.mk_class_id)}</p>
+    </div>`;
+}
+
+async function _schedLoadGroups() {
+  const el = $("schedGroupsListBody");
+  _schedState.groupsLoading = true;
+  _schedState.groupsError = null;
+  if (el) _schedRenderGroupsListBody();
+  const myToken = _schedState.reqToken;
+  const f = _schedState.groupsFilter;
+  const qp = new URLSearchParams();
+  if (f.branch) qp.set("branch", f.branch);
+  if (f.confidence) qp.set("confidence", f.confidence);
+  if (f.weekday) qp.set("weekday", f.weekday);
+  if (f.search) qp.set("search", f.search);
+  qp.set("limit", "100");
+  try {
+    const d = await apiGet(`/api/schedule/groups?${qp.toString()}`);
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.groups = d.groups || [];
+    _schedState.groupsTotal = d.total || 0;
+    _schedState.groupsLoading = false;
+    _schedRenderGroupsListBody();
+  } catch (e) {
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.groupsLoading = false;
+    _schedState.groupsError = e.message || String(e);
+    _schedRenderGroupsListBody();
+  }
+}
+
+// ── Group detail ─────────────────────────────────────────────────────
+function _schedOpenGroupDetail(groupId) {
+  _schedState.view = "group-detail";
+  _schedState.currentGroupId = groupId;
+  _schedState.currentGroup = null;
+  _schedState.groupStudentFilter = { continuation: "", availability: "", search: "" };
+  _schedSetBackButton();
+  const root = $("scheduleFoundationRoot");
+  root.innerHTML = `<div id="schedGroupDetailRoot">${uiLoadingRows(4)}</div>`;
+  _schedLoadGroupDetail(groupId);
+}
+
+async function _schedLoadGroupDetail(groupId) {
+  _schedState.currentGroupLoading = true;
+  _schedState.currentGroupError = null;
+  const myToken = _schedState.reqToken;
+  const f = _schedState.groupStudentFilter;
+  const qp = new URLSearchParams();
+  if (f.continuation) qp.set("continuation", f.continuation);
+  if (f.availability) qp.set("availability", f.availability);
+  if (f.search) qp.set("search", f.search);
+  try {
+    const d = await apiGet(`/api/schedule/groups/${groupId}?${qp.toString()}`);
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.currentGroup = d;
+    _schedState.currentGroupLoading = false;
+    _schedRenderGroupDetail();
+  } catch (e) {
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.currentGroupLoading = false;
+    _schedState.currentGroupError = e.message || String(e);
+    _schedRenderGroupDetail();
+  }
+}
+
+function _schedRenderGroupDetail() {
+  const root = $("schedGroupDetailRoot");
+  if (!root) return;
+  if (_schedState.currentGroupLoading && !_schedState.currentGroup) { root.innerHTML = uiLoadingRows(4); return; }
+  if (_schedState.currentGroupError) { root.innerHTML = uiErrorState(_schedState.currentGroupError, `_schedLoadGroupDetail(${_schedState.currentGroupId})`); return; }
+  const d = _schedState.currentGroup;
+  if (!d || !d.ok) { root.innerHTML = uiErrorState((d && d.error) || "Группа не найдена.", null); return; }
+  const g = d.group;
+  const f = _schedState.groupStudentFilter;
+  root.innerHTML = `
+    <div class="sched-detail-header">
+      <button class="sched-linklike" onclick="_schedGoToOverview()">← К группам</button>
+      <h2>${escapeHtml(g.name || `Группа ${g.mk_class_id}`)}</h2>
+      <p class="sched-group-card__meta">${escapeHtml(g.course_name || "")} ${g.branch_name ? "· " + escapeHtml(g.branch_name) : ""} ${g.teacher_name ? "· " + escapeHtml(g.teacher_name) : ""}</p>
+      <p class="sched-group-card__slot">${escapeHtml(_schedFmtSlot(g))} ${uiStatusBadge(SCHED_CONFIDENCE_LABELS[g.confidence] || g.confidence, SCHED_CONFIDENCE_TONE[g.confidence] || "muted")}</p>
+      <p class="sched-group-card__reason">${escapeHtml(g.confidence_reason || "")}</p>
+      <p class="sched-group-card__tech">ID МойКласс: ${escapeHtml(g.mk_class_id)}${g.is_closed ? " · группа отсутствует в текущем списке МойКласс" : ""}</p>
+      ${d.linkedDraft ? `<div class="sched-cta-row"><button class="secondary" onclick="_schedOpenDraftEditor(${d.linkedDraft.id})">Открыть черновик</button></div>` : ""}
+    </div>
+    <div class="sched-filter-bar">
+      <input type="text" class="sched-search-input" placeholder="Поиск ребёнка" value="${escapeHtml(f.search)}" oninput="_schedGroupStudentFilterChange('search', this.value)" />
+      <select onchange="_schedGroupStudentFilterChange('continuation', this.value)">
+        <option value="">Продолжение: все</option>
+        ${Object.entries(SCHED_CONTINUATION_LABELS).map(([k, l]) => `<option value="${k}" ${f.continuation === k ? "selected" : ""}>${escapeHtml(l)}</option>`).join("")}
+      </select>
+      <select onchange="_schedGroupStudentFilterChange('availability', this.value)">
+        <option value="">Возможности: все</option>
+        ${Object.entries(SCHED_MATCH_LABELS).map(([k, l]) => `<option value="${k}" ${f.availability === k ? "selected" : ""}>${escapeHtml(l)}</option>`).join("")}
+      </select>
+    </div>
+    <div class="sched-student-list">
+      ${d.students.length ? d.students.map(s => `
+        <div class="sched-member-row">
+          <div>
+            <p class="sched-member-row__name">${escapeHtml(s.child_display_name || `ID ${s.mk_user_id}`)}</p>
+            <p class="sched-member-row__tech">mk_user_id: ${escapeHtml(s.mk_user_id)} · занятий: ${s.lessons_attended || 0}</p>
+          </div>
+          <div class="sched-member-row__badges">
+            ${uiStatusBadge(SCHED_CONTINUATION_LABELS[s.continuation_status] || s.continuation_status, SCHED_CONTINUATION_TONE[s.continuation_status] || "muted")}
+            ${uiStatusBadge(SCHED_MATCH_LABELS[s.availability_match] || s.availability_match, SCHED_MATCH_TONE[s.availability_match] || "muted")}
+          </div>
+        </div>`).join("") : uiEmptyState("👥", "Нет учеников", "По выбранным фильтрам ученики не найдены.")}
+    </div>
+  `;
+}
+
+function _schedGroupStudentFilterChange(key, value) {
+  _schedState.groupStudentFilter[key] = value;
+  _schedLoadGroupDetail(_schedState.currentGroupId);
+}
+
+// ── Drafts list ("Основа расписания" / "Требуют решения" / "Черновики") ─
+function _schedRenderDraftsList(root, mode) {
+  const titles = { ready: "Основа расписания (готово к проверке)", "needs-review": "Требуют решения", all: "Черновики" };
+  root.innerHTML = `<p class="sched-list-title">${escapeHtml(titles[mode] || "")}</p><div id="schedDraftsListBody"></div>`;
+  _schedRenderDraftsListBody(mode);
+}
+
+function _schedRenderDraftsListBody(mode) {
+  const el = $("schedDraftsListBody");
+  if (!el) return;
+  if (_schedState.draftsLoading && !_schedState.drafts) { el.innerHTML = uiLoadingRows(3); return; }
+  if (_schedState.draftsError) { el.innerHTML = uiErrorState(_schedState.draftsError, `_schedLoadDrafts('${mode}')`); return; }
+  const drafts = _schedState.drafts || [];
+  if (!drafts.length) { el.innerHTML = uiEmptyState("🗂", "Черновиков нет", "Черновики появятся после создания основы из прошлого года."); return; }
+  el.innerHTML = `<div class="sched-group-list">${drafts.map(dr => `
+    <div class="sched-group-card">
+      <div class="sched-group-card__header">
+        <h3>${escapeHtml(dr.name || `Черновик #${dr.id}`)}</h3>
+        ${uiStatusBadge(SCHED_DRAFT_STATUS_LABELS[dr.status] || dr.status, SCHED_DRAFT_STATUS_TONE[dr.status] || "muted")}
+      </div>
+      <p class="sched-group-card__meta">${escapeHtml(dr.course_name || "")} ${dr.branch_name ? "· " + escapeHtml(dr.branch_name) : ""} ${dr.teacher_name ? "· " + escapeHtml(dr.teacher_name) : ""}</p>
+      <p class="sched-group-card__slot">${escapeHtml(_schedFmtSlot(dr))}</p>
+      <div class="sched-group-card__actions">
+        <button class="secondary" onclick="_schedOpenDraftEditor(${dr.id})">Открыть черновик</button>
+      </div>
+    </div>`).join("")}</div>`;
+}
+
+async function _schedLoadDrafts(mode) {
+  _schedState.draftsLoading = true;
+  _schedState.draftsError = null;
+  const myToken = _schedState.reqToken;
+  const qp = new URLSearchParams({ limit: "100" });
+  if (mode === "ready") qp.set("status", "ready");
+  if (mode === "needs-review") qp.set("status", "needs_review");
+  try {
+    const d = await apiGet(`/api/schedule/drafts?${qp.toString()}`);
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.drafts = d.drafts || [];
+    _schedState.draftsTotal = d.total || 0;
+    _schedState.draftsLoading = false;
+    _schedRenderDraftsListBody(mode);
+  } catch (e) {
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.draftsLoading = false;
+    _schedState.draftsError = e.message || String(e);
+    _schedRenderDraftsListBody(mode);
+  }
+}
+
+// ── Cross-draft member lists ("Без возможностей" / "Не подтверждены") ──
+function _schedRenderMembersList(root, value, kind) {
+  const titles = { availability: "Без возможностей", continuation: "Не подтверждены" };
+  root.innerHTML = `<p class="sched-list-title">${escapeHtml(titles[kind] || "")}</p><div id="schedMembersListBody"></div>`;
+  _schedRenderMembersListBody();
+}
+
+function _schedRenderMembersListBody() {
+  const el = $("schedMembersListBody");
+  if (!el) return;
+  if (_schedState.membersLoading && !_schedState.members) { el.innerHTML = uiLoadingRows(3); return; }
+  if (_schedState.membersError) { el.innerHTML = uiErrorState(_schedState.membersError, null); return; }
+  const members = _schedState.members || [];
+  if (!members.length) { el.innerHTML = uiEmptyState("✅", "Ничего не найдено", "По этому фильтру записей нет."); return; }
+  el.innerHTML = `<div class="sched-student-list">${members.map(m => `
+    <div class="sched-member-row">
+      <div>
+        <p class="sched-member-row__name">${escapeHtml(m.child_display_name || `ID ${m.mk_user_id}`)}</p>
+        <p class="sched-member-row__tech">mk_user_id: ${escapeHtml(m.mk_user_id)} · черновик: ${escapeHtml(m.draft_name || "")}</p>
+      </div>
+      <div class="sched-member-row__badges">
+        ${uiStatusBadge(SCHED_CONTINUATION_LABELS[m.continuation_status] || m.continuation_status, SCHED_CONTINUATION_TONE[m.continuation_status] || "muted")}
+        ${uiStatusBadge(SCHED_MATCH_LABELS[m.availability_match] || m.availability_match, SCHED_MATCH_TONE[m.availability_match] || "muted")}
+      </div>
+      <button class="secondary" onclick="_schedOpenDraftEditor(${m.draft_id})">Открыть черновик</button>
+    </div>`).join("")}</div>`;
+}
+
+async function _schedLoadMembers(value, kind) {
+  _schedState.membersLoading = true;
+  _schedState.membersError = null;
+  const myToken = _schedState.reqToken;
+  const qp = new URLSearchParams({ limit: "100" });
+  qp.set(kind, value);
+  try {
+    const d = await apiGet(`/api/schedule/members?${qp.toString()}`);
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.members = d.members || [];
+    _schedState.membersTotal = d.total || 0;
+    _schedState.membersLoading = false;
+    _schedRenderMembersListBody();
+  } catch (e) {
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.membersLoading = false;
+    _schedState.membersError = e.message || String(e);
+    _schedRenderMembersListBody();
+  }
+}
+
+// ── Draft editor ─────────────────────────────────────────────────────
+function _schedOpenDraftEditor(draftId) {
+  _schedState.view = "draft-editor";
+  _schedState.currentDraftId = draftId;
+  _schedState.currentDraft = null;
+  _schedState.editorDirty = false;
+  _schedState.editorPending = {};
+  _schedState.editorVersionConflict = false;
+  _schedSetBackButton();
+  const root = $("scheduleFoundationRoot");
+  root.innerHTML = `<div id="schedEditorRoot">${uiLoadingRows(4)}</div>`;
+  _schedLoadDraftDetail(draftId);
+}
+
+async function _schedLoadDraftDetail(draftId) {
+  _schedState.currentDraftLoading = true;
+  _schedState.currentDraftError = null;
+  const myToken = _schedState.reqToken;
+  try {
+    const d = await apiGet(`/api/schedule/drafts/${draftId}`);
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.currentDraft = d.draft;
+    _schedState.currentDraftMembers = d.members || [];
+    _schedState.currentDraftConflicts = d.conflicts;
+    _schedState.currentDraftAudit = d.audit || [];
+    _schedState.currentDraftSourceGroup = d.sourceGroup;
+    _schedState.currentDraftLoading = false;
+    _schedState.editorDirty = false;
+    _schedState.editorPending = {};
+    _schedRenderDraftEditor();
+  } catch (e) {
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.currentDraftLoading = false;
+    _schedState.currentDraftError = e.message || String(e);
+    _schedRenderDraftEditor();
+  }
+}
+
+function _schedRenderDraftEditor() {
+  const root = $("schedEditorRoot");
+  if (!root) return;
+  if (_schedState.currentDraftLoading && !_schedState.currentDraft) { root.innerHTML = uiLoadingRows(4); return; }
+  if (_schedState.currentDraftError) { root.innerHTML = uiErrorState(_schedState.currentDraftError, `_schedLoadDraftDetail(${_schedState.currentDraftId})`); return; }
+  const dr = _schedState.currentDraft;
+  if (!dr) { root.innerHTML = uiErrorState("Черновик не найден.", null); return; }
+  const p = _schedState.editorPending;
+  const val = (k) => (p[k] !== undefined ? p[k] : dr[k]);
+  const mutationsEnabled = !!(_schedState.status && _schedState.status.mutationsEnabled);
+  const conflicts = _schedState.currentDraftConflicts || { child_conflicts: [], teacher_conflict_drafts: [] };
+  const hasConflicts = conflicts.child_conflicts.length || conflicts.teacher_conflict_drafts.length;
+  const archived = dr.status === "archived";
+
+  root.innerHTML = `
+    <div class="sched-detail-header">
+      <button class="sched-linklike" onclick="_schedBackButtonHandler()">← Назад</button>
+      <h2>${escapeHtml(dr.name || `Черновик #${dr.id}`)} ${uiStatusBadge(SCHED_DRAFT_STATUS_LABELS[dr.status] || dr.status, SCHED_DRAFT_STATUS_TONE[dr.status] || "muted")}</h2>
+      ${_schedState.editorVersionConflict ? uiInlineNotice("Черновик изменён другим сотрудником. Обновите данные перед повторным сохранением.", "warning") : ""}
+      ${_schedState.editorDirty ? uiInlineNotice("Есть несохранённые изменения.", "info") : ""}
+    </div>
+    ${hasConflicts ? `<div class="sched-conflict-banner">
+      ${conflicts.child_conflicts.length ? `<p>Пересечение по ребёнку: ${conflicts.child_conflicts.map(c => escapeHtml(c.child_display_name || c.mk_user_id) + ` (черновик «${escapeHtml(c.other_draft_name || "")}»)`).join(", ")}</p>` : ""}
+      ${conflicts.teacher_conflict_drafts.length ? `<p>Пересечение по преподавателю с: ${conflicts.teacher_conflict_drafts.map(c => escapeHtml(c.other_draft_name || "")).join(", ")}</p>` : ""}
+    </div>` : ""}
+    <div class="sched-editor">
+      <label class="sched-editor-field">Название
+        <input type="text" ${archived || !mutationsEnabled ? "disabled" : ""} value="${escapeHtml(val("name") || "")}" onchange="_schedEditorFieldChange('name', this.value)" />
+      </label>
+      <label class="sched-editor-field">Филиал
+        <input type="text" ${archived || !mutationsEnabled ? "disabled" : ""} value="${escapeHtml(val("branch_name") || "")}" onchange="_schedEditorFieldChange('branch_name', this.value)" />
+      </label>
+      <label class="sched-editor-field">Преподаватель
+        <input type="text" ${archived || !mutationsEnabled ? "disabled" : ""} value="${escapeHtml(val("teacher_name") || "")}" onchange="_schedEditorFieldChange('teacher_name', this.value)" />
+      </label>
+      <label class="sched-editor-field">День недели
+        <select ${archived || !mutationsEnabled ? "disabled" : ""} onchange="_schedEditorFieldChange('weekday', this.value)">
+          <option value="">—</option>
+          ${Object.entries(SCHED_WEEKDAY_NAMES_FULL).map(([n, name]) => `<option value="${n}" ${String(val("weekday")) === n ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="sched-editor-field">Время начала (ЧЧ:ММ)
+        <input type="text" placeholder="17:00" ${archived || !mutationsEnabled ? "disabled" : ""} value="${escapeHtml(val("start_time") || "")}" onchange="_schedEditorFieldChange('start_time', this.value)" />
+      </label>
+      <label class="sched-editor-field">Длительность (мин)
+        <input type="number" min="1" ${archived || !mutationsEnabled ? "disabled" : ""} value="${escapeHtml(val("duration_minutes") || "")}" onchange="_schedEditorFieldChange('duration_minutes', this.value)" />
+      </label>
+      <label class="sched-editor-field">Предполагаемая дата начала
+        <input type="date" ${archived || !mutationsEnabled ? "disabled" : ""} value="${escapeHtml(val("planned_start_date") || "")}" onchange="_schedEditorFieldChange('planned_start_date', this.value)" />
+      </label>
+    </div>
+    <div class="sched-editor-actions">
+      <button class="primary" ${archived || !mutationsEnabled || !_schedState.editorDirty || _schedState.editorSaving ? "disabled" : ""} onclick="_schedSaveDraftFields()">${_schedState.editorSaving ? "Сохраняем…" : "Сохранить"}</button>
+      ${!archived && mutationsEnabled ? `
+        ${dr.status !== "ready" ? `<button class="secondary" onclick="_schedSetDraftStatus('needs_review')">Требует проверки</button>` : ""}
+        ${dr.status !== "ready" ? `<button class="secondary" onclick="_schedSetDraftStatus('ready')">Готово к проверке</button>` : `<button class="secondary" onclick="_schedSetDraftStatus('needs_review')">Вернуть на проверку</button>`}
+        <button class="danger" onclick="_schedConfirmArchiveDraft()">Архивировать</button>
+      ` : ""}
+    </div>
+    <p class="sched-list-title">Участники (${_schedState.currentDraftMembers.filter(m => !m.manually_excluded).length})</p>
+    <div class="sched-student-list">
+      ${_schedState.currentDraftMembers.map(m => `
+        <div class="sched-member-row${m.manually_excluded ? " sched-member-row--excluded" : ""}">
+          <div>
+            <p class="sched-member-row__name">${escapeHtml(m.child_display_name || `ID ${m.mk_user_id}`)}</p>
+            <p class="sched-member-row__tech">mk_user_id: ${escapeHtml(m.mk_user_id)}${m.internal_note ? " · " + escapeHtml(m.internal_note) : ""}</p>
+          </div>
+          <div class="sched-member-row__badges">
+            ${uiStatusBadge(SCHED_CONTINUATION_LABELS[m.continuation_status] || m.continuation_status, SCHED_CONTINUATION_TONE[m.continuation_status] || "muted")}
+            ${uiStatusBadge(SCHED_MATCH_LABELS[m.availability_match] || m.availability_match, SCHED_MATCH_TONE[m.availability_match] || "muted")}
+          </div>
+          ${!archived && mutationsEnabled ? `
+            <div class="sched-member-row__actions">
+              ${m.manually_excluded
+                ? `<button class="secondary" onclick="_schedIncludeMember('${escapeHtml(m.mk_user_id)}')">Включить</button>`
+                : `<button class="secondary" onclick="_schedExcludeMember('${escapeHtml(m.mk_user_id)}')">Исключить</button>`}
+              <button class="sched-linklike" onclick="_schedEditMemberNote('${escapeHtml(m.mk_user_id)}', '${escapeHtml(m.internal_note || "")}')">Комментарий</button>
+            </div>` : ""}
+        </div>`).join("")}
+    </div>
+    <p class="sched-list-title">История изменений</p>
+    <div class="sched-audit-list">
+      ${_schedState.currentDraftAudit.length ? _schedState.currentDraftAudit.map(a => `
+        <p class="sched-audit-row">${escapeHtml(_schedFmtDate(a.occurred_at))} · ${escapeHtml(a.actor_name || "—")} · ${escapeHtml(a.action)}${a.field ? ` (${escapeHtml(a.field)})` : ""}</p>
+      `).join("") : `<p class="sched-audit-row">Пока нет изменений.</p>`}
+    </div>
+  `;
+}
+
+function _schedEditorFieldChange(field, value) {
+  _schedState.editorPending[field] = value === "" ? null : (["weekday", "duration_minutes"].includes(field) ? Number(value) : value);
+  _schedState.editorDirty = true;
+  _schedRenderDraftEditor();
+}
+
+async function _schedSaveDraftFields() {
+  const dr = _schedState.currentDraft;
+  if (!dr || _schedState.editorSaving) return;
+  _schedState.editorSaving = true;
+  _schedRenderDraftEditor();
+  try {
+    const d = await apiPost(`/api/schedule/drafts/${dr.id}/update`, { expected_version: dr.version, changes: _schedState.editorPending });
+    if (!d.ok) {
+      if (d.reason_code === "version_conflict") { _schedState.editorVersionConflict = true; _schedState.editorSaving = false; _schedRenderDraftEditor(); return; }
+      throw new Error(d.error || "Ошибка сохранения");
+    }
+    _schedState.editorSaving = false;
+    await _schedLoadDraftDetail(dr.id);
+    setNotice("Черновик сохранён.", "success");
+  } catch (e) {
+    _schedState.editorSaving = false;
+    setNotice(`Не удалось сохранить: ${e.message}`, "error");
+    _schedRenderDraftEditor();
+  }
+}
+
+async function _schedSetDraftStatus(newStatus) {
+  const dr = _schedState.currentDraft;
+  if (!dr) return;
+  try {
+    const d = await apiPost(`/api/schedule/drafts/${dr.id}/status`, { expected_version: dr.version, status: newStatus });
+    if (!d.ok) {
+      if (d.reason_code === "version_conflict") { _schedState.editorVersionConflict = true; _schedRenderDraftEditor(); return; }
+      throw new Error(d.error || "Ошибка");
+    }
+    await _schedLoadDraftDetail(dr.id);
+  } catch (e) {
+    setNotice(`Не удалось изменить статус: ${e.message}`, "error");
+  }
+}
+
+function _schedConfirmArchiveDraft() {
+  const dr = _schedState.currentDraft;
+  if (!dr) return;
+  uiConfirmSheet({
+    title: "Архивировать черновик?",
+    message: "Черновик будет перенесён в архив и станет недоступен для редактирования. Это действие можно отменить только вручную через статус.",
+    confirmLabel: "Архивировать", danger: true,
+    onConfirm: () => _schedSetDraftStatus("archived"),
+  });
+}
+
+async function _schedExcludeMember(mkUserId) {
+  const dr = _schedState.currentDraft;
+  if (!dr) return;
+  try {
+    await apiPost(`/api/schedule/drafts/${dr.id}/members/exclude`, { mk_user_id: mkUserId });
+    await _schedLoadDraftDetail(dr.id);
+  } catch (e) { setNotice(`Не удалось исключить: ${e.message}`, "error"); }
+}
+
+async function _schedIncludeMember(mkUserId) {
+  const dr = _schedState.currentDraft;
+  if (!dr) return;
+  try {
+    await apiPost(`/api/schedule/drafts/${dr.id}/members/include`, { mk_user_id: mkUserId });
+    await _schedLoadDraftDetail(dr.id);
+  } catch (e) { setNotice(`Не удалось включить: ${e.message}`, "error"); }
+}
+
+function _schedEditMemberNote(mkUserId, currentNote) {
+  const note = prompt("Внутренний комментарий:", currentNote || "");
+  if (note === null) return;
+  const dr = _schedState.currentDraft;
+  if (!dr) return;
+  apiPost(`/api/schedule/drafts/${dr.id}/members/note`, { mk_user_id: mkUserId, note })
+    .then(() => _schedLoadDraftDetail(dr.id))
+    .catch(e => setNotice(`Не удалось сохранить комментарий: ${e.message}`, "error"));
+}
 
 document.addEventListener("DOMContentLoaded", () => {
   // Load intents when accordion opens
