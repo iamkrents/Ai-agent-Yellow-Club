@@ -148,9 +148,9 @@ class TestFoodOnlyIsolationUnaffected(unittest.TestCase):
 
 class TestVersionBump(unittest.TestCase):
     def test_45_version_and_cache_bust(self):
-        self.assertIn('console.log("MiniApp version: v7.1.16.1");', APP_JS)
-        self.assertIn("styles.css?v=7.1.16.1", INDEX_HTML)
-        self.assertIn("app.js?v=7.1.16.1", INDEX_HTML)
+        self.assertIn('console.log("MiniApp version: v7.1.17");', APP_JS)
+        self.assertIn("styles.css?v=7.1.17", INDEX_HTML)
+        self.assertIn("app.js?v=7.1.17", INDEX_HTML)
 
 
 if __name__ == "__main__":

@@ -276,9 +276,9 @@ class TestVersionUnchanged(unittest.TestCase):
     def test_version_stays_v71123(self):
         js = APP_JS.read_text(encoding="utf-8")
         html = INDEX_HTML.read_text(encoding="utf-8")
-        self.assertIn('console.log("MiniApp version: v7.1.16.1");', js)
-        self.assertIn("styles.css?v=7.1.16.1", html)
-        self.assertIn("app.js?v=7.1.16.1", html)
+        self.assertIn('console.log("MiniApp version: v7.1.17");', js)
+        self.assertIn("styles.css?v=7.1.17", html)
+        self.assertIn("app.js?v=7.1.17", html)
 
 
 if __name__ == "__main__":
