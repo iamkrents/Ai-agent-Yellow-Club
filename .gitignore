@@ -225,3 +225,30 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ── Yellow Club Agent — collaboration setup additions ──────────────────────
+# Additive only: existing rules above are untouched. These close gaps found
+# during the chore/collaboration-setup audit; no rule below duplicates an
+# already-covered pattern (.env, *.db, *.log, build/, dist/, __pycache__/,
+# .venv/venv/ already existed above).
+
+# env variants beyond the bare .env already ignored above
+.env.*
+
+# Node.js tooling (no bundler in this repo today; kept for future/local use)
+node_modules/
+
+# macOS
+.DS_Store
+
+# Playwright UI-check output (used for miniapp/ visual verification)
+test-results/
+playwright-report/
+
+# Claude Code / agent scratch output — never a deliverable
+scratchpad/
+
+# Local runtime SQLite DB and any backup/rotated copies (messages.db,
+# messages.db.bak, messages.db.2026-08-06, ...) — *.db above already
+# matches the exact file, this also catches suffixed backup names.
+storage/messages.db*
