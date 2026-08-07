@@ -124,10 +124,10 @@ class TestResyncButtonHiddenWhenSyncDisabled(unittest.TestCase):
 
     def test_can_resync_requires_sync_enabled_flag(self):
         body = _fn_body("_schedRenderSyncStatusLine")
-        # canResync must be a boolean AND of both conditions, not either
+        # canResync must be a boolean AND of all conditions, not any one
         # alone, so a disabled flag always suppresses the button even with
         # a completed active snapshot.
-        self.assertRegex(body, r'canResync\s*=\s*active\.status === "completed" && s\.syncEnabled')
+        self.assertRegex(body, r'canResync\s*=\s*active\.status === "completed" && s\.syncEnabled && !hasUnresolvedFailedAttempt')
 
     def test_button_omitted_entirely_when_can_resync_false(self):
         body = _fn_body("_schedRenderSyncStatusLine")
@@ -135,6 +135,70 @@ class TestResyncButtonHiddenWhenSyncDisabled(unittest.TestCase):
         # ternary must fall back to empty string, matching the pre-existing
         # `canSync ? ... : ""` idiom used by the first-sync button.
         self.assertIn(': "")', body)
+
+
+class TestFailedPartialCoexistence(unittest.TestCase):
+    """Pre-merge review finding #2: a newer failed/partial snapshot must
+    suppress the fresh-resync control entirely — that state is owned
+    exclusively by the existing "Повторить" retry banner in
+    _schedRenderOverview, never both controls shown at once."""
+
+    def test_active_branch_computes_unresolved_failed_attempt_from_latest(self):
+        body = _fn_body("_schedRenderSyncStatusLine")
+        active_branch = body.split("} else if (active) {", 1)[1].split("} else {", 1)[0]
+        self.assertIn("hasUnresolvedFailedAttempt", active_branch)
+        self.assertIn("s.recentSnapshots", active_branch)
+
+    def test_unresolved_failed_attempt_uses_same_condition_as_retry_banner(self):
+        # must match _schedRenderOverview's own latest/failed-partial check
+        # verbatim, not a reimplementation that could silently drift.
+        body = _fn_body("_schedRenderSyncStatusLine")
+        self.assertIn('latest.id !== active.id && (latest.status === "failed" || latest.status === "partial")', body)
+
+    def test_can_resync_excludes_unresolved_failed_attempt(self):
+        body = _fn_body("_schedRenderSyncStatusLine")
+        self.assertRegex(
+            body,
+            r'canResync\s*=\s*active\.status === "completed" && s\.syncEnabled && !hasUnresolvedFailedAttempt',
+        )
+
+    def test_overview_retry_banner_condition_is_unchanged(self):
+        # the flow that must exclusively own the failed/partial recovery
+        # state — must not have been touched by this fix.
+        overview = _fn_body("_schedRenderOverview")
+        self.assertIn(
+            'if (latest && latest.id !== active.id && (latest.status === "failed" || latest.status === "partial")) {',
+            overview,
+        )
+
+
+class TestResyncTriggeringLifecycleRobustness(unittest.TestCase):
+    """Pre-merge review finding #1: resyncTriggering must reset to false on
+    every path, including a thrown exception from the first render call
+    itself — not only from _schedStartSync (which never rejects, since it
+    already catches its own errors internally)."""
+
+    def test_flag_set_true_only_right_before_the_try_that_also_wraps_the_first_render(self):
+        body = _fn_body("_schedTriggerResync")
+        self.assertRegex(
+            body,
+            r'_schedState\.resyncTriggering = true;\s*try \{\s*_schedRenderSyncStatusLine\(\);\s*await _schedStartSync\(\);\s*\} finally \{',
+        )
+
+    def test_finally_always_resets_flag_and_rerenders(self):
+        body = _fn_body("_schedTriggerResync")
+        finally_block = body.split("} finally {", 1)[1]
+        self.assertIn("_schedState.resyncTriggering = false;", finally_block)
+        self.assertIn("_schedRenderSyncStatusLine();", finally_block)
+
+    def test_start_sync_never_rethrows_so_finally_always_runs(self):
+        # _schedStartSync must keep catching its own errors internally —
+        # if that guarantee were ever removed, _schedTriggerResync's own
+        # try/finally would still reset the flag, but this pins the
+        # invariant this fix's safety argument depends on.
+        body = _fn_body("_schedStartSync")
+        self.assertIn("} catch (e) {", body)
+        self.assertIn("setNotice(", body)
 
 
 class TestExistingFlowsUnbroken(unittest.TestCase):
