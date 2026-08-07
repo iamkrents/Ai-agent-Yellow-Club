@@ -21289,6 +21289,7 @@ const _schedState = {
   editorDirty: false, editorPending: {}, editorSaving: false, editorVersionConflict: false,
 
   foundationGenerating: false,
+  resyncTriggering: false,   // ALE-31 — disables the "Синхронизировать заново" control mid-request
 };
 
 const SCHED_WEEKDAY_NAMES = { 1: "Пн", 2: "Вт", 3: "Ср", 4: "Чт", 5: "Пт", 6: "Сб", 7: "Вс" };
@@ -21508,9 +21509,35 @@ function _schedRenderSyncStatusLine() {
   if (s.runningSnapshot) {
     el.innerHTML = `<span class="sched-sync-badge sched-sync-badge--running">Синхронизация выполняется…</span>`;
   } else if (active) {
-    el.innerHTML = `<span class="sched-sync-badge">Последняя синхронизация: ${escapeHtml(_schedFmtDate(active.completed_at))}</span>`;
+    // ALE-31 — the only way to reach this branch is a completed active
+    // snapshot with no sync currently running; still check active.status
+    // explicitly rather than relying on that invariant implicitly.
+    const canResync = active.status === "completed" && s.syncEnabled;
+    el.innerHTML = `<span class="sched-sync-badge">Последняя синхронизация: ${escapeHtml(_schedFmtDate(active.completed_at))}</span>` +
+      (canResync
+        ? `<button class="sched-linklike" ${_schedState.resyncTriggering ? "disabled" : ""} onclick="_schedTriggerResync()">${_schedState.resyncTriggering ? "Запускаем…" : "Синхронизировать заново"}</button>`
+        : "");
   } else {
     el.innerHTML = `<span class="sched-sync-badge sched-sync-badge--muted">Синхронизация ещё не выполнялась</span>`;
+  }
+}
+
+// ALE-31 — minimal resync control for the healthy-active-snapshot state,
+// where the pre-existing first-sync/retry buttons never render (both are
+// gated on activeSnapshot being absent or the latest attempt having
+// failed/partial status). Reuses _schedStartSync() with no
+// resume_snapshot_id, so it always creates a brand-new snapshot — same
+// path as a first sync, never touches the existing active snapshot.
+async function _schedTriggerResync() {
+  if (_schedState.resyncTriggering) return;
+  if (_schedState.status && _schedState.status.runningSnapshot) return;
+  _schedState.resyncTriggering = true;
+  _schedRenderSyncStatusLine();
+  try {
+    await _schedStartSync();
+  } finally {
+    _schedState.resyncTriggering = false;
+    _schedRenderSyncStatusLine();
   }
 }
 
