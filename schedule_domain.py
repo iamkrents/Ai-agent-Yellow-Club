@@ -12,10 +12,50 @@ web_app_server.py's schedule routes imports this module).
 from __future__ import annotations
 
 from collections import Counter
-from datetime import date
-from typing import Optional
+from datetime import date, datetime
+from typing import Any, Optional
 
 SCHEDULE_CONTINUATION_STATUSES = ("continues", "unconfirmed", "discontinued", "ambiguous")
+# v7.1.17.1 — finer-grained sub-classification surfaced ALONGSIDE the coarse
+# status above (never replacing it — existing callers/tests/UI rely on the
+# coarse vocabulary). Distinguishes "never onboarded at all" from "onboarded,
+# just hasn't answered yet", which the coarse "unconfirmed" bucket conflates.
+SCHEDULE_CONTINUATION_DETAILS = (
+    "continues", "discontinued", "awaiting_confirmation", "status_not_found", "ambiguous_multiple_records",
+)
+# v7.1.17.1 — availability DATA-COMPLETENESS detail, orthogonal to the MATCH
+# quality already captured by SCHEDULE_AVAILABILITY_MATCHES below. Answers
+# "did the parent ever get a chance to fill this in", not "does the old slot
+# still work for them".
+SCHEDULE_AVAILABILITY_DETAILS = (
+    "filled", "invited_not_filled", "no_onboarding_record", "parent_not_connected", "ambiguous",
+)
+
+# v7.1.17.1 — regularity classifier categories (ALE-6). Only regular_confirmed
+# and regular_inferred_high are ever eligible to become a "current" group /
+# feed a future auto-generated draft (still gated off entirely by
+# SCHEDULE_FOUNDATION_ENABLED / SCHEDULE_DRAFT_MUTATIONS_ENABLED in this
+# release — nothing here creates a draft).
+SCHEDULE_REGULARITY_CATEGORIES = (
+    "regular_confirmed", "regular_inferred_high", "regular_inferred_medium",
+    "trial", "makeup", "one_off", "other_group_visitor", "insufficient_evidence", "ambiguous",
+)
+# Thresholds fixed from real-data sensitivity analysis (ALE-6 audit,
+# scenario B of three tested: A=4v/0.70, B=5v/0.75, C=6v/0.80 — all three
+# were stable across the same population; B was the agreed middle ground).
+# n_regular counts only records that are neither trial (test=true) nor
+# makeup (missedLessonRecordId set) — those are excluded per-record before
+# this threshold is ever applied, never by discarding the whole pair.
+REGULARITY_MIN_VISITS = 5
+REGULARITY_MIN_SLOT_RATIO = 0.75
+REGULARITY_MEDIUM_MIN_VISITS = 2
+REGULARITY_OTHER_VISITOR_MAX_VISITS = 3
+# "Material overlap" between two candidate strong (confirmed/high) groups for
+# the same student — both conditions required, agreed explicitly rather than
+# inferred from visit-count ratios (which misclassified ordinary mid-year
+# group transitions as false positives during the ALE-6 audit).
+REGULARITY_OVERLAP_AMBIGUOUS_MIN_DAYS = 14
+REGULARITY_OVERLAP_AMBIGUOUS_MIN_VISITS_EACH = 2
 SCHEDULE_AVAILABILITY_MATCHES = (
     "preferred_match", "possible_match", "branch_conflict", "time_conflict",
     "start_date_conflict", "no_availability", "ambiguous_availability",
@@ -192,7 +232,157 @@ def detect_dominant_slot(lessons: list[dict]) -> dict:
     }
 
 
-def resolve_continuation(status_values: list[str]) -> dict:
+def slot_regularity_ratio(dated_slots: list[tuple[int, str]]) -> Optional[float]:
+    """dated_slots: [(weekday, start_time), ...] — one entry per REGULAR
+    (already trial/makeup-excluded) attended lesson for one (student, group)
+    pair. Returns the fraction landing on that pair's own single most common
+    (weekday, start_time), independent of the group's dominant slot — a
+    student can be perfectly regular even if the group's slot moved under
+    them. None (not 0.0) when there isn't enough data to say anything —
+    callers must not treat "unknown" as "irregular"."""
+    if len(dated_slots) < 3:
+        return None
+    counts = Counter(dated_slots)
+    _, top_count = counts.most_common(1)[0]
+    return top_count / len(dated_slots)
+
+
+def classify_group_student_regularity(
+    *, n_regular: int, n_trial: int, n_makeup: int,
+    group_specific_evidence: bool, slot_ratio: Optional[float],
+    is_primary_group_for_student: bool = True,
+) -> dict[str, Any]:
+    """ALE-6 classifier — pure decision, no I/O. n_regular/n_trial/n_makeup
+    are per-record counts for ONE (student, group) pair, already split by
+    the caller (schedule_sync.py) using MoyKlass's own per-record markers
+    (test=true -> trial, missedLessonRecordId set -> makeup) BEFORE this
+    function ever sees them — a single trial/makeup record never drags an
+    otherwise-regular pair's whole history into the wrong bucket.
+
+    group_specific_evidence must already be scoped to THIS exact group (a
+    userSubscription whose classIds/mainClassId names this classId, or a
+    real MoyKlass join row for this exact (userId, classId) with paid
+    stats) — never "has a subscription somewhere" in general.
+
+    Deliberately keeps membership evidence (group_specific_evidence) and
+    schedule/slot confidence (slot_ratio) as two independent inputs, never
+    collapsed into one blended "confidence" score — a caller that only
+    wants membership certainty, or only wants schedule stability, can read
+    the field it needs without the other diluting it."""
+    if n_regular == 0:
+        category = "makeup" if (n_makeup > 0 and n_trial == 0) else "trial"
+        return {"category": category, "membership_evidence": False, "slot_ratio": None}
+
+    if n_regular == 1:
+        category = "one_off" if group_specific_evidence else "insufficient_evidence"
+        return {"category": category, "membership_evidence": group_specific_evidence, "slot_ratio": slot_ratio}
+
+    if group_specific_evidence and n_regular >= REGULARITY_MIN_VISITS and (slot_ratio is None or slot_ratio >= REGULARITY_MIN_SLOT_RATIO):
+        category = "regular_confirmed"
+    elif group_specific_evidence and n_regular >= REGULARITY_MIN_VISITS:
+        category = "regular_inferred_high"
+    elif group_specific_evidence and n_regular >= REGULARITY_MEDIUM_MIN_VISITS:
+        category = "regular_inferred_medium"
+    elif not group_specific_evidence and not is_primary_group_for_student and n_regular <= REGULARITY_OTHER_VISITOR_MAX_VISITS:
+        category = "other_group_visitor"
+    else:
+        category = "insufficient_evidence"
+
+    return {"category": category, "membership_evidence": group_specific_evidence, "slot_ratio": slot_ratio}
+
+
+_REGULARITY_STRONG_CATEGORIES = frozenset({"regular_confirmed", "regular_inferred_high"})
+
+
+def resolve_current_and_ambiguous_groups(candidates: list[dict[str, Any]]) -> dict[Any, dict[str, Any]]:
+    """candidates: [{"group_key": <hashable>, "category": str,
+    "regular_dates": ["YYYY-MM-DD", ...]}, ...] — every group one student
+    was classified into, for ONE snapshot. Only groups already classified
+    regular_confirmed/regular_inferred_high ("strong") participate in
+    current/ambiguous resolution; every other category passes through with
+    is_current=None (not applicable — the concept only means something for
+    a student's regular group(s)).
+
+    Never assumes exactly one current group exists (that invariant is
+    explicitly rejected — see module docstring/ALE-6 point 6): a student
+    with zero strong groups gets nothing marked current; a student with one
+    gets it marked current; a student with several resolves per-pair via
+    real date-overlap, not by picking a single winner outright.
+
+    "Material overlap" (both required, agreed thresholds — not a guess):
+    the two groups' regular-attendance date spans overlap for more than
+    REGULARITY_OVERLAP_AMBIGUOUS_MIN_DAYS days, AND each group has at least
+    REGULARITY_OVERLAP_AMBIGUOUS_MIN_VISITS_EACH of its own regular visits
+    falling inside that overlap window (not just spanning it on paper).
+    Such pairs are never auto-resolved — both sides become "ambiguous",
+    flagged for manual review, current=False. Non-overlapping strong groups
+    are a sequential transition: the one with the latest last-regular-date
+    is current=True, earlier ones keep their own confirmed/high category
+    but current=False (real history, not silently dropped or merged)."""
+    result: dict[Any, dict[str, Any]] = {}
+    for c in candidates:
+        result[c["group_key"]] = {
+            "is_current": None, "final_category": c["category"], "ambiguous_peer_keys": [],
+        }
+
+    def _parsed_dates(dates: list[str]) -> list[date]:
+        out = []
+        for d in dates:
+            try:
+                out.append(datetime.strptime(str(d)[:10], "%Y-%m-%d").date())
+            except (ValueError, TypeError):
+                continue
+        return out
+
+    strong = []
+    for c in candidates:
+        if c["category"] not in _REGULARITY_STRONG_CATEGORIES:
+            continue
+        dates = sorted(_parsed_dates(c.get("regular_dates") or []))
+        if not dates:
+            continue
+        strong.append({"group_key": c["group_key"], "dates": dates, "first": dates[0], "last": dates[-1]})
+
+    if not strong:
+        return result
+
+    if len(strong) == 1:
+        result[strong[0]["group_key"]]["is_current"] = True
+        return result
+
+    ambiguous_keys: set = set()
+    ambiguous_peers: dict[Any, set] = {}
+    for i in range(len(strong)):
+        for j in range(i + 1, len(strong)):
+            a, b = strong[i], strong[j]
+            overlap_start = max(a["first"], b["first"])
+            overlap_end = min(a["last"], b["last"])
+            overlap_days = (overlap_end - overlap_start).days + 1 if overlap_end >= overlap_start else 0
+            if overlap_days <= REGULARITY_OVERLAP_AMBIGUOUS_MIN_DAYS:
+                continue
+            a_in_window = sum(1 for d in a["dates"] if overlap_start <= d <= overlap_end)
+            b_in_window = sum(1 for d in b["dates"] if overlap_start <= d <= overlap_end)
+            if a_in_window >= REGULARITY_OVERLAP_AMBIGUOUS_MIN_VISITS_EACH and b_in_window >= REGULARITY_OVERLAP_AMBIGUOUS_MIN_VISITS_EACH:
+                ambiguous_keys.add(a["group_key"])
+                ambiguous_keys.add(b["group_key"])
+                ambiguous_peers.setdefault(a["group_key"], set()).add(b["group_key"])
+                ambiguous_peers.setdefault(b["group_key"], set()).add(a["group_key"])
+
+    for key in ambiguous_keys:
+        result[key]["final_category"] = "ambiguous"
+        result[key]["is_current"] = False
+        result[key]["ambiguous_peer_keys"] = sorted(ambiguous_peers.get(key, set()), key=str)
+
+    non_overlapping = [s for s in strong if s["group_key"] not in ambiguous_keys]
+    if non_overlapping:
+        current = max(non_overlapping, key=lambda s: s["last"])
+        for s in non_overlapping:
+            result[s["group_key"]]["is_current"] = (s["group_key"] == current["group_key"])
+
+    return result
+
+
+def resolve_continuation(status_values: list[str], has_any_recipient: Optional[bool] = None) -> dict:
     """status_values: raw continuation_status values (storage.CONTINUATION_
     STATUSES vocabulary: unknown/continues/undecided/needs_consultation/
     not_continuing) collected from every client_onboarding_recipients row
@@ -202,19 +392,32 @@ def resolve_continuation(status_values: list[str]) -> dict:
     another row says continues. Conflicting non-refusal signals (continues
     vs. undecided/needs_consultation from different rows) resolve to
     ambiguous rather than guessing either way. No data at all — or only
-    'unknown' — resolves to unconfirmed, never to continues."""
+    'unknown' — resolves to unconfirmed, never to continues.
+
+    has_any_recipient (v7.1.17.1, additive, optional): whether the caller
+    found ANY client_onboarding_recipients row at all for this mk_user_id
+    — lets 'detail' distinguish "never onboarded" (status_not_found) from
+    "onboarded but hasn't answered yet" (awaiting_confirmation), which the
+    coarse 'status' field (kept unchanged for existing callers/tests) can't
+    tell apart on its own. Defaults to inferring from status_values when
+    not passed, for callers that predate this parameter."""
     non_unknown = {s for s in status_values if s and s != "unknown"}
+    if has_any_recipient is None:
+        has_any_recipient = bool(status_values)
+
     if "not_continuing" in non_unknown:
-        return {"status": "discontinued", "reason": "Явно указано: не продолжает обучение"}
+        return {"status": "discontinued", "detail": "discontinued", "reason": "Явно указано: не продолжает обучение"}
     has_continues = "continues" in non_unknown
     has_pending = bool(non_unknown & {"undecided", "needs_consultation"})
     if has_continues and has_pending:
-        return {"status": "ambiguous", "reason": "Разные записи дают противоречивый статус"}
+        return {"status": "ambiguous", "detail": "ambiguous_multiple_records", "reason": "Разные записи дают противоречивый статус"}
     if has_continues:
-        return {"status": "continues", "reason": "Подтверждено родителем/сотрудником"}
+        return {"status": "continues", "detail": "continues", "reason": "Подтверждено родителем/сотрудником"}
     if has_pending:
-        return {"status": "unconfirmed", "reason": "Ожидает подтверждения"}
-    return {"status": "unconfirmed", "reason": "Статус продолжения обучения не указан"}
+        return {"status": "unconfirmed", "detail": "awaiting_confirmation", "reason": "Ожидает подтверждения"}
+    if not has_any_recipient:
+        return {"status": "unconfirmed", "detail": "status_not_found", "reason": "Нет ни одной записи об onboarding для этого ребёнка"}
+    return {"status": "unconfirmed", "detail": "awaiting_confirmation", "reason": "Статус продолжения обучения не указан"}
 
 
 def match_availability(
@@ -227,21 +430,40 @@ def match_availability(
     preferred_branch: str,
     available_from: Optional[str] = None,
     planned_start_date: Optional[str] = None,
+    has_any_recipient: Optional[bool] = None,
+    has_parent_link: Optional[bool] = None,
 ) -> dict:
     """Never invents a match: continuation is checked first (an explicit
     refusal or an unconfirmed status short-circuits real interval matching
     — those are signals in their own right, per SCHEDULE_AVAILABILITY_
-    MATCHES). Partial time overlap is explicitly never counted as a match."""
+    MATCHES). Partial time overlap is explicitly never counted as a match.
+
+    has_any_recipient / has_parent_link (v7.1.17.1, additive, optional):
+    feed the 'detail' field (SCHEDULE_AVAILABILITY_DETAILS) — a data-
+    COMPLETENESS classification orthogonal to 'match' (match quality).
+    Never conflates "parent never connected at all" (no client_
+    parent_child_links row) with "connected, invited, just hasn't filled
+    the form yet" — those were previously indistinguishable, both landing
+    in a single 'no_availability' bucket. Omit either to skip that
+    distinction (detail falls back to intervals-based filled/invited_not_filled)."""
+    detail = "filled" if intervals else "invited_not_filled"
+    if has_any_recipient is False:
+        detail = "no_onboarding_record"
+    elif has_parent_link is False:
+        detail = "parent_not_connected"
+    if continuation_status == "ambiguous":
+        detail = "ambiguous"
+
     if continuation_status == "discontinued":
-        return {"match": "discontinued", "reason": "Не продолжает обучение"}
+        return {"match": "discontinued", "reason": "Не продолжает обучение", "detail": detail}
     if continuation_status in ("unconfirmed", "ambiguous"):
-        return {"match": "continuation_unconfirmed", "reason": "Продолжение обучения не подтверждено"}
+        return {"match": "continuation_unconfirmed", "reason": "Продолжение обучения не подтверждено", "detail": detail}
 
     if not weekday or not start_time:
-        return {"match": "ambiguous_availability", "reason": "Прежний слот группы не определён однозначно"}
+        return {"match": "ambiguous_availability", "reason": "Прежний слот группы не определён однозначно", "detail": detail}
 
     if not intervals:
-        return {"match": "no_availability", "reason": "Родитель не заполнил возможности"}
+        return {"match": "no_availability", "reason": "Родитель не заполнил возможности", "detail": detail}
 
     branch_conflict = (
         preferred_branch not in ("either", "unknown")
@@ -252,18 +474,20 @@ def match_availability(
         return {
             "match": "branch_conflict",
             "reason": f"Предпочтение филиала не совпадает с прежним ({preferred_branch} ≠ {group_branch_code})",
+            "detail": detail,
         }
 
     if planned_start_date and available_from and str(available_from) > str(planned_start_date):
         return {
             "match": "start_date_conflict",
             "reason": f"Готовность с {available_from}, начало занятий {planned_start_date}",
+            "detail": detail,
         }
 
     end_time = add_minutes(start_time, duration_minutes or 60)
     day_intervals = [iv for iv in intervals if int(iv.get("weekday") or 0) == weekday]
     if not day_intervals:
-        return {"match": "time_conflict", "reason": "Нет доступности в этот день недели"}
+        return {"match": "time_conflict", "reason": "Нет доступности в этот день недели", "detail": detail}
 
     full_fit = [
         iv for iv in day_intervals
@@ -274,6 +498,7 @@ def match_availability(
         return {
             "match": "preferred_match" if preferred else "possible_match",
             "reason": "Прежнее время полностью укладывается в возможности",
+            "detail": detail,
         }
 
     partial_fit = any(
@@ -281,6 +506,6 @@ def match_availability(
         for iv in day_intervals
     )
     if partial_fit:
-        return {"match": "time_conflict", "reason": "Есть только частичное пересечение по времени — это не считается совпадением"}
+        return {"match": "time_conflict", "reason": "Есть только частичное пересечение по времени — это не считается совпадением", "detail": detail}
 
-    return {"match": "time_conflict", "reason": "Нет пересечения по времени в этот день"}
+    return {"match": "time_conflict", "reason": "Нет пересечения по времени в этот день", "detail": detail}

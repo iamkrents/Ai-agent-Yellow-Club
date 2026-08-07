@@ -819,6 +819,28 @@ class Storage:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ssgs_group ON schedule_source_group_students(group_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ssgs_snapshot_user ON schedule_source_group_students(snapshot_id, mk_user_id)")
 
+        # v7.1.17.1 — ALE-6 regularity classifier columns, additive only.
+        # lessons_attended keeps its existing meaning (a count of attended
+        # lessons) but going forward the sync only ever writes REGULAR
+        # (non-trial, non-makeup) attended lessons into it — trial/makeup
+        # get their own separate counters below so nothing is silently lost,
+        # just never blended into the "is this a regular student" count.
+        self._ensure_column(conn, "schedule_source_group_students", "n_trial_visits", "n_trial_visits INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(conn, "schedule_source_group_students", "n_makeup_visits", "n_makeup_visits INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(conn, "schedule_source_group_students", "regularity_category", "regularity_category TEXT NOT NULL DEFAULT 'insufficient_evidence'")
+        # membership_evidence is deliberately a plain 0/1 flag, kept separate
+        # from slot_regularity_ratio — membership confidence and schedule/
+        # slot confidence are two independent signals, never blended into
+        # one score (see schedule_domain.classify_group_student_regularity).
+        self._ensure_column(conn, "schedule_source_group_students", "membership_evidence", "membership_evidence INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(conn, "schedule_source_group_students", "slot_regularity_ratio", "slot_regularity_ratio REAL")
+        # is_current_group / ambiguous_peer_group_ids: cross-group resolution
+        # for one student's several regular_confirmed/regular_inferred_high
+        # groups within the same snapshot. NULL means "not applicable" (this
+        # row was never a candidate — e.g. it's a trial/one_off row).
+        self._ensure_column(conn, "schedule_source_group_students", "is_current_group", "is_current_group INTEGER")
+        self._ensure_column(conn, "schedule_source_group_students", "ambiguous_peer_group_ids", "ambiguous_peer_group_ids TEXT NOT NULL DEFAULT ''")
+
         # Raw-enough lesson rows to justify the dominant-slot computation and
         # to show evidence in the UI — not a full copy of the MoyKlass payload.
         conn.execute("""
@@ -13052,7 +13074,11 @@ class Storage:
             )
             return int(cur.lastrowid)
 
-    _SSGS_FIELDS = frozenset({"child_display_name", "lessons_attended", "first_seen_date", "last_seen_date", "evidence_source", "confidence"})
+    _SSGS_FIELDS = frozenset({
+        "child_display_name", "lessons_attended", "first_seen_date", "last_seen_date", "evidence_source", "confidence",
+        "n_trial_visits", "n_makeup_visits", "regularity_category", "membership_evidence", "slot_regularity_ratio",
+        "is_current_group", "ambiguous_peer_group_ids",
+    })
 
     def upsert_schedule_source_group_student(self, snapshot_id: int, group_id: int, mk_user_id: str, **fields: Any) -> int:
         now = now_iso()
@@ -13164,6 +13190,23 @@ class Storage:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def has_active_parent_link(self, mk_user_id: str) -> bool:
+        """v7.1.17.1 — real "parent actually connected via Telegram" signal
+        (client_parent_child_links, status='active'), distinct from merely
+        having an onboarding-campaign recipient row. Feeds schedule_domain.
+        match_availability's has_parent_link so the Availability data-
+        quality detail never conflates 'родитель не подключён' with
+        'подключён, но не заполнил' (ALE-6 point 7)."""
+        mk_user_id = str(mk_user_id or "").strip()
+        if not mk_user_id:
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM client_parent_child_links WHERE mk_user_id=? AND status='active' LIMIT 1",
+                (mk_user_id,),
+            ).fetchone()
+        return row is not None
+
     def resolve_schedule_student_status(
         self, mk_user_id: str, *, weekday: Optional[int], start_time: Optional[str],
         duration_minutes: Optional[int], group_branch_code: str,
@@ -13174,7 +13217,10 @@ class Storage:
         in both places. Read-only against client_onboarding_recipients /
         client_schedule_availability; never writes."""
         recipients = self.find_onboarding_recipients_by_mk_user(mk_user_id)
-        continuation = schedule_domain.resolve_continuation([r["continuation_status"] for r in recipients])
+        has_any_recipient = bool(recipients)
+        continuation = schedule_domain.resolve_continuation(
+            [r["continuation_status"] for r in recipients], has_any_recipient=has_any_recipient,
+        )
         latest = recipients[0] if recipients else None
         intervals: list[dict[str, Any]] = []
         preferred_branch = "unknown"
@@ -13185,15 +13231,19 @@ class Storage:
                 intervals = avail.get("intervals") or []
                 preferred_branch = latest.get("preferred_branch") or "unknown"
                 available_from = latest.get("available_from")
+        has_parent_link = self.has_active_parent_link(mk_user_id)
         match = schedule_domain.match_availability(
             continuation["status"], weekday, start_time, duration_minutes, group_branch_code,
             intervals, preferred_branch, available_from, planned_start_date,
+            has_any_recipient=has_any_recipient, has_parent_link=has_parent_link,
         )
         return {
             "mk_user_id": str(mk_user_id),
             "continuation_status": continuation["status"],
+            "continuation_detail": continuation["detail"],
             "continuation_reason": continuation["reason"],
             "availability_match": match["match"],
+            "availability_detail": match["detail"],
             "availability_reason": match["reason"],
             "recipient_id": int(latest["id"]) if latest else None,
             "preferred_branch": preferred_branch,
@@ -13561,12 +13611,30 @@ class Storage:
                 "WHERE s.snapshot_id=?",
                 (int(snapshot_id),),
             ).fetchall()
+            # v7.1.17.1 — regularity classifier breakdown straight off the
+            # stored per-row category (written once at sync time), never
+            # re-derived here — this is a raw GROUP BY, not per-row Python.
+            regularity_rows = conn.execute(
+                "SELECT regularity_category, COUNT(*) c FROM schedule_source_group_students "
+                "WHERE snapshot_id=? GROUP BY regularity_category",
+                (int(snapshot_id),),
+            ).fetchall()
+            raw_unique_students = conn.execute(
+                "SELECT COUNT(DISTINCT mk_user_id) FROM schedule_source_group_students WHERE snapshot_id=?",
+                (int(snapshot_id),),
+            ).fetchone()[0]
+            sync_errors_count = conn.execute(
+                "SELECT COUNT(*) FROM schedule_source_sync_errors WHERE snapshot_id=?", (int(snapshot_id),)
+            ).fetchone()[0]
 
         confidence_counts = {row["confidence"]: row["c"] for row in confidence_rows}
         draft_status_counts = {row["status"]: row["c"] for row in draft_status_rows}
+        regularity_counts = {row["regularity_category"]: row["c"] for row in regularity_rows}
 
         continuation_by_student: dict[str, str] = {}
+        continuation_detail_by_student: dict[str, str] = {}
         match_counts: Counter = Counter()
+        availability_detail_counts: Counter = Counter()
         for row in member_rows:
             group_branch_code = schedule_domain.branch_code_from_name(row["branch_name"], yc1_hint, yc2_hint)
             status = self.resolve_schedule_student_status(
@@ -13577,9 +13645,15 @@ class Storage:
             # visits last — resolve_schedule_student_status is independent of
             # which group asked, so every visit agrees on continuation anyway.
             continuation_by_student[row["mk_user_id"]] = status["continuation_status"]
+            continuation_detail_by_student[row["mk_user_id"]] = status["continuation_detail"]
             match_counts[status["availability_match"]] += 1
+            availability_detail_counts[status["availability_detail"]] += 1
 
         continuation_counts = Counter(continuation_by_student.values())
+        continuation_detail_counts = Counter(continuation_detail_by_student.values())
+        excluded_irregular_count = sum(
+            regularity_counts.get(k, 0) for k in ("trial", "makeup", "one_off", "other_group_visitor")
+        )
         return {
             "groups_count": groups_count,
             "students_count": students_count,
@@ -13600,6 +13674,18 @@ class Storage:
             "drafts_ready_count": draft_status_counts.get("ready", 0),
             "confidence_breakdown": confidence_counts,
             "draft_status_breakdown": draft_status_counts,
+            # ── v7.1.17.1 Data Quality block (ALE-6 section 8) ─────────────
+            "raw_unique_student_ids_count": raw_unique_students,
+            "regular_confirmed_count": regularity_counts.get("regular_confirmed", 0),
+            "regular_inferred_high_count": regularity_counts.get("regular_inferred_high", 0),
+            "regular_inferred_medium_count": regularity_counts.get("regular_inferred_medium", 0),
+            "excluded_irregular_count": excluded_irregular_count,
+            "insufficient_evidence_count": regularity_counts.get("insufficient_evidence", 0),
+            "ambiguous_regularity_count": regularity_counts.get("ambiguous", 0),
+            "regularity_breakdown": regularity_counts,
+            "continuation_detail_breakdown": dict(continuation_detail_counts),
+            "availability_detail_breakdown": dict(availability_detail_counts),
+            "sync_errors_count": sync_errors_count,
         }
 
     # ── Conflict detection (live, never persisted — recomputed on read) ─

@@ -131,8 +131,8 @@ const launchTab = urlParams.get("tab") || "";
 // one specific campaign recipient (from the bot's post-activation button).
 const launchAvailabilityRecipientId = urlParams.get("oc_availability_recipient") || "";
 
-console.log("MiniApp version: v7.1.17");
-const APP_VERSION = "7.1.17";
+console.log("MiniApp version: v7.1.17.1");
+const APP_VERSION = "7.1.17.1";
 
 // v7.1.16 — minimal frontend incident reporting. Before this, these two
 // handlers only ever did console.error(...) — nothing was ever sent to the
@@ -1345,6 +1345,13 @@ function uiConfirmSheet(opts) {
   const o = opts || {};
   const modal = $("uiConfirmModal");
   if (!modal) return;
+  // scopeClass: optional caller-supplied class (e.g. "sched-scope") applied
+  // to the modal only while THIS confirm sheet is open — lets one screen
+  // (schedule workspace) force its own scoped light styling on the shared
+  // modal without affecting every other confirm-sheet caller. Always
+  // cleared first so a previous caller's scope class never leaks forward.
+  modal.classList.remove("sched-scope");
+  if (o.scopeClass) modal.classList.add(o.scopeClass);
   $("uiConfirmTitle").textContent = o.title || "Подтвердите действие";
   $("uiConfirmBody").innerHTML = `<p style="margin:0">${escapeHtml(o.message || "")}</p>`;
   const footer = $("uiConfirmFooter");
@@ -21304,6 +21311,25 @@ const SCHED_MATCH_TONE = {
 };
 const SCHED_DRAFT_STATUS_LABELS = { draft: "Черновик", needs_review: "Требует проверки", ready: "Готово к проверке", archived: "Архив" };
 const SCHED_DRAFT_STATUS_TONE = { draft: "muted", needs_review: "warning", ready: "success", archived: "muted" };
+// v7.1.17.1 — ALE-6 regularity classifier vocabulary (schedule_domain.
+// SCHEDULE_REGULARITY_CATEGORIES). Only regular_confirmed/regular_inferred_high
+// are ever eligible to become a "current" group — see is_current_group.
+const SCHED_REGULARITY_LABELS = {
+  regular_confirmed: "Постоянный (подтверждено)",
+  regular_inferred_high: "Постоянный (вероятно)",
+  regular_inferred_medium: "Возможно постоянный",
+  trial: "Пробное занятие",
+  makeup: "Отработка",
+  one_off: "Разовое посещение",
+  other_group_visitor: "Гость из другой группы",
+  insufficient_evidence: "Недостаточно данных",
+  ambiguous: "Неоднозначно — нужна проверка",
+};
+const SCHED_REGULARITY_TONE = {
+  regular_confirmed: "success", regular_inferred_high: "success", regular_inferred_medium: "warning",
+  trial: "muted", makeup: "muted", one_off: "muted", other_group_visitor: "muted",
+  insufficient_evidence: "muted", ambiguous: "danger",
+};
 const SCHED_STAGE_LABELS = {
   classes: "Получение групп", lesson_records: "Получение занятий",
   grouping: "Восстановление слотов и состава", integrity: "Проверка целостности", done: "Активация",
@@ -21320,6 +21346,19 @@ function _schedFmtDate(s) {
   if (!s) return "—";
   const [y, m, d] = String(s).slice(0, 10).split("-");
   return (y && m && d) ? `${d}.${m}.${y}` : s;
+}
+
+// v7.1.17.1 — name PRIMARY, MoyKlass ID secondary (ALE-6 section 5). Name
+// comes from a bulk MoyKlass lookup at sync time (moyklass_client.
+// _v3991_fetch_user_names, batched — never one request per child); when
+// it's genuinely unresolved this shows an explicit fallback rather than
+// silently falling back to the ID as if it were a name.
+function _schedMemberNameHtml(m) {
+  const name = m.child_display_name && String(m.child_display_name).trim();
+  return `
+    <p class="sched-member-row__name">${escapeHtml(name || "Имя не найдено")}</p>
+    <p class="sched-member-row__tech">MoyKlass ID: ${escapeHtml(m.mk_user_id)}</p>
+  `;
 }
 
 // ── Entry point (tab activation) ──────────────────────────────────────
@@ -21557,6 +21596,7 @@ function _schedRenderOverview(root) {
   } else if (stats.groups_count === 0) {
     html += uiEmptyState("📭", "Группы не найдены", "Синхронизация завершилась успешно, но подходящих групп за указанный период не найдено.");
   } else {
+    html += _schedDataQualityHtml(stats);
     html += _schedStatGridHtml(stats);
     if (stats.drafts_count === 0 && s.mutationsEnabled) {
       html += `<div class="sched-cta-row"><button class="primary" ${_schedState.foundationGenerating ? "disabled" : ""} onclick="_schedConfirmGenerateFoundation()">${_schedState.foundationGenerating ? "Создаём…" : "Создать основу из прошлого года"}</button></div>`;
@@ -21567,10 +21607,79 @@ function _schedRenderOverview(root) {
   root.innerHTML = html;
 }
 
+// v7.1.17.1 — ALE-6 section 8 Data Quality block. The whole point is to
+// make it impossible to read "raw_unique_student_ids_count" as if it were
+// the regular-student roster — regular_confirmed/regular_inferred_high are
+// the only categories a future auto-generated draft could ever use, and
+// even that is still fully disabled in this release (SCHEDULE_FOUNDATION_
+// ENABLED / SCHEDULE_DRAFT_MUTATIONS_ENABLED stay off).
+function _schedDataQualityHtml(st) {
+  const raw = st.raw_unique_student_ids_count ?? st.students_count ?? 0;
+  const confirmed = st.regular_confirmed_count || 0;
+  const high = st.regular_inferred_high_count || 0;
+  const medium = st.regular_inferred_medium_count || 0;
+  const excluded = st.excluded_irregular_count || 0;
+  const insufficient = st.insufficient_evidence_count || 0;
+  const ambiguous = st.ambiguous_regularity_count || 0;
+  const rows = [
+    ["regular_confirmed", "Постоянные (подтверждено)", confirmed, "success"],
+    ["regular_inferred_high", "Постоянные (вероятно)", high, "success"],
+    ["regular_inferred_medium", "Возможно постоянные", medium, "warning"],
+    ["excluded_irregular", "Исключены (пробные/отработки/разовые/гости)", excluded, "muted"],
+    ["insufficient_evidence", "Недостаточно данных", insufficient, "muted"],
+    ["ambiguous", "Неоднозначно — нужна проверка", ambiguous, "danger"],
+  ];
+  const contDetail = st.continuation_detail_breakdown || {};
+  const availDetail = st.availability_detail_breakdown || {};
+  const contRows = [
+    ["continues", "Продолжают", contDetail.continues || 0],
+    ["discontinued", "Прекратили", contDetail.discontinued || 0],
+    ["awaiting_confirmation", "Ожидают подтверждения", contDetail.awaiting_confirmation || 0],
+    ["status_not_found", "Нет записи об onboarding", contDetail.status_not_found || 0],
+    ["ambiguous_multiple_records", "Противоречивые записи", contDetail.ambiguous_multiple_records || 0],
+  ];
+  const availRows = [
+    ["filled", "Заполнили возможности", availDetail.filled || 0],
+    ["invited_not_filled", "Подключены, но не заполнили", availDetail.invited_not_filled || 0],
+    ["parent_not_connected", "Родитель не подключён", availDetail.parent_not_connected || 0],
+    ["no_onboarding_record", "Нет записи об onboarding", availDetail.no_onboarding_record || 0],
+    ["ambiguous", "Неоднозначно", availDetail.ambiguous || 0],
+  ];
+  return `
+    <div class="sched-quality-block">
+      <p class="sched-quality-block__title">Качество данных</p>
+      <p class="sched-quality-block__note">Всего уникальных ID в источнике: <b>${escapeHtml(String(raw))}</b> — это НЕ значит «${escapeHtml(String(raw))} постоянных учеников». Ниже — фактическая классификация.</p>
+      <table class="sched-quality-table">
+        <tbody>
+          ${rows.map(([key, label, value, tone]) => `
+            <tr>
+              <td class="sched-quality-table__label">${escapeHtml(label)}</td>
+              <td class="sched-quality-table__value">${uiStatusBadge(String(value), tone)}</td>
+            </tr>`).join("")}
+        </tbody>
+      </table>
+      <p class="sched-quality-block__subtitle">Продолжение обучения</p>
+      <table class="sched-quality-table">
+        <tbody>
+          ${contRows.map(([key, label, value]) => `
+            <tr><td class="sched-quality-table__label">${escapeHtml(label)}</td><td class="sched-quality-table__value">${escapeHtml(String(value))}</td></tr>`).join("")}
+        </tbody>
+      </table>
+      <p class="sched-quality-block__subtitle">Возможности (Availability)</p>
+      <table class="sched-quality-table">
+        <tbody>
+          ${availRows.map(([key, label, value]) => `
+            <tr><td class="sched-quality-table__label">${escapeHtml(label)}</td><td class="sched-quality-table__value">${escapeHtml(String(value))}</td></tr>`).join("")}
+        </tbody>
+      </table>
+      ${st.sync_errors_count ? `<p class="sched-quality-block__errors">Ошибок синхронизации: ${escapeHtml(String(st.sync_errors_count))}</p>` : ""}
+    </div>`;
+}
+
 function _schedStatGridHtml(st) {
   const cards = [
     ["Групп прошлого года", st.groups_count],
-    ["Детей в источнике", st.students_count],
+    ["Детей в источнике (raw)", st.raw_unique_student_ids_count ?? st.students_count],
     ["Продолжают обучение", st.continues_count],
     ["Продолжение не подтверждено", st.unconfirmed_count],
     ["Прекратили обучение", st.discontinued_count],
@@ -21621,6 +21730,7 @@ async function _schedStartSync(resumeSnapshotId) {
 function _schedConfirmGenerateFoundation() {
   const stats = _schedState.stats || {};
   uiConfirmSheet({
+    scopeClass: "sched-scope",
     title: "Создать основу из прошлого года",
     message: `Будет обработано групп: ${stats.groups_count || 0}, детей: ${stats.students_count || 0}.\nВ МойКласс ничего не будет записано.\nУведомления клиентам не отправляются.\nПовторное нажатие не создаст дубли — уже существующие черновики останутся без изменений.`,
     confirmLabel: "Создать основу",
@@ -21798,10 +21908,11 @@ function _schedRenderGroupDetail() {
       ${d.students.length ? d.students.map(s => `
         <div class="sched-member-row">
           <div>
-            <p class="sched-member-row__name">${escapeHtml(s.child_display_name || `ID ${s.mk_user_id}`)}</p>
-            <p class="sched-member-row__tech">mk_user_id: ${escapeHtml(s.mk_user_id)} · занятий: ${s.lessons_attended || 0}</p>
+            ${_schedMemberNameHtml(s)}
+            <p class="sched-member-row__tech">регулярных занятий: ${s.lessons_attended || 0}${s.n_trial_visits ? ` · пробных: ${s.n_trial_visits}` : ""}${s.n_makeup_visits ? ` · отработок: ${s.n_makeup_visits}` : ""}${s.is_current_group === 0 ? " · прошлая группа" : ""}</p>
           </div>
           <div class="sched-member-row__badges">
+            ${s.regularity_category ? uiStatusBadge(SCHED_REGULARITY_LABELS[s.regularity_category] || s.regularity_category, SCHED_REGULARITY_TONE[s.regularity_category] || "muted") : ""}
             ${uiStatusBadge(SCHED_CONTINUATION_LABELS[s.continuation_status] || s.continuation_status, SCHED_CONTINUATION_TONE[s.continuation_status] || "muted")}
             ${uiStatusBadge(SCHED_MATCH_LABELS[s.availability_match] || s.availability_match, SCHED_MATCH_TONE[s.availability_match] || "muted")}
           </div>
@@ -21882,8 +21993,8 @@ function _schedRenderMembersListBody() {
   el.innerHTML = `<div class="sched-student-list">${members.map(m => `
     <div class="sched-member-row">
       <div>
-        <p class="sched-member-row__name">${escapeHtml(m.child_display_name || `ID ${m.mk_user_id}`)}</p>
-        <p class="sched-member-row__tech">mk_user_id: ${escapeHtml(m.mk_user_id)} · черновик: ${escapeHtml(m.draft_name || "")}</p>
+        ${_schedMemberNameHtml(m)}
+        <p class="sched-member-row__tech">черновик: ${escapeHtml(m.draft_name || "")}</p>
       </div>
       <div class="sched-member-row__badges">
         ${uiStatusBadge(SCHED_CONTINUATION_LABELS[m.continuation_status] || m.continuation_status, SCHED_CONTINUATION_TONE[m.continuation_status] || "muted")}
@@ -22016,8 +22127,8 @@ function _schedRenderDraftEditor() {
       ${_schedState.currentDraftMembers.map(m => `
         <div class="sched-member-row${m.manually_excluded ? " sched-member-row--excluded" : ""}">
           <div>
-            <p class="sched-member-row__name">${escapeHtml(m.child_display_name || `ID ${m.mk_user_id}`)}</p>
-            <p class="sched-member-row__tech">mk_user_id: ${escapeHtml(m.mk_user_id)}${m.internal_note ? " · " + escapeHtml(m.internal_note) : ""}</p>
+            ${_schedMemberNameHtml(m)}
+            ${m.internal_note ? `<p class="sched-member-row__tech">${escapeHtml(m.internal_note)}</p>` : ""}
           </div>
           <div class="sched-member-row__badges">
             ${uiStatusBadge(SCHED_CONTINUATION_LABELS[m.continuation_status] || m.continuation_status, SCHED_CONTINUATION_TONE[m.continuation_status] || "muted")}

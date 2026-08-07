@@ -1178,6 +1178,62 @@ class MoyKlassClient:
         """
         return self._scan_lesson_records_for_month(date_from, date_to, limit=limit)
 
+    def list_joins_for_classes(self, class_ids: list[int | str], page_size: int = 500, max_pages: int = 40) -> MoyKlassResult:
+        """v7.1.17.1 — bulk GET /v1/company/joins, used by the schedule module
+        to get real group-specific membership/join evidence for the
+        regularity classifier without any per-group N+1.
+
+        IMPORTANT — confirmed by live testing against the real account: this
+        endpoint's array-style "classIds" query param is silently NOT
+        honored (a request with classIds=[X] returns the exact same
+        unfiltered result set as no filter at all — verified by comparing
+        against the singular "classId=X" filter, which IS honored but only
+        accepts one id, i.e. would mean a real per-group N+1). So this
+        method deliberately sends NO classId filter at all — one plain
+        paginated GET /v1/company/joins for the whole account (e.g. 4375
+        joins fetched in 9 calls of page_size=500 for this account's full
+        history) — and filters to the requested class_ids client-side
+        instead. Still strictly bulk: the number of calls depends only on
+        total join count, never on how many groups the caller asks about.
+
+        Numeric params must be sent as real ints, not strings — the API
+        validator rejects a string limit/offset with a 400
+        RequestValidationError (confirmed empirically), unlike most other
+        MoyKlass endpoints in this client that accept string query params.
+        """
+        wanted = {int(c) for c in class_ids if str(c).strip().lstrip("-").isdigit()}
+        if not wanted:
+            return MoyKlassResult(True, data={"joins": []}, status=200, endpoint="/v1/company/joins")
+        collected: list[dict[str, Any]] = []
+        seen_ids: set = set()
+        offset = 0
+        last_result: Optional[MoyKlassResult] = None
+        for _ in range(max(1, int(max_pages))):
+            result = self.request("GET", "/v1/company/joins", params={"limit": int(page_size), "offset": int(offset)})
+            last_result = result
+            if not result.ok:
+                return result
+            page = result.data.get("joins") if isinstance(result.data, dict) else None
+            page = page if isinstance(page, list) else []
+            for item in page:
+                if not isinstance(item, dict):
+                    continue
+                jid = item.get("id")
+                if jid is not None and jid in seen_ids:
+                    continue
+                if jid is not None:
+                    seen_ids.add(jid)
+                try:
+                    item_class_id = int(item.get("classId"))
+                except (TypeError, ValueError):
+                    continue
+                if item_class_id in wanted:
+                    collected.append(item)
+            if len(page) < page_size:
+                break
+            offset += page_size
+        return MoyKlassResult(True, data={"joins": collected}, status=(last_result.status if last_result else 200), endpoint="/v1/company/joins")
+
     def get_classes(self, raw_args: str = "") -> MoyKlassResult:
         """Read MoyKlass groups/classes using several known endpoint variants."""
         params = self._parse_params(raw_args, default_limit="60")
