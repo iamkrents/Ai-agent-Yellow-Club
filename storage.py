@@ -13832,6 +13832,114 @@ class Storage:
             "sync_errors_count": sync_errors_count,
         }
 
+    # ── ALE-8 — draft planning PREVIEW (live, never persisted). Nothing is
+    # written to schedule_drafts/schedule_draft_members here — this is a
+    # deliberately separate, read-only method from generate_schedule_
+    # draft_foundation above, which already writes real drafts but (pre-
+    # ALE-8) does so one draft per source GROUP with no per-child current-
+    # group/regularity-aware baseline selection at all. This preview is the
+    # first step toward a smarter placement; it is not wired into that
+    # write path yet, and SCHEDULE_DRAFT_MUTATIONS_ENABLED gates neither
+    # this method nor its API route, since it saves nothing. ─────────────
+    def get_schedule_draft_preview(
+        self, snapshot_id: int, yc1_hint: str, yc2_hint: str, *, limit: int = 100, offset: int = 0,
+    ) -> dict[str, Any]:
+        limit = max(1, min(int(limit), 300))
+        offset = max(0, int(offset))
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT s.mk_user_id, s.child_display_name, s.group_id, s.regularity_category, "
+                "s.is_current_group, s.ambiguous_peer_group_ids, "
+                "g.name AS group_name, g.weekday, g.start_time, g.duration_minutes, g.branch_name "
+                "FROM schedule_source_group_students s JOIN schedule_source_groups g ON g.id = s.group_id "
+                "WHERE s.snapshot_id=? ORDER BY s.mk_user_id, s.group_id",
+                (int(snapshot_id),),
+            ).fetchall()
+
+        by_student: dict[str, list[dict[str, Any]]] = {}
+        for r in rows:
+            by_student.setdefault(r["mk_user_id"], []).append(dict(r))
+        student_ids = sorted(by_student.keys())
+
+        # One baseline decision + one bulk-resolver request per UNIQUE
+        # student (never per (student, group) pair) — same no-N+1
+        # discipline as get_schedule_overview_stats/schedule_group_detail
+        # (ALE-6 pre-merge fix): a single resolve_schedule_student_
+        # statuses_bulk call covers every student in the snapshot in
+        # chunk-bounded SQL, regardless of how many historical groups each
+        # one appears in.
+        baselines: dict[str, dict[str, Any]] = {}
+        bulk_requests: list[dict[str, Any]] = []
+        for uid in student_ids:
+            group_rows = [
+                {
+                    "group_id": r["group_id"],
+                    "regularity_category": r["regularity_category"],
+                    "is_current_group": (True if r["is_current_group"] == 1 else (False if r["is_current_group"] == 0 else None)),
+                }
+                for r in by_student[uid]
+            ]
+            baseline = schedule_domain.select_historical_baseline_group(group_rows)
+            baselines[uid] = baseline
+            if baseline["outcome"] == "found":
+                row = next(r for r in by_student[uid] if r["group_id"] == baseline["group_id"])
+                bulk_requests.append({
+                    "mk_user_id": uid, "weekday": row["weekday"], "start_time": row["start_time"],
+                    "duration_minutes": row["duration_minutes"],
+                    "group_branch_code": schedule_domain.branch_code_from_name(row["branch_name"], yc1_hint, yc2_hint),
+                })
+            else:
+                # No usable baseline slot to check Availability against —
+                # continuation is still resolved (it's a per-student, not
+                # per-group, signal), Availability match is irrelevant
+                # here since baseline_outcome alone already forces
+                # manual_review once continuation=continues (see
+                # build_schedule_draft_preview_decision).
+                bulk_requests.append({
+                    "mk_user_id": uid, "weekday": None, "start_time": None,
+                    "duration_minutes": None, "group_branch_code": "unknown",
+                })
+
+        statuses_by_user = {s["mk_user_id"]: s for s in self.resolve_schedule_student_statuses_bulk(bulk_requests)}
+
+        students: list[dict[str, Any]] = []
+        summary = {k: 0 for k in schedule_domain.SCHEDULE_PREVIEW_DECISIONS}
+        for uid in student_ids:
+            baseline = baselines[uid]
+            status = statuses_by_user.get(uid, {})
+            decision = schedule_domain.build_schedule_draft_preview_decision(
+                baseline_outcome=baseline["outcome"],
+                continuation_status=status.get("continuation_status", "unconfirmed"),
+                continuation_detail=status.get("continuation_detail", "status_not_found"),
+                availability_match=status.get("availability_match", "ambiguous_availability"),
+                availability_detail=status.get("availability_detail", "no_onboarding_record"),
+            )
+            historical = None
+            if baseline["outcome"] == "found":
+                historical = next(r for r in by_student[uid] if r["group_id"] == baseline["group_id"])
+            first_row = by_student[uid][0]
+            students.append({
+                "mk_user_id": uid,
+                "child_display_name": (historical or first_row)["child_display_name"],
+                "historical_group_id": historical["group_id"] if historical else None,
+                "historical_group_name": historical["group_name"] if historical else None,
+                "historical_weekday": historical["weekday"] if historical else None,
+                "historical_start_time": historical["start_time"] if historical else None,
+                "baseline_outcome": baseline["outcome"],
+                "ambiguous_candidate_group_ids": baseline.get("candidate_group_ids", []),
+                "continuation_status": status.get("continuation_status", "unconfirmed"),
+                "continuation_detail": status.get("continuation_detail", "status_not_found"),
+                "availability_match": status.get("availability_match", "ambiguous_availability"),
+                "availability_detail": status.get("availability_detail", "no_onboarding_record"),
+                "decision": decision["decision"],
+                "reason_codes": decision["reason_codes"],
+            })
+            summary[decision["decision"]] += 1
+        summary["total"] = len(students)
+
+        page = students[offset:offset + limit]
+        return {"ok": True, "students": page, "total": len(students), "limit": limit, "offset": offset, "summary": summary}
+
     # ── Conflict detection (live, never persisted — recomputed on read) ─
     def get_schedule_draft_conflicts(self, draft_id: int) -> dict[str, Any]:
         draft = self.get_schedule_draft(draft_id)
