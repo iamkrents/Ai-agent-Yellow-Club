@@ -48,7 +48,6 @@ SCHEDULE_REGULARITY_CATEGORIES = (
 # this threshold is ever applied, never by discarding the whole pair.
 REGULARITY_MIN_VISITS = 5
 REGULARITY_MIN_SLOT_RATIO = 0.75
-REGULARITY_MEDIUM_MIN_VISITS = 2
 REGULARITY_OTHER_VISITOR_MAX_VISITS = 3
 # "Material overlap" between two candidate strong (confirmed/high) groups for
 # the same student — both conditions required, agreed explicitly rather than
@@ -264,31 +263,84 @@ def classify_group_student_regularity(
     real MoyKlass join row for this exact (userId, classId) with paid
     stats) — never "has a subscription somewhere" in general.
 
-    Deliberately keeps membership evidence (group_specific_evidence) and
-    schedule/slot confidence (slot_ratio) as two independent inputs, never
-    collapsed into one blended "confidence" score — a caller that only
-    wants membership certainty, or only wants schedule stability, can read
-    the field it needs without the other diluting it."""
+    MEMBERSHIP vs SCHEDULE CONFIDENCE ARE SEPARATE QUESTIONS:
+    regular_confirmed means ONLY "there is reliable group-specific
+    membership evidence" — it carries NO attendance-count or slot-ratio
+    threshold. A confirmed member with zero/weak attendance history is
+    still regular_confirmed; whether that pair is additionally usable for
+    dominant-slot / foundation inference is a SEPARATE question, answered
+    by is_foundation_eligible() below, never by this category alone.
+    group_specific_evidence, n_regular and slot_ratio are always returned
+    as independent fields — never blended into one score.
+
+    regular_inferred_high / regular_inferred_medium are the OPPOSITE case:
+    they only ever apply when group_specific_evidence is False — they are
+    attendance-pattern inference used specifically BECAUSE no membership
+    evidence exists, never a weaker version of regular_confirmed."""
+    if group_specific_evidence:
+        # Membership evidence alone is sufficient and final — no attendance
+        # threshold gates the category itself (see docstring above).
+        return {"category": "regular_confirmed", "membership_evidence": True, "slot_ratio": slot_ratio}
+
     if n_regular == 0:
-        category = "makeup" if (n_makeup > 0 and n_trial == 0) else "trial"
+        if n_trial > 0 and n_makeup == 0:
+            category = "trial"
+        elif n_makeup > 0 and n_trial == 0:
+            category = "makeup"
+        else:
+            # both zero, or mixed trial+makeup with no real attendance at
+            # all — including the "lesson relation exists but every record
+            # is visit=false" case: never silently defaults to "trial".
+            category = "insufficient_evidence"
         return {"category": category, "membership_evidence": False, "slot_ratio": None}
 
+    if not is_primary_group_for_student and n_regular <= REGULARITY_OTHER_VISITOR_MAX_VISITS:
+        # more specific than the medium-confidence bucket below — a short
+        # secondary-group visit history must never become "medium".
+        return {"category": "other_group_visitor", "membership_evidence": False, "slot_ratio": slot_ratio}
+
     if n_regular == 1:
-        category = "one_off" if group_specific_evidence else "insufficient_evidence"
-        return {"category": category, "membership_evidence": group_specific_evidence, "slot_ratio": slot_ratio}
+        return {"category": "one_off", "membership_evidence": False, "slot_ratio": slot_ratio}
 
-    if group_specific_evidence and n_regular >= REGULARITY_MIN_VISITS and (slot_ratio is None or slot_ratio >= REGULARITY_MIN_SLOT_RATIO):
-        category = "regular_confirmed"
-    elif group_specific_evidence and n_regular >= REGULARITY_MIN_VISITS:
+    if n_regular >= REGULARITY_MIN_VISITS and slot_ratio is not None and slot_ratio >= REGULARITY_MIN_SLOT_RATIO:
         category = "regular_inferred_high"
-    elif group_specific_evidence and n_regular >= REGULARITY_MEDIUM_MIN_VISITS:
-        category = "regular_inferred_medium"
-    elif not group_specific_evidence and not is_primary_group_for_student and n_regular <= REGULARITY_OTHER_VISITOR_MAX_VISITS:
-        category = "other_group_visitor"
     else:
-        category = "insufficient_evidence"
+        # n_regular in [2, MIN_VISITS) primary/non-visitor, OR n_regular >=
+        # MIN_VISITS but the slot pattern is unknown/insufficient (< 0.75).
+        category = "regular_inferred_medium"
 
-    return {"category": category, "membership_evidence": group_specific_evidence, "slot_ratio": slot_ratio}
+    return {"category": category, "membership_evidence": False, "slot_ratio": slot_ratio}
+
+
+def is_foundation_eligible(
+    *, category: str, is_current_group: Optional[bool], n_regular: int, slot_ratio: Optional[float],
+) -> bool:
+    """ALE-6 point 2 — foundation/dominant-slot eligibility is NEVER implied
+    by regularity_category alone (a category is a membership/attendance
+    classification, not a scheduling readiness signal). A pair is only
+    eligible once ALL of the following hold:
+    - category is regular_confirmed or regular_inferred_high (never medium
+      or below — a confirmed member with weak attendance is real
+      membership, but not enough schedule signal to seed a slot from);
+    - it is that student's CURRENT group (never an ambiguous or superseded
+      one — resolve_current_and_ambiguous_groups already decided this);
+    - the attendance pattern itself clears the same visits/ratio bar used
+      for regular_inferred_high, regardless of how membership was decided.
+
+    Purely advisory in this release — SCHEDULE_FOUNDATION_ENABLED and
+    SCHEDULE_DRAFT_MUTATIONS_ENABLED stay off, so nothing currently acts on
+    this value; it exists so the persisted classification already carries
+    the right answer once that gate opens, instead of being recomputed
+    ad hoc at that point."""
+    if category not in ("regular_confirmed", "regular_inferred_high"):
+        return False
+    if is_current_group is not True:
+        return False
+    if slot_ratio is None or slot_ratio < REGULARITY_MIN_SLOT_RATIO:
+        return False
+    if n_regular < REGULARITY_MIN_VISITS:
+        return False
+    return True
 
 
 _REGULARITY_STRONG_CATEGORIES = frozenset({"regular_confirmed", "regular_inferred_high"})

@@ -510,6 +510,10 @@ def _execute_sync(storage, moyklass: MoyKlassClient, snapshot_id: int) -> None:
             peer_class_ids = res.get("ambiguous_peer_keys") or []
             evidence = "attendance" if sb["n_regular"] > 0 else "membership"
             confidence = "high" if sb["n_regular"] >= 4 else ("medium" if sb["n_regular"] > 0 else "low")
+            foundation_eligible = schedule_domain.is_foundation_eligible(
+                category=final_category, is_current_group=is_current,
+                n_regular=sb["n_regular"], slot_ratio=base["slot_ratio"],
+            )
             storage.upsert_schedule_source_group_student(
                 snapshot_id, e["group_id"], student_id,
                 child_display_name=sb["child_display_name"], lessons_attended=sb["n_regular"],
@@ -521,6 +525,7 @@ def _execute_sync(storage, moyklass: MoyKlassClient, snapshot_id: int) -> None:
                 slot_regularity_ratio=base["slot_ratio"],
                 is_current_group=(1 if is_current is True else (0 if is_current is False else None)),
                 ambiguous_peer_group_ids=",".join(peer_class_ids),
+                foundation_eligible=1 if foundation_eligible else 0,
             )
             students_found += 1
         storage.update_schedule_sync_progress(snapshot_id, students_found=students_found)

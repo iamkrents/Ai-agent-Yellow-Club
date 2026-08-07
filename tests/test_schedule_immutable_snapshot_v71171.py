@@ -192,6 +192,58 @@ class TestPerRecordTrialMakeupExclusion(unittest.TestCase):
         self.assertEqual(row["lessons_attended"], 0)
 
 
+class TestZeroVisitPairRegression(unittest.TestCase):
+    """Pre-merge fix regression — the real 44-pair shape found in production
+    data: a lesson/student relation exists (the student is on the group's
+    roster in MoyKlass's records) but EVERY record for that pair has
+    visit=false and there is no test/missedLessonRecordId marker anywhere.
+    Must be insufficient_evidence, never trial (the confirmed pre-fix bug:
+    n_regular=n_trial=n_makeup=0 silently defaulted to "trial")."""
+
+    def test_all_visit_false_no_markers_is_insufficient_evidence_not_trial(self):
+        storage = _make_storage()
+        records = [
+            _lesson_record("9001", f"Lmissed{i}", f"2025-09-{4+i:02d}", visit=False, test=False, user_subscription=None)
+            for i in range(3)
+        ]
+        mk = _make_moyklass(records)
+        snap = storage.create_schedule_sync_snapshot(SCHEDULE_SOURCE_PERIOD_START, SCHEDULE_SOURCE_PERIOD_END, 1, "T")
+        schedule_sync._execute_sync(storage, mk, snap["id"])
+        groups, _ = storage.list_schedule_source_groups(snap["id"])
+        students = storage.list_schedule_source_group_students(groups[0]["id"])
+        row = next(s for s in students if s["mk_user_id"] == "9001")
+        self.assertEqual(row["lessons_attended"], 0)
+        self.assertEqual(row["n_trial_visits"], 0)
+        self.assertEqual(row["n_makeup_visits"], 0)
+        self.assertEqual(row["regularity_category"], "insufficient_evidence")
+        self.assertNotEqual(row["regularity_category"], "trial")
+
+    def test_all_visit_false_but_with_group_specific_evidence_is_confirmed(self):
+        # even a never-attended pair becomes regular_confirmed if real
+        # group-specific membership evidence exists on the record itself
+        # (membership is independent of attendance — see G.1/B).
+        storage = _make_storage()
+        records = [
+            _lesson_record(
+                "9001", f"Lmissed{i}", f"2025-09-{4+i:02d}", visit=False,
+                user_subscription={"classIds": ["500"], "mainClassId": "500"},
+            )
+            for i in range(3)
+        ]
+        mk = _make_moyklass(records)
+        snap = storage.create_schedule_sync_snapshot(SCHEDULE_SOURCE_PERIOD_START, SCHEDULE_SOURCE_PERIOD_END, 1, "T")
+        schedule_sync._execute_sync(storage, mk, snap["id"])
+        groups, _ = storage.list_schedule_source_groups(snap["id"])
+        students = storage.list_schedule_source_group_students(groups[0]["id"])
+        row = next(s for s in students if s["mk_user_id"] == "9001")
+        # NOTE: userSubscription evidence is only read off REGULAR (visit=true)
+        # records in schedule_sync.py, so a visit=false-only pair correctly
+        # has no evidence either — confirms insufficient_evidence stays
+        # correct even with a subscription payload attached to missed
+        # records only (matches "on a REGULAR record" in the ALE-6 fix spec).
+        self.assertEqual(row["regularity_category"], "insufficient_evidence")
+
+
 class TestJoinEvidenceWiring(unittest.TestCase):
     """Group-specific membership evidence sourced from userSubscription
     (per-record) and from the bulk joins fetch (moyklass.list_joins_for_

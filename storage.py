@@ -840,6 +840,11 @@ class Storage:
         # row was never a candidate — e.g. it's a trial/one_off row).
         self._ensure_column(conn, "schedule_source_group_students", "is_current_group", "is_current_group INTEGER")
         self._ensure_column(conn, "schedule_source_group_students", "ambiguous_peer_group_ids", "ambiguous_peer_group_ids TEXT NOT NULL DEFAULT ''")
+        # v7.1.17.1 pre-merge fix — schedule_domain.is_foundation_eligible's
+        # answer, persisted so it doesn't need recomputing ad hoc once the
+        # foundation/mutations flags ever turn on. Purely advisory today —
+        # nothing reads it while SCHEDULE_FOUNDATION_ENABLED stays false.
+        self._ensure_column(conn, "schedule_source_group_students", "foundation_eligible", "foundation_eligible INTEGER NOT NULL DEFAULT 0")
 
         # Raw-enough lesson rows to justify the dominant-slot computation and
         # to show evidence in the UI — not a full copy of the MoyKlass payload.
@@ -13077,7 +13082,7 @@ class Storage:
     _SSGS_FIELDS = frozenset({
         "child_display_name", "lessons_attended", "first_seen_date", "last_seen_date", "evidence_source", "confidence",
         "n_trial_visits", "n_makeup_visits", "regularity_category", "membership_evidence", "slot_regularity_ratio",
-        "is_current_group", "ambiguous_peer_group_ids",
+        "is_current_group", "ambiguous_peer_group_ids", "foundation_eligible",
     })
 
     def upsert_schedule_source_group_student(self, snapshot_id: int, group_id: int, mk_user_id: str, **fields: Any) -> int:
@@ -13249,6 +13254,138 @@ class Storage:
             "preferred_branch": preferred_branch,
             "available_from": available_from,
         }
+
+    # v7.1.17.1 pre-merge fix — SQLite IN(...) chunk size for the bulk
+    # schedule-status resolvers below. Conservative relative to SQLite's
+    # own default variable limit (historically 999, 32766 on modern
+    # builds) since a single query here also carries a handful of other
+    # bound params alongside the chunk itself.
+    _SCHEDULE_BULK_CHUNK_SIZE = 400
+
+    def _bulk_find_onboarding_recipients(self, mk_user_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+        """Same rows/ordering as find_onboarding_recipients_by_mk_user
+        (per user: newest-updated first), for every id in mk_user_ids, in
+        ceil(n/_SCHEDULE_BULK_CHUNK_SIZE) queries — never one per id."""
+        ids = sorted({str(x) for x in mk_user_ids if str(x or "").strip()})
+        by_user: dict[str, list[dict[str, Any]]] = {uid: [] for uid in ids}
+        if not ids:
+            return by_user
+        chunk = self._SCHEDULE_BULK_CHUNK_SIZE
+        with self._connect() as conn:
+            for i in range(0, len(ids), chunk):
+                batch = ids[i:i + chunk]
+                placeholders = ",".join("?" for _ in batch)
+                rows = conn.execute(
+                    f"SELECT * FROM client_onboarding_recipients WHERE mk_user_id IN ({placeholders}) "
+                    f"ORDER BY mk_user_id, updated_at DESC",
+                    batch,
+                ).fetchall()
+                for r in rows:
+                    by_user[str(r["mk_user_id"])].append(dict(r))
+        return by_user
+
+    def _bulk_has_active_parent_link(self, mk_user_ids: list[str]) -> dict[str, bool]:
+        """Bulk equivalent of has_active_parent_link — one boolean per id,
+        chunk-bounded query count."""
+        ids = sorted({str(x) for x in mk_user_ids if str(x or "").strip()})
+        result = {uid: False for uid in ids}
+        if not ids:
+            return result
+        chunk = self._SCHEDULE_BULK_CHUNK_SIZE
+        with self._connect() as conn:
+            for i in range(0, len(ids), chunk):
+                batch = ids[i:i + chunk]
+                placeholders = ",".join("?" for _ in batch)
+                rows = conn.execute(
+                    f"SELECT DISTINCT mk_user_id FROM client_parent_child_links "
+                    f"WHERE mk_user_id IN ({placeholders}) AND status='active'",
+                    batch,
+                ).fetchall()
+                for r in rows:
+                    result[str(r["mk_user_id"])] = True
+        return result
+
+    def _bulk_schedule_availability_intervals(self, recipient_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+        """Bulk equivalent of get_schedule_availability's interval fetch
+        (client_schedule_availability WHERE recipient_id IN (...)) —
+        chunk-bounded, never one query per recipient."""
+        ids = sorted({int(x) for x in recipient_ids if x})
+        by_recipient: dict[int, list[dict[str, Any]]] = {rid: [] for rid in ids}
+        if not ids:
+            return by_recipient
+        chunk = self._SCHEDULE_BULK_CHUNK_SIZE
+        with self._connect() as conn:
+            for i in range(0, len(ids), chunk):
+                batch = ids[i:i + chunk]
+                placeholders = ",".join("?" for _ in batch)
+                rows = conn.execute(
+                    f"SELECT * FROM client_schedule_availability WHERE recipient_id IN ({placeholders}) "
+                    f"ORDER BY recipient_id, weekday ASC, start_time ASC",
+                    batch,
+                ).fetchall()
+                for r in rows:
+                    by_recipient[int(r["recipient_id"])].append(
+                        {"weekday": r["weekday"], "start_time": r["start_time"], "end_time": r["end_time"], "preference": r["preference"]}
+                    )
+        return by_recipient
+
+    def resolve_schedule_student_statuses_bulk(self, requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Bulk equivalent of resolve_schedule_student_status — same output
+        shape, one result per request in the same order, but the number of
+        SQL queries depends only on len(unique mk_user_ids) / chunk size,
+        never on len(requests). Every schedule overview/detail loop over
+        many (student, group) pairs MUST use this, never call resolve_
+        schedule_student_status once per row (that reintroduces the exact
+        per-student N+1 this method exists to eliminate — see ALE-6
+        pre-merge review). resolve_schedule_student_status itself stays
+        available for genuine single-item lookups (e.g. one draft-member
+        action).
+
+        requests: [{"mk_user_id", "weekday", "start_time",
+        "duration_minutes", "group_branch_code", "planned_start_date"?}, ...]
+        """
+        unique_ids = sorted({str(r["mk_user_id"]) for r in requests})
+        recipients_by_user = self._bulk_find_onboarding_recipients(unique_ids)
+        parent_link_by_user = self._bulk_has_active_parent_link(unique_ids)
+        latest_by_user = {uid: (rows[0] if rows else None) for uid, rows in recipients_by_user.items()}
+        recipient_ids = [int(r["id"]) for r in latest_by_user.values() if r]
+        intervals_by_recipient = self._bulk_schedule_availability_intervals(recipient_ids)
+
+        results: list[dict[str, Any]] = []
+        for req in requests:
+            uid = str(req["mk_user_id"])
+            recipients = recipients_by_user.get(uid, [])
+            has_any_recipient = bool(recipients)
+            continuation = schedule_domain.resolve_continuation(
+                [r["continuation_status"] for r in recipients], has_any_recipient=has_any_recipient,
+            )
+            latest = latest_by_user.get(uid)
+            intervals: list[dict[str, Any]] = []
+            preferred_branch = "unknown"
+            available_from = None
+            if latest:
+                intervals = intervals_by_recipient.get(int(latest["id"]), [])
+                preferred_branch = latest.get("preferred_branch") or "unknown"
+                available_from = latest.get("available_from")
+            has_parent_link = parent_link_by_user.get(uid, False)
+            match = schedule_domain.match_availability(
+                continuation["status"], req.get("weekday"), req.get("start_time"), req.get("duration_minutes"),
+                req.get("group_branch_code", "unknown"), intervals, preferred_branch, available_from,
+                req.get("planned_start_date"), has_any_recipient=has_any_recipient, has_parent_link=has_parent_link,
+            )
+            results.append({
+                "mk_user_id": uid,
+                "continuation_status": continuation["status"],
+                "continuation_detail": continuation["detail"],
+                "continuation_reason": continuation["reason"],
+                "availability_match": match["match"],
+                "availability_detail": match["detail"],
+                "availability_reason": match["reason"],
+                "recipient_id": int(latest["id"]) if latest else None,
+                "preferred_branch": preferred_branch,
+                "available_from": available_from,
+            })
+        return results
 
     # ── Drafts: generation ──────────────────────────────────────────────
     def generate_schedule_draft_foundation(
@@ -13635,17 +13772,24 @@ class Storage:
         continuation_detail_by_student: dict[str, str] = {}
         match_counts: Counter = Counter()
         availability_detail_counts: Counter = Counter()
-        for row in member_rows:
-            group_branch_code = schedule_domain.branch_code_from_name(row["branch_name"], yc1_hint, yc2_hint)
-            status = self.resolve_schedule_student_status(
-                row["mk_user_id"], weekday=row["weekday"], start_time=row["start_time"],
-                duration_minutes=row["duration_minutes"], group_branch_code=group_branch_code,
-            )
+        # v7.1.17.1 pre-merge fix — bulk-resolved (chunk-bounded SQL), never
+        # one resolve_schedule_student_status() call per member row (that
+        # was the confirmed N+1: ~2 SQL queries x every (student,group)
+        # pair, e.g. 2394 queries for 1193 pairs / 587 students).
+        bulk_requests = [
+            {
+                "mk_user_id": row["mk_user_id"], "weekday": row["weekday"], "start_time": row["start_time"],
+                "duration_minutes": row["duration_minutes"],
+                "group_branch_code": schedule_domain.branch_code_from_name(row["branch_name"], yc1_hint, yc2_hint),
+            }
+            for row in member_rows
+        ]
+        for status in self.resolve_schedule_student_statuses_bulk(bulk_requests):
             # A student in several groups keeps whichever resolution the loop
-            # visits last — resolve_schedule_student_status is independent of
-            # which group asked, so every visit agrees on continuation anyway.
-            continuation_by_student[row["mk_user_id"]] = status["continuation_status"]
-            continuation_detail_by_student[row["mk_user_id"]] = status["continuation_detail"]
+            # visits last — continuation is independent of which group asked,
+            # so every visit agrees on continuation anyway.
+            continuation_by_student[status["mk_user_id"]] = status["continuation_status"]
+            continuation_detail_by_student[status["mk_user_id"]] = status["continuation_detail"]
             match_counts[status["availability_match"]] += 1
             availability_detail_counts[status["availability_detail"]] += 1
 
