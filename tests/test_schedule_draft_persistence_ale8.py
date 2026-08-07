@@ -11,6 +11,12 @@ caller-supplied member list can influence what gets persisted. Nothing is
 written to MoyKlass. Deliberately not built on generate_schedule_draft_
 foundation (group-centric, no regularity-aware baseline filtering).
 
+Review-gate fix: persistence is INCREMENTAL, not skip-if-exists — an
+already-existing draft still accepts newly-eligible children on a later
+call (continuation/Availability answers arrive gradually), while never
+touching an existing member's manual fields and never removing a member
+whose decision later changes (additive-only in this step).
+
 Run offline:
     python -m unittest tests.test_schedule_draft_persistence_ale8 -v
 """
@@ -279,7 +285,7 @@ class TestIdempotentRepeatSubmit(unittest.TestCase):
         self.assertEqual(r1["drafts_created"], 1)
         self.assertEqual(r2["drafts_created"], 0)
         self.assertEqual(r2["drafts_already_existed"], 1)
-        self.assertEqual(r2["members_added"], 0, "repeat call must not touch members of an existing draft")
+        self.assertEqual(r2["members_added"], 0, "no NEW eligible children between calls -> nothing added")
 
         drafts, total = storage.list_schedule_drafts(source_snapshot_id=snap["id"], limit=50)
         self.assertEqual(total, 1, "no duplicate draft on repeat submit")
@@ -305,6 +311,200 @@ class TestIdempotentRepeatSubmit(unittest.TestCase):
         row = next(m for m in members if m["mk_user_id"] == "9502")
         self.assertEqual(row["manually_excluded"], 1, "repeat persist must not resurrect a manually-excluded member")
 
+    def test_repeat_submit_does_not_create_duplicate_for_manually_excluded_child(self):
+        storage = _make_storage()
+        snap = storage.create_schedule_sync_snapshot("2025-09-01", "2026-05-31", 1, "T")
+        group_id = _seed_group(storage, snap["id"], "500")
+        _seed_keep_child(storage, snap["id"], group_id, "9503", "Ольга")
+        storage.finish_schedule_sync_snapshot(snap["id"], "completed", activate=True)
+        storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+        drafts, _ = storage.list_schedule_drafts(source_snapshot_id=snap["id"], limit=50)
+        draft_id = drafts[0]["id"]
+        storage.exclude_schedule_draft_member(draft_id, "9503", 1, "Тест")
+
+        result = storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+        self.assertEqual(result["members_added"], 0, "an already-present member (even excluded) is never re-added")
+        members = storage.list_schedule_draft_members(draft_id)
+        self.assertEqual(len(members), 1, "no duplicate row for the excluded child")
+
+    def test_repeat_submit_does_not_overwrite_manual_note_or_inclusion_flag(self):
+        storage = _make_storage()
+        snap = storage.create_schedule_sync_snapshot("2025-09-01", "2026-05-31", 1, "T")
+        group_id = _seed_group(storage, snap["id"], "500")
+        _seed_keep_child(storage, snap["id"], group_id, "9504", "Павел")
+        storage.finish_schedule_sync_snapshot(snap["id"], "completed", activate=True)
+        storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+        drafts, _ = storage.list_schedule_drafts(source_snapshot_id=snap["id"], limit=50)
+        draft_id = drafts[0]["id"]
+        storage.update_schedule_draft_member_note(draft_id, "9504", "Родитель просил вторник", 1, "Тест")
+        with storage._connect() as conn:
+            conn.execute(
+                "UPDATE schedule_draft_members SET manually_included=1 WHERE draft_id=? AND mk_user_id=?",
+                (draft_id, "9504"),
+            )
+
+        storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+        members = storage.list_schedule_draft_members(draft_id)
+        row = next(m for m in members if m["mk_user_id"] == "9504")
+        self.assertEqual(row["internal_note"], "Родитель просил вторник", "manual note must survive repeat persist")
+        self.assertEqual(row["manually_included"], 1, "manual inclusion flag must survive repeat persist")
+
+
+class TestIncrementalPersist(unittest.TestCase):
+    """Review-gate fix: continuation/Availability answers arrive gradually
+    — an existing draft must accept newly-eligible children on a later
+    persist call, never lose them because the group was already
+    'skipped'."""
+
+    def test_first_persist_six_children_creates_draft_with_six_members(self):
+        storage = _make_storage()
+        snap = storage.create_schedule_sync_snapshot("2025-09-01", "2026-05-31", 1, "T")
+        group_id = _seed_group(storage, snap["id"], "500")
+        for i in range(6):
+            _seed_keep_child(storage, snap["id"], group_id, f"91{i:02d}", f"Ребёнок {i}")
+        storage.finish_schedule_sync_snapshot(snap["id"], "completed", activate=True)
+
+        result = storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+        self.assertEqual(result["drafts_created"], 1)
+        self.assertEqual(result["members_added"], 6)
+        drafts, _ = storage.list_schedule_drafts(source_snapshot_id=snap["id"], limit=50)
+        self.assertEqual(len(storage.list_schedule_draft_members(drafts[0]["id"])), 6)
+
+    def test_second_persist_same_data_still_six_members_zero_duplicates(self):
+        storage = _make_storage()
+        snap = storage.create_schedule_sync_snapshot("2025-09-01", "2026-05-31", 1, "T")
+        group_id = _seed_group(storage, snap["id"], "500")
+        for i in range(6):
+            _seed_keep_child(storage, snap["id"], group_id, f"92{i:02d}", f"Ребёнок {i}")
+        storage.finish_schedule_sync_snapshot(snap["id"], "completed", activate=True)
+
+        storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+        r2 = storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+
+        self.assertEqual(r2["drafts_created"], 0)
+        self.assertEqual(r2["members_added"], 0)
+        drafts, total = storage.list_schedule_drafts(source_snapshot_id=snap["id"], limit=50)
+        self.assertEqual(total, 1)
+        self.assertEqual(len(storage.list_schedule_draft_members(drafts[0]["id"])), 6)
+
+    def test_new_eligible_child_appears_later_gets_added_to_existing_draft(self):
+        storage = _make_storage()
+        snap = storage.create_schedule_sync_snapshot("2025-09-01", "2026-05-31", 1, "T")
+        group_id = _seed_group(storage, snap["id"], "500")
+        for i in range(6):
+            _seed_keep_child(storage, snap["id"], group_id, f"93{i:02d}", f"Ребёнок {i}")
+        storage.finish_schedule_sync_snapshot(snap["id"], "completed", activate=True)
+        storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+        drafts, _ = storage.list_schedule_drafts(source_snapshot_id=snap["id"], limit=50)
+        draft_id = drafts[0]["id"]
+        self.assertEqual(len(storage.list_schedule_draft_members(draft_id)), 6)
+
+        # A day later, a 7th child answers continues + compatible Availability.
+        _seed_keep_child(storage, snap["id"], group_id, "9307", "Седьмой")
+        r2 = storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+        self.assertEqual(r2["drafts_created"], 0, "must not recreate the draft")
+        self.assertEqual(r2["drafts_already_existed"], 1)
+        self.assertEqual(r2["created_draft_ids"], [])
+        self.assertEqual(r2["members_added"], 1, "only the newly-eligible child is added")
+
+        members = storage.list_schedule_draft_members(draft_id)
+        self.assertEqual(len(members), 7)
+        self.assertIn("9307", [m["mk_user_id"] for m in members])
+
+        # A third call with no further new data changes nothing.
+        r3 = storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+        self.assertEqual(r3["members_added"], 0)
+        self.assertEqual(len(storage.list_schedule_draft_members(draft_id)), 7)
+
+    def test_two_existing_drafts_new_eligible_members_in_both(self):
+        storage = _make_storage()
+        snap = storage.create_schedule_sync_snapshot("2025-09-01", "2026-05-31", 1, "T")
+        group_a = _seed_group(storage, snap["id"], "500", weekday=3, start_time="10:00")
+        group_b = _seed_group(storage, snap["id"], "501", weekday=5, start_time="12:00")
+        _seed_keep_child(storage, snap["id"], group_a, "9611", "Олег", weekday=3, start_time="10:00")
+        _seed_keep_child(storage, snap["id"], group_b, "9612", "Полина", weekday=5, start_time="12:00")
+        storage.finish_schedule_sync_snapshot(snap["id"], "completed", activate=True)
+        storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+
+        _seed_keep_child(storage, snap["id"], group_a, "9613", "Рита", weekday=3, start_time="10:00")
+        _seed_keep_child(storage, snap["id"], group_b, "9614", "Саша", weekday=5, start_time="12:00")
+        result = storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+
+        self.assertEqual(result["drafts_created"], 0, "no new drafts — both groups already had one")
+        self.assertEqual(result["drafts_already_existed"], 2)
+        self.assertEqual(result["members_added"], 2)
+
+        drafts, total = storage.list_schedule_drafts(source_snapshot_id=snap["id"], limit=50)
+        self.assertEqual(total, 2, "still exactly two drafts, not four")
+        all_member_ids = set()
+        for d in drafts:
+            for m in storage.list_schedule_draft_members(d["id"]):
+                all_member_ids.add(m["mk_user_id"])
+        self.assertEqual(all_member_ids, {"9611", "9612", "9613", "9614"})
+
+    def test_child_becoming_stopped_after_persist_is_not_removed_additive_only(self):
+        # explicit, intentional additive-only behavior: automatic removal/
+        # reconciliation is a separate future rule, not part of this step.
+        storage = _make_storage()
+        snap = storage.create_schedule_sync_snapshot("2025-09-01", "2026-05-31", 1, "T")
+        group_id = _seed_group(storage, snap["id"], "500")
+        _seed_keep_child(storage, snap["id"], group_id, "9403", "Вика")
+        storage.finish_schedule_sync_snapshot(snap["id"], "completed", activate=True)
+        storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+        drafts, _ = storage.list_schedule_drafts(source_snapshot_id=snap["id"], limit=50)
+        draft_id = drafts[0]["id"]
+        self.assertEqual(len(storage.list_schedule_draft_members(draft_id)), 1)
+
+        # Family later withdraws — an explicit refusal record always wins
+        # over the earlier "continues" (schedule_domain.resolve_continuation
+        # priority), so this child's preview decision becomes "stopped".
+        _seed_recipient(storage, "9403", "not_continuing", campaign_id=2)
+
+        result = storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+        self.assertEqual(result["members_added"], 0)
+        self.assertEqual(result["unresolved_breakdown"]["stopped"], 1)
+        members = storage.list_schedule_draft_members(draft_id)
+        self.assertEqual(len(members), 1, "additive-only: an existing member is never removed by this step")
+        self.assertEqual(members[0]["mk_user_id"], "9403")
+
+    def test_unresolved_breakdown_correct_alongside_incremental_add(self):
+        storage = _make_storage()
+        snap = storage.create_schedule_sync_snapshot("2025-09-01", "2026-05-31", 1, "T")
+        group_id = _seed_group(storage, snap["id"], "500")
+        _seed_keep_child(storage, snap["id"], group_id, "9701", "Кеша")
+        storage.finish_schedule_sync_snapshot(snap["id"], "completed", activate=True)
+        storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+
+        # add one of each unresolved kind, plus one more genuinely new
+        # keep_historical_slot child, before the second call.
+        storage.upsert_schedule_source_group_student(
+            snap["id"], group_id, "9702", child_display_name="Стоп", lessons_attended=9,
+            evidence_source="attendance", confidence="high", regularity_category="regular_confirmed",
+            membership_evidence=1, is_current_group=1,
+        )
+        _seed_recipient(storage, "9702", "not_continuing")
+        storage.upsert_schedule_source_group_student(
+            snap["id"], group_id, "9703", child_display_name="Пендинг", lessons_attended=9,
+            evidence_source="attendance", confidence="high", regularity_category="regular_confirmed",
+            membership_evidence=1, is_current_group=1,
+        )
+        _seed_recipient(storage, "9703", "unknown")
+        storage.upsert_schedule_source_group_student(
+            snap["id"], group_id, "9704", child_display_name="Манрев", lessons_attended=0,
+            evidence_source="membership", confidence="low", regularity_category="trial",
+            n_trial_visits=3, membership_evidence=0, is_current_group=None,
+        )
+        _seed_recipient(storage, "9704", "continues")
+        _seed_keep_child(storage, snap["id"], group_id, "9705", "Новенький")
+
+        result = storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+        self.assertEqual(result["members_added"], 1, "only 9705 is newly eligible")
+        self.assertEqual(result["unresolved_breakdown"]["stopped"], 1)
+        self.assertEqual(result["unresolved_breakdown"]["pending_confirmation"], 1)
+        self.assertEqual(result["unresolved_breakdown"]["manual_review"], 1)
+        self.assertEqual(result["unresolved_breakdown"]["needs_reassignment"], 0)
+        self.assertEqual(result["unresolved_total"], 3)
+
 
 class TestTransactionSafety(unittest.TestCase):
     def test_exception_midway_rolls_back_entire_batch(self):
@@ -324,6 +524,39 @@ class TestTransactionSafety(unittest.TestCase):
         # must have been rolled back too — the whole batch is one transaction.
         drafts, total = storage.list_schedule_drafts(source_snapshot_id=snap["id"], limit=50)
         self.assertEqual(total, 0, "a mid-batch exception must leave zero partially-created drafts")
+
+    def test_exception_during_incremental_add_rolls_back_whole_call(self):
+        # review-gate scenario: exception after a new member was added to
+        # ONE existing draft, but before the other group finished — the
+        # newly-added member must be rolled back too, not left committed.
+        storage = _make_storage()
+        snap = storage.create_schedule_sync_snapshot("2025-09-01", "2026-05-31", 1, "T")
+        group_a = _seed_group(storage, snap["id"], "500", weekday=3, start_time="10:00")
+        group_b = _seed_group(storage, snap["id"], "501", weekday=5, start_time="12:00")
+        _seed_keep_child(storage, snap["id"], group_a, "9621", "Артём", weekday=3, start_time="10:00")
+        _seed_keep_child(storage, snap["id"], group_b, "9622", "Дина", weekday=5, start_time="12:00")
+        storage.finish_schedule_sync_snapshot(snap["id"], "completed", activate=True)
+        storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+
+        drafts, _ = storage.list_schedule_drafts(source_snapshot_id=snap["id"], limit=50)
+        members_before = {d["id"]: len(storage.list_schedule_draft_members(d["id"])) for d in drafts}
+        self.assertEqual(list(members_before.values()), [1, 1])
+
+        # new eligible children in both existing groups' drafts
+        _seed_keep_child(storage, snap["id"], group_a, "9623", "Рита", weekday=3, start_time="10:00")
+        _seed_keep_child(storage, snap["id"], group_b, "9624", "Саша", weekday=5, start_time="12:00")
+
+        # 3rd matching statement = group A's 9621 (ignored) + 9623 (real
+        # insert, succeeds) + group B's 9622 (would-be-ignored) -> raise
+        # right as group B starts, AFTER group A's new member (9623) was
+        # already written (uncommitted) in this same call.
+        with _raise_on_nth_insert(storage, "INSERT OR IGNORE INTO schedule_draft_members", 3):
+            with self.assertRaises(RuntimeError):
+                storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
+
+        for draft_id, before_count in members_before.items():
+            after_count = len(storage.list_schedule_draft_members(draft_id))
+            self.assertEqual(after_count, before_count, "mid-batch exception must roll back the already-added new member too")
 
 
 class TestServerRecomputesNoArbitraryMembers(unittest.TestCase):

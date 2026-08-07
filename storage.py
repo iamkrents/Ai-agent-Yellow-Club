@@ -13978,23 +13978,35 @@ class Storage:
     # there is no parameter through which a frontend-supplied mk_user_id
     # list could influence what gets persisted.
     #
-    # Idempotent per source group: if a draft for (snapshot_id,
-    # source_group_id) already exists, it is left completely untouched —
-    # no member (re-)insertion — so a repeat call never creates duplicate
-    # drafts/members and never disturbs a client_manager's prior manual
-    # edits/exclusions on an already-generated draft. A brand-new group
-    # with keep_historical_slot children always gets a fresh draft plus
-    # its members, in the same idiom as generate_schedule_draft_foundation
-    # (INSERT ... then INSERT OR IGNORE per member, defense-in-depth on
-    # top of the per-group skip).
+    # v7.1.18 review-gate fix — INCREMENTAL + idempotent per source group,
+    # never "skip the whole group forever" (continuation/Availability
+    # answers arrive gradually; a 7th child answering the day after the
+    # first persist must still be able to join the already-created draft).
+    # If a draft for (snapshot_id, source_group_id) already exists, the
+    # draft row itself (status/version/name/slot/etc.) is left completely
+    # untouched — never recreated, never re-stamped — and only genuinely
+    # NEW keep_historical_slot children (mk_user_id not already present as
+    # a schedule_draft_members row for that draft) are inserted. An
+    # already-present member is never re-inserted or altered regardless of
+    # its manually_excluded/manually_included/internal_note/conflict_reason
+    # state — INSERT OR IGNORE on the UNIQUE(draft_id, mk_user_id)
+    # constraint silently no-ops for it, so a client_manager's manual
+    # exclusion (or any other manual field) is never overwritten or
+    # resurrected. A child whose decision later moves away from
+    # keep_historical_slot is NOT removed from an existing draft by this
+    # method — additive-only in this step; automatic removal/reconciliation
+    # is an explicitly separate, future rule.
     #
-    # Transaction-safe: the entire write batch (every draft + every member
-    # insert this call performs) runs inside ONE `with self._connect() as
-    # conn:` block — the same idiom generate_schedule_draft_foundation
-    # already relies on. sqlite3's Connection context-manager protocol
-    # commits on clean exit and rolls back the whole block on any
-    # exception, so a crash partway through never leaves a partially
-    # populated set of drafts/members.
+    # Transaction-safe: the entire write batch (every draft created, every
+    # member inserted, across every group, in this call) runs inside ONE
+    # `with self._connect() as conn:` block — the same idiom generate_
+    # schedule_draft_foundation already relies on. sqlite3's Connection
+    # context-manager protocol commits on clean exit and rolls back the
+    # whole block on any exception — including one raised mid-way through
+    # adding new members to an already-existing draft, with other groups
+    # still unprocessed — so a crash never leaves a partially-applied
+    # persist call, whether creating fresh drafts or topping up existing
+    # ones.
     def persist_schedule_draft_preview(
         self, snapshot_id: int, actor_user_id: Optional[int], actor_name: str, yc1_hint: str, yc2_hint: str,
     ) -> dict[str, Any]:
@@ -14015,7 +14027,7 @@ class Storage:
         drafts_already_existed = 0
         members_added = 0
         created_draft_ids: list[int] = []
-        skipped_existing_group_ids: list[int] = []
+        existing_group_ids: list[int] = []
 
         with self._connect() as conn:
             for group_id in sorted(keep_by_group.keys()):
@@ -14025,40 +14037,43 @@ class Storage:
                     (int(snapshot_id), int(group_id)),
                 ).fetchone()
                 if existing_row:
+                    draft_id = int(existing_row["id"])
                     drafts_already_existed += 1
-                    skipped_existing_group_ids.append(group_id)
-                    continue
-                group_row = conn.execute("SELECT * FROM schedule_source_groups WHERE id=?", (int(group_id),)).fetchone()
-                if not group_row:
-                    # Defensive only — group_id came from the preview we
-                    # just computed against this same snapshot, so this
-                    # should never actually happen.
-                    continue
-                cur = conn.execute(
-                    "INSERT INTO schedule_drafts (source_snapshot_id, source_group_id, name, course_name, "
-                    "branch_name, teacher_mk_id, teacher_name, weekday, start_time, duration_minutes, "
-                    "status, version, created_by, created_by_name, updated_by, updated_by_name, "
-                    "created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?, ?, ?, ?)",
-                    (
-                        int(snapshot_id), int(group_id), group_row["name"], group_row["course_name"],
-                        group_row["branch_name"], group_row["teacher_mk_id"], group_row["teacher_name"],
-                        group_row["weekday"], group_row["start_time"], group_row["duration_minutes"],
-                        actor_user_id, actor_name, actor_user_id, actor_name, now, now,
-                    ),
-                )
-                draft_id = int(cur.lastrowid)
-                drafts_created += 1
-                created_draft_ids.append(draft_id)
-                self._write_schedule_draft_audit(
-                    conn, draft_id, actor_user_id, actor_name, "created",
-                    details=(
-                        f"ALE-8 draft-preview persistence — {len(group_students)} keep_historical_slot "
-                        f"детей из группы источника #{group_id} ({group_row['name'] or group_row['mk_class_id']})"
-                    ),
-                )
+                    existing_group_ids.append(group_id)
+                else:
+                    group_row = conn.execute("SELECT * FROM schedule_source_groups WHERE id=?", (int(group_id),)).fetchone()
+                    if not group_row:
+                        # Defensive only — group_id came from the preview
+                        # we just computed against this same snapshot, so
+                        # this should never actually happen.
+                        continue
+                    cur = conn.execute(
+                        "INSERT INTO schedule_drafts (source_snapshot_id, source_group_id, name, course_name, "
+                        "branch_name, teacher_mk_id, teacher_name, weekday, start_time, duration_minutes, "
+                        "status, version, created_by, created_by_name, updated_by, updated_by_name, "
+                        "created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?, ?, ?, ?)",
+                        (
+                            int(snapshot_id), int(group_id), group_row["name"], group_row["course_name"],
+                            group_row["branch_name"], group_row["teacher_mk_id"], group_row["teacher_name"],
+                            group_row["weekday"], group_row["start_time"], group_row["duration_minutes"],
+                            actor_user_id, actor_name, actor_user_id, actor_name, now, now,
+                        ),
+                    )
+                    draft_id = int(cur.lastrowid)
+                    drafts_created += 1
+                    created_draft_ids.append(draft_id)
+                    self._write_schedule_draft_audit(
+                        conn, draft_id, actor_user_id, actor_name, "created",
+                        details=(
+                            f"ALE-8 draft-preview persistence — {len(group_students)} keep_historical_slot "
+                            f"детей из группы источника #{group_id} ({group_row['name'] or group_row['mk_class_id']})"
+                        ),
+                    )
+
+                newly_added: list[dict[str, Any]] = []
                 for student in group_students:
-                    conn.execute(
+                    cur = conn.execute(
                         "INSERT OR IGNORE INTO schedule_draft_members "
                         "(draft_id, mk_user_id, child_display_name, source_group_id, continuation_status, "
                         " availability_match, conflict_reason, created_at, updated_at) "
@@ -14069,7 +14084,27 @@ class Storage:
                             now, now,
                         ),
                     )
-                    members_added += 1
+                    # rowcount is 0 when the UNIQUE(draft_id, mk_user_id)
+                    # constraint silently ignored an already-present member
+                    # (including a manually_excluded one) — never counted
+                    # as newly added, never touched.
+                    if cur.rowcount > 0:
+                        members_added += 1
+                        newly_added.append(student)
+
+                if existing_row and newly_added:
+                    # One aggregated audit entry per draft per call, not
+                    # one per member — matches this project's existing
+                    # audit granularity (see _write_schedule_draft_audit
+                    # call sites elsewhere: field-level/action-level, never
+                    # per-row-in-a-batch).
+                    self._write_schedule_draft_audit(
+                        conn, draft_id, actor_user_id, actor_name, "members_added",
+                        details=(
+                            f"ALE-8 incremental persist — добавлено {len(newly_added)} новых "
+                            f"keep_historical_slot детей: {', '.join(s['mk_user_id'] for s in newly_added)}"
+                        ),
+                    )
 
         return {
             "ok": True,
@@ -14078,7 +14113,7 @@ class Storage:
             "drafts_already_existed": drafts_already_existed,
             "members_added": members_added,
             "created_draft_ids": created_draft_ids,
-            "skipped_existing_group_ids": skipped_existing_group_ids,
+            "existing_group_ids": existing_group_ids,
             "unresolved_total": sum(unresolved_breakdown.values()),
             "unresolved_breakdown": unresolved_breakdown,
         }
