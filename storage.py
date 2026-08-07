@@ -13846,6 +13846,20 @@ class Storage:
     ) -> dict[str, Any]:
         limit = max(1, min(int(limit), 300))
         offset = max(0, int(offset))
+        computed = self._compute_schedule_draft_preview(snapshot_id, yc1_hint, yc2_hint)
+        students = computed["students"]
+        page = students[offset:offset + limit]
+        return {"ok": True, "students": page, "total": len(students), "limit": limit, "offset": offset, "summary": computed["summary"]}
+
+    # v7.1.18 — extracted from get_schedule_draft_preview so the FULL
+    # (unpaginated) student list/summary can be reused by write paths (see
+    # persist_schedule_draft_preview below) without being silently capped
+    # at the read endpoint's 300-row page limit — a write path recomputing
+    # "who to persist" must never see a truncated subset of the real
+    # snapshot. Identical computation/output shape as before this
+    # extraction; get_schedule_draft_preview's own observable behavior is
+    # unchanged.
+    def _compute_schedule_draft_preview(self, snapshot_id: int, yc1_hint: str, yc2_hint: str) -> dict[str, Any]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT s.mk_user_id, s.child_display_name, s.group_id, s.regularity_category, "
@@ -13937,8 +13951,137 @@ class Storage:
             summary[decision["decision"]] += 1
         summary["total"] = len(students)
 
-        page = students[offset:offset + limit]
-        return {"ok": True, "students": page, "total": len(students), "limit": limit, "offset": offset, "summary": summary}
+        return {"students": students, "summary": summary}
+
+    # ── ALE-8 — draft PERSISTENCE from the accepted preview (write path).
+    # Only decision == "keep_historical_slot" children are ever inserted as
+    # real schedule_draft_members, grouped by their resolved historical_
+    # group_id — which IS schedule_drafts.source_group_id, so no new schema
+    # is needed for this. stopped/pending_confirmation/needs_reassignment/
+    # manual_review are NEVER persisted here: the existing schema has no
+    # safe way to represent an "unresolved, no draft yet" member without
+    # inventing new structure (a nullable draft_id, a placeholder draft,
+    # or a new table) — out of scope for this step per explicit review
+    # instruction. They are only returned in the result for the caller to
+    # act on later.
+    #
+    # Deliberately NOT built on generate_schedule_draft_foundation above:
+    # that function is one-draft-per-GROUP with every non-discontinued
+    # member added regardless of regularity_category, which could pull in
+    # trial/makeup/one_off/other_group_visitor children as if they were
+    # regular members — exactly what select_historical_baseline_group
+    # exists to prevent. This method never calls it.
+    #
+    # The server always recomputes the preview itself (via
+    # _compute_schedule_draft_preview, the FULL unpaginated list) from
+    # current DB state — no member list is ever accepted from a caller;
+    # there is no parameter through which a frontend-supplied mk_user_id
+    # list could influence what gets persisted.
+    #
+    # Idempotent per source group: if a draft for (snapshot_id,
+    # source_group_id) already exists, it is left completely untouched —
+    # no member (re-)insertion — so a repeat call never creates duplicate
+    # drafts/members and never disturbs a client_manager's prior manual
+    # edits/exclusions on an already-generated draft. A brand-new group
+    # with keep_historical_slot children always gets a fresh draft plus
+    # its members, in the same idiom as generate_schedule_draft_foundation
+    # (INSERT ... then INSERT OR IGNORE per member, defense-in-depth on
+    # top of the per-group skip).
+    #
+    # Transaction-safe: the entire write batch (every draft + every member
+    # insert this call performs) runs inside ONE `with self._connect() as
+    # conn:` block — the same idiom generate_schedule_draft_foundation
+    # already relies on. sqlite3's Connection context-manager protocol
+    # commits on clean exit and rolls back the whole block on any
+    # exception, so a crash partway through never leaves a partially
+    # populated set of drafts/members.
+    def persist_schedule_draft_preview(
+        self, snapshot_id: int, actor_user_id: Optional[int], actor_name: str, yc1_hint: str, yc2_hint: str,
+    ) -> dict[str, Any]:
+        computed = self._compute_schedule_draft_preview(snapshot_id, yc1_hint, yc2_hint)
+        students = computed["students"]
+
+        keep_by_group: dict[int, list[dict[str, Any]]] = {}
+        unresolved_breakdown = {"pending_confirmation": 0, "needs_reassignment": 0, "manual_review": 0, "stopped": 0}
+        for student in students:
+            decision = student["decision"]
+            if decision == "keep_historical_slot":
+                keep_by_group.setdefault(int(student["historical_group_id"]), []).append(student)
+            elif decision in unresolved_breakdown:
+                unresolved_breakdown[decision] += 1
+
+        now = now_iso()
+        drafts_created = 0
+        drafts_already_existed = 0
+        members_added = 0
+        created_draft_ids: list[int] = []
+        skipped_existing_group_ids: list[int] = []
+
+        with self._connect() as conn:
+            for group_id in sorted(keep_by_group.keys()):
+                group_students = keep_by_group[group_id]
+                existing_row = conn.execute(
+                    "SELECT id FROM schedule_drafts WHERE source_snapshot_id=? AND source_group_id=?",
+                    (int(snapshot_id), int(group_id)),
+                ).fetchone()
+                if existing_row:
+                    drafts_already_existed += 1
+                    skipped_existing_group_ids.append(group_id)
+                    continue
+                group_row = conn.execute("SELECT * FROM schedule_source_groups WHERE id=?", (int(group_id),)).fetchone()
+                if not group_row:
+                    # Defensive only — group_id came from the preview we
+                    # just computed against this same snapshot, so this
+                    # should never actually happen.
+                    continue
+                cur = conn.execute(
+                    "INSERT INTO schedule_drafts (source_snapshot_id, source_group_id, name, course_name, "
+                    "branch_name, teacher_mk_id, teacher_name, weekday, start_time, duration_minutes, "
+                    "status, version, created_by, created_by_name, updated_by, updated_by_name, "
+                    "created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?, ?, ?, ?)",
+                    (
+                        int(snapshot_id), int(group_id), group_row["name"], group_row["course_name"],
+                        group_row["branch_name"], group_row["teacher_mk_id"], group_row["teacher_name"],
+                        group_row["weekday"], group_row["start_time"], group_row["duration_minutes"],
+                        actor_user_id, actor_name, actor_user_id, actor_name, now, now,
+                    ),
+                )
+                draft_id = int(cur.lastrowid)
+                drafts_created += 1
+                created_draft_ids.append(draft_id)
+                self._write_schedule_draft_audit(
+                    conn, draft_id, actor_user_id, actor_name, "created",
+                    details=(
+                        f"ALE-8 draft-preview persistence — {len(group_students)} keep_historical_slot "
+                        f"детей из группы источника #{group_id} ({group_row['name'] or group_row['mk_class_id']})"
+                    ),
+                )
+                for student in group_students:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO schedule_draft_members "
+                        "(draft_id, mk_user_id, child_display_name, source_group_id, continuation_status, "
+                        " availability_match, conflict_reason, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            draft_id, student["mk_user_id"], student["child_display_name"], int(group_id),
+                            student["continuation_status"], student["availability_match"], None,
+                            now, now,
+                        ),
+                    )
+                    members_added += 1
+
+        return {
+            "ok": True,
+            "snapshot_id": int(snapshot_id),
+            "drafts_created": drafts_created,
+            "drafts_already_existed": drafts_already_existed,
+            "members_added": members_added,
+            "created_draft_ids": created_draft_ids,
+            "skipped_existing_group_ids": skipped_existing_group_ids,
+            "unresolved_total": sum(unresolved_breakdown.values()),
+            "unresolved_breakdown": unresolved_breakdown,
+        }
 
     # ── Conflict detection (live, never persisted — recomputed on read) ─
     def get_schedule_draft_conflicts(self, draft_id: int) -> dict[str, Any]:
