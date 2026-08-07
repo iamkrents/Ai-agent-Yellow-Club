@@ -20,6 +20,8 @@ Run offline:
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import types
@@ -33,12 +35,79 @@ from storage import Storage
 from web_app_server import MiniAppContext
 
 APP_JS = (ROOT / "miniapp" / "app.js").read_text(encoding="utf-8")
+NODE_BIN = shutil.which("node")
 
 
 def _fn_body(name: str) -> str:
     m = re.search(r"(?:async )?function " + re.escape(name) + r"\([^)]*\) \{(.*?)\n\}\n", APP_JS, re.S)
     assert m, f"function {name} not found"
     return m.group(1)
+
+
+def _full_fn(name: str) -> str:
+    """Like _fn_body but returns the COMPLETE function (signature +
+    body), for literal injection into a real Node execution harness —
+    used only where a static text check can't prove the actual runtime
+    behavior (pagination looping, de-dup, stale-response fencing)."""
+    m = re.search(r"(?:async )?function " + re.escape(name) + r"\([^)]*\) \{.*?\n\}\n", APP_JS, re.S)
+    assert m, f"function {name} not found"
+    return m.group(0)
+
+
+def _const_line(name: str) -> str:
+    m = re.search(r"const " + re.escape(name) + r" = [^\n]+;", APP_JS)
+    assert m, f"const {name} not found"
+    return m.group(0)
+
+
+def _run_node_scenario(mock_apiget_js: str, driver_js: str) -> subprocess.CompletedProcess:
+    """Builds a minimal Node harness around the REAL extracted source of
+    _schedLoadChildrenPlan/_schedLoadChildrenDrafts (and their page-size/
+    page-cap consts) — proving actual runtime behavior (pagination
+    looping, de-dup, generation-counter fencing against stale responses),
+    not just that some matching text pattern exists in the source. Only
+    _schedState/_schedRenderChildren*/apiGet are stubbed; everything else
+    is the untouched, currently-shipping app.js code."""
+    assert NODE_BIN, "node is required for this test (already a project dependency — see 'node --check')"
+    harness = f"""
+"use strict";
+let _schedState = {{
+  childrenReqGen: 0, childrenLoading: false, childrenError: null, childrenRenderLimit: 50,
+  children: null, childrenSummary: null,
+  childrenDraftsReqGen: 0, childrenDraftsLoading: false, childrenDraftsError: null, childrenDrafts: null,
+}};
+function _schedRenderChildrenSummary() {{}}
+function _schedRenderChildrenList() {{}}
+function _schedRenderChildrenDrafts() {{}}
+
+{mock_apiget_js}
+
+{_const_line("_SCHED_CHILDREN_PAGE_LIMIT")}
+{_const_line("_SCHED_CHILDREN_MAX_PAGES")}
+{_const_line("_SCHED_DRAFTS_PAGE_LIMIT")}
+{_const_line("_SCHED_DRAFTS_MAX_PAGES")}
+
+{_full_fn("_schedLoadChildrenPlan")}
+{_full_fn("_schedLoadChildrenDrafts")}
+
+(async () => {{
+  try {{
+{driver_js}
+    console.log("OK");
+    process.exit(0);
+  }} catch (e) {{
+    console.error("SCENARIO FAILURE:", (e && e.stack) || e);
+    process.exit(1);
+  }}
+}})();
+"""
+    with tempfile.NamedTemporaryFile(suffix=".js", delete=False, mode="w", encoding="utf-8") as f:
+        f.write(harness)
+        path = f.name
+    try:
+        return subprocess.run([NODE_BIN, path], capture_output=True, text=True, timeout=20)
+    finally:
+        Path(path).unlink(missing_ok=True)
 
 
 def _make_storage() -> Storage:
@@ -269,6 +338,190 @@ class TestDecisionNeverRecomputedOnFrontend(unittest.TestCase):
         body = _fn_body("_schedChildDecisionRowHtml")
         self.assertNotIn("c.decision =", body)
         self.assertNotIn("c.decision=", body)
+
+
+@unittest.skipUnless(NODE_BIN, "node not found on PATH")
+class TestChildrenPlanPaginationDynamic(unittest.TestCase):
+    """Review-gate finding: production snapshot has 587 unique children,
+    but GET /api/schedule/draft-preview caps at limit=300/page. These run
+    the REAL extracted _schedLoadChildrenPlan/_schedLoadChildrenDrafts
+    source in Node against a mocked apiGet, proving actual pagination/
+    de-dup/stale-response behavior — not just a static text pattern."""
+
+    def _assert_ok(self, proc: subprocess.CompletedProcess) -> None:
+        self.assertEqual(proc.returncode, 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}")
+
+    def test_587_across_two_pages_loads_all_unique_including_edges_and_filter(self):
+        mock = """
+async function apiGet(url) {
+  const u = new URL(url, "http://x");
+  const offset = parseInt(u.searchParams.get("offset"), 10);
+  const limit = parseInt(u.searchParams.get("limit"), 10);
+  const total = 587;
+  const students = [];
+  for (let i = offset; i < Math.min(offset + limit, total); i++) {
+    students.push({
+      mk_user_id: String(i + 1), child_display_name: "Child " + (i + 1),
+      decision: "pending_confirmation", continuation_status: "unconfirmed",
+      availability_match: "no_availability", baseline_outcome: "found",
+      historical_group_id: 1, historical_group_name: "G", historical_weekday: 2, historical_start_time: "10:00",
+    });
+  }
+  return {
+    ok: true, students, total, limit, offset,
+    summary: { total, keep_historical_slot: 0, pending_confirmation: total, needs_reassignment: 0, manual_review: 0, stopped: 0 },
+  };
+}
+"""
+        driver = """
+    await _schedLoadChildrenPlan();
+    if (_schedState.children.length !== 587) throw new Error("expected 587 children, got " + _schedState.children.length);
+    const ids = _schedState.children.map(c => c.mk_user_id);
+    if (new Set(ids).size !== 587) throw new Error("duplicate mk_user_id present in loaded set");
+    if (!ids.includes("301")) throw new Error("301st child missing from loaded set");
+    if (!ids.includes("587")) throw new Error("587th (last) child missing from loaded set");
+    const pendingCount = _schedState.children.filter(c => c.decision === "pending_confirmation").length;
+    if (pendingCount !== 587) throw new Error("pending_confirmation filter would only see " + pendingCount + " of 587");
+    if (_schedState.childrenSummary.total !== 587) throw new Error("summary.total mismatch: " + _schedState.childrenSummary.total);
+    if (_schedState.childrenLoading !== false) throw new Error("childrenLoading not cleared after load");
+"""
+        self._assert_ok(_run_node_scenario(mock, driver))
+
+    def test_duplicate_child_across_pages_does_not_produce_duplicate_row(self):
+        mock = """
+async function apiGet(url) {
+  const u = new URL(url, "http://x");
+  const offset = parseInt(u.searchParams.get("offset"), 10);
+  if (offset === 0) {
+    const students = [];
+    for (let i = 0; i < 300; i++) students.push({ mk_user_id: "u" + i, decision: "pending_confirmation", child_display_name: "C" + i });
+    return { ok: true, students, total: 305, summary: { total: 305, keep_historical_slot: 0, pending_confirmation: 305, needs_reassignment: 0, manual_review: 0, stopped: 0 } };
+  }
+  // Second page deliberately RE-RETURNS the last 5 ids from page one
+  // (simulating data shifting mid-pagination) plus 5 genuinely new ones.
+  const students = [];
+  for (let i = 295; i < 300; i++) students.push({ mk_user_id: "u" + i, decision: "pending_confirmation", child_display_name: "C" + i });
+  for (let i = 300; i < 305; i++) students.push({ mk_user_id: "u" + i, decision: "pending_confirmation", child_display_name: "C" + i });
+  return { ok: true, students, total: 305, summary: { total: 305, keep_historical_slot: 0, pending_confirmation: 305, needs_reassignment: 0, manual_review: 0, stopped: 0 } };
+}
+"""
+        driver = """
+    await _schedLoadChildrenPlan();
+    const ids = _schedState.children.map(c => c.mk_user_id);
+    if (new Set(ids).size !== ids.length) throw new Error("duplicate row present: " + ids.length + " rows, " + new Set(ids).size + " unique");
+    if (_schedState.children.length !== 305) throw new Error("expected 305 unique children after de-dup, got " + _schedState.children.length);
+"""
+        self._assert_ok(_run_node_scenario(mock, driver))
+
+    def test_unexpected_empty_second_page_finishes_safely(self):
+        mock = """
+async function apiGet(url) {
+  const u = new URL(url, "http://x");
+  const offset = parseInt(u.searchParams.get("offset"), 10);
+  if (offset === 0) {
+    const students = [];
+    for (let i = 0; i < 300; i++) students.push({ mk_user_id: "u" + i, decision: "pending_confirmation", child_display_name: "C" + i });
+    // total claims far more exist than will ever actually be returned.
+    return { ok: true, students, total: 900, summary: { total: 900, keep_historical_slot: 0, pending_confirmation: 900, needs_reassignment: 0, manual_review: 0, stopped: 0 } };
+  }
+  // Buggy/unexpected: server returns nothing on the next page even
+  // though it claimed more rows existed.
+  return { ok: true, students: [], total: 900, summary: { total: 900, keep_historical_slot: 0, pending_confirmation: 900, needs_reassignment: 0, manual_review: 0, stopped: 0 } };
+}
+"""
+        driver = """
+    await _schedLoadChildrenPlan();
+    if (_schedState.children.length !== 300) throw new Error("expected to stop with the 300 rows actually received, got " + _schedState.children.length);
+    if (_schedState.childrenLoading !== false) throw new Error("childrenLoading stuck true — did not finish safely");
+    if (_schedState.childrenError) throw new Error("unexpected error state: " + _schedState.childrenError);
+"""
+        self._assert_ok(_run_node_scenario(mock, driver))
+
+    def test_pathological_total_never_loops_more_than_the_hard_page_cap(self):
+        # total that would never satisfy offset>=total with real paging
+        # (e.g. a corrupted/absurd value) must still terminate, bounded
+        # by _SCHED_CHILDREN_MAX_PAGES, not hang forever.
+        mock = """
+let calls = 0;
+async function apiGet(url) {
+  calls++;
+  const u = new URL(url, "http://x");
+  const offset = parseInt(u.searchParams.get("offset"), 10);
+  const students = [{ mk_user_id: "u" + offset, decision: "pending_confirmation", child_display_name: "C" }];
+  return { ok: true, students, total: 999999999, summary: { total: 999999999, keep_historical_slot: 0, pending_confirmation: 999999999, needs_reassignment: 0, manual_review: 0, stopped: 0 } };
+}
+"""
+        driver = """
+    await _schedLoadChildrenPlan();
+    if (_schedState.children.length > _SCHED_CHILDREN_MAX_PAGES) throw new Error("loaded more rows than the page cap allows — did not bound the loop: " + _schedState.children.length);
+    if (_schedState.childrenLoading !== false) throw new Error("childrenLoading stuck true — loop never terminated");
+"""
+        self._assert_ok(_run_node_scenario(mock, driver))
+
+    def test_stale_response_does_not_overwrite_newer_state(self):
+        # Call 1 starts, its request is deliberately left unresolved.
+        # Call 2 starts (simulating the user leaving and re-entering the
+        # "Дети" subtab), its request resolves and completes FIRST. Only
+        # THEN does call 1's request resolve — its result must be
+        # discarded, not overwrite call 2's already-applied newer state.
+        mock = """
+let resolvers = [];
+async function apiGet(url) {
+  return new Promise(resolve => resolvers.push(() => {
+    const u = new URL(url, "http://x");
+    const offset = parseInt(u.searchParams.get("offset"), 10);
+    if (resolvers.length <= 1) {
+      // first registered call (the stale one) — 5 children, id prefix "OLD"
+      resolve({ ok: true, students: offset === 0 ? [0,1,2,3,4].map(i => ({ mk_user_id: "OLD" + i, decision: "pending_confirmation", child_display_name: "old" })) : [], total: 5, summary: { total: 5, keep_historical_slot: 0, pending_confirmation: 5, needs_reassignment: 0, manual_review: 0, stopped: 0 } });
+    } else {
+      // second (newer) call — 3 children, id prefix "NEW"
+      resolve({ ok: true, students: offset === 0 ? [0,1,2].map(i => ({ mk_user_id: "NEW" + i, decision: "pending_confirmation", child_display_name: "new" })) : [], total: 3, summary: { total: 3, keep_historical_slot: 0, pending_confirmation: 3, needs_reassignment: 0, manual_review: 0, stopped: 0 } });
+    }
+  }));
+}
+"""
+        driver = """
+    const p1 = _schedLoadChildrenPlan();
+    // Give call 1's apiGet a tick to register its resolver before call 2 starts.
+    await new Promise(r => setTimeout(r, 0));
+    const p2 = _schedLoadChildrenPlan();
+    await new Promise(r => setTimeout(r, 0));
+    if (resolvers.length !== 2) throw new Error("expected exactly 2 pending apiGet calls, got " + resolvers.length);
+    // Resolve the NEWER call's request first (it finishes before the older one).
+    resolvers[1]();
+    await p2;
+    // Now let the STALE call's request resolve, after newer state is already applied.
+    resolvers[0]();
+    await p1;
+    const ids = (_schedState.children || []).map(c => c.mk_user_id);
+    if (!ids.every(id => id.startsWith("NEW"))) throw new Error("stale (OLD) response overwrote the newer state: " + JSON.stringify(ids));
+    if (_schedState.children.length !== 3) throw new Error("expected the newer call's 3 children, got " + _schedState.children.length);
+"""
+        self._assert_ok(_run_node_scenario(mock, driver))
+
+    def test_drafts_list_pagination_beyond_single_page(self):
+        # real persisted-draft count is bounded by historical group count
+        # (~130 per the ALE-6 audit), which already exceeds a naive
+        # single fetch at the OLD limit=100 — confirm the loop covers a
+        # total larger than one page at the endpoint's own 200 cap too.
+        mock = """
+async function apiGet(url) {
+  const u = new URL(url, "http://x");
+  const offset = parseInt(u.searchParams.get("offset"), 10);
+  const limit = parseInt(u.searchParams.get("limit"), 10);
+  const total = 250;
+  const drafts = [];
+  for (let i = offset; i < Math.min(offset + limit, total); i++) drafts.push({ id: i + 1, name: "Draft " + (i + 1), status: "draft" });
+  return { ok: true, drafts, total, limit, offset };
+}
+"""
+        driver = """
+    await _schedLoadChildrenDrafts();
+    if (_schedState.childrenDrafts.length !== 250) throw new Error("expected 250 drafts, got " + _schedState.childrenDrafts.length);
+    const ids = _schedState.childrenDrafts.map(d => d.id);
+    if (new Set(ids).size !== 250) throw new Error("duplicate draft id present");
+"""
+        self._assert_ok(_run_node_scenario(mock, driver))
 
 
 if __name__ == "__main__":

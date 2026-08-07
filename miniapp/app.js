@@ -21294,9 +21294,18 @@ const _schedState = {
   // ALE-10 — client_manager-facing "Дети" screen (draft-preview, human
   // language, read-only). Independent of groupsFilter/draftsFilter/etc.
   // above — never shares state with the older technical subtabs.
+  // childrenReqGen/childrenDraftsReqGen — review-gate fix: the shared
+  // reqToken above is only bumped by _schedLoadStatus() (top-level
+  // "Расписание" tab entry), never by re-activating the "Дети" subtab —
+  // so it can't fence two overlapping _schedLoadChildrenPlan() calls
+  // against each other (e.g. the user leaves and quickly returns to the
+  // subtab). These two counters are bumped at the start of their own
+  // loader every call, so a call that's no longer the latest always
+  // detects it and discards its result instead of clobbering newer state.
   childrenFilter: "all",
   children: null, childrenSummary: null, childrenLoading: false, childrenError: null, childrenRenderLimit: 50,
-  childrenDrafts: null, childrenDraftsLoading: false, childrenDraftsError: null,
+  childrenReqGen: 0,
+  childrenDrafts: null, childrenDraftsLoading: false, childrenDraftsError: null, childrenDraftsReqGen: 0,
 };
 
 const SCHED_WEEKDAY_NAMES = { 1: "Пн", 2: "Вт", 3: "Ср", 4: "Чт", 5: "Пт", 6: "Сб", 7: "Вс" };
@@ -21641,35 +21650,59 @@ function _schedRenderChildrenDrafts() {
 // page. summary always reflects the FULL snapshot regardless of which
 // page it came from (computed server-side before pagination), so it only
 // needs to be read once.
+//
+// Review-gate fix: uses its OWN generation counter (childrenReqGen),
+// bumped once per call to this function, rather than the shared
+// _schedState.reqToken (which is only bumped by _schedLoadStatus() and
+// never by re-activating this subtab) — two overlapping calls (user
+// leaves and quickly returns to "Дети") are now correctly fenced: an
+// older call detects it's no longer the latest after EVERY awaited page
+// and bails out without touching state, so a slow stale response can
+// never clobber a newer, already-applied result. _SCHED_CHILDREN_MAX_
+// PAGES is defense-in-depth against an unexpected/malformed total that
+// would otherwise never satisfy the loop's own exit condition — not
+// expected to ever be hit with real data.
+const _SCHED_CHILDREN_PAGE_LIMIT = 300;
+const _SCHED_CHILDREN_MAX_PAGES = 50; // 50 * 300 = 15,000 children hard ceiling
+
 async function _schedLoadChildrenPlan() {
-  const myToken = _schedState.reqToken;
+  const myGen = ++_schedState.childrenReqGen;
   _schedState.childrenLoading = true;
   _schedState.childrenError = null;
   _schedState.childrenRenderLimit = 50;
   _schedRenderChildrenSummary();
   _schedRenderChildrenList();
   try {
-    const pageLimit = 300;
     let offset = 0;
     let all = [];
     let summary = null;
-    for (;;) {
-      const d = await apiGet(`/api/schedule/draft-preview?limit=${pageLimit}&offset=${offset}`);
-      if (myToken !== _schedState.reqToken) return;
+    for (let page_i = 0; page_i < _SCHED_CHILDREN_MAX_PAGES; page_i++) {
+      const d = await apiGet(`/api/schedule/draft-preview?limit=${_SCHED_CHILDREN_PAGE_LIMIT}&offset=${offset}`);
+      if (myGen !== _schedState.childrenReqGen) return;
       if (!summary) summary = d.summary || null;
       const page = d.students || [];
       all = all.concat(page);
       const total = d.total || 0;
-      offset += pageLimit;
+      offset += _SCHED_CHILDREN_PAGE_LIMIT;
       if (offset >= total || !page.length) break;
     }
-    _schedState.children = all;
-    _schedState.childrenSummary = summary || { total: all.length };
+    // Defensive de-dup by mk_user_id — a child must never appear twice in
+    // the rendered list even if the underlying data shifted between two
+    // page fetches (rare, but the filters/summary math must still hold).
+    const seen = new Set();
+    const deduped = [];
+    for (const c of all) {
+      if (seen.has(c.mk_user_id)) continue;
+      seen.add(c.mk_user_id);
+      deduped.push(c);
+    }
+    _schedState.children = deduped;
+    _schedState.childrenSummary = summary || { total: deduped.length };
     _schedState.childrenLoading = false;
     _schedRenderChildrenSummary();
     _schedRenderChildrenList();
   } catch (e) {
-    if (myToken !== _schedState.reqToken) return;
+    if (myGen !== _schedState.childrenReqGen) return;
     _schedState.childrenLoading = false;
     _schedState.childrenError = e.message || String(e);
     _schedRenderChildrenSummary();
@@ -21677,18 +21710,44 @@ async function _schedLoadChildrenPlan() {
   }
 }
 
+// Same offset-loop + own-generation-counter pattern as _schedLoadChildrenPlan
+// above, applied to GET /api/schedule/drafts (server cap: 200/page). Real
+// persisted-draft count is bounded by the number of historical groups
+// (~130 in the real account per the ALE-6 audit), which already exceeded
+// this function's old single-page limit=100 — a single page was never
+// safe here either. Currently always empty in production (draft
+// generation is still off), but must not silently truncate once it isn't.
+const _SCHED_DRAFTS_PAGE_LIMIT = 200;
+const _SCHED_DRAFTS_MAX_PAGES = 50;
+
 async function _schedLoadChildrenDrafts() {
-  const myToken = _schedState.reqToken;
+  const myGen = ++_schedState.childrenDraftsReqGen;
   _schedState.childrenDraftsLoading = true;
   _schedState.childrenDraftsError = null;
   try {
-    const d = await apiGet(`/api/schedule/drafts?limit=100`);
-    if (myToken !== _schedState.reqToken) return;
-    _schedState.childrenDrafts = d.drafts || [];
+    let offset = 0;
+    let all = [];
+    for (let page_i = 0; page_i < _SCHED_DRAFTS_MAX_PAGES; page_i++) {
+      const d = await apiGet(`/api/schedule/drafts?limit=${_SCHED_DRAFTS_PAGE_LIMIT}&offset=${offset}`);
+      if (myGen !== _schedState.childrenDraftsReqGen) return;
+      const page = d.drafts || [];
+      all = all.concat(page);
+      const total = d.total || 0;
+      offset += _SCHED_DRAFTS_PAGE_LIMIT;
+      if (offset >= total || !page.length) break;
+    }
+    const seen = new Set();
+    const deduped = [];
+    for (const d of all) {
+      if (seen.has(d.id)) continue;
+      seen.add(d.id);
+      deduped.push(d);
+    }
+    _schedState.childrenDrafts = deduped;
     _schedState.childrenDraftsLoading = false;
     _schedRenderChildrenDrafts();
   } catch (e) {
-    if (myToken !== _schedState.reqToken) return;
+    if (myGen !== _schedState.childrenDraftsReqGen) return;
     _schedState.childrenDraftsLoading = false;
     _schedState.childrenDraftsError = e.message || String(e);
     _schedRenderChildrenDrafts();
