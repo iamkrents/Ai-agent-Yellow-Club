@@ -10544,18 +10544,85 @@ body.role-parent-cabinet .tabs.bottom-tabbar .tab:active {
 .sched-audit-row { margin: 0; font-size: 11px; color: var(--muted); padding: 6px 0; border-bottom: 1px solid var(--line); }
 .sched-audit-row:last-child { border-bottom: none; }
 
+/* v7.1.17.1 — ALE-6 Data Quality block. */
+.sched-quality-block {
+  background: #fff; border: 1px solid var(--line); border-radius: 16px;
+  padding: 14px; margin: 4px 0 14px;
+}
+.sched-quality-block__title { margin: 0 0 4px; font-size: 14px; font-weight: 800; color: var(--ink); }
+.sched-quality-block__note { margin: 0 0 10px; font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+.sched-quality-block__subtitle { margin: 14px 0 6px; font-size: 12px; font-weight: 700; color: var(--ink); }
+.sched-quality-block__errors { margin: 10px 0 0; font-size: 11.5px; color: #a82d2d; }
+.sched-quality-table { width: 100%; border-collapse: collapse; }
+.sched-quality-table__label { padding: 5px 0; font-size: 12px; color: var(--ink); }
+.sched-quality-table__value { padding: 5px 0; text-align: right; font-size: 12px; font-weight: 700; color: var(--ink); white-space: nowrap; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   v7.1.17.1 — SCOPED LIGHT THEME for the schedule workspace (ALE-6
+   section 9). Deliberately NOT a global change (the rest of the app keeps
+   its existing color-scheme:light-only + data-theme-driven behavior) —
+   only .sched-* markup, plus the shared confirm modal/empty/error states
+   WHEN rendered inside #scheduleFoundationRoot, are pinned to fixed light
+   colors with no dark/prefers-color-scheme/data-theme branch at all. This
+   replaces an earlier partial dark-mode override (background-only, no
+   matching text-color override) that made card text unreadable in
+   Telegram/iOS dark mode — the fix here is to never apply a dark variant
+   here in the first place, independent of any theme signal. */
+#scheduleFoundationRoot { color-scheme: light; }
+#scheduleFoundationRoot .sched-stat-card,
+#scheduleFoundationRoot .sched-group-card,
+#scheduleFoundationRoot .sched-member-row,
+#scheduleFoundationRoot .sched-sync-progress,
+#scheduleFoundationRoot .sched-quality-block {
+  background: #fff; border-color: var(--line); color: #172033;
+}
+#scheduleFoundationRoot .sched-sync-counters > div { background: #f7f8fb; }
+#scheduleFoundationRoot .sched-filter-bar select,
+#scheduleFoundationRoot .sched-search-input,
+#scheduleFoundationRoot .sched-editor-field input,
+#scheduleFoundationRoot .sched-editor-field select {
+  background: #fff; border-color: var(--line); color: #172033;
+}
+#scheduleFoundationRoot .sched-filter-bar select:disabled,
+#scheduleFoundationRoot .sched-search-input:disabled,
+#scheduleFoundationRoot .sched-editor-field input:disabled,
+#scheduleFoundationRoot .sched-editor-field select:disabled,
+#scheduleFoundationRoot button:disabled {
+  opacity: .5; background: #f6f7fb; color: #8a92a6;
+}
+#scheduleFoundationRoot .sched-filter-bar select:focus,
+#scheduleFoundationRoot .sched-search-input:focus,
+#scheduleFoundationRoot .sched-editor-field input:focus,
+#scheduleFoundationRoot .sched-editor-field select:focus {
+  border-color: #3498db; box-shadow: 0 0 0 3px rgba(52,152,219,.18); outline: none;
+}
+#scheduleFoundationRoot .ws-empty-state,
+#scheduleFoundationRoot .ws-error-state {
+  background: transparent;
+}
+#scheduleFoundationRoot .ws-empty-state-title,
+#scheduleFoundationRoot .ws-empty-state-desc,
+#scheduleFoundationRoot .ws-status-badge {
+  color: inherit;
+}
+/* The confirm sheet (#uiConfirmModal) lives outside #scheduleFoundationRoot
+   in the DOM (a single shared modal, index.html), so descendant scoping
+   can't reach it — uiConfirmSheet() accepts an opts.scopeClass instead,
+   and _schedConfirmGenerateFoundation() passes "sched-scope" so only a
+   confirm sheet actually opened FROM the schedule module gets pinned
+   light; every other screen's confirm sheet is untouched. */
+#uiConfirmModal.sched-scope .pi-modal-sheet { background: #fff; color: #172033; }
+#uiConfirmModal.sched-scope .pi-modal-head { border-bottom-color: var(--line); }
+#uiConfirmModal.sched-scope .pi-modal-head h3 { color: #172033; }
+#uiConfirmModal.sched-scope .pi-modal-close { color: #657089; }
+#uiConfirmModal.sched-scope .pi-modal-body label { color: #657089; }
+#uiConfirmModal.sched-scope .pi-modal-body input,
+#uiConfirmModal.sched-scope .pi-modal-body select,
+#uiConfirmModal.sched-scope .pi-modal-body textarea { background: #f6f7fb; border-color: #e0e4ef; color: #172033; }
+#uiConfirmModal.sched-scope .pi-modal-footer { border-top-color: var(--line); }
+
 /* uiConfirmSheet's body is a single escaped <p> — the "Создать основу"
    confirm message uses literal \n separators for its bullet-style summary,
    so this one shared rule renders them as line breaks. Harmless for every
    other existing confirm sheet caller, none of which include \n. */
 #uiConfirmBody p { white-space: pre-line; }
-
-@media (prefers-color-scheme: dark) {
-  .sched-stat-card, .sched-group-card, .sched-member-row, .sched-sync-progress { background: #1a1e28; border-color: #2e3447; }
-  .sched-sync-counters > div { background: #20253a; }
-  .sched-filter-bar select, .sched-search-input, .sched-editor-field input, .sched-editor-field select { background: #1a1e28; border-color: #2e3447; color: #e8ecf4; }
-}
-:root[data-theme="dark"] .sched-stat-card, :root[data-theme="dark"] .sched-group-card, :root[data-theme="dark"] .sched-member-row, :root[data-theme="dark"] .sched-sync-progress { background: #1a1e28; border-color: #2e3447; }
-:root[data-theme="dark"] .sched-sync-counters > div { background: #20253a; }
-:root[data-theme="dark"] .sched-filter-bar select, :root[data-theme="dark"] .sched-search-input, :root[data-theme="dark"] .sched-editor-field input, :root[data-theme="dark"] .sched-editor-field select { background: #1a1e28; border-color: #2e3447; color: #e8ecf4; }
-:root[data-theme="light"] .sched-stat-card, :root[data-theme="light"] .sched-group-card, :root[data-theme="light"] .sched-member-row, :root[data-theme="light"] .sched-sync-progress { background: #fff; border-color: var(--line); }

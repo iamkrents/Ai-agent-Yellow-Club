@@ -17848,12 +17848,23 @@ class MiniAppContext:
         filter_continuation = params.get("continuation") or None
         filter_availability = params.get("availability") or None
         search = str(params.get("search") or "").strip().lower()
+        # v7.1.17.1 pre-merge fix — bulk-resolved (chunk-bounded SQL), never
+        # one resolve_schedule_student_status() call per student row.
+        members = self.storage.list_schedule_source_group_students(gid)
+        bulk_requests = [
+            {
+                "mk_user_id": s["mk_user_id"], "weekday": group.get("weekday"), "start_time": group.get("start_time"),
+                "duration_minutes": group.get("duration_minutes"), "group_branch_code": group_branch_code,
+            }
+            for s in members
+        ]
+        statuses_by_user = {
+            status["mk_user_id"]: status
+            for status in self.storage.resolve_schedule_student_statuses_bulk(bulk_requests)
+        }
         enriched = []
-        for s in self.storage.list_schedule_source_group_students(gid):
-            status = self.storage.resolve_schedule_student_status(
-                s["mk_user_id"], weekday=group.get("weekday"), start_time=group.get("start_time"),
-                duration_minutes=group.get("duration_minutes"), group_branch_code=group_branch_code,
-            )
+        for s in members:
+            status = statuses_by_user.get(s["mk_user_id"], {})
             row = {**s, **status}
             if filter_continuation and row["continuation_status"] != filter_continuation:
                 continue

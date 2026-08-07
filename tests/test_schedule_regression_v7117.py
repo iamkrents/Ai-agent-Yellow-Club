@@ -136,8 +136,8 @@ class TestSchemaIsolation(unittest.TestCase):
 
 class TestVersionBump(unittest.TestCase):
     def test_85_version_bumped_in_three_places(self):
-        self.assertIn('console.log("MiniApp version: v7.1.17");', APP_JS)
-        self.assertIn('const APP_VERSION = "7.1.17";', APP_JS)
+        self.assertIn('console.log("MiniApp version: v7.1.17.1");', APP_JS)
+        self.assertIn('const APP_VERSION = "7.1.17.1";', APP_JS)
         self.assertIn('styles.css?v=7.1.17', INDEX_HTML)
         self.assertIn('app.js?v=7.1.17', INDEX_HTML)
 
