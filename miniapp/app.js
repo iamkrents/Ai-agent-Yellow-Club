@@ -21290,6 +21290,13 @@ const _schedState = {
 
   foundationGenerating: false,
   resyncTriggering: false,   // ALE-31 — disables the "Синхронизировать заново" control mid-request
+
+  // ALE-10 — client_manager-facing "Дети" screen (draft-preview, human
+  // language, read-only). Independent of groupsFilter/draftsFilter/etc.
+  // above — never shares state with the older technical subtabs.
+  childrenFilter: "all",
+  children: null, childrenSummary: null, childrenLoading: false, childrenError: null, childrenRenderLimit: 50,
+  childrenDrafts: null, childrenDraftsLoading: false, childrenDraftsError: null,
 };
 
 const SCHED_WEEKDAY_NAMES = { 1: "Пн", 2: "Вт", 3: "Ср", 4: "Чт", 5: "Пт", 6: "Сб", 7: "Вс" };
@@ -21408,6 +21415,7 @@ function _schedGoToOverview() {
 function _schedRenderSkeleton(root) {
   const tabs = [
     { id: "overview", label: "Обзор" },
+    { id: "children", label: "Дети" },
     { id: "groups", label: "Группы прошлого года" },
     { id: "foundation", label: "Основа расписания" },
     { id: "needs-review", label: "Требуют решения" },
@@ -21446,6 +21454,7 @@ function _schedRenderCurrentTab() {
   const root = $("schedTabContent");
   if (!root) return;
   if (_schedState.tab === "overview") _schedRenderOverview(root);
+  else if (_schedState.tab === "children") { _schedRenderChildrenPlan(root); _schedLoadChildrenPlan(); _schedLoadChildrenDrafts(); }
   else if (_schedState.tab === "groups") { _schedRenderGroupsList(root); _schedLoadGroups(); }
   else if (_schedState.tab === "foundation") { _schedRenderDraftsList(root, "ready"); _schedLoadDrafts("ready"); }
   else if (_schedState.tab === "needs-review") { _schedRenderDraftsList(root, "needs-review"); _schedLoadDrafts("needs-review"); }
@@ -21461,6 +21470,229 @@ function _schedOpenHelp() {
     confirmLabel: "Понятно", cancelLabel: "Закрыть",
     onConfirm: () => {},
   });
+}
+
+// ── ALE-10 — "Дети" screen: client_manager-facing, human-language,
+// read-only view of the ALE-8 draft-preview. Reuses the existing GET
+// /api/schedule/draft-preview and GET /api/schedule/drafts endpoints —
+// no new backend route. Never creates/edits drafts, never touches
+// SCHEDULE_DRAFT_MUTATIONS_ENABLED, never calls MoyKlass. The backend
+// "decision" is shown as-is via SCHED_PREVIEW_DECISION_LABELS below —
+// this screen never recomputes or overrides it from baseline_outcome/
+// continuation_status/availability_match; those are only ever displayed
+// as separate, additional context alongside the decision badge.
+const SCHED_PREVIEW_DECISION_LABELS = {
+  keep_historical_slot: "Можно сохранить прошлую группу",
+  pending_confirmation: "Ждём ответа",
+  needs_reassignment: "Нужно подобрать время",
+  manual_review: "Нужно проверить",
+  stopped: "Не продолжает",
+};
+const SCHED_PREVIEW_DECISION_TONE = {
+  keep_historical_slot: "success", pending_confirmation: "pending",
+  needs_reassignment: "warning", manual_review: "warning", stopped: "danger",
+};
+const SCHED_PREVIEW_SUMMARY_CARDS = [
+  ["total", "Всего детей"],
+  ["keep_historical_slot", "Можно сохранить прошлую группу"],
+  ["pending_confirmation", "Ждут ответа"],
+  ["needs_reassignment", "Нужно распределить"],
+  ["manual_review", "Требуют проверки"],
+  ["stopped", "Не продолжают"],
+];
+const SCHED_PREVIEW_FILTERS = [
+  { id: "all", label: "Все" },
+  { id: "pending_confirmation", label: "Ждут ответа" },
+  { id: "keep_historical_slot", label: "Сохранить прошлую группу" },
+  { id: "needs_reassignment", label: "Нужно распределить" },
+  { id: "manual_review", label: "Проверить вручную" },
+  { id: "stopped", label: "Не продолжают" },
+];
+
+function _schedRenderChildrenPlan(root) {
+  root.innerHTML = `
+    <h3 class="sched-list-title" style="margin-top:0">Расписание нового учебного года</h3>
+    <div id="schedChildrenSummary"></div>
+    <div id="schedChildrenFilters"></div>
+    <div id="schedChildrenListBody"></div>
+    <h3 class="sched-list-title">Локальные черновики</h3>
+    <div id="schedChildrenDraftsBody"></div>
+  `;
+  _schedRenderChildrenSummary();
+  _schedRenderChildrenFilters();
+  _schedRenderChildrenList();
+  _schedRenderChildrenDrafts();
+}
+
+function _schedRenderChildrenSummary() {
+  const el = $("schedChildrenSummary");
+  if (!el) return;
+  if (_schedState.childrenLoading && !_schedState.childrenSummary) { el.innerHTML = uiLoadingRows(2); return; }
+  if (_schedState.childrenError) { el.innerHTML = ""; return; }
+  const s = _schedState.childrenSummary || {};
+  el.innerHTML = `<div class="sched-stat-grid">${SCHED_PREVIEW_SUMMARY_CARDS.map(([key, label]) => `
+    <div class="sched-stat-card">
+      <p class="sched-stat-card__value">${escapeHtml(String(s[key] ?? 0))}</p>
+      <p class="sched-stat-card__label">${escapeHtml(label)}</p>
+    </div>`).join("")}</div>`;
+}
+
+function _schedRenderChildrenFilters() {
+  const el = $("schedChildrenFilters");
+  if (!el) return;
+  el.innerHTML = `<div class="sched-subtabs">${SCHED_PREVIEW_FILTERS.map(f => `
+    <button class="sched-decision-filter${_schedState.childrenFilter === f.id ? " active" : ""}" onclick="_schedChildrenFilterChange('${f.id}')">${escapeHtml(f.label)}</button>
+  `).join("")}</div>`;
+}
+
+function _schedChildrenFilterChange(filterId) {
+  _schedState.childrenFilter = filterId;
+  _schedState.childrenRenderLimit = 50;
+  _schedRenderChildrenFilters();
+  _schedRenderChildrenList();
+}
+
+// v7.1.18 — historical baseline is display-only context here, never a
+// substitute for the backend decision badge (which is always rendered
+// separately, unconditionally, from c.decision as-is).
+function _schedChildBaselineText(c) {
+  if (c.baseline_outcome === "found") {
+    const day = SCHED_WEEKDAY_NAMES_FULL[c.historical_weekday] || "";
+    const time = c.historical_start_time ? `, ${c.historical_start_time}` : "";
+    return `${c.historical_group_name || "Группа"} · ${day}${time}`;
+  }
+  if (c.baseline_outcome === "ambiguous") return "Несколько возможных групп";
+  return "Основная группа не определена";
+}
+
+function _schedChildDecisionRowHtml(c) {
+  return `
+    <div class="sched-member-row">
+      <div>
+        ${_schedMemberNameHtml(c)}
+        <p class="sched-member-row__tech">${escapeHtml(_schedChildBaselineText(c))}</p>
+        <div class="sched-member-row__badges">
+          ${uiStatusBadge(SCHED_CONTINUATION_LABELS[c.continuation_status] || c.continuation_status, SCHED_CONTINUATION_TONE[c.continuation_status] || "muted")}
+          ${uiStatusBadge(SCHED_MATCH_LABELS[c.availability_match] || c.availability_match, SCHED_MATCH_TONE[c.availability_match] || "muted")}
+          ${uiStatusBadge(SCHED_PREVIEW_DECISION_LABELS[c.decision] || c.decision, SCHED_PREVIEW_DECISION_TONE[c.decision] || "muted")}
+        </div>
+      </div>
+    </div>`;
+}
+
+function _schedRenderChildrenList() {
+  const el = $("schedChildrenListBody");
+  if (!el) return;
+  if (_schedState.childrenLoading && !_schedState.children) { el.innerHTML = uiLoadingRows(4); return; }
+  if (_schedState.childrenError) { el.innerHTML = uiErrorState(_schedState.childrenError, "_schedLoadChildrenPlan()"); return; }
+  const all = _schedState.children || [];
+  const filter = _schedState.childrenFilter;
+  const filtered = filter === "all" ? all : all.filter(c => c.decision === filter);
+  if (!filtered.length) {
+    el.innerHTML = uiEmptyState("👥", "Пока никого нет", "По выбранному фильтру детей не найдено.");
+    return;
+  }
+  const limit = _schedState.childrenRenderLimit || 50;
+  const visible = filtered.slice(0, limit);
+  const hasMore = filtered.length > visible.length;
+  el.innerHTML = `
+    <p class="ws-results-count">Показано ${visible.length} из ${filtered.length}</p>
+    <div class="sched-group-list">${visible.map(_schedChildDecisionRowHtml).join("")}</div>
+    ${hasMore ? `<div class="sched-cta-row"><button class="secondary" onclick="_schedChildrenShowMore()">Показать ещё</button></div>` : ""}
+  `;
+}
+
+function _schedChildrenShowMore() {
+  _schedState.childrenRenderLimit = (_schedState.childrenRenderLimit || 50) + 50;
+  _schedRenderChildrenList();
+}
+
+function _schedRenderChildrenDrafts() {
+  const el = $("schedChildrenDraftsBody");
+  if (!el) return;
+  if (_schedState.childrenDraftsLoading && !_schedState.childrenDrafts) { el.innerHTML = uiLoadingRows(2); return; }
+  if (_schedState.childrenDraftsError) { el.innerHTML = uiErrorState(_schedState.childrenDraftsError, "_schedLoadChildrenDrafts()"); return; }
+  const drafts = _schedState.childrenDrafts || [];
+  if (!drafts.length) {
+    el.innerHTML = uiEmptyState(
+      "🗂", "Черновиков пока нет",
+      "Черновики появятся после того, как родители подтвердят продолжение обучения и укажут доступное время.",
+    );
+    return;
+  }
+  el.innerHTML = `<div class="sched-group-list">${drafts.map(dr => `
+    <div class="sched-group-card">
+      <div class="sched-group-card__header">
+        <h3>${escapeHtml(dr.name || `Черновик #${dr.id}`)}</h3>
+        ${uiStatusBadge(SCHED_DRAFT_STATUS_LABELS[dr.status] || dr.status, SCHED_DRAFT_STATUS_TONE[dr.status] || "muted")}
+      </div>
+      <p class="sched-group-card__meta">${escapeHtml(dr.course_name || "")} ${dr.branch_name ? "· " + escapeHtml(dr.branch_name) : ""}</p>
+      <p class="sched-group-card__slot">${escapeHtml(_schedFmtSlot(dr))}</p>
+      <div class="sched-group-card__actions">
+        <button class="secondary" onclick="_schedOpenDraftEditor(${dr.id})">Открыть черновик</button>
+      </div>
+    </div>`).join("")}</div>`;
+}
+
+// Loops GET /api/schedule/draft-preview by offset until the server-
+// reported total is reached (bounded by real data — hundreds, not
+// thousands, of children per account) so client-side filtering by
+// decision always operates on the complete set, never a stale first
+// page. summary always reflects the FULL snapshot regardless of which
+// page it came from (computed server-side before pagination), so it only
+// needs to be read once.
+async function _schedLoadChildrenPlan() {
+  const myToken = _schedState.reqToken;
+  _schedState.childrenLoading = true;
+  _schedState.childrenError = null;
+  _schedState.childrenRenderLimit = 50;
+  _schedRenderChildrenSummary();
+  _schedRenderChildrenList();
+  try {
+    const pageLimit = 300;
+    let offset = 0;
+    let all = [];
+    let summary = null;
+    for (;;) {
+      const d = await apiGet(`/api/schedule/draft-preview?limit=${pageLimit}&offset=${offset}`);
+      if (myToken !== _schedState.reqToken) return;
+      if (!summary) summary = d.summary || null;
+      const page = d.students || [];
+      all = all.concat(page);
+      const total = d.total || 0;
+      offset += pageLimit;
+      if (offset >= total || !page.length) break;
+    }
+    _schedState.children = all;
+    _schedState.childrenSummary = summary || { total: all.length };
+    _schedState.childrenLoading = false;
+    _schedRenderChildrenSummary();
+    _schedRenderChildrenList();
+  } catch (e) {
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.childrenLoading = false;
+    _schedState.childrenError = e.message || String(e);
+    _schedRenderChildrenSummary();
+    _schedRenderChildrenList();
+  }
+}
+
+async function _schedLoadChildrenDrafts() {
+  const myToken = _schedState.reqToken;
+  _schedState.childrenDraftsLoading = true;
+  _schedState.childrenDraftsError = null;
+  try {
+    const d = await apiGet(`/api/schedule/drafts?limit=100`);
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.childrenDrafts = d.drafts || [];
+    _schedState.childrenDraftsLoading = false;
+    _schedRenderChildrenDrafts();
+  } catch (e) {
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.childrenDraftsLoading = false;
+    _schedState.childrenDraftsError = e.message || String(e);
+    _schedRenderChildrenDrafts();
+  }
 }
 
 // ── Status + overview ────────────────────────────────────────────────
