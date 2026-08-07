@@ -17919,6 +17919,30 @@ class MiniAppContext:
         yc1, yc2 = self._schedule_branch_hints()
         return self.storage.generate_schedule_draft_foundation(active["id"], actor_id, actor_name, yc1, yc2)
 
+    # v7.1.18 — ALE-8 persistence step: turns the already-accepted read-only
+    # draft-preview (schedule_draft_preview / storage.get_schedule_draft_
+    # preview) into REAL local schedule_drafts/schedule_draft_members rows.
+    # Deliberately separate from schedule_foundation_generate above (which
+    # stays untouched, group-centric, no regularity-aware baseline
+    # selection). Same role gate + SCHEDULE_DRAFT_MUTATIONS_ENABLED gate as
+    # every other schedule mutation in this module. The request body is
+    # intentionally ignored beyond the shared auth envelope — this endpoint
+    # never accepts a caller-supplied member list; the server always
+    # recomputes the preview itself from current DB state before deciding
+    # what to persist.
+    def schedule_draft_preview_persist(self, auth: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        if not bool(getattr(self.settings, "schedule_draft_mutations_enabled", False)):
+            return {"ok": False, "error": "Редактирование черновиков выключено.", "reason_code": "mutations_disabled"}
+        active = self.storage.get_active_schedule_snapshot()
+        if not active:
+            return {"ok": False, "error": "Нет активного snapshot — сначала выполните синхронизацию.", "reason_code": "no_active_snapshot"}
+        actor_id, actor_name = self._schedule_actor(auth)
+        yc1, yc2 = self._schedule_branch_hints()
+        return self.storage.persist_schedule_draft_preview(active["id"], actor_id, actor_name, yc1, yc2)
+
     def schedule_drafts_list(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
         denied = self._require_schedule_module_access(auth)
         if denied:
@@ -21601,6 +21625,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 return self._send_json(CTX.schedule_sync_start(auth, body))
             if path == "/api/schedule/foundation/generate":
                 return self._send_json(CTX.schedule_foundation_generate(auth, body))
+            if path == "/api/schedule/draft-preview/persist":
+                return self._send_json(CTX.schedule_draft_preview_persist(auth, body))
             if path.startswith("/api/schedule/drafts/"):
                 _sd_rest = path[len("/api/schedule/drafts/"):]
                 _sd_parts = _sd_rest.split("/")
