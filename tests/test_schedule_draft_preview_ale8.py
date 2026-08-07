@@ -23,6 +23,7 @@ Run offline:
 """
 from __future__ import annotations
 
+import contextlib
 import sys
 import tempfile
 import unittest
@@ -44,14 +45,17 @@ def _make_storage() -> Storage:
     return Storage(Path(tmp.name))
 
 
-def _seed_recipient(storage: Storage, mk_user_id: str, continuation_status: str) -> int:
+def _seed_recipient(storage: Storage, mk_user_id: str, continuation_status: str, campaign_id: int = 1) -> int:
+    # UNIQUE(campaign_id, mk_user_id) — a second conflicting record for the
+    # same child (e.g. two onboarding campaigns/years) needs a distinct
+    # campaign_id, same as real multi-campaign data would.
     now = "2026-06-01T00:00:00"
     with storage._connect() as conn:
         cur = conn.execute(
             "INSERT INTO client_onboarding_recipients "
             "(campaign_id, mk_user_id, child_display_name, continuation_status, added_by, created_at, updated_at) "
-            "VALUES (1, ?, 'Ребёнок', ?, 'test', ?, ?)",
-            (mk_user_id, continuation_status, now, now),
+            "VALUES (?, ?, 'Ребёнок', ?, 'test', ?, ?)",
+            (campaign_id, mk_user_id, continuation_status, now, now),
         )
         return int(cur.lastrowid)
 
@@ -177,9 +181,21 @@ class TestBuildScheduleDraftPreviewDecision(unittest.TestCase):
         self.assertEqual(result["decision"], "stopped")
 
     def test_pending_or_no_response_is_pending_confirmation(self):
-        for status, detail in (("unconfirmed", "awaiting_confirmation"), ("unconfirmed", "status_not_found"), ("ambiguous", "ambiguous_multiple_records")):
+        for status, detail in (("unconfirmed", "awaiting_confirmation"), ("unconfirmed", "status_not_found")):
             result = self._decide(continuation_status=status, continuation_detail=detail)
             self.assertEqual(result["decision"], "pending_confirmation", (status, detail))
+
+    def test_conflicting_continuation_records_is_manual_review_not_pending(self):
+        # review-gate finding D — resolve_continuation's "ambiguous" coarse
+        # status means conflicting onboarding records exist (one says
+        # continues, another says undecided/needs_consultation), which is
+        # a different situation from "no answer yet" (unconfirmed): data
+        # already exists and disagrees with itself, so a human decides
+        # rather than the case sitting in the same "still waiting" bucket
+        # as an unanswered family.
+        result = self._decide(continuation_status="ambiguous", continuation_detail="ambiguous_multiple_records")
+        self.assertEqual(result["decision"], "manual_review")
+        self.assertIn("continuation_ambiguous_multiple_records", result["reason_codes"])
 
     def test_ambiguous_historical_group_is_manual_review(self):
         result = self._decide(baseline_outcome="ambiguous")
@@ -325,6 +341,101 @@ class TestGetScheduleDraftPreviewEndToEnd(unittest.TestCase):
         self.assertCountEqual(row["ambiguous_candidate_group_ids"], [group_a, group_b])
         self.assertEqual(result["summary"]["manual_review"], 1)
 
+    def test_conflicting_continuation_records_is_manual_review_end_to_end(self):
+        # review-gate finding D — two client_onboarding_recipients rows for
+        # the same child with contradictory answers (one continues, one
+        # undecided) must resolve to manual_review, not pending_confirmation.
+        storage = _make_storage()
+        snap = storage.create_schedule_sync_snapshot("2025-09-01", "2026-05-31", 1, "T")
+        group_id = _seed_group(storage, snap["id"], "500")
+        storage.upsert_schedule_source_group_student(
+            snap["id"], group_id, "9010", child_display_name="Лена", lessons_attended=9,
+            evidence_source="attendance", confidence="high", regularity_category="regular_confirmed",
+            membership_evidence=1, is_current_group=1,
+        )
+        storage.finish_schedule_sync_snapshot(snap["id"], "completed", activate=True)
+        _seed_recipient(storage, "9010", "continues", campaign_id=1)
+        _seed_recipient(storage, "9010", "undecided", campaign_id=2)
+
+        result = storage.get_schedule_draft_preview(snap["id"], "Кульман 1/1", "Мстиславца 6")
+        row = next(s for s in result["students"] if s["mk_user_id"] == "9010")
+        self.assertEqual(row["continuation_status"], "ambiguous")
+        self.assertEqual(row["decision"], "manual_review")
+        self.assertNotEqual(row["decision"], "pending_confirmation")
+        self.assertEqual(result["summary"]["manual_review"], 1)
+
+    def test_student_in_multiple_historical_groups_appears_exactly_once(self):
+        # review-gate finding F — a student with several historical rows
+        # (here: one strong current group + one weak/trial row in another
+        # group) must still produce exactly one row in the preview output,
+        # never one per (student, group) pair.
+        storage = _make_storage()
+        snap = storage.create_schedule_sync_snapshot("2025-09-01", "2026-05-31", 1, "T")
+        group_a = _seed_group(storage, snap["id"], "500")
+        group_b = _seed_group(storage, snap["id"], "501")
+        storage.upsert_schedule_source_group_student(
+            snap["id"], group_a, "9011", child_display_name="Миша", lessons_attended=9,
+            evidence_source="attendance", confidence="high", regularity_category="regular_confirmed",
+            membership_evidence=1, is_current_group=1,
+        )
+        storage.upsert_schedule_source_group_student(
+            snap["id"], group_b, "9011", child_display_name="Миша", lessons_attended=1,
+            evidence_source="attendance", confidence="low", regularity_category="one_off",
+            membership_evidence=0, is_current_group=None,
+        )
+        storage.finish_schedule_sync_snapshot(snap["id"], "completed", activate=True)
+        recipient_id = _seed_recipient(storage, "9011", "continues")
+        _seed_availability(storage, recipient_id, weekday=4, start_time="16:00", end_time="19:00")
+
+        result = storage.get_schedule_draft_preview(snap["id"], "Кульман 1/1", "Мстиславца 6")
+        matches = [s for s in result["students"] if s["mk_user_id"] == "9011"]
+        self.assertEqual(len(matches), 1, "student must appear exactly once, not once per historical group")
+        self.assertEqual(matches[0]["historical_group_id"], group_a, "must pick the strong current group, not the one_off row")
+        self.assertEqual(result["summary"]["total"], 1)
+
+    def test_baseline_selection_is_independent_of_row_insertion_order(self):
+        # review-gate finding F — deliberately insert the weak/non-current
+        # row BEFORE the strong current row for the same student, across
+        # two snapshots, and confirm both resolve to the identical result
+        # regardless of insertion/row order.
+        def _build(order: str) -> tuple[dict, int]:
+            storage = _make_storage()
+            snap = storage.create_schedule_sync_snapshot("2025-09-01", "2026-05-31", 1, "T")
+            group_strong = _seed_group(storage, snap["id"], "500")
+            group_weak = _seed_group(storage, snap["id"], "499")
+
+            def _insert_strong():
+                storage.upsert_schedule_source_group_student(
+                    snap["id"], group_strong, "9012", child_display_name="Настя", lessons_attended=9,
+                    evidence_source="attendance", confidence="high", regularity_category="regular_confirmed",
+                    membership_evidence=1, is_current_group=1,
+                )
+
+            def _insert_weak():
+                storage.upsert_schedule_source_group_student(
+                    snap["id"], group_weak, "9012", child_display_name="Настя", lessons_attended=1,
+                    evidence_source="attendance", confidence="low", regularity_category="one_off",
+                    membership_evidence=0, is_current_group=None,
+                )
+
+            if order == "strong_first":
+                _insert_strong(); _insert_weak()
+            else:
+                _insert_weak(); _insert_strong()
+            storage.finish_schedule_sync_snapshot(snap["id"], "completed", activate=True)
+            recipient_id = _seed_recipient(storage, "9012", "continues")
+            _seed_availability(storage, recipient_id, weekday=4, start_time="16:00", end_time="19:00")
+            result = storage.get_schedule_draft_preview(snap["id"], "Кульман 1/1", "Мстиславца 6")
+            row = next(s for s in result["students"] if s["mk_user_id"] == "9012")
+            return row, group_strong
+
+        row_a, group_strong_a = _build("strong_first")
+        row_b, group_strong_b = _build("weak_first")
+        self.assertEqual(row_a["historical_group_id"], group_strong_a, "must pick the strong group, not the one_off row")
+        self.assertEqual(row_a["historical_group_id"], row_b["historical_group_id"])
+        self.assertEqual(row_a["decision"], row_b["decision"])
+        self.assertEqual(row_a["decision"], "keep_historical_slot")
+
     def test_makeup_trial_visitor_never_becomes_primary_baseline_end_to_end(self):
         storage = _make_storage()
         snap = storage.create_schedule_sync_snapshot("2025-09-01", "2026-05-31", 1, "T")
@@ -422,6 +533,89 @@ class TestGetScheduleDraftPreviewEndToEnd(unittest.TestCase):
             sum(v for k, v in result["summary"].items() if k != "total"),
             result["summary"]["total"],
         )
+
+
+@contextlib.contextmanager
+def _count_sql(storage: Storage):
+    """Counts every SQL statement executed against `storage` for the
+    duration of the with-block — same idiom as tests.
+    test_schedule_sql_bulk_resolution_v71171._count_sql."""
+    log: list[str] = []
+    orig_connect = Storage._connect
+
+    class _CountingConn:
+        def __init__(self, real_conn):
+            self._real = real_conn
+
+        def execute(self, sql, params=()):
+            log.append(sql.strip().split("\n")[0][:100])
+            return self._real.execute(sql, params)
+
+        def __getattr__(self, item):
+            return getattr(self._real, item)
+
+    @contextlib.contextmanager
+    def counting_connect(self):
+        with orig_connect(self) as conn:
+            yield _CountingConn(conn)
+
+    Storage._connect = counting_connect
+    try:
+        yield log
+    finally:
+        Storage._connect = orig_connect
+
+
+def _seed_snapshot_with_n_students(storage: Storage, n_students: int, group_id_suffix: str = "500") -> int:
+    """One group, n_students students, each with a real onboarding
+    recipient + a fitting Availability window — enough real data flowing
+    through continuation/Availability resolution to exercise the bulk
+    path, not just N rows resolving to the same not-found shortcut."""
+    snap = storage.create_schedule_sync_snapshot("2025-09-01", "2026-05-31", 1, "T")
+    group_id = _seed_group(storage, snap["id"], group_id_suffix, weekday=4, start_time="17:00")
+    for i in range(n_students):
+        uid = f"9{group_id_suffix}{i:05d}"
+        storage.upsert_schedule_source_group_student(
+            snap["id"], group_id, uid, child_display_name=f"Ребёнок {i}", lessons_attended=9,
+            evidence_source="attendance", confidence="high", regularity_category="regular_confirmed",
+            membership_evidence=1, is_current_group=1,
+        )
+        recipient_id = _seed_recipient(storage, uid, "continues")
+        _seed_availability(storage, recipient_id, weekday=4, start_time="16:00", end_time="19:00")
+    storage.finish_schedule_sync_snapshot(snap["id"], "completed", activate=True)
+    return snap["id"]
+
+
+class TestNoN1QueryPattern(unittest.TestCase):
+    """Review-gate finding G — proves query count is chunk-bounded, not
+    student-count-bounded, the same discipline (and the same real bug
+    class, ALE-6's pre-merge N+1) already enforced for the other schedule
+    read paths in tests.test_schedule_sql_bulk_resolution_v71171."""
+
+    def test_query_count_does_not_grow_linearly_with_student_count(self):
+        storage_small = _make_storage()
+        snap_small = _seed_snapshot_with_n_students(storage_small, 5, group_id_suffix="500")
+        storage_large = _make_storage()
+        snap_large = _seed_snapshot_with_n_students(storage_large, 300, group_id_suffix="600")
+
+        with _count_sql(storage_small) as log_small:
+            storage_small.get_schedule_draft_preview(snap_small, "Кульман 1/1", "Мстиславца 6")
+        with _count_sql(storage_large) as log_large:
+            storage_large.get_schedule_draft_preview(snap_large, "Кульман 1/1", "Мстиславца 6")
+
+        n_small, n_large = len(log_small), len(log_large)
+        self.assertLess(n_large, n_small + 20, f"query count grew from {n_small} to {n_large} — looks student-bounded, not chunk-bounded")
+        self.assertLess(n_large, 60, "300 students must not need anywhere near 300+ queries")
+
+    def test_no_per_student_onboarding_or_availability_query_pattern(self):
+        storage = _make_storage()
+        snap_id = _seed_snapshot_with_n_students(storage, 50)
+        with _count_sql(storage) as log:
+            storage.get_schedule_draft_preview(snap_id, "Кульман 1/1", "Мстиславца 6")
+        onboarding_queries = [q for q in log if "client_onboarding_recipients" in q]
+        availability_queries = [q for q in log if "client_schedule_availability" in q]
+        self.assertLessEqual(len(onboarding_queries), 3, f"expected a handful of chunked queries, got {len(onboarding_queries)} for 50 students")
+        self.assertLessEqual(len(availability_queries), 3, f"expected a handful of chunked queries, got {len(availability_queries)} for 50 students")
 
 
 class TestNoMoyKlassWrites(unittest.TestCase):

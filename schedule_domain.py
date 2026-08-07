@@ -636,6 +636,15 @@ def build_schedule_draft_preview_decision(
     data quality; only once continuation=continues do the historical
     baseline (rules 4/7/8) and Availability (rules 5/6) get consulted.
 
+    continuation_status == "unconfirmed" (no answer yet at all — unknown/
+    undecided/needs_consultation, no conflicting records) is a simple
+    "waiting on the parent" case: pending_confirmation. continuation_
+    status == "ambiguous" (resolve_continuation's own conflicting-records
+    case — one onboarding record says continues, another says undecided/
+    needs_consultation) is a DIFFERENT case — data already exists and
+    disagrees with itself, which needs a human decision rather than more
+    waiting, so it goes to manual_review instead (review-gate finding).
+
     availability_match == "no_availability" (Availability never filled in
     at all, as opposed to filled-but-incompatible) is treated as a safe
     unresolved case (pending_confirmation) — the same bucket as an
@@ -647,7 +656,10 @@ def build_schedule_draft_preview_decision(
     if continuation_status == "discontinued":
         return {"decision": "stopped", "reason_codes": [f"continuation_{continuation_detail}"]}
 
-    if continuation_status in ("unconfirmed", "ambiguous"):
+    if continuation_status == "ambiguous":
+        return {"decision": "manual_review", "reason_codes": [f"continuation_{continuation_detail}"]}
+
+    if continuation_status == "unconfirmed":
         return {"decision": "pending_confirmation", "reason_codes": [f"continuation_{continuation_detail}"]}
 
     # continuation_status == "continues" from here on.
