@@ -561,3 +561,121 @@ def match_availability(
         return {"match": "time_conflict", "reason": "Есть только частичное пересечение по времени — это не считается совпадением", "detail": detail}
 
     return {"match": "time_conflict", "reason": "Нет пересечения по времени в этот день", "detail": detail}
+
+
+# ── ALE-8 — draft-planning preview (read-only decision layer) ──────────────
+# Product model clarified for ALE-8: MoyKlass is historical evidence ONLY
+# (who attended which group last year, when, with whom) — it is never
+# written to, and its live join/subscription status is never trusted for
+# the NEW academic year (a join can be legitimately closed out and that
+# means nothing about whether the family is continuing). The actual plan
+# for the new year is driven entirely by the client's own continuation +
+# Availability answers, layered on top of the historical baseline. This
+# module never picks a brand-new slot on its own initiative (rule 6) and
+# is allowed to leave a case unresolved rather than guess (rule 9) — that
+# is a feature, not a gap, in this first version.
+SCHEDULE_PREVIEW_DECISIONS = (
+    "keep_historical_slot", "pending_confirmation", "stopped", "needs_reassignment", "manual_review",
+)
+
+# Only these two regularity categories may ever become a student's
+# historical baseline group for next year's placement — the same category
+# gate is_foundation_eligible already uses (never trial/makeup/one_off/
+# other_group_visitor/insufficient_evidence/regular_inferred_medium/
+# ambiguous). See ALE-8 rule 8.
+_PREVIEW_BASELINE_STRONG_CATEGORIES = frozenset({"regular_confirmed", "regular_inferred_high"})
+
+
+def select_historical_baseline_group(group_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """group_rows: every schedule_source_group_students row for ONE student
+    within ONE snapshot — each needs at least "group_id",
+    "regularity_category", "is_current_group" (True/False/None). These
+    are expected to already be the FINAL values schedule_sync.py persisted
+    (regularity_category is the post-cross-group-resolution category,
+    already overridden to 'ambiguous' when resolve_current_and_ambiguous_
+    groups found material overlap; is_current_group is already resolved
+    there too) — this function never re-derives current/ambiguous status
+    itself, it only picks which (if any) of a student's already-classified
+    rows is usable as the ONE historical baseline for next year.
+
+    Returns one of:
+      {"outcome": "found", "group_id": <id>}
+      {"outcome": "ambiguous", "candidate_group_ids": [<id>, ...]}
+      {"outcome": "none"}
+    """
+    ambiguous_rows = [r for r in group_rows if r.get("regularity_category") == "ambiguous"]
+    if ambiguous_rows:
+        return {"outcome": "ambiguous", "candidate_group_ids": [r["group_id"] for r in ambiguous_rows]}
+
+    current_strong = [
+        r for r in group_rows
+        if r.get("regularity_category") in _PREVIEW_BASELINE_STRONG_CATEGORIES and r.get("is_current_group") is True
+    ]
+    if len(current_strong) > 1:
+        # ALE-6's own cross-group resolution should never leave more than
+        # one non-ambiguous current=True row for the same student — but
+        # this never silently picks one if that invariant is ever
+        # violated; a human looks at it instead of the algorithm guessing.
+        return {"outcome": "ambiguous", "candidate_group_ids": [r["group_id"] for r in current_strong]}
+    if len(current_strong) == 1:
+        return {"outcome": "found", "group_id": current_strong[0]["group_id"]}
+    return {"outcome": "none"}
+
+
+def build_schedule_draft_preview_decision(
+    *, baseline_outcome: str, continuation_status: str, continuation_detail: str,
+    availability_match: str, availability_detail: str,
+) -> dict[str, Any]:
+    """Pure decision combining a student's baseline outcome (select_
+    historical_baseline_group), continuation (resolve_continuation) and
+    availability match (match_availability) into ONE of
+    SCHEDULE_PREVIEW_DECISIONS, plus reason_codes explaining why.
+
+    Priority, per the agreed ALE-8 rules: continuation is checked FIRST
+    (rules 1-3) — an explicit stop always wins regardless of historical
+    data quality; only once continuation=continues do the historical
+    baseline (rules 4/7/8) and Availability (rules 5/6) get consulted.
+
+    continuation_status == "unconfirmed" (no answer yet at all — unknown/
+    undecided/needs_consultation, no conflicting records) is a simple
+    "waiting on the parent" case: pending_confirmation. continuation_
+    status == "ambiguous" (resolve_continuation's own conflicting-records
+    case — one onboarding record says continues, another says undecided/
+    needs_consultation) is a DIFFERENT case — data already exists and
+    disagrees with itself, which needs a human decision rather than more
+    waiting, so it goes to manual_review instead (review-gate finding).
+
+    availability_match == "no_availability" (Availability never filled in
+    at all, as opposed to filled-but-incompatible) is treated as a safe
+    unresolved case (pending_confirmation) — the same bucket as an
+    unanswered continuation question, since both mean "waiting on the
+    parent for more information", never an automatic placement (rule 9).
+    A real conflict once Availability data DOES exist (branch/time/
+    start_date) is the only case that becomes needs_reassignment (rule 6).
+    """
+    if continuation_status == "discontinued":
+        return {"decision": "stopped", "reason_codes": [f"continuation_{continuation_detail}"]}
+
+    if continuation_status == "ambiguous":
+        return {"decision": "manual_review", "reason_codes": [f"continuation_{continuation_detail}"]}
+
+    if continuation_status == "unconfirmed":
+        return {"decision": "pending_confirmation", "reason_codes": [f"continuation_{continuation_detail}"]}
+
+    # continuation_status == "continues" from here on.
+    if baseline_outcome == "ambiguous":
+        return {"decision": "manual_review", "reason_codes": ["historical_group_ambiguous"]}
+    if baseline_outcome == "none":
+        return {"decision": "manual_review", "reason_codes": ["no_historical_baseline"]}
+
+    # baseline_outcome == "found"
+    if availability_match in ("preferred_match", "possible_match"):
+        return {"decision": "keep_historical_slot", "reason_codes": [f"availability_{availability_match}"]}
+    if availability_match in ("branch_conflict", "time_conflict", "start_date_conflict"):
+        return {"decision": "needs_reassignment", "reason_codes": [f"availability_{availability_match}"]}
+    if availability_match == "no_availability":
+        return {"decision": "pending_confirmation", "reason_codes": ["availability_not_filled"]}
+    # ambiguous_availability (the old group's own slot was never determined
+    # with confidence) or any future unrecognized match value — safest
+    # bucket, never auto-place a child on unclear historical data.
+    return {"decision": "manual_review", "reason_codes": [f"availability_{availability_match}"]}

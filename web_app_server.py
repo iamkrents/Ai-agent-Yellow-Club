@@ -17817,6 +17817,32 @@ class MiniAppContext:
         yc1, yc2 = self._schedule_branch_hints()
         return {"ok": True, "stats": self.storage.get_schedule_overview_stats(snapshot["id"], yc1, yc2), "snapshot": snapshot}
 
+    # v7.1.18 — ALE-8 first safe draft-planning preview. Purely read-only:
+    # combines the historical MoyKlass snapshot with live continuation/
+    # Availability data into a per-child decision. Never writes to
+    # schedule_drafts/schedule_draft_members, never calls MoyKlass. Gated
+    # the same as every other schedule-module READ (role + SCHEDULE_
+    # FOUNDATION_ENABLED/pilot allowlist via _require_schedule_module_
+    # access) — deliberately NOT gated by SCHEDULE_DRAFT_MUTATIONS_ENABLED,
+    # since this saves nothing.
+    def schedule_draft_preview(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        snapshot_id = _safe_int(params.get("snapshot_id"), 0) or None
+        snapshot = self.storage.get_schedule_snapshot(snapshot_id) if snapshot_id else self.storage.get_active_schedule_snapshot()
+        if not snapshot:
+            return {
+                "ok": True, "students": [], "total": 0, "limit": 0, "offset": 0,
+                "summary": {k: 0 for k in schedule_domain.SCHEDULE_PREVIEW_DECISIONS}, "snapshot": None,
+            }
+        limit = max(1, min(_safe_int(params.get("limit"), 100), 300))
+        offset = max(0, _safe_int(params.get("offset"), 0))
+        yc1, yc2 = self._schedule_branch_hints()
+        result = self.storage.get_schedule_draft_preview(snapshot["id"], yc1, yc2, limit=limit, offset=offset)
+        result["snapshot"] = snapshot
+        return result
+
     def schedule_groups_list(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
         denied = self._require_schedule_module_access(auth)
         if denied:
@@ -21166,6 +21192,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.schedule_sync_progress(auth, params))
                 if path == "/api/schedule/stats":
                     return self._send_json(CTX.schedule_stats(auth, params))
+                if path == "/api/schedule/draft-preview":
+                    return self._send_json(CTX.schedule_draft_preview(auth, params))
                 if path == "/api/schedule/groups":
                     return self._send_json(CTX.schedule_groups_list(auth, params))
                 if path.startswith("/api/schedule/groups/"):
