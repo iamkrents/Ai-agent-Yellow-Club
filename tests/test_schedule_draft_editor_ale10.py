@@ -394,5 +394,158 @@ class TestNoMoyKlassInEditorChanges(unittest.TestCase):
             self.assertNotIn("apiGet(", body)
 
 
+class TestStatusEditingUsesExistingEndpointAndVersioning(unittest.TestCase):
+    """Review-gate point 1 — status control already existed pre-review
+    (real backend values draft/needs_review/ready/archived, already
+    wired in _schedRenderDraftEditor to _schedSetDraftStatus ->
+    /api/schedule/drafts/{id}/status -> the pre-existing
+    set_schedule_draft_status) but was under-reported and not directly
+    tested end-to-end at the storage layer for these specific properties.
+    No new endpoint added — these exercise the real existing one."""
+
+    def test_status_change_saves_bumps_version_and_writes_audit(self):
+        storage = _make_storage()
+        draft = _seed_draft(storage, "500", ["9001"])
+        self.assertEqual(draft["status"], "draft")
+        result = storage.set_schedule_draft_status(draft["id"], 1, "T", draft["version"], "needs_review")
+        self.assertTrue(result["ok"], result)
+        after = storage.get_schedule_draft(draft["id"])
+        self.assertEqual(after["status"], "needs_review")
+        self.assertEqual(after["version"], draft["version"] + 1)
+        audit = storage.list_schedule_draft_audit_log(draft["id"], limit=50)
+        status_entries = [a for a in audit if a["action"] == "status_changed"]
+        self.assertEqual(len(status_entries), 1)
+        self.assertEqual(status_entries[0]["old_value"], "draft")
+        self.assertEqual(status_entries[0]["new_value"], "needs_review")
+
+    def test_stale_version_rejected_for_status_change(self):
+        storage = _make_storage()
+        draft = _seed_draft(storage, "500", ["9001"])
+        ok1 = storage.set_schedule_draft_status(draft["id"], 1, "T", draft["version"], "needs_review")
+        self.assertTrue(ok1["ok"])
+        stale = storage.set_schedule_draft_status(draft["id"], 1, "T", draft["version"], "ready")
+        self.assertFalse(stale["ok"])
+        self.assertEqual(stale["reason_code"], "version_conflict")
+        # the first, accepted status change must not have been clobbered
+        self.assertEqual(storage.get_schedule_draft(draft["id"])["status"], "needs_review")
+
+    def test_invalid_status_value_rejected_by_existing_backend(self):
+        storage = _make_storage()
+        draft = _seed_draft(storage, "500", ["9001"])
+        result = storage.set_schedule_draft_status(draft["id"], 1, "T", draft["version"], "published")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason_code"], "invalid_status")
+        self.assertEqual(storage.get_schedule_draft(draft["id"])["version"], draft["version"])
+
+    def test_archived_is_terminal_no_further_status_transitions(self):
+        storage = _make_storage()
+        draft = _seed_draft(storage, "500", ["9001"])
+        archived = storage.set_schedule_draft_status(draft["id"], 1, "T", draft["version"], "archived")
+        self.assertTrue(archived["ok"])
+        blocked = storage.set_schedule_draft_status(archived["draft"]["id"], 1, "T", archived["draft"]["version"], "needs_review")
+        self.assertFalse(blocked["ok"])
+        self.assertEqual(blocked["reason_code"], "invalid_transition")
+
+    def test_api_layer_status_change_uses_the_same_mutation_flag_and_permission_gate(self):
+        storage = _make_storage()
+        draft = _seed_draft(storage, "500", ["9001"])
+        cm_id = 900701
+        storage.set_staff_role(cm_id, "client_manager")
+        ctx = _make_ctx(storage, owner_id=900001, mutations_enabled=True)
+        result = ctx.schedule_draft_set_status(
+            {"user_id": cm_id}, str(draft["id"]), {"expected_version": draft["version"], "status": "needs_review"},
+        )
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(storage.get_schedule_draft(draft["id"])["status"], "needs_review")
+
+    def test_editor_status_buttons_use_real_backend_status_values_and_human_labels(self):
+        # real SCHEDULE_DRAFT_STATUSES vocabulary: draft/needs_review/
+        # ready/archived — never the review-gate message's shorthand
+        # ("review"/"archive"), which are not actual backend values.
+        render = _fn_body("_schedRenderDraftEditor")
+        self.assertIn("_schedSetDraftStatus('needs_review')", render)
+        self.assertIn("_schedSetDraftStatus('ready')", render)
+        self.assertIn("_schedConfirmArchiveDraft()", render)
+        labels_decl = APP_JS[APP_JS.index("const SCHED_DRAFT_STATUS_LABELS"):][:200]
+        self.assertIn('draft: "Черновик"', labels_decl)
+        self.assertIn('needs_review: "Требует проверки"', labels_decl)
+        self.assertIn('ready: "Готово к проверке"', labels_decl)
+        self.assertIn('archived: "Архив"', labels_decl)
+
+    def test_status_change_also_gated_by_mutations_flag_via_api(self):
+        storage = _make_storage()
+        draft = _seed_draft(storage, "500", ["9001"])
+        cm_id = 900702
+        storage.set_staff_role(cm_id, "client_manager")
+        ctx = _make_ctx(storage, owner_id=900001, mutations_enabled=False)
+        result = ctx.schedule_draft_set_status(
+            {"user_id": cm_id}, str(draft["id"]), {"expected_version": draft["version"], "status": "needs_review"},
+        )
+        self.assertFalse(result.get("ok"))
+        self.assertEqual(result.get("reason_code"), "mutations_disabled")
+        self.assertEqual(storage.get_schedule_draft(draft["id"])["status"], "draft")
+
+
+class TestTopLevelNavigationDirtyGuard(unittest.TestCase):
+    """Review-gate point 2 — real defect: activateTab() (the global
+    bottom-nav tab switcher) had zero awareness of _schedState.
+    editorDirty. The Telegram BackButton path (_schedBackButtonHandler)
+    was already guarded, but switching to a different top-level app tab
+    went through activateTab() directly, bypassing it — and returning to
+    "schedule-foundation" later unconditionally calls
+    loadScheduleFoundation(), which replaces #scheduleFoundationRoot's
+    whole DOM and silently discards editorPending. Fixed with a guard at
+    the top of activateTab() itself, reusing the existing uiConfirmSheet
+    pattern — not a new navigation system."""
+
+    def test_activate_tab_guards_when_editor_is_dirty(self):
+        body = _fn_body("activateTab")
+        self.assertIn('_schedState.view === "draft-editor" && _schedState.editorDirty', body)
+        self.assertIn("uiConfirmSheet(", body)
+        self.assertIn("Есть несохранённые изменения", body)
+
+    def test_guard_uses_the_requested_stay_leave_wording(self):
+        body = _fn_body("activateTab")
+        self.assertIn('confirmLabel: "Выйти"', body)
+        self.assertIn('cancelLabel: "Остаться"', body)
+
+    def test_declining_leaves_state_untouched_and_editor_intact(self):
+        # no onCancel handler is passed — uiConfirmSheet's own default
+        # cancel behavior (just close the sheet) is the entire "Остаться"
+        # path: activateTab already returned before touching any state
+        # or the DOM, so nothing needs to be undone.
+        body = _fn_body("activateTab")
+        guard_block = body[:body.index("const askInput")]
+        self.assertNotIn("onCancel", guard_block)
+
+    def test_confirming_clears_dirty_state_then_actually_navigates(self):
+        body = _fn_body("activateTab")
+        guard_block = body[:body.index("const askInput")]
+        self.assertIn("_schedState.editorDirty = false;", guard_block)
+        self.assertIn("_schedState.editorPending = {};", guard_block)
+        self.assertIn("activateTab(name);", guard_block)
+
+    def test_guard_is_the_very_first_check_before_any_dom_mutation(self):
+        # must run before activateTab's existing tab/panel class
+        # toggling — otherwise a declined confirm could still leave the
+        # DOM half-switched.
+        body = _fn_body("activateTab")
+        guard_pos = body.index('_schedState.view === "draft-editor"')
+        dom_mutation_pos = body.index('document.querySelectorAll(".tab")')
+        self.assertLess(guard_pos, dom_mutation_pos)
+
+    def test_successful_save_clears_dirty_so_navigation_no_longer_prompts(self):
+        # _schedLoadDraftDetail (called by _schedSaveDraftFields after a
+        # successful save) already resets editorDirty/editorPending —
+        # confirming the SAME state the new activateTab guard reads.
+        load_fn = _fn_body("_schedLoadDraftDetail")
+        self.assertIn("_schedState.editorDirty = false;", load_fn)
+        self.assertIn("_schedState.editorPending = {};", load_fn)
+
+    def test_cancel_also_clears_dirty_so_navigation_no_longer_prompts(self):
+        cancel_fn = _fn_body("_schedCancelDraftEdits")
+        self.assertIn("_schedState.editorDirty = false;", cancel_fn)
+
+
 if __name__ == "__main__":
     unittest.main()

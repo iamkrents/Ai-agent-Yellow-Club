@@ -1546,6 +1546,30 @@ function ensureVisibleActiveTab() {
 }
 
 function activateTab(name) {
+  // ALE-10 review-gate fix — the Telegram BackButton handler
+  // (_schedBackButtonHandler) already guards leaving the draft editor via
+  // Back, but switching to a DIFFERENT top-level app tab (bottom nav,
+  // or any programmatic activateTab(...) call) went through this
+  // function directly and bypassed it entirely: returning to
+  // "schedule-foundation" later unconditionally re-runs the module's own
+  // top-level loader, which replaces #scheduleFoundationRoot's whole DOM
+  // and silently discards any unsaved editorPending. Guarding
+  // here (rather than only at the Back-button level) covers every way
+  // to leave, including re-clicking the same "Расписание" tab while
+  // mid-edit, without building a second navigation system.
+  if (_schedState.view === "draft-editor" && _schedState.editorDirty) {
+    uiConfirmSheet({
+      title: "Есть несохранённые изменения",
+      message: "Выйти без сохранения? Изменения будут потеряны.",
+      confirmLabel: "Выйти", cancelLabel: "Остаться", danger: true,
+      onConfirm: () => {
+        _schedState.editorDirty = false;
+        _schedState.editorPending = {};
+        activateTab(name);
+      },
+    });
+    return;
+  }
   const askInput = $("askInput");
   if (name !== "ask") {
     askInput?.blur?.();
