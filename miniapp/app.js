@@ -21552,6 +21552,18 @@ function _schedRenderChildrenFilters() {
   el.innerHTML = `<div class="sched-subtabs">${SCHED_PREVIEW_FILTERS.map(f => `
     <button class="sched-decision-filter${_schedState.childrenFilter === f.id ? " active" : ""}" onclick="_schedChildrenFilterChange('${f.id}')">${escapeHtml(f.label)}</button>
   `).join("")}</div>`;
+  // Bugfix: assigning innerHTML resets the container's scrollLeft to 0
+  // even though the active chip correctly moved — the horizontal filter
+  // row visually snapped back to the start after every click. Bring the
+  // active chip back into view, horizontally only ("nearest" on both
+  // axes — the row is already vertically in place, so this never causes
+  // a page-level vertical jump; "nearest" also means a chip that's
+  // already visible is left alone, so rapid re-clicks don't fight the
+  // user's own scroll position).
+  const activeBtn = el.querySelector(".sched-decision-filter.active");
+  if (activeBtn && typeof activeBtn.scrollIntoView === "function") {
+    activeBtn.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
 }
 
 function _schedChildrenFilterChange(filterId) {
@@ -21564,11 +21576,27 @@ function _schedChildrenFilterChange(filterId) {
 // v7.1.18 — historical baseline is display-only context here, never a
 // substitute for the backend decision badge (which is always rendered
 // separately, unconditionally, from c.decision as-is).
+//
+// v7.1.19 bugfix — historical_group_name can already encode the day/time
+// itself (real production names like "Воскресенье 17.00"), so appending
+// the structured weekday/start_time unconditionally produced a visible
+// duplicate ("Воскресенье 17.00 · воскресенье, 17:00"). Only append
+// whichever of day/time isn't already present in the name — case-
+// insensitive, tolerant of "17.00" vs "17:00" — never a hardcoded check
+// for one specific day string, so any group-name convention is handled
+// the same way.
 function _schedChildBaselineText(c) {
   if (c.baseline_outcome === "found") {
-    const day = SCHED_WEEKDAY_NAMES_FULL[c.historical_weekday] || "";
-    const time = c.historical_start_time ? `, ${c.historical_start_time}` : "";
-    return `${c.historical_group_name || "Группа"} · ${day}${time}`;
+    const name = c.historical_group_name || "Группа";
+    const lowerName = name.toLowerCase();
+    const dayName = SCHED_WEEKDAY_NAMES_FULL[c.historical_weekday] || "";
+    const dayAlreadyInName = Boolean(dayName) && lowerName.includes(dayName.toLowerCase());
+    const startTime = c.historical_start_time || "";
+    const timeAlreadyInName = Boolean(startTime) && (lowerName.includes(startTime) || lowerName.includes(startTime.replace(":", ".")));
+    const extra = [];
+    if (dayName && !dayAlreadyInName) extra.push(dayName);
+    if (startTime && !timeAlreadyInName) extra.push(startTime);
+    return extra.length ? `${name} · ${extra.join(", ")}` : name;
   }
   if (c.baseline_outcome === "ambiguous") return "Несколько возможных групп";
   return "Основная группа не определена";
