@@ -304,7 +304,7 @@ class TestIdempotentRepeatSubmit(unittest.TestCase):
         storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
         drafts, _ = storage.list_schedule_drafts(source_snapshot_id=snap["id"], limit=50)
         draft_id = drafts[0]["id"]
-        storage.exclude_schedule_draft_member(draft_id, "9502", 1, "Тест")
+        storage.exclude_schedule_draft_member(draft_id, "9502", 1, "Тест", drafts[0]["version"])
 
         storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
         members = storage.list_schedule_draft_members(draft_id)
@@ -320,7 +320,7 @@ class TestIdempotentRepeatSubmit(unittest.TestCase):
         storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
         drafts, _ = storage.list_schedule_drafts(source_snapshot_id=snap["id"], limit=50)
         draft_id = drafts[0]["id"]
-        storage.exclude_schedule_draft_member(draft_id, "9503", 1, "Тест")
+        storage.exclude_schedule_draft_member(draft_id, "9503", 1, "Тест", drafts[0]["version"])
 
         result = storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
         self.assertEqual(result["members_added"], 0, "an already-present member (even excluded) is never re-added")
@@ -336,7 +336,7 @@ class TestIdempotentRepeatSubmit(unittest.TestCase):
         storage.persist_schedule_draft_preview(snap["id"], 1, "Тест", "Кульман 1/1", "Мстиславца 6")
         drafts, _ = storage.list_schedule_drafts(source_snapshot_id=snap["id"], limit=50)
         draft_id = drafts[0]["id"]
-        storage.update_schedule_draft_member_note(draft_id, "9504", "Родитель просил вторник", 1, "Тест")
+        storage.update_schedule_draft_member_note(draft_id, "9504", "Родитель просил вторник", 1, "Тест", drafts[0]["version"])
         with storage._connect() as conn:
             conn.execute(
                 "UPDATE schedule_draft_members SET manually_included=1 WHERE draft_id=? AND mk_user_id=?",

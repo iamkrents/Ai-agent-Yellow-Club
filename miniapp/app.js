@@ -21311,6 +21311,13 @@ const _schedState = {
   currentDraftAudit: [], currentDraftSourceGroup: null,
   currentDraftLoading: false, currentDraftError: null,
   editorDirty: false, editorPending: {}, editorSaving: false, editorVersionConflict: false,
+  // ALE-10 member composition slice — "Добавить ребёнка" picker state,
+  // separate from editorPending/editorDirty (member actions are their
+  // own explicit, immediately-submitted actions, never batched with
+  // unsaved field edits — see _schedMemberActionsBlockedByDirty).
+  addPickerOpen: false, addCandidates: null, addCandidatesTotal: 0,
+  addCandidatesLoading: false, addCandidatesError: null, addCandidatesRenderLimit: 30,
+  addingMemberId: null,
 
   foundationGenerating: false,
   resyncTriggering: false,   // ALE-31 — disables the "Синхронизировать заново" control mid-request
@@ -21541,6 +21548,17 @@ const SCHED_PREVIEW_FILTERS = [
   { id: "manual_review", label: "Проверить вручную" },
   { id: "stopped", label: "Не продолжают" },
 ];
+
+// ALE-10 member composition slice — "Добавить ребёнка" candidate grouping.
+// Purely a display label over the real backend candidate_group value
+// (schedule_domain.candidate_group_for_decision, itself a bucket over the
+// real SCHEDULE_PREVIEW_DECISIONS "decision" already used above) — never
+// a second decision computed in the frontend.
+const SCHED_ADD_CANDIDATE_GROUP_LABELS = {
+  assignable: "Можно распределять", needs_review: "Нужно проверить",
+  pending_confirmation: "Ждут подтверждения", stopped: "Не продолжают",
+};
+const SCHED_ADD_CANDIDATE_GROUP_ORDER = ["assignable", "needs_review", "pending_confirmation", "stopped"];
 
 function _schedRenderChildrenPlan(root) {
   root.innerHTML = `
@@ -22449,6 +22467,11 @@ async function _schedLoadDraftDetail(draftId) {
 function _schedRenderDraftEditor() {
   const root = $("schedEditorRoot");
   if (!root) return;
+  // Member actions (exclude/include/note/add) are explicit, immediately-
+  // submitted actions, never mixed with unsaved field edits (section 11)
+  // — a single choke point here guarantees the picker never stays open
+  // once editorDirty becomes true, however it became true.
+  if (_schedState.editorDirty && _schedState.addPickerOpen) _schedState.addPickerOpen = false;
   if (_schedState.currentDraftLoading && !_schedState.currentDraft) { root.innerHTML = uiLoadingRows(4); return; }
   if (_schedState.currentDraftError) { root.innerHTML = uiErrorState(_schedState.currentDraftError, `_schedLoadDraftDetail(${_schedState.currentDraftId})`); return; }
   const dr = _schedState.currentDraft;
@@ -22507,6 +22530,8 @@ function _schedRenderDraftEditor() {
       ` : ""}
     </div>
     <p class="sched-list-title">Участники (${_schedState.currentDraftMembers.filter(m => !m.manually_excluded).length})</p>
+    ${!archived && mutationsEnabled ? `<div class="sched-cta-row"><button class="secondary" ${_schedState.editorDirty || _schedState.editorSaving ? "disabled" : ""} title="${_schedState.editorDirty ? "Сначала сохраните или отмените изменения черновика" : ""}" onclick="_schedOpenAddChildPicker()">+ Добавить ребёнка</button></div>` : ""}
+    <div id="schedAddChildPicker"></div>
     <div class="sched-student-list">
       ${_schedState.currentDraftMembers.map(m => `
         <div class="sched-member-row${m.manually_excluded ? " sched-member-row--excluded" : ""}">
@@ -22521,9 +22546,9 @@ function _schedRenderDraftEditor() {
           ${!archived && mutationsEnabled ? `
             <div class="sched-member-row__actions">
               ${m.manually_excluded
-                ? `<button class="secondary" onclick="_schedIncludeMember('${escapeHtml(m.mk_user_id)}')">Включить</button>`
-                : `<button class="secondary" onclick="_schedExcludeMember('${escapeHtml(m.mk_user_id)}')">Исключить</button>`}
-              <button class="sched-linklike" onclick="_schedEditMemberNote('${escapeHtml(m.mk_user_id)}', '${escapeHtml(m.internal_note || "")}')">Комментарий</button>
+                ? `<button class="secondary" ${_schedState.editorDirty ? "disabled" : ""} onclick="_schedIncludeMember('${escapeHtml(m.mk_user_id)}')">Включить</button>`
+                : `<button class="secondary" ${_schedState.editorDirty ? "disabled" : ""} onclick="_schedExcludeMember('${escapeHtml(m.mk_user_id)}')">Исключить</button>`}
+              <button class="sched-linklike" ${_schedState.editorDirty ? "disabled" : ""} onclick="_schedEditMemberNote('${escapeHtml(m.mk_user_id)}', '${escapeHtml(m.internal_note || "")}')">Комментарий</button>
             </div>` : ""}
         </div>`).join("")}
     </div>
@@ -22534,6 +22559,7 @@ function _schedRenderDraftEditor() {
       `).join("") : `<p class="sched-audit-row">Пока нет изменений.</p>`}
     </div>
   `;
+  if (_schedState.addPickerOpen) _schedRenderAddChildPicker();
 }
 
 function _schedEditorFieldChange(field, value) {
@@ -22614,32 +22640,194 @@ function _schedConfirmArchiveDraft() {
   });
 }
 
+// Member actions (exclude/include/note/add) are separate, immediately-
+// submitted actions — never batched with unsaved editorPending field
+// edits (section 11). Every caller below checks this first; the buttons
+// that trigger them are also rendered disabled while editorDirty, so this
+// is defense-in-depth against a stale/cached click, not the only guard.
+function _schedMemberActionsBlockedByDirty() {
+  if (_schedState.editorDirty) {
+    setNotice("Сначала сохраните или отмените изменения черновика.", "error");
+    return true;
+  }
+  return false;
+}
+
 async function _schedExcludeMember(mkUserId) {
+  if (_schedMemberActionsBlockedByDirty()) return;
   const dr = _schedState.currentDraft;
   if (!dr) return;
   try {
-    await apiPost(`/api/schedule/drafts/${dr.id}/members/exclude`, { mk_user_id: mkUserId });
+    const d = await apiPost(`/api/schedule/drafts/${dr.id}/members/exclude`, { mk_user_id: mkUserId, expected_version: dr.version });
+    if (!d.ok) {
+      if (d.reason_code === "version_conflict") { _schedState.editorVersionConflict = true; _schedRenderDraftEditor(); return; }
+      throw new Error(d.error || "Ошибка");
+    }
     await _schedLoadDraftDetail(dr.id);
   } catch (e) { setNotice(`Не удалось исключить: ${e.message}`, "error"); }
 }
 
 async function _schedIncludeMember(mkUserId) {
+  if (_schedMemberActionsBlockedByDirty()) return;
   const dr = _schedState.currentDraft;
   if (!dr) return;
   try {
-    await apiPost(`/api/schedule/drafts/${dr.id}/members/include`, { mk_user_id: mkUserId });
+    const d = await apiPost(`/api/schedule/drafts/${dr.id}/members/include`, { mk_user_id: mkUserId, expected_version: dr.version });
+    if (!d.ok) {
+      if (d.reason_code === "version_conflict") { _schedState.editorVersionConflict = true; _schedRenderDraftEditor(); return; }
+      throw new Error(d.error || "Ошибка");
+    }
     await _schedLoadDraftDetail(dr.id);
   } catch (e) { setNotice(`Не удалось включить: ${e.message}`, "error"); }
 }
 
 function _schedEditMemberNote(mkUserId, currentNote) {
+  if (_schedMemberActionsBlockedByDirty()) return;
   const note = prompt("Внутренний комментарий:", currentNote || "");
   if (note === null) return;
   const dr = _schedState.currentDraft;
   if (!dr) return;
-  apiPost(`/api/schedule/drafts/${dr.id}/members/note`, { mk_user_id: mkUserId, note })
-    .then(() => _schedLoadDraftDetail(dr.id))
+  apiPost(`/api/schedule/drafts/${dr.id}/members/note`, { mk_user_id: mkUserId, note, expected_version: dr.version })
+    .then(d => {
+      if (!d.ok) {
+        if (d.reason_code === "version_conflict") { _schedState.editorVersionConflict = true; _schedRenderDraftEditor(); return; }
+        throw new Error(d.error || "Ошибка");
+      }
+      return _schedLoadDraftDetail(dr.id);
+    })
     .catch(e => setNotice(`Не удалось сохранить комментарий: ${e.message}`, "error"));
+}
+
+// ── ALE-10 member composition slice — "Добавить ребёнка" ────────────────
+function _schedOpenAddChildPicker() {
+  if (_schedMemberActionsBlockedByDirty()) return;
+  _schedState.addPickerOpen = true;
+  _schedState.addCandidates = null;
+  _schedState.addCandidatesError = null;
+  _schedState.addCandidatesRenderLimit = 30;
+  _schedRenderDraftEditor();
+  _schedLoadAddCandidates();
+}
+
+function _schedCloseAddChildPicker() {
+  _schedState.addPickerOpen = false;
+  _schedRenderDraftEditor();
+}
+
+async function _schedLoadAddCandidates() {
+  const dr = _schedState.currentDraft;
+  if (!dr) return;
+  _schedState.addCandidatesLoading = true;
+  _schedState.addCandidatesError = null;
+  const myToken = _schedState.reqToken;
+  try {
+    const d = await apiGet(`/api/schedule/drafts/${dr.id}/add-candidates?limit=300`);
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.addCandidates = d.candidates || [];
+    _schedState.addCandidatesTotal = d.total || 0;
+    _schedState.addCandidatesLoading = false;
+    _schedRenderAddChildPicker();
+  } catch (e) {
+    if (myToken !== _schedState.reqToken) return;
+    _schedState.addCandidatesLoading = false;
+    _schedState.addCandidatesError = e.message || String(e);
+    _schedRenderAddChildPicker();
+  }
+}
+
+function _schedAddCandidatesShowMore() {
+  _schedState.addCandidatesRenderLimit = (_schedState.addCandidatesRenderLimit || 30) + 30;
+  _schedRenderAddChildPicker();
+}
+
+function _schedRenderAddChildPicker() {
+  const el = $("schedAddChildPicker");
+  if (!el) return;
+  if (!_schedState.addPickerOpen) { el.innerHTML = ""; return; }
+  if (_schedState.addCandidatesLoading && !_schedState.addCandidates) {
+    el.innerHTML = `<p class="sched-list-title">Добавить ребёнка</p>${uiLoadingRows(3)}`;
+    return;
+  }
+  if (_schedState.addCandidatesError) {
+    el.innerHTML = `<p class="sched-list-title">Добавить ребёнка</p>${uiErrorState(_schedState.addCandidatesError, "_schedLoadAddCandidates()")}`;
+    return;
+  }
+  const all = _schedState.addCandidates || [];
+  if (!all.length) {
+    el.innerHTML = `<p class="sched-list-title">Добавить ребёнка</p>${uiEmptyState("👥", "Некого добавить", "Все дети из этого набора данных уже в черновике.")}<div class="sched-cta-row"><button class="sched-linklike" onclick="_schedCloseAddChildPicker()">Закрыть</button></div>`;
+    return;
+  }
+  const limit = _schedState.addCandidatesRenderLimit || 30;
+  const visible = all.slice(0, limit);
+  const hasMore = all.length > visible.length;
+  const byGroup = {};
+  for (const c of visible) { (byGroup[c.candidate_group] || (byGroup[c.candidate_group] = [])).push(c); }
+  el.innerHTML = `
+    <p class="sched-list-title">Добавить ребёнка</p>
+    <p class="ws-results-count">Показано ${visible.length} из ${all.length}</p>
+    ${SCHED_ADD_CANDIDATE_GROUP_ORDER.filter(g => byGroup[g] && byGroup[g].length).map(g => `
+      <p class="sched-list-title">${escapeHtml(SCHED_ADD_CANDIDATE_GROUP_LABELS[g])} (${byGroup[g].length})</p>
+      <div class="sched-student-list">${byGroup[g].map(_schedAddCandidateRowHtml).join("")}</div>
+    `).join("")}
+    ${hasMore ? `<div class="sched-cta-row"><button class="secondary" onclick="_schedAddCandidatesShowMore()">Показать ещё</button></div>` : ""}
+    <div class="sched-cta-row"><button class="sched-linklike" onclick="_schedCloseAddChildPicker()">Закрыть</button></div>
+  `;
+}
+
+function _schedAddCandidateRowHtml(c) {
+  const stopped = c.candidate_group === "stopped";
+  const busy = _schedState.addingMemberId === c.mk_user_id;
+  const historicalLine = c.historical_group_name
+    ? `Прошлая группа: ${escapeHtml(c.historical_group_name)}${c.historical_weekday ? " · " + escapeHtml(SCHED_WEEKDAY_NAMES[c.historical_weekday] || "") + " " + escapeHtml(c.historical_start_time || "") : ""}`
+    : "Прошлая группа не определена однозначно";
+  return `
+    <div class="sched-member-row">
+      <div>
+        ${_schedMemberNameHtml(c)}
+        <p class="sched-member-row__tech">${historicalLine}</p>
+      </div>
+      <div class="sched-member-row__badges">
+        ${uiStatusBadge(SCHED_CONTINUATION_LABELS[c.continuation_status] || c.continuation_status, SCHED_CONTINUATION_TONE[c.continuation_status] || "muted")}
+        ${uiStatusBadge(SCHED_MATCH_LABELS[c.target_slot_availability_match] || c.target_slot_availability_match, SCHED_MATCH_TONE[c.target_slot_availability_match] || "muted")}
+        ${uiStatusBadge(SCHED_PREVIEW_DECISION_LABELS[c.decision] || c.decision, SCHED_PREVIEW_DECISION_TONE[c.decision] || "muted")}
+      </div>
+      <button class="secondary" ${stopped || busy ? "disabled" : ""} onclick="_schedAddChildToDraft('${escapeHtml(c.mk_user_id)}')">${busy ? "Добавляем…" : "Добавить"}</button>
+    </div>`;
+}
+
+async function _schedAddChildToDraft(mkUserId, overridePending) {
+  if (_schedMemberActionsBlockedByDirty()) return;
+  const dr = _schedState.currentDraft;
+  if (!dr || _schedState.addingMemberId) return;
+  _schedState.addingMemberId = mkUserId;
+  _schedRenderAddChildPicker();
+  try {
+    const d = await apiPost(`/api/schedule/drafts/${dr.id}/members/add`, {
+      mk_user_id: mkUserId, expected_version: dr.version, override_pending: !!overridePending,
+    });
+    _schedState.addingMemberId = null;
+    if (!d.ok) {
+      if (d.reason_code === "version_conflict") { _schedState.editorVersionConflict = true; _schedRenderDraftEditor(); return; }
+      if (d.reason_code === "pending_confirmation_requires_override") {
+        _schedRenderAddChildPicker();
+        uiConfirmSheet({
+          title: "Продолжение обучения не подтверждено",
+          message: "Родитель ещё не подтвердил продолжение обучения. Всё равно добавить ребёнка в этот черновик?",
+          confirmLabel: "Всё равно добавить", cancelLabel: "Отмена",
+          onConfirm: () => _schedAddChildToDraft(mkUserId, true),
+        });
+        return;
+      }
+      throw new Error(d.error || "Не удалось добавить ребёнка");
+    }
+    await _schedLoadDraftDetail(dr.id);
+    await _schedLoadAddCandidates();
+    setNotice("Ребёнок добавлен в черновик.", "success");
+  } catch (e) {
+    _schedState.addingMemberId = null;
+    setNotice(`Не удалось добавить: ${e.message}`, "error");
+    _schedRenderAddChildPicker();
+  }
 }
 
 document.addEventListener("DOMContentLoaded", () => {

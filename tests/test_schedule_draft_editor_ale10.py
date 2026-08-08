@@ -305,7 +305,7 @@ class TestMembersCountOnDraftList(unittest.TestCase):
     def test_members_count_present_and_excludes_manually_excluded(self):
         storage = _make_storage()
         draft = _seed_draft(storage, "500", ["9001", "9002", "9003"])
-        storage.exclude_schedule_draft_member(draft["id"], "9002", 1, "T")
+        storage.exclude_schedule_draft_member(draft["id"], "9002", 1, "T", draft["version"])
         drafts, _total = storage.list_schedule_drafts(source_snapshot_id=draft["source_snapshot_id"])
         self.assertEqual(drafts[0]["members_count"], 2, "excluded member must not count")
 
