@@ -21318,6 +21318,13 @@ const _schedState = {
   addPickerOpen: false, addCandidates: null, addCandidatesTotal: 0,
   addCandidatesLoading: false, addCandidatesError: null, addCandidatesRenderLimit: 30,
   addingMemberId: null,
+  // Bug-fix (real-data E2E finding) — own generation counter, same
+  // reasoning/convention as childrenReqGen below: the shared reqToken is
+  // only bumped by the top-level _schedLoadStatus() loader, so it can't
+  // fence two overlapping _schedLoadAddCandidates() calls against each
+  // other (e.g. the picker is closed and reopened quickly while an older
+  // multi-page fetch is still in flight).
+  addCandidatesReqGen: 0,
 
   foundationGenerating: false,
   resyncTriggering: false,   // ALE-31 — disables the "Синхронизировать заново" control mid-request
@@ -22593,13 +22600,32 @@ function _schedCancelDraftEdits() {
   _schedRenderDraftEditor();
 }
 
+// Bug-fix (real-data E2E finding) — every schedule mutation below uses
+// _apiPostRaw (miniapp/app.js:708, pre-existing — same helper already used
+// by linkClientChild/_wsOcCreateInvite), never the shared apiPost. apiPost
+// does `if (!data.ok) throw new Error(...)` unconditionally, so the
+// `if (!d.ok) { if (d.reason_code === "...") {...} }` branches below were
+// silently unreachable dead code: apiPost had already thrown and control
+// jumped straight to the outer catch (a generic toast) before `d` could
+// ever be inspected. This broke both the dedicated version-conflict inline
+// banner (editorVersionConflict never actually got set from a live save/
+// mutation) and, more seriously, the pending-confirmation override dialog
+// in _schedAddChildToDraft (uiConfirmSheet was never called at all — the
+// override flow was completely unreachable). _apiPostRaw returns the raw
+// {ok, reason_code, error} payload without throwing, while fetch()/
+// res.json() still throw naturally for real network/transport/invalid-
+// JSON failures — audited across the whole file: every OTHER apiPost
+// caller (~90 call sites, payments/food/communications/admin/etc.) relies
+// on try/catch around the thrown Error and never inspects .ok/.reason_code
+// itself, so apiPost's own throw-on-error behavior is left completely
+// unchanged for them.
 async function _schedSaveDraftFields() {
   const dr = _schedState.currentDraft;
   if (!dr || _schedState.editorSaving) return;
   _schedState.editorSaving = true;
   _schedRenderDraftEditor();
   try {
-    const d = await apiPost(`/api/schedule/drafts/${dr.id}/update`, { expected_version: dr.version, changes: _schedState.editorPending });
+    const d = await _apiPostRaw(`/api/schedule/drafts/${dr.id}/update`, { expected_version: dr.version, changes: _schedState.editorPending });
     if (!d.ok) {
       if (d.reason_code === "version_conflict") { _schedState.editorVersionConflict = true; _schedState.editorSaving = false; _schedRenderDraftEditor(); return; }
       throw new Error(d.error || "Ошибка сохранения");
@@ -22618,7 +22644,7 @@ async function _schedSetDraftStatus(newStatus) {
   const dr = _schedState.currentDraft;
   if (!dr) return;
   try {
-    const d = await apiPost(`/api/schedule/drafts/${dr.id}/status`, { expected_version: dr.version, status: newStatus });
+    const d = await _apiPostRaw(`/api/schedule/drafts/${dr.id}/status`, { expected_version: dr.version, status: newStatus });
     if (!d.ok) {
       if (d.reason_code === "version_conflict") { _schedState.editorVersionConflict = true; _schedRenderDraftEditor(); return; }
       throw new Error(d.error || "Ошибка");
@@ -22658,7 +22684,7 @@ async function _schedExcludeMember(mkUserId) {
   const dr = _schedState.currentDraft;
   if (!dr) return;
   try {
-    const d = await apiPost(`/api/schedule/drafts/${dr.id}/members/exclude`, { mk_user_id: mkUserId, expected_version: dr.version });
+    const d = await _apiPostRaw(`/api/schedule/drafts/${dr.id}/members/exclude`, { mk_user_id: mkUserId, expected_version: dr.version });
     if (!d.ok) {
       if (d.reason_code === "version_conflict") { _schedState.editorVersionConflict = true; _schedRenderDraftEditor(); return; }
       throw new Error(d.error || "Ошибка");
@@ -22672,7 +22698,7 @@ async function _schedIncludeMember(mkUserId) {
   const dr = _schedState.currentDraft;
   if (!dr) return;
   try {
-    const d = await apiPost(`/api/schedule/drafts/${dr.id}/members/include`, { mk_user_id: mkUserId, expected_version: dr.version });
+    const d = await _apiPostRaw(`/api/schedule/drafts/${dr.id}/members/include`, { mk_user_id: mkUserId, expected_version: dr.version });
     if (!d.ok) {
       if (d.reason_code === "version_conflict") { _schedState.editorVersionConflict = true; _schedRenderDraftEditor(); return; }
       throw new Error(d.error || "Ошибка");
@@ -22687,7 +22713,7 @@ function _schedEditMemberNote(mkUserId, currentNote) {
   if (note === null) return;
   const dr = _schedState.currentDraft;
   if (!dr) return;
-  apiPost(`/api/schedule/drafts/${dr.id}/members/note`, { mk_user_id: mkUserId, note, expected_version: dr.version })
+  _apiPostRaw(`/api/schedule/drafts/${dr.id}/members/note`, { mk_user_id: mkUserId, note, expected_version: dr.version })
     .then(d => {
       if (!d.ok) {
         if (d.reason_code === "version_conflict") { _schedState.editorVersionConflict = true; _schedRenderDraftEditor(); return; }
@@ -22714,21 +22740,52 @@ function _schedCloseAddChildPicker() {
   _schedRenderDraftEditor();
 }
 
+// Bug-fix (real-data E2E finding) — a real snapshot can have far more than
+// one page's worth of candidates (576 in the production copy used for
+// E2E validation); GET add-candidates already supports limit/offset/total
+// (server max 300/page, matching _SCHED_CHILDREN_PAGE_LIMIT), so this
+// loops every page rather than fetching a single capped batch — same
+// offset-loop + total-aware-stop + dedup + hard-page-cap + own-generation-
+// counter pattern already established by _schedLoadChildrenPlan above.
+const _SCHED_ADD_CANDIDATES_PAGE_LIMIT = 300;
+const _SCHED_ADD_CANDIDATES_MAX_PAGES = 50; // 50 * 300 = 15,000 candidates hard ceiling
+
 async function _schedLoadAddCandidates() {
   const dr = _schedState.currentDraft;
   if (!dr) return;
+  const myGen = ++_schedState.addCandidatesReqGen;
   _schedState.addCandidatesLoading = true;
   _schedState.addCandidatesError = null;
-  const myToken = _schedState.reqToken;
+  _schedRenderAddChildPicker();
   try {
-    const d = await apiGet(`/api/schedule/drafts/${dr.id}/add-candidates?limit=300`);
-    if (myToken !== _schedState.reqToken) return;
-    _schedState.addCandidates = d.candidates || [];
-    _schedState.addCandidatesTotal = d.total || 0;
+    let offset = 0;
+    let all = [];
+    let total = 0;
+    for (let page_i = 0; page_i < _SCHED_ADD_CANDIDATES_MAX_PAGES; page_i++) {
+      const d = await apiGet(`/api/schedule/drafts/${dr.id}/add-candidates?limit=${_SCHED_ADD_CANDIDATES_PAGE_LIMIT}&offset=${offset}`);
+      if (myGen !== _schedState.addCandidatesReqGen) return;
+      const page = d.candidates || [];
+      all = all.concat(page);
+      total = d.total || 0;
+      offset += _SCHED_ADD_CANDIDATES_PAGE_LIMIT;
+      if (offset >= total || !page.length) break;
+    }
+    // Defensive de-dup by mk_user_id — same idiom as _schedLoadChildrenPlan
+    // (a candidate must never appear twice even if draft membership shifted
+    // between two page fetches of the same multi-page load).
+    const seen = new Set();
+    const deduped = [];
+    for (const c of all) {
+      if (seen.has(c.mk_user_id)) continue;
+      seen.add(c.mk_user_id);
+      deduped.push(c);
+    }
+    _schedState.addCandidates = deduped;
+    _schedState.addCandidatesTotal = total;
     _schedState.addCandidatesLoading = false;
     _schedRenderAddChildPicker();
   } catch (e) {
-    if (myToken !== _schedState.reqToken) return;
+    if (myGen !== _schedState.addCandidatesReqGen) return;
     _schedState.addCandidatesLoading = false;
     _schedState.addCandidatesError = e.message || String(e);
     _schedRenderAddChildPicker();
@@ -22802,7 +22859,7 @@ async function _schedAddChildToDraft(mkUserId, overridePending) {
   _schedState.addingMemberId = mkUserId;
   _schedRenderAddChildPicker();
   try {
-    const d = await apiPost(`/api/schedule/drafts/${dr.id}/members/add`, {
+    const d = await _apiPostRaw(`/api/schedule/drafts/${dr.id}/members/add`, {
       mk_user_id: mkUserId, expected_version: dr.version, override_pending: !!overridePending,
     });
     _schedState.addingMemberId = null;
