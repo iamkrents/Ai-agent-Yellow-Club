@@ -14451,6 +14451,69 @@ class MiniAppContext:
             result["filled"] = True
         return result
 
+    # ── ALE-34 — permanent client-facing continuation entry point. Before
+    # this, a parent could only ever answer "continues/not continuing" via
+    # a ONE-SHOT Telegram bot chat survey message right after invite
+    # activation (handlers.py, storage.submit_continuation_response) — never
+    # revisitable from the cabinet, and not sent at all for campaigns with
+    # survey_enabled=False. This mirrors client_schedule_availability_get/
+    # submit exactly (same _require_availability_access ownership gate, same
+    # get_or_create_recipient_for_client lazy-create pattern) so it works
+    # for ANY linked client regardless of which campaign/invite/survey path
+    # brought them in — reuses storage.update_recipient_continuation_status
+    # (the same single audited write path the bot survey and staff-override
+    # screens already converge on) unchanged; no new table, no new storage
+    # method.
+    def client_continuation_status_get(self, auth: dict[str, Any], mk_user_id_str: str) -> dict[str, Any]:
+        """GET /api/client/continuation-status/{mk_user_id}
+
+        Read-only: never creates a recipient row just from viewing (same
+        principle as client_schedule_availability_get)."""
+        mk_user_id = str(mk_user_id_str or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "invalid mk_user_id"}
+        _source, denied = self._require_availability_access(auth, mk_user_id)
+        if denied:
+            return denied
+        trusted = self.storage.get_trusted_local_client_candidate(mk_user_id)
+        display_name = (trusted or {}).get("child_display_name") or None
+        recipients = self.storage.find_onboarding_recipients_by_mk_user(mk_user_id)
+        if not recipients:
+            return {"ok": True, "continuation_status": "unknown", "continuation_updated_at": None, "child_display_name": display_name}
+        latest = recipients[0]
+        return {
+            "ok": True, "continuation_status": latest.get("continuation_status") or "unknown",
+            "continuation_updated_at": latest.get("continuation_updated_at"),
+            "child_display_name": display_name or latest.get("child_display_name"),
+        }
+
+    def client_continuation_status_submit(self, auth: dict[str, Any], mk_user_id_str: str, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /api/client/continuation-status/{mk_user_id}
+
+        Client-facing choice is deliberately binary in the UI (продолжает /
+        не продолжает) — the underlying vocabulary also has undecided/
+        needs_consultation for staff use, which this endpoint still accepts
+        (update_recipient_continuation_status validates against the full
+        CONTINUATION_STATUSES set) but the cabinet never offers as buttons."""
+        mk_user_id = str(mk_user_id_str or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "invalid mk_user_id"}
+        source, denied = self._require_availability_access(auth, mk_user_id)
+        if denied:
+            return denied
+        if source == "owner_test" and not bool(body.get("ownerTestConfirm")):
+            return {"ok": False, "error": "owner_confirm_required"}
+        new_status = str(body.get("continuation_status") or "").strip()
+        if new_status == "unknown":
+            return {"ok": False, "error": "Некорректный статус", "reason_code": "invalid_status"}
+        actor = str(auth.get("user_id") or "")
+        trusted = self.storage.get_trusted_local_client_candidate(mk_user_id)
+        display_name = (trusted or {}).get("child_display_name") or f"Ученик #{mk_user_id}"
+        recipient = self.storage.get_or_create_recipient_for_client(mk_user_id, display_name, actor)
+        return self.storage.update_recipient_continuation_status(
+            recipient["id"], new_status, actor_tg_id=actor, actor_role="parent", source=source,
+        )
+
     # v7.1.12.1 — reproducible HMAC-signed invite links. The deep-link secret
     # is the app's existing stable secret (telegram_bot_token — the same one
     # already used for signed Mini App URLs), so a link can be re-derived at
@@ -21195,6 +21258,9 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 if path.startswith("/api/client/schedule-availability/"):
                     _csa_mk = path[len("/api/client/schedule-availability/"):]
                     return self._send_json(CTX.client_schedule_availability_get(auth, _csa_mk))
+                if path.startswith("/api/client/continuation-status/"):
+                    _ccs_mk = path[len("/api/client/continuation-status/"):]
+                    return self._send_json(CTX.client_continuation_status_get(auth, _ccs_mk))
                 # ── v7.1.14 — staff "Рассылки" (communications center, GET) ──
                 if path == "/api/staff/communications/campaigns":
                     return self._send_json(CTX.communications_campaigns_list(auth, params))
@@ -21584,6 +21650,9 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/client/schedule-availability/"):
                 _csa_mk = path[len("/api/client/schedule-availability/"):]
                 return self._send_json(CTX.client_schedule_availability_submit(auth, _csa_mk, body))
+            if path.startswith("/api/client/continuation-status/"):
+                _ccs_mk = path[len("/api/client/continuation-status/"):]
+                return self._send_json(CTX.client_continuation_status_submit(auth, _ccs_mk, body))
             # ── v7.1.14 — staff "Рассылки" (communications center, POST) ─────
             if path == "/api/staff/communications/client-lookup":
                 return self._send_json(CTX.communications_client_lookup(auth, body))

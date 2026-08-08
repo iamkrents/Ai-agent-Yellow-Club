@@ -8850,11 +8850,24 @@ function renderMyChildren() {
   // Section: client children (Оплаты access)
   const clientCardsHtml = clientChildren.map(c => {
     const name = escapeHtml(c.display_name || "Ученик");
+    const nameAttr = name.replace(/'/g, "\\'");
     const since = c.linked_at ? escapeHtml(String(c.linked_at).slice(0, 10)) : "";
+    const mk = escapeHtml(String(c.mk_user_id));
+    const contStatus = c.continuation_status || "unknown";
+    const contLabel = ONBOARDING_CONTINUATION_LABELS[contStatus] || contStatus;
+    const contTone = contStatus === "continues" ? "success" : contStatus === "not_continuing" ? "danger" : "muted";
     return `<div class="parent-child-card parent-child-card--client">
       <div class="parent-child-name">${name}</div>
       <div class="parent-child-meta">Оплаты</div>
       ${since ? `<div class="parent-child-meta">Привязан: ${since}</div>` : ""}
+      <div class="parent-child-continuation">
+        ${uiStatusBadge(contLabel, contTone)}
+        <div class="parent-child-continuation-actions">
+          <button type="button" class="secondary" ${contStatus === "continues" ? "disabled" : ""} onclick="setMyChildContinuationConfirm('${mk}','continues','${nameAttr}')">Продолжает обучение</button>
+          <button type="button" class="secondary" ${contStatus === "not_continuing" ? "disabled" : ""} onclick="setMyChildContinuationConfirm('${mk}','not_continuing','${nameAttr}')">Не продолжает обучение</button>
+        </div>
+      </div>
+      <button type="button" class="secondary parent-child-availability-btn" onclick="openClientScheduleAvailabilityModal('${mk}')">Возможности для расписания</button>
     </div>`;
   }).join("");
 
@@ -8940,6 +8953,16 @@ async function loadMyChildren() {
       state.clientChildren = (data.children || []).filter(c => c.source === "client");
       // Keep food children in myChildren for backward compat with other callers
       state.myChildren = (data.children || []).filter(c => c.source === "food");
+      // ALE-34 — continuation_status per client child, small N (a household's
+      // own linked children), fetched in parallel; a failed lookup just
+      // leaves that one child's status undefined (rendered as "Не уточнено"),
+      // never blocks the rest of the list from showing.
+      await Promise.all(state.clientChildren.map(async c => {
+        try {
+          const cs = await apiGet(`/api/client/continuation-status/${encodeURIComponent(c.mk_user_id)}`);
+          if (cs.ok) c.continuation_status = cs.continuation_status;
+        } catch (e) { /* leave undefined */ }
+      }));
     } else {
       state.clientChildren = [];
       state.myChildren = [];
@@ -8949,6 +8972,43 @@ async function loadMyChildren() {
     state.myChildren = [];
   }
   renderMyChildren();
+}
+
+// ALE-34 — the only persistent, revisitable client-facing entry point for
+// continuation status (previously: a one-shot bot-chat survey message
+// only, never reachable again from the cabinet — see client_continuation_
+// status_get/submit in web_app_server.py for the full rationale). Placed
+// directly on "Мои дети" (renderMyChildren) rather than the new Главная
+// dashboard because "Мои дети" is the one screen reachable by EVERY
+// client regardless of the client_cabinet_v7113_enabled pilot flag — the
+// same reasoning applies to the "Возможности для расписания" button added
+// to the same card below, which the v7.1.13 redesign had only wired into
+// Главная/Ещё (both new-cabinet-only), leaving pre-pilot clients with no
+// way to reach an otherwise-complete, already-shipped screen at all.
+async function setMyChildContinuation(mkUserId, status) {
+  try {
+    const d = await _apiPostRaw(`/api/client/continuation-status/${encodeURIComponent(mkUserId)}`, { continuation_status: status });
+    if (!d.ok) {
+      setNotice(d.error || "Не удалось сохранить", "error");
+      return;
+    }
+    const child = (state.clientChildren || []).find(c => String(c.mk_user_id) === String(mkUserId));
+    if (child) child.continuation_status = status;
+    renderMyChildren();
+    setNotice("Сохранено", "ok");
+  } catch (e) {
+    setNotice(`Не удалось сохранить: ${safeUserError(e)}`, "error");
+  }
+}
+
+function setMyChildContinuationConfirm(mkUserId, status, childName) {
+  if (status !== "not_continuing") { setMyChildContinuation(mkUserId, status); return; }
+  uiConfirmSheet({
+    title: "Не продолжает обучение?",
+    message: `Подтвердите: ${childName} не продолжает обучение в новом учебном году.`,
+    confirmLabel: "Подтвердить", cancelLabel: "Отмена", danger: true,
+    onConfirm: () => setMyChildContinuation(mkUserId, status),
+  });
 }
 
 // v7.1.15 — launch-readiness: stable reason_code -> friendly retry-oriented
