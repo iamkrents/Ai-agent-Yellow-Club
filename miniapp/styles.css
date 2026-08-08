@@ -10456,6 +10456,18 @@ body.role-parent-cabinet .tabs.bottom-tabbar .tab:active {
 }
 .sched-subtab.active { background: var(--yellow, #ffcb1f); color: var(--ink); }
 
+/* ALE-10 — "Дети" screen decision filters. Same declarations as
+   .sched-subtab/.sched-subtab.active above (reused design, not a new
+   visual style) under a distinct class so _schedActivateTab's
+   document.querySelectorAll(".sched-subtab") (top-level nav only) never
+   touches these filter buttons. */
+.sched-decision-filter {
+  flex: 0 0 auto; white-space: nowrap; min-height: 44px; display: inline-flex; align-items: center;
+  padding: 0 14px; border-radius: 14px; background: var(--line); color: var(--muted);
+  font-size: 12.5px; font-weight: 700; border: none; cursor: pointer;
+}
+.sched-decision-filter.active { background: var(--yellow, #ffcb1f); color: var(--ink); }
+
 .sched-cta-row { margin: 14px 0; display: flex; justify-content: center; }
 .sched-cta-row button { min-height: 44px; padding: 0 20px; border-radius: 14px; font-weight: 700; }
 
