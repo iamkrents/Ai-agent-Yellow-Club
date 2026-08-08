@@ -136,10 +136,16 @@ class TestSchemaIsolation(unittest.TestCase):
 
 class TestVersionBump(unittest.TestCase):
     def test_85_version_bumped_in_three_places(self):
+        # v7.1.18 cache-bust fix (PR #7 shipped app.js/styles.css changes
+        # without bumping index.html's query string) intentionally moved
+        # only the two cache-bust params forward — APP_VERSION/console.log
+        # stay at 7.1.17.1 since that fix touched index.html only, not
+        # app.js. The three places are no longer required to share one
+        # version number; each still gets its own presence check.
         self.assertIn('console.log("MiniApp version: v7.1.17.1");', APP_JS)
         self.assertIn('const APP_VERSION = "7.1.17.1";', APP_JS)
-        self.assertIn('styles.css?v=7.1.17', INDEX_HTML)
-        self.assertIn('app.js?v=7.1.17', INDEX_HTML)
+        self.assertIn('styles.css?v=7.1.18', INDEX_HTML)
+        self.assertIn('app.js?v=7.1.18', INDEX_HTML)
 
     def test_85b_no_stale_previous_version_left_in_cache_bust(self):
         self.assertNotIn('styles.css?v=7.1.16.1', INDEX_HTML)

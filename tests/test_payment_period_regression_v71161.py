@@ -148,9 +148,12 @@ class TestFoodOnlyIsolationUnaffected(unittest.TestCase):
 
 class TestVersionBump(unittest.TestCase):
     def test_45_version_and_cache_bust(self):
+        # v7.1.18 cache-bust fix moved only index.html's query-string
+        # cache-bust forward — APP_VERSION/console.log stay at 7.1.17.1
+        # since that fix touched index.html only, not app.js.
         self.assertIn('console.log("MiniApp version: v7.1.17.1");', APP_JS)
-        self.assertIn("styles.css?v=7.1.17.1", INDEX_HTML)
-        self.assertIn("app.js?v=7.1.17.1", INDEX_HTML)
+        self.assertIn("styles.css?v=7.1.18", INDEX_HTML)
+        self.assertIn("app.js?v=7.1.18", INDEX_HTML)
 
 
 if __name__ == "__main__":

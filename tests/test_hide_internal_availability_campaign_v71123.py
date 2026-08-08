@@ -274,11 +274,14 @@ INDEX_HTML = ROOT / "miniapp" / "index.html"
 
 class TestVersionUnchanged(unittest.TestCase):
     def test_version_stays_v71123(self):
+        # v7.1.18 cache-bust fix moved only index.html's query-string
+        # cache-bust forward — APP_VERSION/console.log stay at 7.1.17.1
+        # since that fix touched index.html only, not app.js.
         js = APP_JS.read_text(encoding="utf-8")
         html = INDEX_HTML.read_text(encoding="utf-8")
         self.assertIn('console.log("MiniApp version: v7.1.17.1");', js)
-        self.assertIn("styles.css?v=7.1.17.1", html)
-        self.assertIn("app.js?v=7.1.17.1", html)
+        self.assertIn("styles.css?v=7.1.18", html)
+        self.assertIn("app.js?v=7.1.18", html)
 
 
 if __name__ == "__main__":
