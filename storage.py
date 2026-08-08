@@ -13456,6 +13456,88 @@ class Storage:
             "members_added": members_added, "members_skipped_discontinued": members_skipped_discontinued,
         }
 
+    # ── ALE-10 — safe SINGLE-group draft creation. Neither generate_
+    # schedule_draft_foundation above nor persist_schedule_draft_preview
+    # below can create just one draft — both are deliberately whole-
+    # snapshot operations (one draft per eligible group across the entire
+    # snapshot, ~130+ real groups), which is the wrong tool when a
+    # client_manager/owner wants to review the editor against exactly ONE,
+    # deliberately-chosen group first. This method reuses the EXACT same
+    # per-group insert logic (field mapping, member status resolution via
+    # resolve_schedule_student_status, audit action "created") as
+    # generate_schedule_draft_foundation, narrowed to a single group_id —
+    # never a second, parallel draft-creation algorithm. The snapshot is
+    # derived from the group's own snapshot_id (a group belongs to exactly
+    # one snapshot), so there is no separate snapshot_id parameter to
+    # mismatch. Idempotent by the same UNIQUE(source_snapshot_id,
+    # source_group_id) constraint — a second call for the same group
+    # returns the existing draft untouched (created=False) rather than
+    # raising or duplicating. Discontinued students are never inserted as
+    # members. Nothing is written to MoyKlass; no notification is sent.
+    def create_schedule_draft_for_group(
+        self, group_id: int, actor_user_id: Optional[int], actor_name: str,
+        yc1_hint: str, yc2_hint: str,
+    ) -> dict[str, Any]:
+        group = self.get_schedule_source_group(group_id)
+        if not group:
+            return {"ok": False, "error": "Группа не найдена", "reason_code": "not_found"}
+        snapshot_id = int(group["snapshot_id"])
+        with self._connect() as conn:
+            existing_row = conn.execute(
+                "SELECT id FROM schedule_drafts WHERE source_snapshot_id=? AND source_group_id=?",
+                (snapshot_id, int(group_id)),
+            ).fetchone()
+        if existing_row:
+            return {"ok": True, "created": False, "draft": self.get_schedule_draft(int(existing_row["id"]))}
+
+        now = now_iso()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO schedule_drafts (source_snapshot_id, source_group_id, name, course_name, "
+                "branch_name, teacher_mk_id, teacher_name, weekday, start_time, duration_minutes, "
+                "status, version, created_by, created_by_name, updated_by, updated_by_name, "
+                "created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?, ?, ?, ?)",
+                (
+                    snapshot_id, int(group_id), group["name"], group["course_name"],
+                    group["branch_name"], group["teacher_mk_id"], group["teacher_name"],
+                    group["weekday"], group["start_time"], group["duration_minutes"],
+                    actor_user_id, actor_name, actor_user_id, actor_name, now, now,
+                ),
+            )
+            draft_id = int(cur.lastrowid)
+            self._write_schedule_draft_audit(
+                conn, draft_id, actor_user_id, actor_name, "created",
+                details=f"Ручное создание одного черновика из группы источника #{group_id} ({group['name'] or group['mk_class_id']})",
+            )
+            group_branch_code = schedule_domain.branch_code_from_name(group["branch_name"], yc1_hint, yc2_hint)
+            members_added, members_skipped_discontinued = 0, 0
+            for student in self.list_schedule_source_group_students(int(group_id)):
+                status = self.resolve_schedule_student_status(
+                    student["mk_user_id"], weekday=group["weekday"], start_time=group["start_time"],
+                    duration_minutes=group["duration_minutes"], group_branch_code=group_branch_code,
+                    planned_start_date=None,
+                )
+                if status["continuation_status"] == "discontinued":
+                    members_skipped_discontinued += 1
+                    continue
+                conn.execute(
+                    "INSERT OR IGNORE INTO schedule_draft_members "
+                    "(draft_id, mk_user_id, child_display_name, source_group_id, continuation_status, "
+                    " availability_match, conflict_reason, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        draft_id, student["mk_user_id"], student["child_display_name"], int(group_id),
+                        status["continuation_status"], status["availability_match"], status["availability_reason"],
+                        now, now,
+                    ),
+                )
+                members_added += 1
+        return {
+            "ok": True, "created": True, "draft": self.get_schedule_draft(draft_id),
+            "members_added": members_added, "members_skipped_discontinued": members_skipped_discontinued,
+        }
+
     # ── Drafts: reading ─────────────────────────────────────────────────
     def get_schedule_draft(self, draft_id: int) -> Optional[dict[str, Any]]:
         with self._connect() as conn:

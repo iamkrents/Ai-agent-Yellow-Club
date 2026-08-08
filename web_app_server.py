@@ -17943,6 +17943,23 @@ class MiniAppContext:
         yc1, yc2 = self._schedule_branch_hints()
         return self.storage.persist_schedule_draft_preview(active["id"], actor_id, actor_name, yc1, yc2)
 
+    # ALE-10 — safe single-group draft creation. Same permission + mutation-
+    # flag gate as schedule_foundation_generate/schedule_draft_preview_
+    # persist above; unlike those, this targets ONE group (via the URL),
+    # never the whole active snapshot.
+    def schedule_group_create_draft(self, auth: dict[str, Any], group_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        if not bool(getattr(self.settings, "schedule_draft_mutations_enabled", False)):
+            return {"ok": False, "error": "Редактирование черновиков выключено.", "reason_code": "mutations_disabled"}
+        gid = _safe_int(group_id, 0)
+        if not gid:
+            return {"ok": False, "error": "Группа не найдена", "reason_code": "not_found"}
+        actor_id, actor_name = self._schedule_actor(auth)
+        yc1, yc2 = self._schedule_branch_hints()
+        return self.storage.create_schedule_draft_for_group(gid, actor_id, actor_name, yc1, yc2)
+
     def schedule_drafts_list(self, auth: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
         denied = self._require_schedule_module_access(auth)
         if denied:
@@ -21681,6 +21698,11 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 return self._send_json(CTX.schedule_foundation_generate(auth, body))
             if path == "/api/schedule/draft-preview/persist":
                 return self._send_json(CTX.schedule_draft_preview_persist(auth, body))
+            if path.startswith("/api/schedule/groups/"):
+                _sg_rest = path[len("/api/schedule/groups/"):]
+                _sg_parts = _sg_rest.split("/")
+                if len(_sg_parts) == 2 and _sg_parts[0] and _sg_parts[1] == "create-draft":
+                    return self._send_json(CTX.schedule_group_create_draft(auth, _sg_parts[0], body))
             if path.startswith("/api/schedule/drafts/"):
                 _sd_rest = path[len("/api/schedule/drafts/"):]
                 _sd_parts = _sd_rest.split("/")
