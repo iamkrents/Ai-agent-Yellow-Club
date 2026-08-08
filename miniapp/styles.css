@@ -6359,6 +6359,14 @@ body.is-telegram-webapp .app-shell {
 .parent-child-name { font-weight: 700; font-size: 1rem; margin-bottom: 4px; }
 .parent-child-meta { font-size: 13px; color: var(--color-text-secondary, #666); }
 
+/* ALE-34 — continuation status + Availability entry point, on the "Мои
+   дети" card so both are reachable regardless of the client_cabinet_v7113
+   pilot flag (see the comment above setMyChildContinuation in app.js). */
+.parent-child-continuation { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.parent-child-continuation-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.parent-child-continuation-actions button { flex: 1 1 auto; min-height: 40px; font-size: 13px; }
+.parent-child-availability-btn { width: 100%; margin-top: 10px; min-height: 44px; }
+
 /* v7.1.12.3 — permanent "Возможности для расписания" entry card + multi-child picker */
 .parent-schedule-avail-card {
   display: block; width: 100%; text-align: left; cursor: pointer;
