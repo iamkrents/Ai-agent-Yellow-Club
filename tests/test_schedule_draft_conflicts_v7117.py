@@ -51,12 +51,12 @@ class TestManualIncludeExclude(unittest.TestCase):
     def test_42_exclude_then_include_member(self):
         storage = _make_storage()
         draft = _seed_draft(storage, "500", ["9001"])
-        r = storage.exclude_schedule_draft_member(draft["id"], "9001", 1, "T")
+        r = storage.exclude_schedule_draft_member(draft["id"], "9001", 1, "T", draft["version"])
         self.assertTrue(r["ok"])
         member = storage.list_schedule_draft_members(draft["id"])[0]
         self.assertEqual(member["manually_excluded"], 1)
 
-        r2 = storage.include_schedule_draft_member(draft["id"], "9001", "Ребёнок 9001", None, 1, "T", "Кульман 1/1", "Мстиславца 6")
+        r2 = storage.include_schedule_draft_member(draft["id"], "9001", "Ребёнок 9001", None, 1, "T", "Кульман 1/1", "Мстиславца 6", r["draft"]["version"])
         self.assertTrue(r2["ok"])
         member2 = storage.list_schedule_draft_members(draft["id"])[0]
         self.assertEqual(member2["manually_excluded"], 0)
@@ -64,7 +64,7 @@ class TestManualIncludeExclude(unittest.TestCase):
     def test_42b_include_brand_new_child_not_in_source_roster(self):
         storage = _make_storage()
         draft = _seed_draft(storage, "500", ["9001"])
-        r = storage.include_schedule_draft_member(draft["id"], "9999", "Добавленный вручную", None, 1, "T", "Кульман 1/1", "Мстиславца 6")
+        r = storage.include_schedule_draft_member(draft["id"], "9999", "Добавленный вручную", None, 1, "T", "Кульман 1/1", "Мстиславца 6", draft["version"])
         self.assertTrue(r["ok"])
         ids = {m["mk_user_id"] for m in storage.list_schedule_draft_members(draft["id"])}
         self.assertIn("9999", ids)
@@ -77,8 +77,8 @@ class TestAuditLog(unittest.TestCase):
         storage = _make_storage()
         draft = _seed_draft(storage, "500", ["9001"])
         storage.update_schedule_draft_fields(draft["id"], 1, "T", draft["version"], {"name": "Новое имя"}, "Кульман 1/1", "Мстиславца 6")
-        storage.exclude_schedule_draft_member(draft["id"], "9001", 1, "T")
-        storage.set_schedule_draft_status(draft["id"], 1, "T", draft["version"] + 1, "needs_review")
+        storage.exclude_schedule_draft_member(draft["id"], "9001", 1, "T", draft["version"] + 1)
+        storage.set_schedule_draft_status(draft["id"], 1, "T", draft["version"] + 2, "needs_review")
 
         audit = storage.list_schedule_draft_audit_log(draft["id"], limit=50)
         actions = {a["action"] for a in audit}
@@ -130,7 +130,7 @@ class TestCrossDraftConflicts(unittest.TestCase):
         storage = _make_storage()
         draft_a = _seed_draft(storage, "500", ["9001"], weekday=4, start_time="17:00")
         draft_b = _seed_draft(storage, "600", ["9001"], weekday=4, start_time="17:15")
-        storage.exclude_schedule_draft_member(draft_a["id"], "9001", 1, "T")
+        storage.exclude_schedule_draft_member(draft_a["id"], "9001", 1, "T", draft_a["version"])
         conflicts = storage.get_schedule_draft_conflicts(draft_a["id"])
         self.assertEqual(conflicts["child_conflicts"], [], "an excluded member must not trigger a conflict")
 

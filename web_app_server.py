@@ -18033,6 +18033,12 @@ class MiniAppContext:
             return {"ok": False, "error": "Некорректный статус", "reason_code": "invalid_status"}
         return self.storage.set_schedule_draft_status(did, *self._schedule_actor(auth), int(expected_version), new_status)
 
+    def _schedule_require_expected_version(self, body: dict[str, Any]) -> tuple[Optional[int], Optional[dict[str, Any]]]:
+        expected_version = body.get("expected_version")
+        if expected_version is None:
+            return None, {"ok": False, "error": "expected_version обязателен", "reason_code": "missing_version"}
+        return int(expected_version), None
+
     def schedule_draft_member_exclude(self, auth: dict[str, Any], draft_id: str, body: dict[str, Any]) -> dict[str, Any]:
         denied = self._require_schedule_module_access(auth)
         if denied:
@@ -18046,7 +18052,10 @@ class MiniAppContext:
         mk_user_id = str(body.get("mk_user_id") or "").strip()
         if not mk_user_id:
             return {"ok": False, "error": "mk_user_id обязателен", "reason_code": "missing_mk_user_id"}
-        return self.storage.exclude_schedule_draft_member(did, mk_user_id, *self._schedule_actor(auth))
+        expected_version, err = self._schedule_require_expected_version(body)
+        if err:
+            return err
+        return self.storage.exclude_schedule_draft_member(did, mk_user_id, *self._schedule_actor(auth), expected_version)
 
     def schedule_draft_member_include(self, auth: dict[str, Any], draft_id: str, body: dict[str, Any]) -> dict[str, Any]:
         denied = self._require_schedule_module_access(auth)
@@ -18061,10 +18070,13 @@ class MiniAppContext:
         mk_user_id = str(body.get("mk_user_id") or "").strip()
         if not mk_user_id:
             return {"ok": False, "error": "mk_user_id обязателен", "reason_code": "missing_mk_user_id"}
+        expected_version, err = self._schedule_require_expected_version(body)
+        if err:
+            return err
         child_name = str(body.get("child_display_name") or "").strip()
         source_group_id = _safe_int(body.get("source_group_id"), 0) or None
         yc1, yc2 = self._schedule_branch_hints()
-        return self.storage.include_schedule_draft_member(did, mk_user_id, child_name, source_group_id, *self._schedule_actor(auth), yc1, yc2)
+        return self.storage.include_schedule_draft_member(did, mk_user_id, child_name, source_group_id, *self._schedule_actor(auth), yc1, yc2, expected_version)
 
     def schedule_draft_member_note(self, auth: dict[str, Any], draft_id: str, body: dict[str, Any]) -> dict[str, Any]:
         denied = self._require_schedule_module_access(auth)
@@ -18079,7 +18091,46 @@ class MiniAppContext:
         mk_user_id = str(body.get("mk_user_id") or "").strip()
         if not mk_user_id:
             return {"ok": False, "error": "mk_user_id обязателен", "reason_code": "missing_mk_user_id"}
-        return self.storage.update_schedule_draft_member_note(did, mk_user_id, str(body.get("note") or ""), *self._schedule_actor(auth))
+        expected_version, err = self._schedule_require_expected_version(body)
+        if err:
+            return err
+        return self.storage.update_schedule_draft_member_note(did, mk_user_id, str(body.get("note") or ""), *self._schedule_actor(auth), expected_version)
+
+    # ── ALE-10 member composition slice ─────────────────────────────────
+    def schedule_draft_add_candidates(self, auth: dict[str, Any], draft_id: str, params: dict[str, str]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        did = _safe_int(draft_id, 0)
+        draft = self.storage.get_schedule_draft(did) if did else None
+        if not draft:
+            return {"ok": False, "error": "Черновик не найден", "reason_code": "not_found"}
+        limit = max(1, min(_safe_int(params.get("limit"), 100), 300))
+        offset = max(0, _safe_int(params.get("offset"), 0))
+        yc1, yc2 = self._schedule_branch_hints()
+        return self.storage.get_schedule_draft_add_candidates(did, yc1, yc2, limit=limit, offset=offset)
+
+    def schedule_draft_member_add(self, auth: dict[str, Any], draft_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        denied = self._require_schedule_module_access(auth)
+        if denied:
+            return denied
+        if not bool(getattr(self.settings, "schedule_draft_mutations_enabled", False)):
+            return {"ok": False, "error": "Редактирование черновиков выключено.", "reason_code": "mutations_disabled"}
+        did = _safe_int(draft_id, 0)
+        _draft, err = self._schedule_require_mutable_draft(did)
+        if err:
+            return err
+        mk_user_id = str(body.get("mk_user_id") or "").strip()
+        if not mk_user_id:
+            return {"ok": False, "error": "mk_user_id обязателен", "reason_code": "missing_mk_user_id"}
+        expected_version, err = self._schedule_require_expected_version(body)
+        if err:
+            return err
+        override_pending = bool(body.get("override_pending"))
+        yc1, yc2 = self._schedule_branch_hints()
+        return self.storage.add_schedule_draft_member_manual(
+            did, mk_user_id, *self._schedule_actor(auth), expected_version, yc1, yc2, override_pending=override_pending,
+        )
 
     # ── v7.1.5 — Review approval ──────────────────────────────────────────────
 
@@ -21232,6 +21283,9 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     _sdid = path[len("/api/schedule/drafts/"):]
                     if _sdid and "/" not in _sdid:
                         return self._send_json(CTX.schedule_draft_detail(auth, _sdid))
+                    _sdid_parts = _sdid.split("/")
+                    if len(_sdid_parts) == 2 and _sdid_parts[0] and _sdid_parts[1] == "add-candidates":
+                        return self._send_json(CTX.schedule_draft_add_candidates(auth, _sdid_parts[0], params))
                 return self._send_json({"ok": False, "error": "Unknown API route"}, status=404)
             self.send_error(404, "Not found")
         except (BrokenPipeError, ConnectionResetError):
@@ -21640,6 +21694,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return self._send_json(CTX.schedule_draft_member_include(auth, _sd_parts[0], body))
                 if len(_sd_parts) == 3 and _sd_parts[0] and _sd_parts[1] == "members" and _sd_parts[2] == "note":
                     return self._send_json(CTX.schedule_draft_member_note(auth, _sd_parts[0], body))
+                if len(_sd_parts) == 3 and _sd_parts[0] and _sd_parts[1] == "members" and _sd_parts[2] == "add":
+                    return self._send_json(CTX.schedule_draft_member_add(auth, _sd_parts[0], body))
             return self._send_json({"ok": False, "error": "Unknown API route"}, status=404)
         except (BrokenPipeError, ConnectionResetError):
             log.info("Client disconnected: path=%s", self.path.split("?", 1)[0])

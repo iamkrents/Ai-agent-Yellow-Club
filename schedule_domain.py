@@ -585,6 +585,28 @@ SCHEDULE_PREVIEW_DECISIONS = (
 # ambiguous). See ALE-8 rule 8.
 _PREVIEW_BASELINE_STRONG_CATEGORIES = frozenset({"regular_confirmed", "regular_inferred_high"})
 
+# ── ALE-10 — member composition manual-add candidate grouping ──────────────
+# Purely a DISPLAY grouping over the existing, real SCHEDULE_PREVIEW_DECISIONS
+# value already computed by build_schedule_draft_preview_decision — never a
+# second decision engine, never invents a new status. Maps the same 5 real
+# backend decisions onto the 4 buckets the "Добавить ребёнка" picker groups
+# candidates into.
+SCHEDULE_ADD_CANDIDATE_GROUPS = {
+    "keep_historical_slot": "assignable",
+    "needs_reassignment": "needs_review",
+    "manual_review": "needs_review",
+    "pending_confirmation": "pending_confirmation",
+    "stopped": "stopped",
+}
+
+
+def candidate_group_for_decision(decision: str) -> str:
+    """Buckets a real preview `decision` value into one of the 4 manual-add
+    candidate groups (assignable/needs_review/pending_confirmation/stopped).
+    Falls back to "needs_review" for any unrecognized value — the safest
+    bucket, never silently treated as freely assignable."""
+    return SCHEDULE_ADD_CANDIDATE_GROUPS.get(decision, "needs_review")
+
 
 def select_historical_baseline_group(group_rows: list[dict[str, Any]]) -> dict[str, Any]:
     """group_rows: every schedule_source_group_students row for ONE student

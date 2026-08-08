@@ -13654,10 +13654,46 @@ class Storage:
             )
         return {"ok": True, "draft": self.get_schedule_draft(draft_id)}
 
+    def _schedule_draft_member_mutation_precheck(
+        self, draft_id: int, expected_version: int,
+    ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+        """Shared optimistic-concurrency + archive-finality guard for every
+        member mutation (exclude/include/note/manual add) — ALE-10 member
+        composition slice. Member mutations previously bumped nothing on
+        schedule_drafts and never checked expected_version at all, unlike
+        every other draft mutation (update_schedule_draft_fields/
+        set_schedule_draft_status), which is the exact gap this closes.
+        Returns (draft, error) — error is set (and draft is None) on
+        not_found/archived/version_conflict, matching the response shape
+        used everywhere else in this module."""
+        draft = self.get_schedule_draft(draft_id)
+        if not draft:
+            return None, {"ok": False, "error": "Черновик не найден", "reason_code": "not_found"}
+        if draft["status"] == "archived":
+            return None, {"ok": False, "error": "Черновик в архиве — редактирование недоступно", "reason_code": "archived"}
+        if int(draft["version"]) != int(expected_version):
+            return None, {
+                "ok": False, "error": "Черновик изменён другим сотрудником — обновите и повторите",
+                "reason_code": "version_conflict", "current_version": draft["version"],
+            }
+        return draft, None
+
+    def _bump_schedule_draft_version(
+        self, conn: sqlite3.Connection, draft_id: int, actor_user_id: Optional[int], actor_name: str, now: str,
+    ) -> None:
+        conn.execute(
+            "UPDATE schedule_drafts SET version=version+1, updated_by=?, updated_by_name=?, updated_at=? WHERE id=?",
+            (actor_user_id, actor_name, now, int(draft_id)),
+        )
+
     def exclude_schedule_draft_member(
         self, draft_id: int, mk_user_id: str, actor_user_id: Optional[int], actor_name: str,
+        expected_version: int,
     ) -> dict[str, Any]:
         mk_user_id = str(mk_user_id)
+        _draft, err = self._schedule_draft_member_mutation_precheck(draft_id, expected_version)
+        if err:
+            return err
         now = now_iso()
         with self._connect() as conn:
             row = conn.execute(
@@ -13670,19 +13706,21 @@ class Storage:
                 "UPDATE schedule_draft_members SET manually_excluded=1, manually_included=0, updated_at=? WHERE id=?",
                 (now, row["id"]),
             )
+            self._bump_schedule_draft_version(conn, draft_id, actor_user_id, actor_name, now)
             self._write_schedule_draft_audit(
                 conn, draft_id, actor_user_id, actor_name, "member_excluded", field="mk_user_id", new_value=mk_user_id,
             )
-        return {"ok": True}
+        return {"ok": True, "draft": self.get_schedule_draft(draft_id)}
 
     def include_schedule_draft_member(
         self, draft_id: int, mk_user_id: str, child_display_name: str, source_group_id: Optional[int],
         actor_user_id: Optional[int], actor_name: str, yc1_hint: str, yc2_hint: str,
+        expected_version: int,
     ) -> dict[str, Any]:
         mk_user_id = str(mk_user_id)
-        draft = self.get_schedule_draft(draft_id)
-        if not draft:
-            return {"ok": False, "error": "Черновик не найден", "reason_code": "not_found"}
+        draft, err = self._schedule_draft_member_mutation_precheck(draft_id, expected_version)
+        if err:
+            return err
         now = now_iso()
         group_branch_code = schedule_domain.branch_code_from_name(draft["branch_name"], yc1_hint, yc2_hint)
         with self._connect() as conn:
@@ -13712,14 +13750,19 @@ class Storage:
                         now, now,
                     ),
                 )
+            self._bump_schedule_draft_version(conn, draft_id, actor_user_id, actor_name, now)
             self._write_schedule_draft_audit(
                 conn, draft_id, actor_user_id, actor_name, "member_included", field="mk_user_id", new_value=mk_user_id,
             )
-        return {"ok": True}
+        return {"ok": True, "draft": self.get_schedule_draft(draft_id)}
 
     def update_schedule_draft_member_note(
         self, draft_id: int, mk_user_id: str, note: str, actor_user_id: Optional[int], actor_name: str,
+        expected_version: int,
     ) -> dict[str, Any]:
+        _draft, err = self._schedule_draft_member_mutation_precheck(draft_id, expected_version)
+        if err:
+            return err
         now = now_iso()
         with self._connect() as conn:
             row = conn.execute(
@@ -13732,10 +13775,170 @@ class Storage:
                 "UPDATE schedule_draft_members SET internal_note=?, updated_at=? WHERE id=?",
                 (str(note or "")[:2000], now, row["id"]),
             )
+            self._bump_schedule_draft_version(conn, draft_id, actor_user_id, actor_name, now)
             self._write_schedule_draft_audit(
                 conn, draft_id, actor_user_id, actor_name, "note_added", field="mk_user_id", new_value=str(mk_user_id),
             )
-        return {"ok": True}
+        return {"ok": True, "draft": self.get_schedule_draft(draft_id)}
+
+    # ── ALE-10 member composition slice — MANUAL ADD of a child who is not
+    # yet a schedule_draft_members row for this draft. Deliberately a
+    # SEPARATE method from include_schedule_draft_member above (which
+    # keeps its pre-existing, unrestricted "insert new row" branch exactly
+    # as-is — that primitive is only ever driven by the frontend's
+    # restore-a-previously-excluded-member action, and an existing test
+    # (test_42b_include_brand_new_child_not_in_source_roster) already
+    # relies on it accepting an arbitrary mk_user_id with no snapshot
+    # membership at all). This method is the ONLY path the new "Добавить
+    # ребёнка" UI action is wired to, and enforces the ALE-10 product
+    # rules that path must never bypass:
+    #   - the child must actually belong to this draft's own source
+    #     snapshot (schedule_source_group_students), never an arbitrary
+    #     mk_user_id and never a child from a different snapshot;
+    #   - never a duplicate row for (draft_id, mk_user_id) — reuse the
+    #     existing exclude/restore flow instead once a row exists;
+    #   - continuation_status == "discontinued" (not_continuing) is a hard
+    #     block, no override;
+    #   - continuation_status == "unconfirmed" (pending_confirmation)
+    #     requires the caller to pass override_pending=True — the frontend
+    #     only sets this after an explicit confirm dialog;
+    #   - an Availability conflict against the draft's OWN slot never
+    #     blocks the add (per product rule) — only continuation gates it.
+    # continuation_status is resolved independently of weekday/start_time
+    # (see resolve_continuation) so it is identical whether computed
+    # against the draft's own slot or any other slot — safe to gate on
+    # directly here without a separate lookup.
+    def add_schedule_draft_member_manual(
+        self, draft_id: int, mk_user_id: str, actor_user_id: Optional[int], actor_name: str,
+        expected_version: int, yc1_hint: str, yc2_hint: str, override_pending: bool = False,
+    ) -> dict[str, Any]:
+        mk_user_id = str(mk_user_id)
+        draft, err = self._schedule_draft_member_mutation_precheck(draft_id, expected_version)
+        if err:
+            return err
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM schedule_draft_members WHERE draft_id=? AND mk_user_id=?",
+                (int(draft_id), mk_user_id),
+            ).fetchone()
+            if existing:
+                return {
+                    "ok": False,
+                    "error": "Этот ребёнок уже в черновике — если он был исключён, используйте «Вернуть».",
+                    "reason_code": "already_member",
+                }
+            snapshot_rows = conn.execute(
+                "SELECT s.group_id, s.child_display_name, s.regularity_category, s.is_current_group "
+                "FROM schedule_source_group_students s WHERE s.snapshot_id=? AND s.mk_user_id=?",
+                (int(draft["source_snapshot_id"]), mk_user_id),
+            ).fetchall()
+        if not snapshot_rows:
+            return {
+                "ok": False,
+                "error": "Ребёнок не найден в этом наборе данных (snapshot) — нельзя добавить из другого набора.",
+                "reason_code": "not_in_snapshot",
+            }
+        child_display_name = snapshot_rows[0]["child_display_name"]
+        baseline = schedule_domain.select_historical_baseline_group([
+            {
+                "group_id": r["group_id"], "regularity_category": r["regularity_category"],
+                "is_current_group": (True if r["is_current_group"] == 1 else (False if r["is_current_group"] == 0 else None)),
+            }
+            for r in snapshot_rows
+        ])
+        source_group_id = baseline["group_id"] if baseline["outcome"] == "found" else None
+
+        group_branch_code = schedule_domain.branch_code_from_name(draft["branch_name"], yc1_hint, yc2_hint)
+        status = self.resolve_schedule_student_status(
+            mk_user_id, weekday=draft["weekday"], start_time=draft["start_time"],
+            duration_minutes=draft["duration_minutes"], group_branch_code=group_branch_code,
+            planned_start_date=draft["planned_start_date"],
+        )
+        if status["continuation_status"] == "discontinued":
+            return {
+                "ok": False,
+                "error": "Родитель указал, что ребёнок не продолжает обучение — добавление недоступно.",
+                "reason_code": "not_continuing",
+            }
+        if status["continuation_status"] == "unconfirmed" and not override_pending:
+            return {
+                "ok": False,
+                "error": "Родитель ещё не подтвердил продолжение обучения. Всё равно добавить ребёнка в этот черновик?",
+                "reason_code": "pending_confirmation_requires_override",
+            }
+
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO schedule_draft_members "
+                "(draft_id, mk_user_id, child_display_name, source_group_id, continuation_status, "
+                " availability_match, conflict_reason, manually_included, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                (
+                    int(draft_id), mk_user_id, child_display_name, source_group_id,
+                    status["continuation_status"], status["availability_match"], status["availability_reason"],
+                    now, now,
+                ),
+            )
+            self._bump_schedule_draft_version(conn, draft_id, actor_user_id, actor_name, now)
+            self._write_schedule_draft_audit(
+                conn, draft_id, actor_user_id, actor_name, "member_added", field="mk_user_id", new_value=mk_user_id,
+                details=("Ручное добавление при неподтверждённом продолжении (override)" if override_pending and status["continuation_status"] == "unconfirmed" else None),
+            )
+        return {"ok": True, "draft": self.get_schedule_draft(draft_id)}
+
+    # ── ALE-10 member composition slice — candidate list for "Добавить
+    # ребёнка": every student from the draft's own source snapshot who is
+    # NOT yet a schedule_draft_members row for THIS draft (any state —
+    # included or excluded; an existing row must go through exclude/
+    # restore instead). Reuses _compute_schedule_draft_preview (the same
+    # bulk, no-N+1 decision engine already powering the whole-snapshot
+    # "Дети" screen and draft-preview persistence) for the per-candidate
+    # backend "decision" (keep_historical_slot/needs_reassignment/
+    # manual_review/pending_confirmation/stopped) and historical baseline
+    # fields — never a second, parallel decision algorithm.
+    def get_schedule_draft_add_candidates(
+        self, draft_id: int, yc1_hint: str, yc2_hint: str, *, limit: int = 100, offset: int = 0,
+    ) -> dict[str, Any]:
+        draft = self.get_schedule_draft(draft_id)
+        if not draft:
+            return {"ok": False, "error": "Черновик не найден", "reason_code": "not_found"}
+        limit = max(1, min(int(limit), 300))
+        offset = max(0, int(offset))
+        computed = self._compute_schedule_draft_preview(draft["source_snapshot_id"], yc1_hint, yc2_hint)
+        with self._connect() as conn:
+            existing_ids = {
+                r["mk_user_id"] for r in conn.execute(
+                    "SELECT mk_user_id FROM schedule_draft_members WHERE draft_id=?", (int(draft_id),),
+                ).fetchall()
+            }
+        candidates = [s for s in computed["students"] if s["mk_user_id"] not in existing_ids]
+        for c in candidates:
+            c["candidate_group"] = schedule_domain.candidate_group_for_decision(c["decision"])
+        page = candidates[offset:offset + limit]
+
+        # section 7 — compatibility with THIS draft's OWN slot is a
+        # different question than the preview's availability_match (which
+        # is relative to the child's own historical baseline group/slot,
+        # used only for the candidate_group bucket above). Bulk-resolved
+        # for the returned page only (bounded by limit), never per card.
+        if page:
+            group_branch_code = schedule_domain.branch_code_from_name(draft["branch_name"], yc1_hint, yc2_hint)
+            bulk_requests = [
+                {
+                    "mk_user_id": c["mk_user_id"], "weekday": draft["weekday"], "start_time": draft["start_time"],
+                    "duration_minutes": draft["duration_minutes"], "group_branch_code": group_branch_code,
+                    "planned_start_date": draft["planned_start_date"],
+                }
+                for c in page
+            ]
+            target_by_user = {s["mk_user_id"]: s for s in self.resolve_schedule_student_statuses_bulk(bulk_requests)}
+            for c in page:
+                target = target_by_user.get(c["mk_user_id"], {})
+                c["target_slot_availability_match"] = target.get("availability_match", "ambiguous_availability")
+                c["target_slot_availability_reason"] = target.get("availability_reason", "")
+
+        return {"ok": True, "candidates": page, "total": len(candidates), "limit": limit, "offset": offset}
 
     # ── Overview stat grid (section 3B of the release spec) — server-side
     # aggregation, never shipped as raw rows to the browser. member_rows is
