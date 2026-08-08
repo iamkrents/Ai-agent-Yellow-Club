@@ -67,6 +67,32 @@ class TestDraftEditorScreen(unittest.TestCase):
         self.assertIn("editorVersionConflict", render)
         self.assertIn("изменён другим сотрудником", render)
 
+    def test_ale10_cancel_button_present_and_disabled_when_not_dirty(self):
+        render = _fn_body("_schedRenderDraftEditor")
+        self.assertIn('onclick="_schedCancelDraftEdits()"', render)
+        self.assertIn(">Отмена<", render)
+        # same disabled condition as Save's dirty-gate (never active with
+        # nothing to discard), but — unlike Save — never gated on
+        # mutationsEnabled/archived, since discarding local-only unsaved
+        # input is always safe regardless of write permission.
+        cancel_btn_line = next(line for line in render.splitlines() if "_schedCancelDraftEdits()" in line)
+        self.assertIn("!_schedState.editorDirty", cancel_btn_line)
+
+    def test_ale10_cancel_resets_pending_state_without_calling_the_backend(self):
+        cancel_fn = _fn_body("_schedCancelDraftEdits")
+        self.assertIn("_schedState.editorPending = {};", cancel_fn)
+        self.assertIn("_schedState.editorDirty = false;", cancel_fn)
+        self.assertNotIn("apiPost(", cancel_fn)
+        self.assertNotIn("apiGet(", cancel_fn)
+
+    def test_ale10_field_change_does_not_mark_dirty_when_reverted_to_original(self):
+        # bugfix: touching a field and typing back its original value must
+        # not leave it in editorPending (which would both incorrectly keep
+        # Save enabled and send a no-op field_changed to the backend).
+        field_fn = _fn_body("_schedEditorFieldChange")
+        self.assertIn("delete _schedState.editorPending[field];", field_fn)
+        self.assertIn("_schedState.editorDirty = Object.keys(_schedState.editorPending).length > 0;", field_fn)
+
 
 class TestConflictBadges(unittest.TestCase):
     def test_64_conflict_banner_shows_child_and_teacher_conflicts(self):
