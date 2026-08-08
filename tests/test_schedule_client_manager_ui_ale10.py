@@ -110,6 +110,36 @@ function _schedRenderChildrenDrafts() {{}}
         Path(path).unlink(missing_ok=True)
 
 
+def _run_node_pure(driver_js: str) -> subprocess.CompletedProcess:
+    """Like _run_node_scenario, but for _schedChildBaselineText — a pure
+    function (no apiGet/_schedState/DOM needed), so only it and its one
+    real dependency (SCHED_WEEKDAY_NAMES_FULL) are injected."""
+    assert NODE_BIN, "node is required for this test (already a project dependency — see 'node --check')"
+    harness = f"""
+"use strict";
+{_const_line("SCHED_WEEKDAY_NAMES_FULL")}
+{_full_fn("_schedChildBaselineText")}
+
+(async () => {{
+  try {{
+{driver_js}
+    console.log("OK");
+    process.exit(0);
+  }} catch (e) {{
+    console.error("SCENARIO FAILURE:", (e && e.stack) || e);
+    process.exit(1);
+  }}
+}})();
+"""
+    with tempfile.NamedTemporaryFile(suffix=".js", delete=False, mode="w", encoding="utf-8") as f:
+        f.write(harness)
+        path = f.name
+    try:
+        return subprocess.run([NODE_BIN, path], capture_output=True, text=True, timeout=20)
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
 def _make_storage() -> Storage:
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
@@ -522,6 +552,149 @@ async function apiGet(url) {
     if (new Set(ids).size !== 250) throw new Error("duplicate draft id present");
 """
         self._assert_ok(_run_node_scenario(mock, driver))
+
+
+class TestFilterHorizontalScrollFix(unittest.TestCase):
+    """Bug 1 — assigning el.innerHTML resets the container's scrollLeft
+    to 0 even though the active chip correctly moved, so the horizontal
+    filter row visually snapped back to the start after every click.
+    Static checks (the actual scroll-position behavior is a real-browser
+    concern verified separately via Playwright, per this project's UI
+    rule that string/CSS checks alone aren't sufficient for UI bugs —
+    but the exact scrollIntoView call shape is what makes that behavior
+    correct or not, so it's pinned here as a regression guard)."""
+
+    def test_active_chip_scrolled_into_view_after_rerender(self):
+        body = _fn_body("_schedRenderChildrenFilters")
+        self.assertIn(".sched-decision-filter.active", body)
+        self.assertIn("scrollIntoView(", body)
+
+    def test_scroll_is_horizontal_only_never_vertical_jump(self):
+        # block/inline "nearest" is what guarantees no vertical movement
+        # for an element already in place, and no horizontal movement
+        # for a chip already visible — "start"/"center"/"end" on the
+        # block axis would risk a vertical page jump the task explicitly
+        # forbids.
+        body = _fn_body("_schedRenderChildrenFilters")
+        self.assertIn('block: "nearest"', body)
+        self.assertIn('inline: "nearest"', body)
+        self.assertNotIn('block: "start"', body)
+        self.assertNotIn('block: "center"', body)
+        self.assertNotIn('block: "end"', body)
+        self.assertNotIn("window.scrollTo", body)
+        self.assertNotIn("scrollTo(0", body)
+
+    def test_active_lookup_scoped_to_the_freshly_rendered_container_not_document(self):
+        body = _fn_body("_schedRenderChildrenFilters")
+        self.assertIn("el.querySelector(", body)
+        self.assertNotIn("document.querySelector(", body)
+
+    def test_scrollintoview_call_is_defensively_guarded(self):
+        # must not throw in an environment where scrollIntoView isn't
+        # implemented (e.g. some headless/test DOMs).
+        body = _fn_body("_schedRenderChildrenFilters")
+        self.assertIn('typeof activeBtn.scrollIntoView === "function"', body)
+
+    def test_active_class_logic_unchanged_by_the_fix(self):
+        # the underlying "which chip is active" logic (what makes filter
+        # switching itself correct) must be untouched by this scroll fix.
+        body = _fn_body("_schedRenderChildrenFilters")
+        self.assertIn('_schedState.childrenFilter === f.id ? " active" : ""', body)
+
+    def test_filter_change_handler_does_not_duplicate_the_scroll_fix(self):
+        # the scroll-restore call must live in exactly one place
+        # (_schedRenderChildrenFilters, called by every path that
+        # re-renders the filter bar) — not duplicated in the click
+        # handler itself, which would risk a double-scroll or drift if
+        # the two ever disagree.
+        body = _fn_body("_schedChildrenFilterChange")
+        self.assertNotIn("scrollIntoView", body)
+        self.assertIn("_schedRenderChildrenFilters()", body)
+
+    def test_show_more_pagination_reveal_unchanged(self):
+        # explicit regression guard: this fix must not have touched the
+        # existing "Показать ещё" batch-reveal mechanism.
+        body = _fn_body("_schedChildrenShowMore")
+        self.assertIn("_schedState.childrenRenderLimit = (_schedState.childrenRenderLimit || 50) + 50;", body)
+        list_body = _fn_body("_schedRenderChildrenList")
+        self.assertIn("Показать ещё", list_body)
+        self.assertIn("Показано ${visible.length} из ${filtered.length}", list_body)
+
+
+@unittest.skipUnless(NODE_BIN, "node not found on PATH")
+class TestHistoricalSlotTextDynamic(unittest.TestCase):
+    """Bug 2 — historical_group_name can already encode the day/time
+    (real production names like "Воскресенье 17.00"), so unconditionally
+    appending the structured weekday/start_time produced a visible
+    duplicate. Runs the REAL extracted _schedChildBaselineText in Node —
+    proving the actual dedup logic on concrete inputs, not just that some
+    text pattern exists."""
+
+    def _assert_ok(self, proc: subprocess.CompletedProcess) -> None:
+        self.assertEqual(proc.returncode, 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}")
+
+    def test_group_name_already_encoding_day_and_time_has_no_duplicate_suffix(self):
+        driver = """
+    const text = _schedChildBaselineText({
+      baseline_outcome: "found", historical_group_name: "Воскресенье 17.00",
+      historical_weekday: 7, historical_start_time: "17:00",
+    });
+    if (text !== "Воскресенье 17.00") throw new Error("expected no duplicated suffix, got: " + JSON.stringify(text));
+    if (text.toLowerCase().split("воскресенье").length - 1 !== 1) throw new Error("day name appears more than once: " + text);
+"""
+        self._assert_ok(_run_node_pure(driver))
+
+    def test_group_name_with_day_only_gets_time_appended_without_repeating_day(self):
+        # e.g. real seed data "Творчество, среда" (weekday=3, "10:00")
+        driver = """
+    const text = _schedChildBaselineText({
+      baseline_outcome: "found", historical_group_name: "Творчество, среда",
+      historical_weekday: 3, historical_start_time: "10:00",
+    });
+    if (!text.includes("10:00")) throw new Error("expected the time to still be shown: " + text);
+    if (text.toLowerCase().split("среда").length - 1 !== 1) throw new Error("day name duplicated: " + text);
+"""
+        self._assert_ok(_run_node_pure(driver))
+
+    def test_group_name_without_day_or_time_uses_structured_fallback(self):
+        driver = """
+    const text = _schedChildBaselineText({
+      baseline_outcome: "found", historical_group_name: "Робототехника",
+      historical_weekday: 4, historical_start_time: "17:00",
+    });
+    if (!text.includes("Робототехника")) throw new Error("group name missing: " + text);
+    if (!text.toLowerCase().includes("четверг")) throw new Error("fallback weekday missing: " + text);
+    if (!text.includes("17:00")) throw new Error("fallback start_time missing: " + text);
+"""
+        self._assert_ok(_run_node_pure(driver))
+
+    def test_dot_time_format_in_name_recognized_as_already_present(self):
+        # MoyKlass/staff-entered names commonly use "17.00" where the
+        # structured field is "17:00" — must still be recognized as the
+        # same time, not duplicated as "17.00 · 17:00".
+        driver = """
+    const text = _schedChildBaselineText({
+      baseline_outcome: "found", historical_group_name: "Занятие 17.00",
+      historical_weekday: null, historical_start_time: "17:00",
+    });
+    if (text.includes("17:00")) throw new Error("dot-formatted time in the name should suppress the colon-formatted duplicate: " + text);
+    if (text !== "Занятие 17.00") throw new Error("unexpected result: " + text);
+"""
+        self._assert_ok(_run_node_pure(driver))
+
+    def test_no_historical_baseline_unchanged(self):
+        driver = """
+    const text = _schedChildBaselineText({ baseline_outcome: "none" });
+    if (text !== "Основная группа не определена") throw new Error("unexpected: " + text);
+"""
+        self._assert_ok(_run_node_pure(driver))
+
+    def test_ambiguous_baseline_unchanged(self):
+        driver = """
+    const text = _schedChildBaselineText({ baseline_outcome: "ambiguous" });
+    if (text !== "Несколько возможных групп") throw new Error("unexpected: " + text);
+"""
+        self._assert_ok(_run_node_pure(driver))
 
 
 if __name__ == "__main__":
