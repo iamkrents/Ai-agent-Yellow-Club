@@ -13490,7 +13490,23 @@ class Storage:
                 f"SELECT * FROM schedule_drafts {where} ORDER BY name ASC, id ASC LIMIT ? OFFSET ?",
                 [*params, limit, offset],
             ).fetchall()
-        return [dict(r) for r in rows], int(total)
+            drafts = [dict(r) for r in rows]
+            # ALE-10 — "количество участников" on the draft card. One bulk
+            # GROUP BY for the whole (already-capped, <=200 row) page, never
+            # one COUNT query per draft — same no-N+1 discipline as every
+            # other bulk resolver in this module.
+            draft_ids = [d["id"] for d in drafts]
+            if draft_ids:
+                placeholders = ",".join("?" for _ in draft_ids)
+                count_rows = conn.execute(
+                    f"SELECT draft_id, COUNT(*) c FROM schedule_draft_members "
+                    f"WHERE draft_id IN ({placeholders}) AND manually_excluded=0 GROUP BY draft_id",
+                    draft_ids,
+                ).fetchall()
+                counts_by_draft = {r["draft_id"]: r["c"] for r in count_rows}
+                for d in drafts:
+                    d["members_count"] = counts_by_draft.get(d["id"], 0)
+        return drafts, int(total)
 
     def list_schedule_draft_members(self, draft_id: int) -> list[dict[str, Any]]:
         with self._connect() as conn:

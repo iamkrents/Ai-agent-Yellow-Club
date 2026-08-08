@@ -21663,8 +21663,9 @@ function _schedRenderChildrenDrafts() {
         <h3>${escapeHtml(dr.name || `Черновик #${dr.id}`)}</h3>
         ${uiStatusBadge(SCHED_DRAFT_STATUS_LABELS[dr.status] || dr.status, SCHED_DRAFT_STATUS_TONE[dr.status] || "muted")}
       </div>
-      <p class="sched-group-card__meta">${escapeHtml(dr.course_name || "")} ${dr.branch_name ? "· " + escapeHtml(dr.branch_name) : ""}</p>
+      <p class="sched-group-card__meta">${escapeHtml(dr.course_name || "")} ${dr.branch_name ? "· " + escapeHtml(dr.branch_name) : ""} ${dr.teacher_name ? "· " + escapeHtml(dr.teacher_name) : ""}</p>
       <p class="sched-group-card__slot">${escapeHtml(_schedFmtSlot(dr))}</p>
+      <p class="sched-group-card__stats"><span>Детей: ${dr.members_count ?? 0}</span></p>
       <div class="sched-group-card__actions">
         <button class="secondary" onclick="_schedOpenDraftEditor(${dr.id})">Открыть черновик</button>
       </div>
@@ -22474,6 +22475,7 @@ function _schedRenderDraftEditor() {
     </div>
     <div class="sched-editor-actions">
       <button class="primary" ${archived || !mutationsEnabled || !_schedState.editorDirty || _schedState.editorSaving ? "disabled" : ""} onclick="_schedSaveDraftFields()">${_schedState.editorSaving ? "Сохраняем…" : "Сохранить"}</button>
+      <button class="secondary" ${!_schedState.editorDirty || _schedState.editorSaving ? "disabled" : ""} onclick="_schedCancelDraftEdits()">Отмена</button>
       ${!archived && mutationsEnabled ? `
         ${dr.status !== "ready" ? `<button class="secondary" onclick="_schedSetDraftStatus('needs_review')">Требует проверки</button>` : ""}
         ${dr.status !== "ready" ? `<button class="secondary" onclick="_schedSetDraftStatus('ready')">Готово к проверке</button>` : `<button class="secondary" onclick="_schedSetDraftStatus('needs_review')">Вернуть на проверку</button>`}
@@ -22511,8 +22513,33 @@ function _schedRenderDraftEditor() {
 }
 
 function _schedEditorFieldChange(field, value) {
-  _schedState.editorPending[field] = value === "" ? null : (["weekday", "duration_minutes"].includes(field) ? Number(value) : value);
-  _schedState.editorDirty = true;
+  const parsed = value === "" ? null : (["weekday", "duration_minutes"].includes(field) ? Number(value) : value);
+  const dr = _schedState.currentDraft;
+  const original = dr ? dr[field] : undefined;
+  // Bugfix: only track a field as pending if it actually differs from
+  // the draft's current value — otherwise touching a field and typing
+  // back the same value left it in editorPending, incorrectly kept
+  // "Сохранить" enabled, and would have sent a no-op change to the
+  // backend (still a real field_changed audit row + version bump there,
+  // since the backend can't tell "same value" from "no change" once a
+  // key is present in the changes dict at all).
+  const same = parsed === original || (parsed == null && original == null) || String(parsed) === String(original ?? "");
+  if (same) {
+    delete _schedState.editorPending[field];
+  } else {
+    _schedState.editorPending[field] = parsed;
+  }
+  _schedState.editorDirty = Object.keys(_schedState.editorPending).length > 0;
+  _schedRenderDraftEditor();
+}
+
+function _schedCancelDraftEdits() {
+  // Cancel: discard any unsaved changes and re-render with the draft's
+  // original values (val() in _schedRenderDraftEditor falls back to
+  // dr[k] once editorPending is empty) — never touches the backend.
+  _schedState.editorPending = {};
+  _schedState.editorDirty = false;
+  _schedState.editorVersionConflict = false;
   _schedRenderDraftEditor();
 }
 
