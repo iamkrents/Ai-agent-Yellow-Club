@@ -415,10 +415,13 @@ class TestErrorDoesNotClearValues(unittest.TestCase):
 
 class TestVersion(unittest.TestCase):
     def test_18_version_and_cache_bust(self):
+        # v7.1.18 cache-bust fix moved only index.html's query-string
+        # cache-bust forward — APP_VERSION/console.log stay at 7.1.17.1
+        # since that fix touched index.html only, not app.js.
         self.assertIn('console.log("MiniApp version: v7.1.17.1");', _js())
         html = _html()
-        self.assertIn("styles.css?v=7.1.17.1", html)
-        self.assertIn("app.js?v=7.1.17.1", html)
+        self.assertIn("styles.css?v=7.1.18", html)
+        self.assertIn("app.js?v=7.1.18", html)
 
 
 if __name__ == "__main__":

@@ -270,8 +270,11 @@ class TestStaticFrontendChanges(unittest.TestCase):
         self.assertIn("canReturnToAdminFromComms() ?", segment)
 
     def test_version_cache_bust_v71142(self):
-        self.assertIn("styles.css?v=7.1.17.1", self.html)
-        self.assertIn("app.js?v=7.1.17.1", self.html)
+        # v7.1.18 cache-bust fix moved only index.html's query-string
+        # cache-bust forward — APP_VERSION/console.log stay at 7.1.17.1
+        # since that fix touched index.html only, not app.js.
+        self.assertIn("styles.css?v=7.1.18", self.html)
+        self.assertIn("app.js?v=7.1.18", self.html)
         self.assertIn('console.log("MiniApp version: v7.1.17.1");', self.js)
 
 

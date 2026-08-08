@@ -132,9 +132,12 @@ class TestClientCabinetForcedLight(unittest.TestCase):
             )
 
     def test_11_version_and_cache_bust(self):
+        # v7.1.18 cache-bust fix moved only index.html's query-string
+        # cache-bust forward — APP_VERSION/console.log stay at 7.1.17.1
+        # since that fix touched index.html only, not app.js.
         self.assertIn('console.log("MiniApp version: v7.1.17.1")', self.js)
-        self.assertIn('styles.css?v=7.1.17', self.html)
-        self.assertIn('app.js?v=7.1.17', self.html)
+        self.assertIn('styles.css?v=7.1.18', self.html)
+        self.assertIn('app.js?v=7.1.18', self.html)
 
     def test_12_no_stray_horizontal_scroll_selectors_introduced(self):
         block = self._override_block()
