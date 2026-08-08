@@ -12191,6 +12191,24 @@ class MiniAppContext:
         pi = self.storage.get_payment_intent(public_id)
         if not pi:
             return {"ok": False, "error": "Счёт не найден."}
+
+        # ALE-35 — IDOR fix: storage.get_payment_intent is a plain, unscoped
+        # lookup by public_id — it never checks that this intent belongs to
+        # the calling parent's own family. Re-derive the caller's own
+        # children from client_parent_child_links (same ownership idiom
+        # _require_availability_access already uses for onboarding/
+        # Availability, ALE-34) and never trust the public_id path
+        # parameter's mk_user_id alone. Deliberately returns the exact same
+        # generic "not found" message as a genuinely nonexistent public_id
+        # — for payment/financial data, a caller must never be able to
+        # distinguish "exists, not yours" from "does not exist at all".
+        # Checked before any other detail about this intent (published/
+        # withdrawn/paid/confirmed) is used or revealed.
+        parent_tid = self._effective_client_identity(auth)
+        own_children = self.storage.list_client_children_for_parent(parent_tid)
+        if not any(str(c.get("mk_user_id")) == str(pi.get("mk_user_id")) for c in own_children):
+            return {"ok": False, "error": "Счёт не найден."}
+
         if pi.get("client_visibility") != "published":
             return {"ok": False, "error": "Счёт недоступен."}
         if pi.get("client_visibility") == "withdrawn":
